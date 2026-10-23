@@ -18,7 +18,7 @@ const { ReviewManager } = await import("../src/server/reviews.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
-const { closeDb } = await import("../src/server/db.ts");
+const { closeDb, openDb } = await import("../src/server/db.ts");
 const { savePlan } = await import("../src/server/plans/store.ts");
 const { planAuthority } = await import("../src/server/plans/authority.ts");
 const managers: InstanceType<typeof WorkflowManager>[] = [];
@@ -44,8 +44,9 @@ async function fixture({ kind = "shape", storage = "repository", invited = true 
   registry.applyDiscovery([{ syntheticId: id, agent: "claude", name: id, nameSource: "process", cwd: repo, gitRoot: repo, repoRoot: repo, gitBranch: "main", pid: 1, tty: null, terminals: [], startedAt: 1 }]);
   registry.applyHook({ agent: "claude", event: "Stop", sessionId: id, cwd: repo, transcriptPath: null, env: {} });
   if (invited) registry.inviteForeman(id);
-  registry.upsertTask(mkTask({ id: `task-${id}`, kind, status: "running", sessionId: id, repoRoot: repo, worktreePath: repo, baseSha: git(repo, "rev-parse", "HEAD"), workflowId: null,
-    planPolicy: storage === "local" ? { version: 2, storage, commitPlanHtml: false } : { storage, commitPlanHtml: false }, planInputs: [] }));
+  const task = mkTask({ id: `task-${id}`, kind, status: "running", sessionId: id, repoRoot: repo, worktreePath: repo, baseSha: git(repo, "rev-parse", "HEAD"), workflowId: null,
+    planPolicy: storage === "local" ? { version: 2, storage, commitPlanHtml: false } : { storage, commitPlanHtml: false }, planInputs: [] });
+  registry.upsertTask(task);
   const personas = new PersonaManager(registry), workflows = new WorkflowManager(registry, personas.store);
   managers.push(workflows);
   const reviews = new ReviewManager(registry);
@@ -62,7 +63,13 @@ async function fixture({ kind = "shape", storage = "repository", invited = true 
     assert.equal(res.status, 200, await res.clone().text());
     return registry.getReview(((await res.json()) as { id: string }).id)!;
   };
-  return { registry, reviews, save, ask };
+  // A redispatch: the same session and task start a new work episode, as `resetWorkEpisode` does.
+  const newEpisode = () => {
+    registry.resetWorkEpisode(id);
+    registry.upsertTask({ ...task, status: "running" });
+    registry.bindTaskToWorkEpisode(task.id, id);
+  };
+  return { registry, reviews, save, ask, planId, newEpisode };
 }
 
 test("after the human approves a shape plan, Foreman approves later revisions with the same answers", async () => {
@@ -78,6 +85,11 @@ test("after the human approves a shape plan, Foreman approves later revisions wi
   assert.match(second.response!, /^Foreman approved revision 2 on the operator's behalf, carrying forward their approval of revision 1\./);
   assert.match(second.response!, /Create tickets after the plan merges/);
   assert.equal(f.registry.pendingReviews().length, 0, "nothing is left for the human to answer");
+  // A repository plan publishes by merging its pull request; no publication gate reads this
+  // approval (`publish_plan` and `readiness` serve local plans only). What the review cycle
+  // does need is the carried answer bound to the exact revision it approved, as a human's is.
+  assert.deepEqual(openDb().prepare("SELECT review_id, revision FROM managed_plan_reviews WHERE plan_id = ? ORDER BY revision").all(f.planId)
+    .map((row) => ({ ...row })), [{ review_id: first.id, revision: 1 }, { review_id: second.id, revision: 2 }]);
   await f.save(3);
   const third = await f.ask(3);
   assert.equal(third.resolvedBy, "foreman", "a Foreman approval never replaces the human's as the carried source");
@@ -90,10 +102,28 @@ test("the human still answers a new question, a refusal, or a plan Foreman may n
   await newQuestion.save(2);
   const scope: PlanDecision = { id: "scope", question: "Include exports?", options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }] };
   assert.equal((await newQuestion.ask(2, [scope, followUp])).status, "pending", "a question the human never answered");
+  const changedOptions = await fixture();
+  changedOptions.reviews.resolve((await changedOptions.ask(1)).id, "answer", null, "human", approveWith("create-tickets"));
+  await changedOptions.save(2);
+  assert.equal((await changedOptions.ask(2, [{ ...followUp, options: [...followUp.options, { id: "phase", label: "Phase it" }] }])).status, "pending", "changed options");
   const reworded = await fixture();
   reworded.reviews.resolve((await reworded.ask(1)).id, "answer", null, "human", approveWith("create-tickets"));
   await reworded.save(2);
-  assert.equal((await reworded.ask(2, [{ ...followUp, options: [...followUp.options, { id: "phase", label: "Phase it" }] }])).status, "pending", "changed options");
+  assert.equal((await reworded.ask(2, [{ ...followUp, question: "What should happen after this plan merges?" }])).status, "pending", "same option ids, reworded question");
+
+  const qualified = await fixture();
+  qualified.reviews.resolve((await qualified.ask(1)).id, "answer", null, "human",
+    [approveWith("create-tickets")[0]!, { decisionId: "approve-final-bundle", selected: ["approve"], other: "Only if exports stay out" }]);
+  await qualified.save(2);
+  assert.equal((await qualified.ask(2)).status, "pending", "an approval with Other text is not a plain approval");
+
+  const redispatched = await fixture();
+  redispatched.reviews.resolve((await redispatched.ask(1)).id, "answer", null, "human", approveWith("create-tickets"));
+  redispatched.newEpisode();
+  await redispatched.save(2);
+  const nextEpisode = await redispatched.ask(2);
+  assert.equal(nextEpisode.status, "pending", "an earlier work episode's approval never authorizes a new episode's revision");
+  assert.equal(nextEpisode.resolvedBy, null);
 
   const refused = await fixture();
   refused.reviews.resolve((await refused.ask(1)).id, "answer", null, "human", approveWith("create-tickets"));
