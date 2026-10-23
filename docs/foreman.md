@@ -192,7 +192,8 @@ decision it leaves alone keeps the agent's recommendation.
   question is left as you set it.
 - Foreman **never submits** these forms, in any mode: dry-run, semi-auto and live all draft,
   and the allowlist does not change that. The daemon refuses a Foreman-marked resolve of a
-  plan-decisions review outright.
+  plan-decisions review outright. The one exception is
+  [re-approving a shape plan](#re-approving-a-shape-plan), which the daemon settles itself.
 - When you submit with Foreman's Other text still in place, word for word, the answer the
   agent receives reads `Other: … (Foreman draft, accepted)`, and the conversation's record of
   your answer carries the same **Foreman draft, accepted** mark. Edit the text at all and it
@@ -206,6 +207,28 @@ decision it leaves alone keeps the agent's recommendation.
 Escalating or skipping writes no draft, so the form stays as the agent preselected it. The
 cheap tier never drafts: these asks always go to the full reviewer, recorded with the triage
 reason **decision draft**.
+
+#### Re-approving a shape plan
+
+A shape task's plan review cycle saves a new revision for every round of review repairs, and
+each one asks for final-bundle approval again. Once you have approved the plan, Foreman
+approves those later revisions for you, so you answer the first approval only. The daemon
+settles the new form at once with your earlier answers, without a model call, when all of
+these hold:
+
+- The session is a `shape` task's, Foreman is [invited into](#which-sessions-foreman-may-act-in)
+  it, and the plan uses repository storage. A local plan's publication accepts only a human's
+  approval, so its revisions still come to you.
+- Your latest answer on an earlier revision of the same plan, in the same work episode, was
+  **Approve final bundle**. A **Needs revision** answer or a dismissal puts the next one back
+  in front of you.
+- Every other question on the new form is one you answered there, with the same wording and
+  option ids. A new or changed question leaves the whole form to you.
+
+The agent receives your carried answers, led by `Foreman approved revision N on the
+operator's behalf, carrying forward their approval of revision M.` The review is recorded as
+Foreman's, so it does not appear in the conversation as your answer. Withdraw the invite to
+answer every revision yourself.
 
 For a draft or escalation that has no canonical review form, the session detail keeps the existing
 **◆ decision** or **✎ draft** flag. Its expanded note carries the brief, recommendation and

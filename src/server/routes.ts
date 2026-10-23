@@ -1,4 +1,5 @@
-import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, finalBundleDecision } from "./plans/publication.ts";
+import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, carriedPlanApproval, finalBundleDecision } from "./plans/publication.ts";
+import { decisionLead, formatResponse } from "@shared/review-item.ts";
 import { validatePlanInputs } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
@@ -4996,9 +4997,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         const saved = readPlanRevision(target.planId, target.revision);
         const input = { planId: target.planId, revision: target.revision, repoKey: saved.manifest.repoKey };
         validatePlanReview(authority, input, manager);
-        const review = reviews.create(session.id, kind, title,
-          `${body}\n\nFinal bundle: [${saved.manifest.slug}, revision ${target.revision}](${saved.preview}). Files: ${saved.manifest.files.map((f) => f.name).join(", ")}. Approval applies only to this complete immutable revision.`,
-          [...(decisions ?? []).filter((d) => d.id !== PLAN_APPROVAL_DECISION), finalBundleDecision]);
+        const formBody = `${body}\n\nFinal bundle: [${saved.manifest.slug}, revision ${target.revision}](${saved.preview}). Files: ${saved.manifest.files.map((f) => f.name).join(", ")}. Approval applies only to this complete immutable revision.`;
+        const formDecisions = [...(decisions ?? []).filter((d) => d.id !== PLAN_APPROVAL_DECISION), finalBundleDecision];
+        // Fork (shape re-approval): once the human approved this shape plan, Foreman approves
+        // the review cycle's later revisions for them, unless the form asks something new.
+        const carried = registry.taskForSession(session.id, session.cwd)?.kind === "shape" && session.foremanInvite !== null
+          ? carriedPlanApproval(authority, input, formDecisions) : null;
+        const review = carried
+          ? reviews.record({ sessionId: session.id, kind, title, body: formBody, decisions: formDecisions, selections: carried.selections,
+            response: `Foreman approved revision ${target.revision} on the operator's behalf, carrying forward their approval of revision ${carried.revision}.\n\n${formatResponse(formDecisions, carried.selections, decisionLead(kind))}`,
+            resolvedBy: "foreman", at: Date.now() })
+          : reviews.create(session.id, kind, title, formBody, formDecisions);
         bindPlanReview(authority, input, review.id, manager);
         return c.json({ id: review.id, sessionId: session.id });
       }
