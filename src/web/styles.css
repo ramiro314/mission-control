@@ -69,6 +69,7 @@
 
   --pr-open: #3fb950;
   --pr-merged: var(--purple);
+  --pr-closed: var(--danger);
 
   /* Task priority. Reuses the session-state ramp rather than inventing a fifth hue,
      so "orange means look at me" reads the same on a card and on a backlog chip.
@@ -10779,6 +10780,16 @@ mark.find-hit.is-current {
 .pr-merged:hover {
   background: color-mix(in oklab, var(--pr-merged) 24%, var(--panel-2));
   border-color: color-mix(in oklab, var(--pr-merged) 62%, transparent);
+}
+
+.pr-closed {
+  color: color-mix(in oklab, var(--pr-closed) 80%, var(--fg));
+  background: color-mix(in oklab, var(--pr-closed) 14%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--pr-closed) 34%, transparent);
+}
+.pr-closed:hover {
+  background: color-mix(in oklab, var(--pr-closed) 22%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--pr-closed) 58%, transparent);
 }
 
 /* "A CI check failed" alert - sits right after the PR chip and links to the same
@@ -24208,13 +24219,23 @@ button.sc-row:focus-visible {
 }
 /* One grid for the whole table so every column line stays true down the rows: repo path
    takes the flexible track, the three grants are fixed to their label widths, and the
-   remove button gets a hairline column of its own. */
+   remove button gets a hairline column of its own.
+
+   The grid is also the table's scrollport. Uncapped, every trusted repo added a row to the
+   settings pane, which pushed the add picker to the pane's bottom edge where its list had no
+   room to open. Past the cap the rows scroll here, under a header that stays put. */
 .trust-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 150px 140px 168px 130px 44px;
   align-items: stretch;
+  max-height: min(460px, 55vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .trust-h {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   padding: 9px 12px;
   background: var(--panel-2);
   font-size: 10px;
@@ -26864,6 +26885,9 @@ span.line-run-prov {
   font-size: 9.5px;
   font-weight: 650;
   color: var(--pr-open);
+}
+.rail-pr.pr-closed {
+  color: var(--pr-closed);
 }
 .rail-pr.pr-merged {
   color: var(--pr-merged);
@@ -30823,6 +30847,10 @@ span.line-run-prov {
 .tile-flag.pr-open {
   border-color: color-mix(in oklab, var(--pr-open) 45%, var(--border));
   color: var(--pr-open);
+}
+.tile-flag.pr-closed {
+  border-color: color-mix(in oklab, var(--pr-closed) 45%, var(--border));
+  color: var(--pr-closed);
 }
 .tile-flag.pr-merged {
   border-color: color-mix(in oklab, var(--pr-merged) 45%, var(--border));

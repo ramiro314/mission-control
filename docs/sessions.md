@@ -41,6 +41,9 @@ one call per checkout. Those do not crowd the chip, which keeps naming the sessi
 checkout; they appear as the session detail's per-repository lines, and it is those the completion
 quorum and Foreman's [PR follow-through](work-queues.md#keeping-a-pr-on-track) read.
 
+PR links are green while open, purple when merged, and red when closed without merging.
+Closed links remain visible until the session moves to a branch with no matching PR.
+
 When GitHub reports that pull request, or any of a multi-repo task's, as conflicting with its
 base, the chip carries a conflict mark whose accessible name is "Conflicts with `<base>`": a
 separate alert beside the chip in the session header, folded into the label as `⇄` on the Board
@@ -468,11 +471,6 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   wait their turn on the same session detail instead of replacing one another. Claude's own question
   tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
   terminal is unreadable, and here it is not;
-- a Claude session has Claude Code's Artifact tool, as a dispatched pane does. The CLI leaves
-  that tool off by default when the Agent SDK launches it, so the driver sets
-  `CLAUDE_CODE_ARTIFACT=1` on the subprocess unless the daemon's environment already sets
-  that variable. `CLAUDE_CODE_ARTIFACT=0` in the daemon's environment, `enableArtifact: false`
-  in Claude Code settings, and organization policy still turn it off;
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
   just as they control a pane-backed one - though on Codex a reasoning-effort selection
   takes effect when the next turn starts rather than immediately, which the effort badge

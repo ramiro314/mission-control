@@ -58,8 +58,8 @@ const NO_REPOSITORY_ARGV = new Set([
   '["auth", "status"]',
   '["auth", "status", "--hostname", "github.com"]',
   '["api", "user", "--jq", ".login"]',
-  // `scripts/install-app.mjs`: `authStatus: () => ["auth", "status"]`.
-  "GH_ARGS.authStatus()",
+  // `scripts/install-app.mjs`: `authProbe: () => ["api", "user", "--jq", ".login"]`.
+  "GH_ARGS.authProbe()",
 ]);
 
 /** The only argv a `node-id` row may carry: the Inspector resolving a thread it read off the PR. */
@@ -128,8 +128,8 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
   ],
   "scripts/install-app.mjs": [
     { fn: "newestStableRelease", argv: "GH_ARGS.releaseList(repo)", how: "explicit", why: "`--repo`, defaulting to `CANONICAL_REPO`" },
-    { fn: "checkPrerequisites", argv: '["--version"]', how: "none", why: "version probe" },
-    { fn: "checkPrerequisites", argv: "GH_ARGS.authStatus()", how: "none", why: "authentication probe" },
+    { fn: "ghCredentialProblem", argv: '["--version"]', how: "none", why: "version probe" },
+    { fn: "ghCredentialProblem", argv: "GH_ARGS.authProbe()", how: "none", why: "active-credential probe (`gh api user`)" },
   ],
   "scripts/unit-shard-timings.ts": [
     { fn: "main", argv: '["run", "download", runId, "--repo", repo, "--pattern", "unit-junit-node-*", "--dir", dir]', how: "resolver", why: "`scriptRepository()`" },

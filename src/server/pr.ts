@@ -12,14 +12,14 @@ import { checkoutGitHubRepository } from "./github/repository.ts";
 // Keeps each session's PR chip honest by asking `gh` for the pull request on the
 // session's current branch. It is the source of truth behind the chip: it
 // discovers PRs the hook never saw (Codex sessions, PRs opened in the web UI),
-// surfaces whether that PR is open or merged, and retracts the chip only when the
+// surfaces whether that PR is open, merged, or closed, and retracts the chip only when the
 // session moves to a branch that no longer matches the PR's head. The hook only
 // ever sets a link optimistically; nothing but this poller can confirm a merge,
 // because a merge happens outside the session where no hook can observe it.
 //
 // A merged PR is deliberately kept (not cleared): once your work lands you can
 // still see the PR that carried it, right up until the session is reset onto a
-// different branch. Only a *closed-unmerged* PR is treated as "no PR".
+// different branch. Closed-unmerged PRs are kept too, with their closed state.
 //
 // Cheap by construction: live sessions cost one `gh` call per distinct worktree;
 // persisted links are concurrency-limited and back off independently.
@@ -36,12 +36,11 @@ const DEFAULT_BRANCHES = new Set(["main", "master"]);
 type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId" | "episodeId">;
 /**
  * What the by-URL poller learned about one pull request. `closed` is a pull request closed
- * without merging: the session poller still reads it as "no PR", but a task bound to it is
- * told (`Registry.reconcilePrClosures`). `null` is "nothing to report", which an injected
- * lookup may still return for a closed PR.
+ * without merging, which a task bound to it is told about (`Registry.reconcilePrClosures`).
+ * `null` is "nothing to report", which an injected lookup may still return for a closed PR.
  */
 type PrStateMatch = {
-  state: PrState | "closed";
+  state: PrState;
   mergedAt: number | null;
   /** Null when GitHub answered `UNKNOWN`, or when an injected lookup did not ask. */
   mergeable?: PrMergeable | null;
@@ -123,11 +122,10 @@ export function prListArgs(branch: string, repo: string): string[] {
 /**
  * Ask `gh` for the pull request whose head is `branch`, on the repository
  * `checkoutGitHubRepository` resolves for `cwd` (`prListArgs`). Prefers a still-open PR, else
- * falls back to a merged one (so a landed PR keeps showing). Returns `null` when
- * the branch has provably no open/merged PR (only closed-unmerged, or none), or
- * `"error"` when `gh` is missing/unauthenticated/timed out, or the checkout names no GitHub
- * repository - which the reconciler treats as "unknown, leave the existing chip alone"
- * rather than a reason to clear.
+ * falls back to a merged one, then a closed one. Returns `null` when the branch has provably
+ * no matching PR, or `"error"` when `gh` is missing/unauthenticated/timed out, or the checkout
+ * names no GitHub repository - which the reconciler treats as "unknown, leave the existing
+ * chip alone" rather than a reason to clear.
  */
 export async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
   const [res, head] = await Promise.all([
@@ -142,9 +140,10 @@ export async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
     const arr = JSON.parse(res.stdout || "[]") as unknown;
     if (!Array.isArray(arr)) return "error"; // malformed output is an anomaly, not "no PR"
     // `gh` lists newest-first; prefer an open PR, else the most recent merged one.
-    // A closed-unmerged PR is ignored, so the chip drops like there's no PR.
+    // Keep closed PRs visible when no open or merged PR supersedes them.
     const open = arr.find((p) => prStateOf(p) === "open");
-    const match = open ?? arr.find((p) => prStateOf(p) === "merged");
+    const match = open ?? arr.find((p) => prStateOf(p) === "merged")
+      ?? arr.find((p) => prStateOf(p) === "closed");
     if (!match) return null;
     const { url, number, createdAt, mergedAt, headRefOid, mergeable, baseRefName } = match as {
       url?: unknown;
@@ -215,10 +214,8 @@ async function queryPrUrl(url: string): Promise<PrStateLookup> {
       headSha: typeof parsed.headRefOid === "string" ? parsed.headRefOid : null,
     };
     const state = prStateOf(parsed);
-    if (state === null) {
-      return parsed.state === "CLOSED" ? { state: "closed", mergedAt: null, ...facts } : "error";
-    }
-    if (state === "open") return { state, mergedAt: null, ...facts };
+    if (state === null) return "error";
+    if (state === "open" || state === "closed") return { state, mergedAt: null, ...facts };
     const mergedAt = typeof parsed.mergedAt === "string" ? Date.parse(parsed.mergedAt) : Number.NaN;
     return Number.isFinite(mergedAt) ? { state, mergedAt, ...facts } : "error";
   } catch {
@@ -226,12 +223,13 @@ async function queryPrUrl(url: string): Promise<PrStateLookup> {
   }
 }
 
-/** Map `gh`'s uppercase PR state to our surfaced states; closed-unmerged -> null. */
+/** Map `gh`'s uppercase PR state to our surfaced states; including closed-unmerged. */
 function prStateOf(p: unknown): PrState | null {
   const raw = (p as { state?: unknown })?.state;
   if (raw === "OPEN") return "open";
   if (raw === "MERGED") return "merged";
-  return null; // CLOSED (unmerged) or anything unexpected
+  if (raw === "CLOSED") return "closed";
+  return null; // unexpected state
 }
 
 type CheckState = "fail" | "pending" | "pass";
@@ -376,7 +374,7 @@ export async function pollAndReconcilePrs(
         episodeId: t.episodeId,
       });
     }
-    // r === null (no open/merged PR) -> omitted from both -> reconcile clears the chip
+    // r === null (no matching PR) -> omitted from both -> reconcile clears the chip
   }
   for (const t of repoQueryable) {
     const r = results.get(t.cwd);
@@ -406,6 +404,7 @@ export async function pollAndReconcilePrs(
       mergedUrls.set(url, match.mergedAt);
       mergedBases.set(url, match.baseRef ?? null);
     }
+    if (match.state === "closed") closedUrls.add(url);
   }
   await forEachConcurrent(
     dueUrls.filter((url) => !observed.has(url)),
@@ -418,9 +417,8 @@ export async function pollAndReconcilePrs(
         mergedUrls.set(url, result.mergedAt);
         mergedBases.set(url, result.baseRef ?? null);
       }
-      // Read from the URL itself, which is the only place a closed, unmerged state survives:
-      // the branch lookup drops it, and the URL is asked about here precisely because the
-      // branch lookup no longer observes an open PR for it.
+      // A URL the branch lookup does not observe (the session moved on, or exited) learns
+      // it was closed only here.
       if (result !== "error" && result?.state === "closed") closedUrls.add(url);
     },
   );

@@ -10,7 +10,7 @@ import type { PrMatch } from "../src/server/registry.ts";
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-pr-"));
 const { Registry, prNumberFromUrl } = await import("../src/server/registry.ts");
-const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
+const { pollAndReconcilePrs, queryPr } = await import("../src/server/pr.ts");
 const { currentMergeability } = await import("../src/shared/pr-mergeable.ts");
 
 function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
@@ -101,8 +101,8 @@ test("reconcilePrs clears the chip once the branch has no matching PR", () => {
   reg.reconcilePrs(new Map([["feat", match()]]), new Set());
   assert.equal(reg.getSession("feat")!.prUrl, PR);
 
-  // Next sweep: gh finds no open/merged PR for the branch (branch moved, or the
-  // PR was closed unmerged) -> absent from `found` -> cleared.
+  // Next sweep: gh finds no matching PR for the branch after it moved
+  // -> absent from `found` -> cleared.
   reg.reconcilePrs(new Map(), new Set());
 
   assert.equal(reg.getSession("feat")!.prUrl, null);
@@ -227,22 +227,24 @@ test("push, then UNKNOWN, then resolved: conflicting on A, unknown on B, then me
   assert.equal(currentMergeability(reg.getSession("feat")!), "mergeable");
 });
 
-test("a merged PR clears the observation, and a closed one clears all three fields", () => {
+test("a merged or closed PR clears the observation, and no PR clears all three fields", () => {
   const reg = new Registry();
   reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
-  reg.reconcilePrs(
-    new Map([["feat", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
-    new Set(),
-  );
-  reg.reconcilePrs(new Map([["feat", match({ state: "merged", headSha: "A" })]]), new Set());
-  assert.equal(reg.getSession("feat")!.prMergeable, null);
+  for (const state of ["merged", "closed"] as const) {
+    reg.reconcilePrs(
+      new Map([["feat", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
+      new Set(),
+    );
+    reg.reconcilePrs(new Map([["feat", match({ state, headSha: "A" })]]), new Set());
+    assert.equal(reg.getSession("feat")!.prMergeable, null, state);
+  }
 
   reg.applyDiscovery([disco({ syntheticId: "other", gitBranch: "feat/x" })]);
   reg.reconcilePrs(
     new Map([["other", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
     new Set(),
   );
-  // Closed unmerged: the branch lookup drops it, so `found` no longer holds it.
+  // The branch has no matching PR any more, so `found` no longer holds it.
   reg.reconcilePrs(new Map(), new Set());
   const s = reg.getSession("other")!;
   assert.equal(s.prState, null);
@@ -345,4 +347,52 @@ test("the poller asks gh for mergeable, baseRefName and headRefOid on both paths
   assert.match(calls, /pr view \S+ --json \S*mergeable/);
   assert.match(calls, /pr view \S+ --json \S*baseRefName/);
   assert.match(calls, /pr view \S+ --json \S*headRefOid/);
+});
+
+test("reconcilePrs retains closed PRs and follows reopening", () => {
+  const reg = new Registry();
+  reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
+  for (const state of ["open", "closed", "open"] as const) {
+    reg.reconcilePrs(new Map([["feat", match({ state })]]), new Set());
+    assert.equal(reg.getSession("feat")!.prUrl, PR);
+    assert.equal(reg.getSession("feat")!.prState, state);
+  }
+});
+
+test("queryPr prefers an open PR, then a merged one, and falls back to a closed one", async () => {
+  const home = process.env.HARNESS_HOME!;
+  const bin = join(home, "fake-gh-select");
+  mkdirSync(bin, { recursive: true });
+  const listOut = join(home, "gh-select.json");
+  writeFileSync(join(bin, "gh"), `#!/bin/sh\ncat "${listOut}"\n`);
+  chmodSync(join(bin, "gh"), 0o755);
+  const repo = mkdtempSync(join(tmpdir(), "harness-pr-select-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "ignore" });
+  git("init", "-q");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  git("remote", "add", "origin", "https://github.com/acme/demo.git");
+  const row = (number: number, state: string) => ({
+    url: `https://github.com/acme/demo/pull/${number}`,
+    number,
+    state,
+    statusCheckRollup: [],
+    createdAt: "2026-01-01T00:00:00Z",
+    mergedAt: state === "MERGED" ? "2026-01-02T00:00:00Z" : null,
+    headRefOid: "A",
+  });
+  // `gh` lists newest-first, so the closed PR comes first each time.
+  const pick = async (rows: object[]) => {
+    writeFileSync(listOut, JSON.stringify(rows));
+    const r = await queryPr(repo, "feat/x");
+    assert.ok(r && r !== "error", `expected a match, got ${String(r)}`);
+    return { number: r.number, state: r.state };
+  };
+  process.env.HARNESS_GH_BIN = join(bin, "gh");
+  try {
+    assert.deepEqual(await pick([row(3, "CLOSED"), row(2, "OPEN")]), { number: 2, state: "open" });
+    assert.deepEqual(await pick([row(3, "CLOSED"), row(1, "MERGED")]), { number: 1, state: "merged" });
+    assert.deepEqual(await pick([row(3, "CLOSED")]), { number: 3, state: "closed" });
+  } finally {
+    delete process.env.HARNESS_GH_BIN;
+  }
 });

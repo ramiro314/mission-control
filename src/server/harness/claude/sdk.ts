@@ -1231,29 +1231,6 @@ function assistantActivity(message: ClaudeSdkMessage): string | null {
 }
 
 /**
- * The env var that opts an SDK entrypoint into Claude Code's Artifact tool.
- *
- * The CLI leaves the tool off by default for `CLAUDE_CODE_ENTRYPOINT=sdk-*` (it reports the
- * reason as `sdk_default_off`), and this variable being truthy is the only thing that lifts
- * that one default. It enables nothing beyond it: `enableArtifact: false` in managed, user,
- * project or local settings, the org policy and the feature gate all still decide, exactly
- * as they do in the interactive CLI a dispatched pane runs.
- */
-const ARTIFACT_ENV = "CLAUDE_CODE_ARTIFACT";
-
-/**
- * A live embedded session's env: the subprocess env, with the Artifact tool opted in.
- *
- * Without this an embedded session is a different agent from a dispatched pane running the
- * same task - the pane can publish an Artifact and the session cannot. An operator who set
- * the variable themselves keeps their value, so `CLAUDE_CODE_ARTIFACT=0` still turns the
- * tool off here. One-shot queries do not come through this: they are tool-less by design.
- */
-export function claudeSdkSessionEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
-  return env[ARTIFACT_ENV] === undefined ? { ...env, [ARTIFACT_ENV]: "1" } : env;
-}
-
-/**
  * Claude's `SdkSpec`: start (or resume) an embedded session.
  *
  * `deps` is the transport seam - a test hands in a scripted `query` and drives this exact
@@ -1265,6 +1242,20 @@ export function claudeSdkSessionEnv(env: Record<string, string | undefined>): Re
  * into `SessionRequest`, and `answer()` resolves the callback the CLI is blocked on.
  */
 const CLAUDE_ANSWERS_REQUESTS = true;
+
+/**
+ * Opt the embedded session in to Claude Code's `Artifact` tool, which the Files tab's
+ * Publish control asks it to call.
+ *
+ * The CLI withholds that tool from every `sdk-ts` entrypoint unless `CLAUDE_CODE_ARTIFACT`
+ * is truthy (its own withheld reason is `sdk_default_off`), while an interactive pane has
+ * it on by default. Without this, Publish sends an embedded session a request it cannot
+ * carry out. This removes only that SDK default: an operator's own `CLAUDE_CODE_ARTIFACT`
+ * is left as they set it, and `enableArtifact: false`, plan and admin policy still decide.
+ */
+function withArtifactTool(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  return env.CLAUDE_CODE_ARTIFACT === undefined ? { ...env, CLAUDE_CODE_ARTIFACT: "1" } : env;
+}
 
 export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSpec {
   return {
@@ -1278,7 +1269,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       const options: ClaudeSdkQueryOptions = {
         cwd: opts.cwd,
         pathToClaudeCodeExecutable: await deps.executable(),
-        env: claudeSdkSessionEnv(deps.env(opts.cwd, opts.stateHome)),
+        env: withArtifactTool(deps.env(opts.cwd, opts.stateHome)),
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(permissionMode ? { permissionMode } : {}),

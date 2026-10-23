@@ -178,3 +178,14 @@ test("the session's own conflicting PR is named only by its base, and linked to 
   assert.equal(view?.conflictTitle, "Conflicts with main");
   assert.equal(view?.conflictUrl, "https://github.com/o/r/pull/264");
 });
+
+test("closed PRs share their closed tone and accurate tooltip on every drawing", () => {
+  const over = { prUrl: "https://github.com/o/r/pull/264", prNumber: 264, prState: "closed" } as const;
+  const view = prChipView(mkSession(over));
+  assert.equal(view?.tone, "pr-closed");
+  assert.equal(view?.title, "Pull request #264 closed - open on GitHub");
+  for (const { name, component } of DRAWINGS) {
+    assert.match(render(component, over), /pr-closed/, name);
+    assert.match(render(component, over), /Pull request #264 closed/, name);
+  }
+});
