@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PLAN_APPROVAL_DECISION, PLAN_APPROVAL_OPTION, type PlanIdentity, type PlanPublicationReceipt, type PlanReadiness } from "@shared/managed-plans.ts";
-import type { PlanDecision, Task } from "@shared/types.ts";
+import type { PlanDecision, PlanDecisionAnswer, Task } from "@shared/types.ts";
 import { isLocalPlanningTask } from "@shared/task.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { WorkflowBinding, WorkflowSubmission, WorkflowVersion } from "@shared/workflow.ts";
@@ -99,6 +99,36 @@ function approval(authority: PlanAuthority, input: PlanIdentity, context: Return
   const approved = candidates.find((candidate) => candidate.review_id === latest.id)!;
   if (approved.manifest_hash !== planRevisionRecord(input.planId, input.revision).manifest_hash) throw new PlanStoreError("Approved plan manifest changed");
   return approved;
+}
+
+/**
+ * Fork (shape re-approval): the answer Foreman may carry onto a new revision of a repository
+ * plan the human already approved in this work episode, or null when the human must answer.
+ *
+ * Carried only when the human's latest answer on an earlier review of this plan approved it,
+ * and every other question on the new form is one they answered there, with the same wording
+ * and options. A refusal, a dismissal or a new question leaves the form to the human. Local
+ * plans are excluded: their publication gate (`approval`) accepts only a human's answer.
+ */
+export function carriedPlanApproval(authority: PlanAuthority, input: PlanIdentity, decisions: PlanDecision[]): { revision: number; selections: PlanDecisionAnswer[] } | null {
+  if (readPlanRevision(input.planId, input.revision).manifest.policy.storage !== "repository") return null;
+  const bound = openDb().prepare(`SELECT review_id, revision FROM managed_plan_reviews WHERE plan_id = ?
+    AND session_id = ? AND task_id IS ? AND episode_id IS ?`)
+    .all(input.planId, authority.sessionId, authority.taskId, authority.episodeId) as unknown as { review_id: string; revision: number }[];
+  const latest = loadHumanResolvedReviews(authority.sessionId).filter((review) => bound.some((row) => row.review_id === review.id)).at(-1);
+  const answers = latest?.status === "answered" ? latest.selections ?? [] : [];
+  const approved = answers.find((answer) => answer.decisionId === PLAN_APPROVAL_DECISION);
+  if (!latest || !approved || approved.other || approved.selected.length !== 1 || approved.selected[0] !== PLAN_APPROVAL_OPTION) return null;
+  const sameQuestion = (a: PlanDecision, b: PlanDecision) => a.question === b.question
+    && a.options.map((option) => option.id).join("\n") === b.options.map((option) => option.id).join("\n");
+  const carried: PlanDecisionAnswer[] = [];
+  for (const decision of decisions.filter((d) => d.id !== PLAN_APPROVAL_DECISION)) {
+    const before = latest.decisions?.find((d) => d.id === decision.id);
+    const answer = answers.find((a) => a.decisionId === decision.id);
+    if (!before || !answer || !sameQuestion(before, decision)) return null;
+    carried.push({ decisionId: answer.decisionId, selected: answer.selected, other: answer.other });
+  }
+  return { revision: bound.find((row) => row.review_id === latest.id)!.revision, selections: [...carried, approved] };
 }
 
 function matchingValidation(input: PlanIdentity, approved: ApprovalRow, submissionId: string): boolean {
