@@ -383,6 +383,42 @@ test("a plan PR read CLOSED by the poller signals the task once and lapses a pen
   assert.equal(shapeTicketsStateFor(f.taskId), "started");
 });
 
+test("a plan PR the branch lookup reads closed signals the task without a by-URL lookup", async () => {
+  // The branch lookup keeps a closed PR (upstream #1200), so the by-URL lookup skips a URL it
+  // already observed; the closure has to reach the task from the branch read itself.
+  const url = "https://github.com/acme/demo/pull/604";
+  const f = shaping("closed-on-branch");
+  choose(f, "pending");
+  observeOpenPr(f, url, 604);
+  const closures: string[] = [];
+  f.registry.onTaskPrClosed((e) => closures.push(`${e.taskId} ${e.url}`));
+  const asked: string[] = [];
+  await pollAndReconcilePrs(
+    f.registry,
+    async () => ({
+      url,
+      number: 604,
+      state: "closed" as const,
+      checks: null,
+      createdAt: f.episode.startedAt,
+      mergedAt: null,
+      headSha: "head",
+      worktreeHeadSha: "head",
+    }),
+    async (candidate) => {
+      asked.push(candidate);
+      return null;
+    },
+    undefined,
+    NOW,
+    async () => "head",
+  );
+  assert.equal(f.registry.getSession(f.id)?.prState, "closed");
+  assert.ok(!asked.includes(url), "the observed URL is not asked about again");
+  assert.deepEqual(closures, [`${f.taskId} ${url}`]);
+  assert.equal(shapeTicketsStateFor(f.taskId), "lapsed");
+});
+
 /** The live session's branch lookup observed `url` open, so the task's binding carries it. */
 function observeOpenPr(f: Fixture, url: string, number: number): void {
   f.registry.reconcilePrs(
