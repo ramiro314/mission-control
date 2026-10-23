@@ -41,6 +41,9 @@ one call per checkout. Those do not crowd the chip, which keeps naming the sessi
 checkout; they appear as the session detail's per-repository lines, and it is those the completion
 quorum and Foreman's [PR follow-through](work-queues.md#keeping-a-pr-on-track) read.
 
+PR links are green while open, purple when merged, and red when closed without merging.
+Closed links remain visible until the session moves to a branch with no matching PR.
+
 When GitHub reports that pull request, or any of a multi-repo task's, as conflicting with its
 base, the chip carries a conflict mark whose accessible name is "Conflicts with `<base>`": a
 separate alert beside the chip in the session header, folded into the label as `⇄` on the Board

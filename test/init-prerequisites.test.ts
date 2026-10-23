@@ -212,3 +212,8 @@ test("make init passes a present lsof on Linux", { skip: process.platform !== "l
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /✓.* lsof available/);
 });
+
+test("the gh message appends gh's own output without changing the shared sentence", () => {
+  const message = ghPrerequisiteMessage({ installed: true, authenticated: false, detail: "HTTP 401\n" });
+  assert.equal(message, "gh is not authenticated - run `gh auth login`\ngh said: HTTP 401");
+});

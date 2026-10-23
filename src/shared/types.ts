@@ -1909,8 +1909,8 @@ export interface SkillsView {
   problems: string[];
 }
 
-/** The states we surface for a session's PR. Closed-unmerged is treated as "no PR". */
-export type PrState = "open" | "merged";
+/** The states we surface for a session's PR, including closed without merging. */
+export type PrState = "open" | "merged" | "closed";
 
 /** Rolled-up CI status for a session's PR. A single failing check dominates. */
 export type PrChecks = "passing" | "failing" | "pending";

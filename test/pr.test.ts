@@ -101,8 +101,8 @@ test("reconcilePrs clears the chip once the branch has no matching PR", () => {
   reg.reconcilePrs(new Map([["feat", match()]]), new Set());
   assert.equal(reg.getSession("feat")!.prUrl, PR);
 
-  // Next sweep: gh finds no open/merged PR for the branch (branch moved, or the
-  // PR was closed unmerged) -> absent from `found` -> cleared.
+  // Next sweep: gh finds no matching PR for the branch after it moved
+  // -> absent from `found` -> cleared.
   reg.reconcilePrs(new Map(), new Set());
 
   assert.equal(reg.getSession("feat")!.prUrl, null);
@@ -227,22 +227,24 @@ test("push, then UNKNOWN, then resolved: conflicting on A, unknown on B, then me
   assert.equal(currentMergeability(reg.getSession("feat")!), "mergeable");
 });
 
-test("a merged PR clears the observation, and a closed one clears all three fields", () => {
+test("a merged or closed PR clears the observation, and no PR clears all three fields", () => {
   const reg = new Registry();
   reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
-  reg.reconcilePrs(
-    new Map([["feat", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
-    new Set(),
-  );
-  reg.reconcilePrs(new Map([["feat", match({ state: "merged", headSha: "A" })]]), new Set());
-  assert.equal(reg.getSession("feat")!.prMergeable, null);
+  for (const state of ["merged", "closed"] as const) {
+    reg.reconcilePrs(
+      new Map([["feat", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
+      new Set(),
+    );
+    reg.reconcilePrs(new Map([["feat", match({ state, headSha: "A" })]]), new Set());
+    assert.equal(reg.getSession("feat")!.prMergeable, null, state);
+  }
 
   reg.applyDiscovery([disco({ syntheticId: "other", gitBranch: "feat/x" })]);
   reg.reconcilePrs(
     new Map([["other", match({ headSha: "A", mergeable: "conflicting", baseRef: "main" })]]),
     new Set(),
   );
-  // Closed unmerged: the branch lookup drops it, so `found` no longer holds it.
+  // The branch has no matching PR any more, so `found` no longer holds it.
   reg.reconcilePrs(new Map(), new Set());
   const s = reg.getSession("other")!;
   assert.equal(s.prState, null);
@@ -345,4 +347,14 @@ test("the poller asks gh for mergeable, baseRefName and headRefOid on both paths
   assert.match(calls, /pr view \S+ --json \S*mergeable/);
   assert.match(calls, /pr view \S+ --json \S*baseRefName/);
   assert.match(calls, /pr view \S+ --json \S*headRefOid/);
+});
+
+test("reconcilePrs retains closed PRs and follows reopening", () => {
+  const reg = new Registry();
+  reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
+  for (const state of ["open", "closed", "open"] as const) {
+    reg.reconcilePrs(new Map([["feat", match({ state })]]), new Set());
+    assert.equal(reg.getSession("feat")!.prUrl, PR);
+    assert.equal(reg.getSession("feat")!.prState, state);
+  }
 });
