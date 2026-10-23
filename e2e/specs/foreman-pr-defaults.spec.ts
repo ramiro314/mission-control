@@ -6,11 +6,12 @@ import { expect, test } from "../fixtures/test.ts";
 
 const PREFERENCES = [
   { key: "keepShipTasksMoving", label: "Keep pre-PR ship tasks moving" },
-  { key: "trackReviewFeedback", label: "Keep sessions on track with review comments" },
+  { key: "trackReviewFeedback", label: "Keep sessions on track with GitHub Inspector findings" },
   { key: "trackCiFailures", label: "Keep sessions on track with CI" },
+  { key: "trackMergeConflicts", label: "Keep sessions on track with merge conflicts" },
 ] as const;
 
-test("all three pull-request controls default on and preserve independent saved opt-outs", async ({
+test("all four pull-request controls default on and preserve independent saved opt-outs", async ({
   dashboard,
   daemon,
 }) => {
