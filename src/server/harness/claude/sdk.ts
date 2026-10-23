@@ -1231,29 +1231,6 @@ function assistantActivity(message: ClaudeSdkMessage): string | null {
 }
 
 /**
- * The env var that opts an SDK entrypoint into Claude Code's Artifact tool.
- *
- * The CLI leaves the tool off by default for `CLAUDE_CODE_ENTRYPOINT=sdk-*` (it reports the
- * reason as `sdk_default_off`), and this variable being truthy is the only thing that lifts
- * that one default. It enables nothing beyond it: `enableArtifact: false` in managed, user,
- * project or local settings, the org policy and the feature gate all still decide, exactly
- * as they do in the interactive CLI a dispatched pane runs.
- */
-const ARTIFACT_ENV = "CLAUDE_CODE_ARTIFACT";
-
-/**
- * A live embedded session's env: the subprocess env, with the Artifact tool opted in.
- *
- * Without this an embedded session is a different agent from a dispatched pane running the
- * same task - the pane can publish an Artifact and the session cannot. An operator who set
- * the variable themselves keeps their value, so `CLAUDE_CODE_ARTIFACT=0` still turns the
- * tool off here. One-shot queries do not come through this: they are tool-less by design.
- */
-export function claudeSdkSessionEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
-  return env[ARTIFACT_ENV] === undefined ? { ...env, [ARTIFACT_ENV]: "1" } : env;
-}
-
-/**
  * Claude's `SdkSpec`: start (or resume) an embedded session.
  *
  * `deps` is the transport seam - a test hands in a scripted `query` and drives this exact

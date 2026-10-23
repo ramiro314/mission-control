@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   claudeSdkRateLimits,
-  claudeSdkSessionEnv,
   claudeSdkSpec,
   askUserQuestions,
   permissionPrompt,
@@ -1261,25 +1260,6 @@ test("every session may REACH bypass, and only the mode decides whether it is in
   const foreignOptions = (await foreign.started).options;
   assert.equal(foreignOptions.permissionMode, undefined);
   assert.equal(foreignOptions.allowDangerouslySkipPermissions, true);
-});
-
-test("an embedded session opts into the Artifact tool, and an operator's own value wins", async () => {
-  // The CLI turns the Artifact tool off by default for an SDK entrypoint, so without this
-  // an embedded session cannot publish an Artifact while a dispatched pane on the same task
-  // can. The variable lifts only that default; settings and policy still decide.
-  const { deps, started } = fakeDeps();
-  await claudeSdkSpec(deps).launch(launchOpts());
-  const { env } = (await started).options;
-  assert.equal(env.CLAUDE_CODE_ARTIFACT, "1");
-  assert.equal(env.PATH, "/usr/bin");
-
-  // An explicit operator value, including an off one, is passed through untouched.
-  assert.equal(claudeSdkSessionEnv({ CLAUDE_CODE_ARTIFACT: "0" }).CLAUDE_CODE_ARTIFACT, "0");
-  assert.equal(claudeSdkSessionEnv({ CLAUDE_CODE_ARTIFACT: "" }).CLAUDE_CODE_ARTIFACT, "");
-  // The subprocess env it is handed is not mutated.
-  const base = { PATH: "/bin" };
-  assert.equal(claudeSdkSessionEnv(base).CLAUDE_CODE_ARTIFACT, "1");
-  assert.deepEqual(base, { PATH: "/bin" });
 });
 
 // The resume argv used to be asserted here, because it used to live on `SdkSpec`. It is a
