@@ -711,11 +711,12 @@ test("an explicit chat Workflow reaches ordinary verification and claims that Wo
 
 // Local bundles have no Git patch. Exercise the real worker through verification and
 // the claim boundary; the daemon's exact approval/publication gates have their own tests.
-for (const triggerMode of ["foreman_complete", "manual"] as const) test(`a local plan with an empty diff reaches its ${triggerMode} workflow`, async () => {
+// Shape takes plan's local path (`isLocalPlanningTask`), so a local shape task is covered too.
+for (const kind of ["plan", "shape"] as const) for (const triggerMode of ["foreman_complete", "manual"] as const) test(`a local ${kind} with an empty diff reaches its ${triggerMode} workflow`, async () => {
   const repo = tmp("pw-local-plan-");
   const fake = mkFixedVerdictClaude({ complete: true, summary: "The approved local bundle is ready for validation", gaps: [] });
   const session = mkSession(repo, {
-    task: mkTaskSummary({ kind: "plan", workflowId: "local-plan-validation",
+    task: mkTaskSummary({ kind, workflowId: "local-plan-validation",
       planPolicy: { version: 2, storage: "local", commitPlanHtml: false } }),
   });
   const publication = { owner: "workflow", bindingId: "local-binding", workflowVersionId: "local-version", triggerMode };
@@ -765,7 +766,7 @@ for (const triggerMode of ["foreman_complete", "manual"] as const) test(`a local
   assert.equal(claims.length, 1, `the empty checkout must not suppress local plan validation\n${out}`);
   assert.deepEqual((claims[0]!.body as { expectedPlanPublication: unknown }).expectedPlanPublication, publication);
   assert.equal(claudeCalls(fake.log).length, 1, out);
-  assert.match(readFileSync(fake.prompt, "utf8"), /the local plan publication handoff/);
+  assert.match(readFileSync(fake.prompt, "utf8"), kind === "plan" ? /the local plan publication handoff/ : /the local shaping handoff/);
   assert.equal(queue.promptedConsumedGeneration, 1, out);
   const consumes = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
   if (triggerMode === "manual") {

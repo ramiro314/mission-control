@@ -2283,8 +2283,7 @@ export async function processPromptedWrapup(
   // the session sits idle.
   // Local plan bundles live outside Git. Their bound validation still needs the ordinary
   // verifier and completion claim, whose daemon gates enforce exact approval and evidence.
-  const localPlanValidation = session.task?.kind === "plan"
-    && session.task.planPolicy?.storage === "local" && planPublication?.owner === "workflow";
+  const localPlanValidation = isLocalPlanningTask(session.task) && planPublication?.owner === "workflow";
   if (!diff.patch.trim() && !localPlanValidation) {
     // The consume IS the whole tick here, so its result is the tick's result. Swallowing
     // it and claiming progress anyway would re-process this session every BETWEEN_MS -
