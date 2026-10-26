@@ -131,9 +131,18 @@ flowchart LR
   The 5-minute grace keeps the documented rule that a capture does not compete with startup. A
   restart, a sleep, or a changed interval takes effect at the next wake.
 - A manual copy neither counts toward the hourly limit nor restarts the interval.
-- The service records `{ lastAttemptAt, lastSuccessAt, lastFailure: { at, kind, message } }` per
+- The service records
+  `{ lastAttemptAt, lastSuccessAt, consecutiveFailures, lastFailure: { at, kind, message } }` per
   kind as an `operational` `app_config` value, so status survives the restarts that hid
-  problem 3. A success clears that kind's failure.
+  problem 3. A success clears that kind's failure and resets `consecutiveFailures` to 0.
+- **A failure backs off.** A failed capture publishes no copy, so the due check alone would
+  retry a full online backup on every wake. Under a persistent cause, such as ENOSPC on the
+  full disk this plan exists for, that is about 12 near-full-size temp writes an hour. So a
+  scheduled attempt is also gated on `lastAttemptAt`: after `n` consecutive failures the next
+  one waits `min(5 min × 2^(n-1), intervalHours)` from the last attempt, giving 5, 10, 20 and
+  40 minutes and then the interval. The gate reads the persisted record, so a restart does
+  not reset it. Back up now is an explicit request and is not gated, but its failure counts
+  toward the same backoff.
 - `POST /api/storage/backups` takes a manual copy through the same single-flight capture.
 - A failed capture raises the `backup-failed` problem (D16). Overdue time is shown but never
   raised as a problem.
@@ -275,7 +284,7 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC5 | After a successful capture, and after an injected failure in the online backup, the journal switch, and validation, the backup root holds no `.database-backup-*` file or sidecar | `test/database-backups.test.ts` |
 | AC6 | The startup sweep removes leftover temp files and sidecars, and nothing else | `test/database-backups.test.ts` |
 | AC7 | A restart 50 minutes after the newest copy captures about 10 minutes later, not 60. A wall-clock jump past the interval captures at the next wake. No capture runs in the first 5 minutes after start | `test/database-backups.test.ts` (loop with injected clock and timers) |
-| AC8 | A failed capture is recorded with time and message, survives a restart, raises `backup-failed`, and is cleared by the next success | `test/database-backups.test.ts`, `test/storage-health.test.ts` |
+| AC8 | A failed capture is recorded with time and message, survives a restart, raises `backup-failed`, and is cleared by the next success. With an injected persistent failure and clock, scheduled attempts come 5, 10, 20 and 40 minutes apart and then once per `intervalHours`, never on every 5-minute wake. A restart mid-backoff keeps the wait, and a success resets it | `test/database-backups.test.ts`, `test/storage-health.test.ts` |
 | AC9 | A refused task return and a refused check return record first refusal and reason, become `stuck-return` after 1 h, and clear on success | `test/storage-health.test.ts` plus the task and check-lease tests |
 | AC10 | A settled task with only clean trees is reclaimed at once, even when they hold ignored files such as `node_modules`; one with uncommitted, untracked or unpushed work keeps its 30-day window and is listed | task retention tests |
 | AC11 | A live lease with no Git-visible change for `staleLeaseDays` is listed and never reclaimed | `test/storage-health.test.ts` |
