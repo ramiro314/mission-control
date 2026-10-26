@@ -77,11 +77,21 @@ These follow from the decisions above; they were not asked:
 - Overflow and check trees have no slot card, so the Worktrees section gains an
   **Unowned trees** list that carries the same actions (D24).
 - Restore stays offline through `npm run recover:database`. The Storage section never restores.
-- "Clean" for D6, D11 and D20 means exactly the operator's definition: nothing uncommitted,
-  untracked or unpushed. `worktreeReturnBlocker` (`src/server/git/worktree-return-safety.ts`)
-  also counts **ignored** files as work, so every tree with `node_modules` or `dist` would read
-  as dirty and never be reclaimed. Reclaim and sweep therefore call it with a new
-  `includeIgnored: false` option. Kill's guarded return keeps today's stricter check.
+- "Clean" for D6, D11 and D20 means the operator's definition: nothing uncommitted, untracked
+  or unpushed, **and no ignored file that cannot be regenerated**.
+  - `worktreeReturnBlocker` (`src/server/git/worktree-return-safety.ts`) counts every ignored
+    file as work, so any tree with `node_modules` installed would read as dirty and never be
+    reclaimed.
+  - Treating every ignored file as disposable is also wrong. Gitignored files include workflow
+    evidence, which AGENTS.md requires to live in a gitignored location (`.evidence/`,
+    `e2e/.artifacts/`), and local config such as `.env`. A routine daemon restart must not
+    delete those without a preview.
+  - So reclaim and sweep call `worktreeReturnBlocker` with a new `regenerableIgnored` option.
+    Ignored paths under the fixed list `REGENERABLE_IGNORED_PATHS` are discounted:
+    `node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/` and `.next/`, at any
+    depth. Any other ignored file still makes the tree dirty, so it is listed and kept: for a
+    settled task, within its 30-day window.
+  - Kill's guarded return keeps today's stricter check, which counts every ignored file.
 
 ## Design
 
@@ -139,9 +149,11 @@ flowchart LR
   retry a full online backup on every wake. Under a persistent cause, such as ENOSPC on the
   full disk this plan exists for, that is about 12 near-full-size temp writes an hour. So a
   scheduled attempt is also gated on `lastAttemptAt`: after `n` consecutive failures the next
-  one waits `min(5 min × 2^(n-1), intervalHours)` from the last attempt, giving 5, 10, 20 and
-  40 minutes and then the interval. The gate reads the persisted record, so a restart does
-  not reset it. Back up now is an explicit request and is not gated, but its failure counts
+  one waits `min(5 min × 2^(n-1), intervalHours)` from the last attempt. The wait doubles
+  from 5 minutes until it would pass the interval, then stays at the interval. At the
+  default 1 hour that gives 5, 10, 20, 40, then 60 minutes. At 24 hours it keeps doubling
+  through 80, 160, 320, 640 and 1280 minutes before settling at 1440. The gate reads the
+  persisted record, so a restart does not reset it. Back up now is an explicit request and is not gated, but its failure counts
   toward the same backoff.
 - `POST /api/storage/backups` takes a manual copy through the same single-flight capture.
 - A failed capture raises the `backup-failed` problem (D16). Overdue time is shown but never
@@ -155,7 +167,7 @@ flowchart LR
   hour of refusals the tree raises `stuck-return` (D17).
 - **Finished owners (D6, D20).** A completed task already returns its tree. The new rule covers
   a task settled by crash or restart: when every tree it holds is clean
-  (`worktreeReturnBlocker` with `includeIgnored: false`), it is
+  (`worktreeReturnBlocker` with `regenerableIgnored`), it is
   reclaimed at once through `TaskManager.reclaim()`. Otherwise it keeps the 30-day retention
   and is listed as `dirty-settled-tree`. Discard-and-reclaim goes through the existing
   preview-first Return operation, with an explicit discard consequence where the preview would
@@ -227,7 +239,7 @@ flowchart LR
   - a **husk**, meaning no regular file anywhere under it except git leftovers (a `.git` file
     whose gitdir no longer exists, or empty directories such as the Sep 26 folder's `src/...`
     tree): removed;
-  - a clean git worktree (`worktreeReturnBlocker` with `includeIgnored: false`): removed with
+  - a clean git worktree (`worktreeReturnBlocker` with `regenerableIgnored`): removed with
     `git worktree remove --force`, and its `harness/*` branch
     is deleted only when that branch is contained in a remote branch;
   - anything else (dirty, untracked or unpushed work, or a folder that is not a valid worktree
@@ -303,9 +315,9 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC5 | After a successful capture, and after an injected failure in the online backup, the journal switch, and validation, the backup root holds no `.database-backup-*` file or sidecar | `test/database-backups.test.ts` |
 | AC6 | The startup sweep removes leftover temp files and sidecars, and nothing else | `test/database-backups.test.ts` |
 | AC7 | A restart 50 minutes after the newest copy captures about 10 minutes later, not 60. A wall-clock jump past the interval captures at the next wake. No capture runs in the first 5 minutes after start | `test/database-backups.test.ts` (loop with injected clock and timers) |
-| AC8 | A failed capture is recorded with time and message, survives a restart, raises `backup-failed`, and is cleared by the next success. With an injected persistent failure and clock, scheduled attempts come 5, 10, 20 and 40 minutes apart and then once per `intervalHours`, never on every 5-minute wake. A restart mid-backoff keeps the wait, and a success resets it | `test/database-backups.test.ts`, `test/storage-health.test.ts` |
+| AC8 | A failed capture is recorded with time and message, survives a restart, raises `backup-failed`, and is cleared by the next success. With an injected persistent failure and clock, scheduled attempts follow `min(5 min × 2^(n-1), intervalHours)` and never come on every 5-minute wake: at a 1-hour interval they are 5, 10, 20, 40, then 60 minutes apart, and at a 24-hour interval 5, 10, 20, 40, 80, 160, 320, 640, 1280, then 1440. A restart mid-backoff keeps the wait, and a success resets it | `test/database-backups.test.ts`, `test/storage-health.test.ts` |
 | AC9 | A refused task return and a refused check return record first refusal and reason, become `stuck-return` after 1 h, and clear on success | `test/storage-health.test.ts` plus the task and check-lease tests |
-| AC10 | A settled task with only clean trees is reclaimed at once, even when they hold ignored files such as `node_modules`; one with uncommitted, untracked or unpushed work keeps its 30-day window and is listed | task retention tests |
+| AC10 | A settled task with only clean trees is reclaimed at once, even when they hold ignored files under `REGENERABLE_IGNORED_PATHS` such as `node_modules/` and `dist/`. One with uncommitted, untracked or unpushed work, or with any other ignored file (for example `.evidence/report.md`, `e2e/.artifacts/` or `.env`), keeps its 30-day window and is listed. The orphan sweep applies the same rule | task retention tests |
 | AC11 | A live lease with no Git-visible change for `staleLeaseDays` is listed and never reclaimed | `test/storage-health.test.ts` |
 | AC12 | A process inside a finished owner's tree is reported. Kill refuses a changed start time or command, sends SIGTERM then SIGKILL after 5 s, and triggers the pending return. Kill refuses, without signalling anything, a `path` that resolves outside every reported `orphan-process` tree (for example `$HOME` with a real live process's PID, start time and command), a symlink to a reported tree that resolves elsewhere, and a PID the reported problem does not list | worktree operations tests |
 | AC13 | Recover removes `index.lock` only when no git process uses the worktree, resets the slot to `available`, and refuses while a live owner references it. The automatic pass recovers a slot whose lock is gone or older than 10 minutes | worktree manager tests |
