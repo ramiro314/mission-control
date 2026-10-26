@@ -10,8 +10,11 @@
 A disk audit on 2026-10-26 found about 20 GB under `~/.mission-control` that Mission Control
 keeps without needing it, in five problems. After this work:
 
-1. Database backups use about 2 GB or less by default, the limits are user settings, and every
-   kept copy is a valid restore candidate.
+1. Database backups are bounded by copy counts that are user settings, and every kept copy is a
+   valid restore candidate. By default at most 3 hourly, 2 pre-migration and 1 manual copy are
+   kept. At today's 452 MB per copy that is about 2.3 GB, which is the operator's "about 2 GB"
+   target, stated as 3 hourly plus 2 pre-migration copies. It is about 2.7 GB once a Back up now
+   copy exists (D23). Total size grows with the database, since the limit is counts (D1).
 2. A backup capture leaves nothing behind but the published copy, on success and on failure.
 3. Backups keep their cadence across restarts and sleep, and the app shows when the last one
    happened and when one failed.
