@@ -151,9 +151,10 @@ flowchart LR
   future the same way, as if it were `now`.
 - A manual copy neither counts toward the hourly limit nor restarts the interval.
 - The service records
-  `{ lastAttemptAt, lastSuccessAt, consecutiveFailures, lastFailure: { at, kind, message } }` per
-  kind as an `operational` `app_config` value, so status survives the restarts that hid
-  problem 3. A success clears that kind's failure and resets `consecutiveFailures` to 0.
+  `{ lastAttemptAt, lastSuccessAt, consecutiveFailures, failingSince, lastFailure: { at, kind, message } }`
+  per kind as an `operational` `app_config` value, so status survives the restarts that hid
+  problem 3. `failingSince` is the time of the first failure in the current streak. A success
+  clears that kind's failure, resets `consecutiveFailures` to 0 and clears `failingSince`.
 - **A failure backs off.** A failed capture publishes no copy, so the due check alone would
   retry a full online backup on every wake. Under a persistent cause, such as ENOSPC on the
   full disk this plan exists for, that is about 12 near-full-size temp writes an hour. So a
@@ -162,8 +163,14 @@ flowchart LR
   from 5 minutes until it would pass the interval, then stays at the interval. At the
   default 1 hour that gives 5, 10, 20, 40, then 60 minutes. At 24 hours it keeps doubling
   through 80, 160, 320, 640 and 1280 minutes before settling at 1440. The gate reads the
-  persisted record, so a restart does not reset it. Back up now is an explicit request and is not gated, but its failure counts
-  toward the same backoff.
+  persisted record, so a restart does not reset it.
+- **Back up now and the backoff.** Back up now is an explicit request and is never gated. It
+  uses the same online backup path, so its outcome also feeds the scheduled backoff: a manual
+  failure is recorded on the `manual` kind and also increments the `scheduled` kind's
+  `consecutiveFailures` and sets its `lastAttemptAt` (and `failingSince` if unset). A manual
+  success resets the `scheduled` kind's `consecutiveFailures` and `failingSince`, since it
+  proves the path works. The scheduled due check still measures from the newest `scheduled-*`
+  copy, so a manual success does not postpone the next hourly copy.
 - `POST /api/storage/backups` takes a manual copy through the same single-flight capture.
 - A failed capture raises the `backup-failed` problem (D16). Overdue time is shown but never
   raised as a problem.
@@ -293,9 +300,23 @@ flowchart LR
   occurrence id, a kind (`backup-failed`, `stuck-return`, `quarantined-slot`, `orphan-process`,
   `dirty-orphan-folder`, `dirty-settled-tree`, `stale-lease`), a `bannered` flag per D25, a
   message, and a link target (a slot id or an unowned tree path). The id names one occurrence,
-  not a recurring subject: it joins the subject with the moment that occurrence began, such as
-  `backup-failed:scheduled:<first failure at>` or `stuck-return:task:<task id>:<first refused at>`.
-  A failure that clears and later recurs therefore gets a new id.
+  not a recurring subject: it joins the subject with the moment that occurrence began. A
+  failure that clears and later recurs therefore gets a new id. Every part of an id comes from
+  durable state, so a daemon restart, which under `tsx watch` follows every source change
+  (finding 3), never changes it:
+  - `backup-failed:<kind>:<failingSince>`, from the persisted backup status record;
+  - `stuck-return:<task|check>:<owner id>:<first_refused_at>`, from the new refusal columns;
+  - `quarantined-slot:<slot id>:<quarantined_at>`, from a new `worktree_slots.quarantined_at`
+    column that `WorktreeStore.quarantine` stamps when a slot enters quarantine. It is added
+    with `addColumn`, and existing quarantined rows are stamped once with the migration time;
+  - `orphan-process:<tree>:<pid>:<process start time>`, from `ps`. The process outlives the
+    daemon, so its start time does too;
+  - `stale-lease:<slot id>:<active lease id>`, from the slot row;
+  - `dirty-orphan-folder:<path>:<first seen at>` and `dirty-settled-tree:<task id>:<first seen at>`.
+    Neither subject has a timestamp of its own, so the daemon keeps a small `operational`
+    `app_config` record of first-seen times, keyed by subject (a folder is keyed by path and
+    inode). It writes an entry when the problem first appears and deletes it when the problem
+    clears.
 - `StorageHealthService` recomputes after every capture, maintenance pass, sweep and return
   outcome, and publishes a `storage_health` ServerEvent when the result changes. The reconnect
   snapshot carries it, and `useEventStream` handles it exhaustively.
@@ -329,7 +350,7 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC5 | After a successful capture, and after an injected failure in the online backup, the journal switch, and validation, the backup root holds no `.database-backup-*` file or sidecar | `test/database-backups.test.ts` |
 | AC6 | The startup sweep removes leftover temp files and sidecars, and nothing else | `test/database-backups.test.ts` |
 | AC7 | A restart 50 minutes after the newest copy captures about 10 minutes later, not 60. A wall-clock jump past the interval captures at the next wake. A backward jump that leaves the newest copy dated 2 hours in the future captures at the next wake, does not capture again on the wake after, and the future-dated copy is the first one pruned; a `lastAttemptAt` in the future does not lengthen the backoff. No capture runs in the first 5 minutes after start | `test/database-backups.test.ts` (loop with injected clock and timers) |
-| AC8 | A failed capture is recorded with time and message, survives a restart, raises `backup-failed`, and is cleared by the next success. With an injected persistent failure and clock, scheduled attempts follow `min(5 min × 2^(n-1), intervalHours)` and never come on every 5-minute wake: at a 1-hour interval they are 5, 10, 20, 40, then 60 minutes apart, and at a 24-hour interval 5, 10, 20, 40, 80, 160, 320, 640, 1280, then 1440. A restart mid-backoff keeps the wait, and a success resets it | `test/database-backups.test.ts`, `test/storage-health.test.ts` |
+| AC8 | A failed capture is recorded with time and message, survives a restart, raises `backup-failed`, and is cleared by the next success. With an injected persistent failure and clock, scheduled attempts follow `min(5 min × 2^(n-1), intervalHours)` and never come on every 5-minute wake: at a 1-hour interval they are 5, 10, 20, 40, then 60 minutes apart, and at a 24-hour interval 5, 10, 20, 40, 80, 160, 320, 640, 1280, then 1440. A restart mid-backoff keeps the wait, and a success resets it. A Back up now failure increments the scheduled counter and moves the next scheduled attempt out accordingly, a Back up now success resets it, and Back up now itself is never refused by the backoff | `test/database-backups.test.ts`, `test/storage-health.test.ts` |
 | AC9 | A refused task return and a refused check return record first refusal and reason, become `stuck-return` after 1 h, and clear on success | `test/storage-health.test.ts` plus the task and check-lease tests |
 | AC10 | A settled task with only clean trees is reclaimed at once, even when they hold ignored files under `REGENERABLE_IGNORED_PATHS` such as `node_modules/` and `dist/`. One with uncommitted, untracked or unpushed work, or with any other ignored file (for example `.evidence/report.md`, `e2e/.artifacts/` or `.env`), keeps its 30-day window and is listed. The orphan sweep applies the same rule | task retention tests |
 | AC11 | A live lease with no Git-visible change for `staleLeaseDays` is listed and never reclaimed | `test/storage-health.test.ts` |
@@ -339,7 +360,7 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC15 | Scoped prune removes only missing registrations under the state home | `test/orphan-tree-sweep.test.ts` |
 | AC16 | A fixture test file that leaks a detached grandchild and exits normally fails under the preload, and the grandchild is dead afterwards. A fixture runner killed with SIGKILL leaves its tagged grandchild alive; the next worker's preload start kills it and reports it as leaked by an earlier run, while a tagged child of a concurrently live worker survives. `test/update-build.test.ts` passes, and its escaped children run in their temp clone, not the checkout | `test/test-leak-guard.test.ts` |
 | AC17 | Settings > Storage shows the backup config, status and kept copies; saving counts round-trips; Back up now adds a manual copy | `e2e/storage.spec.ts` |
-| AC18 | The banner appears for a bannered problem, dismisses, stays hidden for the same problems, and returns for a new one. A problem that clears after a dismissal and then recurs, such as a backup that fails, succeeds, then fails again, brings the banner back. A stale lease alone does not raise it | `e2e/storage.spec.ts` |
+| AC18 | The banner appears for a bannered problem, dismisses, stays hidden for the same problems, and returns for a new one. A problem that clears after a dismissal and then recurs, such as a backup that fails, succeeds, then fails again, brings the banner back. After a daemon restart, a dismissed quarantined slot, orphan process, failed backup, stuck return and dirty orphan folder keep their ids and stay hidden. A stale lease alone does not raise it | `e2e/storage.spec.ts` |
 | AC19 | From a Storage problem link, the slot card offers Recover for a quarantined slot and Kill for an orphan process, and each runs through its preview or confirmation | `e2e/worktree-reclaim.spec.ts` |
 | AC20 | A dirty unowned tree under `worktrees/` appears in Worktrees > Unowned trees, and from its Storage problem link too. Its discard-and-remove opens a preview that names the path and the work it discards. Cancel leaves the row and the folder in place. Confirm removes the folder, and the row and the Storage problem disappear after the next `storage_health` event | `e2e/worktree-reclaim.spec.ts` |
 | AC21 | A settled task whose tree holds uncommitted work is listed as `dirty-settled-tree`. Its discard-and-reclaim opens the Return preview with the discard consequence stated. Cancel keeps the tree. Confirm reclaims it, and the problem disappears | `e2e/worktree-reclaim.spec.ts` |
