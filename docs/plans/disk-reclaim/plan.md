@@ -269,6 +269,13 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC17 | Settings > Storage shows the backup config, status and kept copies; saving counts round-trips; Back up now adds a manual copy | `e2e/storage.spec.ts` |
 | AC18 | The banner appears for a bannered problem, dismisses, stays hidden for the same problems, and returns for a new one. A stale lease alone does not raise it | `e2e/storage.spec.ts` |
 | AC19 | From a Storage problem link, the slot card offers Recover for a quarantined slot and Kill for an orphan process, and each runs through its preview or confirmation | `e2e/worktree-reclaim.spec.ts` |
+| AC20 | A dirty unowned tree under `worktrees/` appears in Worktrees > Unowned trees, and from its Storage problem link too. Its discard-and-remove opens a preview that names the path and the work it discards. Cancel leaves the row and the folder in place. Confirm removes the folder, and the row and the Storage problem disappear after the next `storage_health` event | `e2e/worktree-reclaim.spec.ts` |
+| AC21 | A settled task whose tree holds uncommitted work is listed as `dirty-settled-tree`. Its discard-and-reclaim opens the Return preview with the discard consequence stated. Cancel keeps the tree. Confirm reclaims it, and the problem disappears | `e2e/worktree-reclaim.spec.ts` |
+| AC22 | `staleLeaseDays` under Worktrees > Policy saves and survives a reload. A leased slot whose fixture activity is older than the saved threshold shows the `stale` chip and a Storage-only problem, with no banner. Raising the threshold above its age removes both | `e2e/worktree-reclaim.spec.ts` |
+
+Every Playwright spec runs against the fake agents (`e2e/fixtures/fake-agents.ts`) and selects by
+role, label or placeholder, never `data-testid`. A preview or confirmation that opens as a modal
+calls `expectContentClearsBorder`.
 
 ## Documentation to update
 
