@@ -1,6 +1,6 @@
 # Reclaim the disk Mission Control does not need
 
-**Status:** Shaped with the operator on 2026-10-26, pending review\
+**Status:** Approved on 2026-10-26. The operator approved revision 1, with tickets to be created after this plan merges. Later revisions repair workflow and GitHub Inspector review findings, and Foreman approved each on the operator's behalf, carrying that approval forward.\
 **Scope:** `~/.mission-control/backups/database`, worktree pool slots, `worktrees/` and `check-worktrees/`\
 **Amends:** `docs/plans/automatic-stale-worktree-cleanup/plan.md` for clean settled task trees only (decision D20)\
 **Delivery:** one plan; tickets are sliced from it after it merges
@@ -280,10 +280,13 @@ flowchart LR
 ```
 
 - `src/shared/storage-health.ts` holds the browser-safe schema: backup status per kind, kept
-  copies (kind, time, bytes), the total size, and a list of problems. Each problem has a stable
-  id, a kind (`backup-failed`, `stuck-return`, `quarantined-slot`, `orphan-process`,
+  copies (kind, time, bytes), the total size, and a list of problems. Each problem has an
+  occurrence id, a kind (`backup-failed`, `stuck-return`, `quarantined-slot`, `orphan-process`,
   `dirty-orphan-folder`, `dirty-settled-tree`, `stale-lease`), a `bannered` flag per D25, a
-  message, and a link target (a slot id or an unowned tree path).
+  message, and a link target (a slot id or an unowned tree path). The id names one occurrence,
+  not a recurring subject: it joins the subject with the moment that occurrence began, such as
+  `backup-failed:scheduled:<first failure at>` or `stuck-return:task:<task id>:<first refused at>`.
+  A failure that clears and later recurs therefore gets a new id.
 - `StorageHealthService` recomputes after every capture, maintenance pass, sweep and return
   outcome, and publishes a `storage_health` ServerEvent when the result changes. The reconnect
   snapshot carries it, and `useEventStream` handles it exhaustively.
@@ -295,8 +298,10 @@ flowchart LR
     failure per kind, the total size, and the list of kept copies;
   - a Problems list where each row links to its slot card or Unowned trees row.
 - **StorageBanner** appears at the top of the dashboard when any bannered problem id is not
-  in the viewer's dismissed set. Dismiss stores the current ids, so a new problem brings it
-  back. It links to Settings > Storage.
+  in the viewer's dismissed set. Dismiss stores the current ids, and every `storage_health`
+  event prunes the dismissed set to ids still in the problem list. A new problem, or a cleared
+  problem that comes back as a new occurrence, therefore brings the banner back. It links to
+  Settings > Storage.
 - **Worktrees** gains: a Recover button, orphan-process rows with Kill (behind a confirmation),
   the stuck-return reason, and a `stale` chip on the slot card; `staleLeaseDays` under Policy;
   and the Unowned trees list.
@@ -325,7 +330,7 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC15 | Scoped prune removes only missing registrations under the state home | `test/orphan-tree-sweep.test.ts` |
 | AC16 | A fixture test file that leaks a detached grandchild and exits normally fails under the preload, and the grandchild is dead afterwards. A fixture runner killed with SIGKILL leaves its tagged grandchild alive; the next worker's preload start kills it and reports it as leaked by an earlier run, while a tagged child of a concurrently live worker survives. `test/update-build.test.ts` passes, and its escaped children run in their temp clone, not the checkout | `test/test-leak-guard.test.ts` |
 | AC17 | Settings > Storage shows the backup config, status and kept copies; saving counts round-trips; Back up now adds a manual copy | `e2e/storage.spec.ts` |
-| AC18 | The banner appears for a bannered problem, dismisses, stays hidden for the same problems, and returns for a new one. A stale lease alone does not raise it | `e2e/storage.spec.ts` |
+| AC18 | The banner appears for a bannered problem, dismisses, stays hidden for the same problems, and returns for a new one. A problem that clears after a dismissal and then recurs, such as a backup that fails, succeeds, then fails again, brings the banner back. A stale lease alone does not raise it | `e2e/storage.spec.ts` |
 | AC19 | From a Storage problem link, the slot card offers Recover for a quarantined slot and Kill for an orphan process, and each runs through its preview or confirmation | `e2e/worktree-reclaim.spec.ts` |
 | AC20 | A dirty unowned tree under `worktrees/` appears in Worktrees > Unowned trees, and from its Storage problem link too. Its discard-and-remove opens a preview that names the path and the work it discards. Cancel leaves the row and the folder in place. Confirm removes the folder, and the row and the Storage problem disappear after the next `storage_health` event | `e2e/worktree-reclaim.spec.ts` |
 | AC21 | A settled task whose tree holds uncommitted work is listed as `dirty-settled-tree`. Its discard-and-reclaim opens the Return preview with the discard consequence stated. Cancel keeps the tree. Confirm reclaims it, and the problem disappears | `e2e/worktree-reclaim.spec.ts` |
