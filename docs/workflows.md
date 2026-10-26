@@ -1,5 +1,67 @@
 # Workflows and Personas
 
+## Workflow controls through MCP
+
+Mission Control's MCP exposes the same workflow runtime controls as the dashboard. A session
+can read and control its own workflow without delegation. Reading or controlling another
+session's workflows requires the operator to enable **Control other sessions** on the calling
+session, using the desktop dashboard. The grant is transient and revocable; the MCP cannot enable it.
+All three tools require a current signed Registry session credential alongside the machine token.
+Caller identity comes from that credential, never from a supplied session id or working directory.
+Bindings must match both the current session and its conversation identity. Reattachment checks
+both the source binding and destination; delivery actions also check the packet's original destination.
+An orphaned or historical binding that cannot establish current ownership requires delegation.
+
+`list_workflow_runs` accepts optional `status`, `workflowId`, `session`, `limit`
+(1 through 200), and `cursor` filters. Follow its `nextCursor` until it is null.
+`get_workflow_run({runId})` returns the dashboard's run detail, including the binding,
+submissions, deliveries, and current recovery options. Inspect that state before taking an action.
+
+`trigger_workflow_action` takes a `request` containing `action`, the appropriate target ID,
+and `parameters` using the dashboard's existing request body schema:
+
+```json
+{
+  "request": {
+    "action": "grant-rounds",
+    "runId": "the-run-id",
+    "parameters": { "requestId": "grant-intent-1", "rounds": 2 }
+  }
+}
+```
+
+| Actions | Target | Additional parameters |
+| --- | --- | --- |
+| `grant-rounds` | `runId` | `rounds` |
+| `cancel`, `prepare-pr`, `recheck-inspector` | `runId` | None |
+| `retry` | `runId` | Optional `nodeAttemptId` |
+| `resubmit` | `runId` | Optional `resubmitUnchanged` and `evidence` |
+| `restart-full` | `runId` | `confirmation` when required by the server |
+| `set-nodes-disabled` | `runId` | `nodeIds`, `disabled` |
+| `set-persona-directive` | `runId` | `nodeId`, `feedback` |
+| `remove-persona-directive` | `runId` | `nodeId` |
+| `recover-evidence`, `retry-evidence-readiness` | `runId`, `submissionId` | None |
+| `override-evidence-readiness` | `runId`, `submissionId` | `reason`, `acknowledgedRisk: true` |
+| `retry-delivery` | `deliveryId` | `expectedSessionId`, `expectedNoteKey` |
+| `resolve-delivery` | `deliveryId` | `resolution`: `mark_delivered` or `discard_and_new_round`; the latter also needs `expectedSessionId`, `expectedNoteKey`, and any required `confirmation` |
+| `submit` | `bindingId` | Optional `evidence`; also implements **Run again** |
+| `reattach` | `bindingId` | `sessionId` |
+| `start-review` | `sessionId` | Optional `evidence` |
+
+All parameter objects require a `requestId` except `reattach`. Keep the same request ID when
+retrying the same intent after a lost response; give a new intent a new ID. Full restarts use
+the exact confirmation `RESTART FULL WORKFLOW`; discarding an uncertain delivery uses
+`DISCARD AND SEND A NEW REPAIR ROUND` when the server requires confirmation. To deliberately
+review unchanged work, use `resubmit` with `resubmitUnchanged: true`.
+
+These tools pass through daemon-owned `/mcp/workflows/list`, `/read`, and `/act` authorization
+routes. Run-list ownership is filtered in SQL before pagination. Allowed reads and actions
+use the existing dashboard handlers with MCP/agent telemetry attribution for actions.
+They do not impersonate a human. Use them for operator-authorized workflow actions. The daemon
+retains ownership of state transitions, round limits, idempotency, evidence policy, confirmation
+checks, and delivery/session matching. Failed calls return the daemon's error without an automatic
+retry or fallback. Workflow definition and Persona authoring remain in the Library.
+
 The **Follow the review** guided tour is the fastest orientation to the run side of
 everything below: it walks one real No-Mistakes Review run stage by stage, from the Settings
 rail's **Help & tours** footer or the ⌘K palette; see [guided tours](ui.md#guided-tours).
