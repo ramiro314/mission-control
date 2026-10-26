@@ -143,6 +143,12 @@ flowchart LR
   `intervalHours`, measured by wall clock, and the daemon has been up for at least 5 minutes.
   The 5-minute grace keeps the documented rule that a capture does not compete with startup. A
   restart, a sleep, or a changed interval takes effect at the next wake.
+- **A clock that moves backward cannot stall it.** After an NTP correction or an RTC reset, a
+  copy can be dated after `now`. The due check ignores any copy dated more than 1 minute in the
+  future and measures from the newest copy that is not, so a future-dated copy makes a capture
+  due rather than postponing it. Prune sorts such a copy as the oldest, so it is the first one
+  expired once newer copies exist. The backoff gate below treats a `lastAttemptAt` in the
+  future the same way, as if it were `now`.
 - A manual copy neither counts toward the hourly limit nor restarts the interval.
 - The service records
   `{ lastAttemptAt, lastSuccessAt, consecutiveFailures, lastFailure: { at, kind, message } }` per
@@ -322,7 +328,7 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC4 | The newest kept copy of each kind passes `verifyDatabaseBackupForRestore`, and each published copy reports `journal_mode=delete` | `test/database-backups.test.ts` |
 | AC5 | After a successful capture, and after an injected failure in the online backup, the journal switch, and validation, the backup root holds no `.database-backup-*` file or sidecar | `test/database-backups.test.ts` |
 | AC6 | The startup sweep removes leftover temp files and sidecars, and nothing else | `test/database-backups.test.ts` |
-| AC7 | A restart 50 minutes after the newest copy captures about 10 minutes later, not 60. A wall-clock jump past the interval captures at the next wake. No capture runs in the first 5 minutes after start | `test/database-backups.test.ts` (loop with injected clock and timers) |
+| AC7 | A restart 50 minutes after the newest copy captures about 10 minutes later, not 60. A wall-clock jump past the interval captures at the next wake. A backward jump that leaves the newest copy dated 2 hours in the future captures at the next wake, does not capture again on the wake after, and the future-dated copy is the first one pruned; a `lastAttemptAt` in the future does not lengthen the backoff. No capture runs in the first 5 minutes after start | `test/database-backups.test.ts` (loop with injected clock and timers) |
 | AC8 | A failed capture is recorded with time and message, survives a restart, raises `backup-failed`, and is cleared by the next success. With an injected persistent failure and clock, scheduled attempts follow `min(5 min × 2^(n-1), intervalHours)` and never come on every 5-minute wake: at a 1-hour interval they are 5, 10, 20, 40, then 60 minutes apart, and at a 24-hour interval 5, 10, 20, 40, 80, 160, 320, 640, 1280, then 1440. A restart mid-backoff keeps the wait, and a success resets it | `test/database-backups.test.ts`, `test/storage-health.test.ts` |
 | AC9 | A refused task return and a refused check return record first refusal and reason, become `stuck-return` after 1 h, and clear on success | `test/storage-health.test.ts` plus the task and check-lease tests |
 | AC10 | A settled task with only clean trees is reclaimed at once, even when they hold ignored files under `REGENERABLE_IGNORED_PATHS` such as `node_modules/` and `dist/`. One with uncommitted, untracked or unpushed work, or with any other ignored file (for example `.evidence/report.md`, `e2e/.artifacts/` or `.env`), keeps its 30-day window and is listed. The orphan sweep applies the same rule | task retention tests |
