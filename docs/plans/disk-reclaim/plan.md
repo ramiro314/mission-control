@@ -217,8 +217,12 @@ flowchart LR
   "Unable to create '...index.lock': File exists" text in `last_error`, so slot 5's existing row
   qualifies with no migration.
 - **Automatic recover (D10).** Each maintenance pass retries a lock-caused quarantine when the
-  lock is gone, or when it is older than 10 minutes and the same no-git-process check passes.
-  Slot 5 recovers on the first pass.
+  lock is gone, or when it is older than 10 minutes and the same no-git-process check passes,
+  **and only when the slot is clean** by `worktreeReturnBlocker` with `regenerableIgnored`. The
+  clean check runs after the lock check, and git reads it with `--no-optional-locks`. A slot
+  with uncommitted, untracked, unpushed or non-regenerable ignored work is never reset
+  automatically: it stays quarantined, is listed as `quarantined-slot`, and waits for the
+  manual Recover, whose preview names the work it would discard.
 - **The leak at its source (D9, D22).** The escaped children in `test/update-build.test.ts`
   run with `cwd` set to their temp clone, so even a leaked one can no longer pin a slot. That
   source fix is what prevents the audited case. `test/setup-state.mjs` sets a per-worker
@@ -355,7 +359,7 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC10 | A settled task with only clean trees is reclaimed at once, even when they hold ignored files under `REGENERABLE_IGNORED_PATHS` such as `node_modules/` and `dist/`. One with uncommitted, untracked or unpushed work, or with any other ignored file (for example `.evidence/report.md`, `e2e/.artifacts/` or `.env`), keeps its 30-day window and is listed. The orphan sweep applies the same rule | task retention tests |
 | AC11 | A live lease with no Git-visible change for `staleLeaseDays` is listed and never reclaimed | `test/storage-health.test.ts` |
 | AC12 | A process inside a finished owner's tree is reported. Kill refuses a changed start time or command, sends SIGTERM then SIGKILL after 5 s, and triggers the pending return. Kill refuses, without signalling anything, a `path` that resolves outside every reported `orphan-process` tree (for example `$HOME` with a real live process's PID, start time and command), a symlink to a reported tree that resolves elsewhere, and a PID the reported problem does not list | worktree operations tests |
-| AC13 | Recover removes `index.lock` only when no git process uses the worktree, resets the slot to `available`, and refuses while a live owner references it. The automatic pass recovers a slot whose lock is gone or older than 10 minutes | worktree manager tests |
+| AC13 | Recover removes `index.lock` only when no git process uses the worktree, resets the slot to `available`, and refuses while a live owner references it. The automatic pass recovers a clean slot whose lock is gone or older than 10 minutes. A lock-caused quarantined slot holding an uncommitted change, an untracked file, an unpushed commit or a non-regenerable ignored file is left quarantined by the automatic pass with that work intact, and only the manual Recover, after its preview, resets it | worktree manager tests |
 | AC14 | The sweep removes a husk and a clean unreferenced worktree, keeps and lists a dirty one, skips an occupied one, never touches a referenced one, and never follows a symlink out of its directory. A folder holding any regular file outside git's own leftovers (for example a tree whose `.git` file is gone but whose source files remain) is listed, not removed. A tree caught mid-creation is never removed: one registered as in flight and not yet named by any row, and one younger than the 30-minute grace, both survive a sweep; an unregistered tree older than the grace is swept | `test/orphan-tree-sweep.test.ts` |
 | AC15 | Scoped prune removes only missing registrations under the state home | `test/orphan-tree-sweep.test.ts` |
 | AC16 | A fixture test file that leaks a detached grandchild and exits normally fails under the preload, and the grandchild is dead afterwards. A fixture runner killed with SIGKILL leaves its tagged grandchild alive; the next worker's preload start kills it and reports it as leaked by an earlier run, while a tagged child of a concurrently live worker survives. `test/update-build.test.ts` passes, and its escaped children run in their temp clone, not the checkout | `test/test-leak-guard.test.ts` |
@@ -384,7 +388,8 @@ calls `expectContentClearsBorder`.
 On the first run after it ships:
 
 - **Backups:** about 9.5 GB freed. Startup prune drops 24 hourly copies to 3.
-- **Slot 5:** recovered automatically to `available`, since its lock is already gone.
+- **Slot 5:** its lock is already gone, so the first pass recovers it to `available` if it is
+  clean, and otherwise lists it for the manual Recover.
 - **Slots 2 and 7:** each orphan process is reported and its return is flagged as stuck. One
   confirmed Kill per process lets the pending return complete.
 
