@@ -4,6 +4,7 @@
 
 import type { UpdateSnapshot } from "@shared/update.ts";
 import type { UpdateDialogChoice, UpdateDialogRequest } from "@shared/update-dialog.ts";
+import type { SessionControlAuthorization } from "@shared/session-control-authorization.ts";
 
 export {};
 
@@ -20,6 +21,8 @@ declare global {
     };
     /** Claim the renderer module's private capability once. */
     claimProductIssueAuthorization?(): string | null;
+    claimSessionControlAuthorization?(): string | null;
+    authorizeSessionControl?(capability: string, input: SessionControlAuthorization): boolean;
     /** Arm one exact report only for the module that claimed the private capability. */
     authorizeProductIssue?(
       capability: string,
