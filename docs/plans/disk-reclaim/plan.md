@@ -194,13 +194,31 @@ flowchart LR
   `held` or `returning` names it as `lease_path`. A referenced child is never touched.
 - An unreferenced child is resolved through `realpath` and must stay inside its directory.
   Then:
+  - being created: skipped (see below);
   - occupied: skipped, and its processes reported as `orphan-process`;
-  - not a git worktree (a husk like the Sep 26 folder): removed;
+  - a **husk**, meaning no regular file anywhere under it except git leftovers (a `.git` file
+    whose gitdir no longer exists, or empty directories such as the Sep 26 folder's `src/...`
+    tree): removed;
   - a clean git worktree (`worktreeReturnBlocker` with `includeIgnored: false`): removed with
     `git worktree remove --force`, and its `harness/*` branch
     is deleted only when that branch is contained in a remote branch;
-  - dirty, untracked or unpushed: kept and listed as `dirty-orphan-folder`, with discard and
-    remove offered under Worktrees > Unowned trees.
+  - anything else (dirty, untracked or unpushed work, or a folder that is not a valid worktree
+    but still holds files, such as a tree whose `.git` file was lost): kept and listed as
+    `dirty-orphan-folder`, with discard and remove offered under Worktrees > Unowned trees. The
+    sweep never deletes a file it cannot prove is git's own.
+- **No race with creation.** Both creation paths make the folder before any row names it: the
+  task overflow arm in `dispatcher.ts` runs `git worktree add` and the task row records the path
+  later, and `GitCheckTreeProvider.acquire` runs it before `insertHeld`. The sweep closes that
+  window two ways:
+  - **An in-flight registry.** Each creation path registers its target path in a shared
+    in-memory set before `git worktree add` and clears it once its row names the path or its
+    unwind removes the tree. The sweep skips every registered path. The check path already
+    keeps this kind of pin (`justAcquired`) for its own reaper, and the registry generalizes
+    it rather than adding a second mechanism.
+  - **An age grace as a backstop.** The sweep also skips any child whose folder, or whose
+    `.git` file, was modified in the last 30 minutes. That covers a creation in another
+    daemon generation and any path that misses the registry. After a crash nothing is in
+    flight, so a half-created tree is swept on the first pass after its grace ends.
 - **Scoped `git worktree prune` (D21).** For each source repository Mission Control knows
   (pool repositories and task repositories), it reads `git worktree list --porcelain` and
   removes only the `prunable` registrations whose path is under the state home. It never runs
@@ -263,7 +281,7 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC11 | A live lease with no Git-visible change for `staleLeaseDays` is listed and never reclaimed | `test/storage-health.test.ts` |
 | AC12 | A process inside a finished owner's tree is reported. Kill refuses a changed start time or command, sends SIGTERM then SIGKILL after 5 s, and triggers the pending return | worktree operations tests |
 | AC13 | Recover removes `index.lock` only when no git process uses the worktree, resets the slot to `available`, and refuses while a live owner references it. The automatic pass recovers a slot whose lock is gone or older than 10 minutes | worktree manager tests |
-| AC14 | The sweep removes a husk and a clean unreferenced worktree, keeps and lists a dirty one, skips an occupied one, never touches a referenced one, and never follows a symlink out of its directory | `test/orphan-tree-sweep.test.ts` |
+| AC14 | The sweep removes a husk and a clean unreferenced worktree, keeps and lists a dirty one, skips an occupied one, never touches a referenced one, and never follows a symlink out of its directory. A folder holding any regular file outside git's own leftovers (for example a tree whose `.git` file is gone but whose source files remain) is listed, not removed. A tree caught mid-creation is never removed: one registered as in flight and not yet named by any row, and one younger than the 30-minute grace, both survive a sweep; an unregistered tree older than the grace is swept | `test/orphan-tree-sweep.test.ts` |
 | AC15 | Scoped prune removes only missing registrations under the state home | `test/orphan-tree-sweep.test.ts` |
 | AC16 | A fixture test file that leaks a detached grandchild fails under the preload, and the grandchild is dead afterwards. `test/update-build.test.ts` passes and leaves no child behind | `test/test-leak-guard.test.ts` |
 | AC17 | Settings > Storage shows the backup config, status and kept copies; saving counts round-trips; Back up now adds a manual copy | `e2e/storage.spec.ts` |
