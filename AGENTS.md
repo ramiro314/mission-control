@@ -85,6 +85,21 @@ A test that needs one sets it in its file body, as it does for its home. `TERMIN
 it is the Linux default terminal's second launcher, so a developer's value could open real
 windows.
 
+The preload also stops a test from leaving a process alive (`test/leak-guard.mjs`). Each
+worker sets `MISSION_TEST_LEAK_TAG` to `<worker pid>:<worker start time>`, which every
+descendant inherits, and finds tagged processes by reading environments (`ps -E -ww` on
+macOS, `/proc/*/environ` on Linux), so a detached grandchild reparented to PID 1 is still
+found. At worker exit it kills every process carrying its own tag, prints each command, and
+fails the file; a leaked process is a bug in that file, so clean it up rather than loosen the
+guard. At worker start it kills every process whose tag is stale, meaning its worker PID is
+gone or has another start time, and reports it as leaked by an earlier run without failing:
+that is how a runner killed by a timeout or `SIGKILL`, whose own exit half never ran, gets
+cleaned up. A live tag belongs to a concurrent worker and is never touched. The one exempt
+process is tsx's `esbuild --service` child, which exits when the worker does. The guard stops
+where `openDb`'s does under **Where this stops**: a child spawned with a scrubbed environment,
+such as a deliberately built daemon launch, drops the tag and is not covered.
+`test/test-leak-guard.test.ts` pins both halves.
+
 A test that needs a particular database keeps seeding its own home above its imports, exactly
 as before. `src/server/db.ts` backs the preload up rather than trusting it: under the test
 runner `openDb` opens only the `harness.db` named by the state home set *right now*, and only

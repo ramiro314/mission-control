@@ -24,6 +24,7 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { armLeakGuard } from "./leak-guard.mjs";
 
 // `node --test` sets this in each test process it spawns, which is the scope wanted: the
 // runner's PARENT process gets `--import` too (it propagates through `execArgv`) and has no
@@ -154,4 +155,7 @@ if (process.env.NODE_TEST_CONTEXT) {
   process.on("exit", () => {
     rmSync(root, { recursive: true, force: true });
   });
+
+  // Tag the worker before its test file can spawn anything. See `leak-guard.mjs`.
+  armLeakGuard();
 }

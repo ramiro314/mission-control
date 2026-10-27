@@ -73,6 +73,28 @@ function fakeClone(script: string): string {
 
 const BUNDLE = "release/mac-arm64/Mission Control.app";
 
+/**
+ * The top of a fake build that leaves a descendant behind: in its OWN process group, so the
+ * group kill does not touch it, inheriting stdio, so it holds the pipes this test's reader is
+ * attached to, and recording its pid for the test to kill.
+ *
+ * Its working directory is named, not inherited: the clone. A test runner killed before its
+ * `t.after` leaves this process alive for good, and one that once sat in a pool slot pinned
+ * the slot for weeks. In the clone, an escape this file fails to kill pins a temp directory
+ * and nothing else. It writes where it runs to `escaped.cwd`, which the first case checks.
+ */
+const ESCAPE = `
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const escaped = spawn(
+  process.execPath,
+  ["-e", "require('node:fs').writeFileSync('escaped.cwd', process.cwd()); setInterval(() => {}, 1000)"],
+  { cwd: new URL("..", import.meta.url), detached: true, stdio: "inherit" },
+);
+escaped.unref();
+writeFileSync(process.env.MISSION_TEST_PID_FILE, String(escaped.pid));
+`;
+
 test("the staged build asks the clone's own install script for the build alone", () => {
   const script = stageScriptPath("/state/app-src");
   assert.equal(script, "/state/app-src/scripts/install-app.mjs");
@@ -493,17 +515,7 @@ test("a hung build settles anyway when something escapes the kill and holds the 
   // child's `close` then never arrives, and waiting on it unconditionally would leave the
   // banner reading `preparing` for good - the opposite of what a documented timeout is for.
   const clone = fakeClone(`
-import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
-// detached: its own process group, so the kill of ours does not touch it. It inherits stdio,
-// so it holds the pipes this test's reader is attached to.
-const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-  detached: true,
-  stdio: "inherit",
-});
-escaped.unref();
-writeFileSync(process.env.MISSION_TEST_PID_FILE, String(escaped.pid));
-setInterval(() => {}, 1000);
+${ESCAPE}setInterval(() => {}, 1000);
 `);
   const pidFile = join(clone, "escaped.pid");
   process.env.MISSION_TEST_PID_FILE = pidFile;
@@ -544,19 +556,17 @@ setInterval(() => {}, 1000);
     logged.some((line) => line.includes("still holding on")),
     `the uncertain shutdown should be logged: ${logged.join(" | ")}`,
   );
+
+  // The escape runs in its clone, never in the checkout the suite was started from.
+  const where = join(clone, "escaped.cwd");
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(where) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(readFileSync(where, "utf8"), clone);
 });
 
 test("a cancelled build settles anyway when something escapes the kill", async (t) => {
   const clone = fakeClone(`
-import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
-const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-  detached: true,
-  stdio: "inherit",
-});
-escaped.unref();
-writeFileSync(process.env.MISSION_TEST_PID_FILE, String(escaped.pid));
-process.stdout.write("${UPDATE_PROGRESS_MARKER} dependencies\\n");
+${ESCAPE}process.stdout.write("${UPDATE_PROGRESS_MARKER} dependencies\\n");
 setInterval(() => {}, 1000);
 `);
   const pidFile = join(clone, "escaped.pid");
@@ -599,15 +609,7 @@ test("a clone whose killed build never exited is refused to the next build", asy
   // starting another build would run `git checkout --force` and `npm ci` in a directory the
   // dying group may still be writing to.
   const clone = fakeClone(`
-import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
-const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-  detached: true,
-  stdio: "inherit",
-});
-escaped.unref();
-writeFileSync(process.env.MISSION_TEST_PID_FILE, String(escaped.pid));
-setInterval(() => {}, 1000);
+${ESCAPE}setInterval(() => {}, 1000);
 `);
   const pidFile = join(clone, "escaped.pid");
   process.env.MISSION_TEST_PID_FILE = pidFile;
