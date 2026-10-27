@@ -165,12 +165,19 @@ flowchart LR
   through 80, 160, 320, 640 and 1280 minutes before settling at 1440. The gate reads the
   persisted record, so a restart does not reset it.
 - **Back up now and the backoff.** Back up now is an explicit request and is never gated. It
-  uses the same online backup path, so its outcome also feeds the scheduled backoff: a manual
-  failure is recorded on the `manual` kind and also increments the `scheduled` kind's
-  `consecutiveFailures` and sets its `lastAttemptAt` (and `failingSince` if unset). A manual
-  success resets the `scheduled` kind's `consecutiveFailures` and `failingSince`, since it
-  proves the path works. The scheduled due check still measures from the newest `scheduled-*`
-  copy, so a manual success does not postpone the next hourly copy.
+  uses the same online backup path, so its outcome also feeds the scheduled backoff:
+  - A manual failure is recorded in full on the `manual` kind (`lastFailure`, `failingSince`)
+    and raises only `backup-failed:manual:<failingSince>`. On the `scheduled` kind it touches
+    only the backoff fields, incrementing `consecutiveFailures` and setting `lastAttemptAt`.
+    It never sets the scheduled `lastFailure` or `failingSince`, so one failed capture raises
+    one problem, and Storage never reports a scheduled failure that did not happen.
+  - A manual success clears the `manual` failure and, because it proves the path works, also
+    clears the `scheduled` kind's `consecutiveFailures`, `failingSince` and `lastFailure`, so
+    any `backup-failed:scheduled:*` problem clears with it.
+  - A `backup-failed:<kind>` problem exists exactly while that kind's `failingSince` is set, so
+    its id is never built from an empty value.
+  - The scheduled due check still measures from the newest `scheduled-*` copy, so a manual
+    success does not postpone the next hourly copy.
 - `POST /api/storage/backups` takes a manual copy through the same single-flight capture.
 - A failed capture raises the `backup-failed` problem (D16). Overdue time is shown but never
   raised as a problem.
@@ -354,7 +361,7 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC5 | After a successful capture, and after an injected failure in the online backup, the journal switch, and validation, the backup root holds no `.database-backup-*` file or sidecar | `test/database-backups.test.ts` |
 | AC6 | The startup sweep removes leftover temp files and sidecars, and nothing else | `test/database-backups.test.ts` |
 | AC7 | A restart 50 minutes after the newest copy captures about 10 minutes later, not 60. A wall-clock jump past the interval captures at the next wake. A backward jump that leaves the newest copy dated 2 hours in the future captures at the next wake, does not capture again on the wake after, and the future-dated copy is the first one pruned; a `lastAttemptAt` in the future does not lengthen the backoff. No capture runs in the first 5 minutes after start | `test/database-backups.test.ts` (loop with injected clock and timers) |
-| AC8 | A failed capture is recorded with time and message, survives a restart, raises `backup-failed`, and is cleared by the next success. With an injected persistent failure and clock, scheduled attempts follow `min(5 min × 2^(n-1), intervalHours)` and never come on every 5-minute wake: at a 1-hour interval they are 5, 10, 20, 40, then 60 minutes apart, and at a 24-hour interval 5, 10, 20, 40, 80, 160, 320, 640, 1280, then 1440. A restart mid-backoff keeps the wait, and a success resets it. A Back up now failure increments the scheduled counter and moves the next scheduled attempt out accordingly, a Back up now success resets it, and Back up now itself is never refused by the backoff | `test/database-backups.test.ts`, `test/storage-health.test.ts` |
+| AC8 | A failed capture is recorded with time and message, survives a restart, raises `backup-failed`, and is cleared by the next success. With an injected persistent failure and clock, scheduled attempts follow `min(5 min × 2^(n-1), intervalHours)` and never come on every 5-minute wake: at a 1-hour interval they are 5, 10, 20, 40, then 60 minutes apart, and at a 24-hour interval 5, 10, 20, 40, 80, 160, 320, 640, 1280, then 1440. A restart mid-backoff keeps the wait, and a success resets it. A Back up now failure increments the scheduled counter and moves the next scheduled attempt out accordingly, raises only `backup-failed:manual:*`, and leaves the scheduled `lastFailure` unset. After a scheduled failure, a Back up now success resets the scheduled counter and clears the scheduled `lastFailure`, `failingSince` and `backup-failed:scheduled:*` problem. Back up now itself is never refused by the backoff | `test/database-backups.test.ts`, `test/storage-health.test.ts` |
 | AC9 | A refused task return and a refused check return record first refusal and reason, become `stuck-return` after 1 h, and clear on success | `test/storage-health.test.ts` plus the task and check-lease tests |
 | AC10 | A settled task with only clean trees is reclaimed at once, even when they hold ignored files under `REGENERABLE_IGNORED_PATHS` such as `node_modules/` and `dist/`. One with uncommitted, untracked or unpushed work, or with any other ignored file (for example `.evidence/report.md`, `e2e/.artifacts/` or `.env`), keeps its 30-day window and is listed. The orphan sweep applies the same rule | task retention tests |
 | AC11 | A live lease with no Git-visible change for `staleLeaseDays` is listed and never reclaimed | `test/storage-health.test.ts` |
