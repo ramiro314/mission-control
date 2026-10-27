@@ -457,7 +457,14 @@ export class DatabaseBackupService {
       }
     }
     if (!existsSync(this.root)) return true;
-    this.ensureRoot();
+    try {
+      this.ensureRoot();
+    } catch {
+      // A root that cannot be prepared is due, so the capture fails on it and records that
+      // failure on the scheduled kind, backing off like any other, instead of every wake
+      // warning while the persisted status says nothing is wrong.
+      return true;
+    }
     const horizon = now + DATABASE_BACKUP_FUTURE_TOLERANCE_MS;
     const newest = Math.max(
       -Infinity,

@@ -769,6 +769,31 @@ test("a status write that fails never turns a capture's own outcome around", asy
   }
 });
 
+test("a backup root that cannot be prepared is a recorded scheduled failure that backs off", async (t) => {
+  const loop = wallClockLoop(t);
+  const elsewhere = join(loop.backupRoot, "..", "elsewhere");
+  mkdirSync(elsewhere, { mode: 0o700 });
+  symlinkSync(elsewhere, loop.backupRoot);
+  const started = loop.state.clock;
+
+  await loop.wake();
+  const first = loop.service.status().scheduled;
+  assert.equal(first.consecutiveFailures, 1, "the due check must not swallow the failure");
+  assert.equal(first.failingSince, started + 5 * MINUTE);
+  assert.equal(first.lastFailure?.kind, "scheduled");
+  assert.match(first.lastFailure?.message ?? "", /must be a real directory/);
+
+  const attempts = [first.lastAttemptAt];
+  for (let wake = 0; wake < 6; wake += 1) {
+    await loop.wake();
+    const { lastAttemptAt } = loop.service.status().scheduled;
+    if (lastAttemptAt !== attempts.at(-1)) attempts.push(lastAttemptAt);
+  }
+  assert.deepEqual(gapsInMinutes(attempts as number[]), [5, 10], "attempts follow the backoff");
+  assert.equal(loop.service.status().scheduled.consecutiveFailures, 3);
+  assert.deepEqual(loop.state.attempts, [], "no online backup ran into the symlinked root");
+});
+
 test("a future lastAttemptAt counts as now and does not lengthen the backoff", async (t) => {
   const loop = wallClockLoop(t);
   loop.state.failing = true;
