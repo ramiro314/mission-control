@@ -486,6 +486,22 @@ test("two frames for one repository in one column do not share a key", () => {
   assert.equal(new Set(keys).size, 2);
 });
 
+test("a frame keeps its key when a session sorts in ahead of its first member", () => {
+  // The key is the React key of the frame. If it moved with the first member, a new session
+  // sorting in front would remount the frame and drop focus from a rail row inside it.
+  const before = orderSessions([inRepo("bravo", REPO_A, IDLE)], new Set(), true);
+  const after = orderSessions(
+    [inRepo("bravo", REPO_A, IDLE), inRepo("alpha", REPO_A, IDLE)],
+    new Set(),
+    true,
+  );
+  const keysOf = (on: ReturnType<typeof orderSessions>) =>
+    fleetRows(on.groups.find((g) => g.tone === "idle")!)
+      .flatMap((r) => (r.kind === "repo" ? [r.key] : []));
+  assert.equal(after.groups.find((g) => g.tone === "idle")!.sessions[0]!.id, "plain-alpha");
+  assert.deepEqual(keysOf(after), keysOf(before));
+});
+
 test("a run cluster sits wholly inside one repository frame", () => {
   // The nesting the whole design rests on: an ensemble's members share a repository, so the
   // repository partition can never split a run. If it could, `fleetRows` would step past a

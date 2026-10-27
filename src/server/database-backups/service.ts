@@ -14,19 +14,53 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
+import {
+  databaseBackupsConfigFrom,
+  DEFAULT_DATABASE_BACKUPS_CONFIG,
+  type DatabaseBackupsConfig,
+} from "@shared/database-backups.ts";
 import { DATABASE_BACKUPS_DIR } from "../config.ts";
 
-export type DatabaseBackupKind = "scheduled" | "preMigration";
+export type DatabaseBackupKind = "scheduled" | "preMigration" | "manual";
 
+/** The configurable counts. A `manual` copy is not counted here: exactly one is always kept. */
 export interface DatabaseBackupRetention {
   scheduled: number;
   preMigration: number;
 }
 
-export const DATABASE_BACKUP_RETENTION: Readonly<DatabaseBackupRetention> = Object.freeze({
-  scheduled: 24,
-  preMigration: 10,
-});
+export function databaseBackupRetention(config: DatabaseBackupsConfig): DatabaseBackupRetention {
+  return { scheduled: config.scheduledCount, preMigration: config.preMigrationCount };
+}
+
+export const DATABASE_BACKUP_RETENTION: Readonly<DatabaseBackupRetention> = Object.freeze(
+  databaseBackupRetention(DEFAULT_DATABASE_BACKUPS_CONFIG),
+);
+
+const MANUAL_BACKUP_RETENTION = 1;
+
+/**
+ * The stored backups config, read through the given handle rather than `getAppConfig`.
+ *
+ * `openDb` takes its pre-migration copy before any migration has run, when `app_config` may
+ * not exist yet and the shared connection is not open, so this reads the raw row. A missing
+ * table, a missing row, or a malformed value reads as the default and never throws.
+ */
+export function storedDatabaseBackupsConfig(db: DatabaseSync): DatabaseBackupsConfig {
+  try {
+    const table = db
+      .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'app_config'")
+      .get();
+    if (!table) return databaseBackupsConfigFrom(undefined);
+    const row = db
+      .prepare("SELECT value FROM app_config WHERE key = ?")
+      .get(APP_CONFIG_ENTRIES.backups.key) as { value: string } | undefined;
+    return databaseBackupsConfigFrom(row ? JSON.parse(row.value) : undefined);
+  } catch {
+    return databaseBackupsConfigFrom(undefined);
+  }
+}
 
 export interface DatabaseBackupRecord {
   kind: DatabaseBackupKind;
@@ -43,6 +77,7 @@ export interface DatabaseBackupValidation {
 
 interface DatabaseBackupServiceOptions {
   root?: string;
+  /** Fixed counts. Without it, every prune reads the stored config through `source`. */
   retention?: DatabaseBackupRetention;
   now?: () => Date;
   onlineBackup?: (source: DatabaseSync, destination: string) => Promise<void>;
@@ -50,8 +85,23 @@ interface DatabaseBackupServiceOptions {
   validate?: (temporary: string) => DatabaseBackupValidation;
 }
 
-const OWNED_BACKUP = /^(scheduled|pre-migration)-(\d{8}T\d{9}Z)-([a-f0-9]{32})\.sqlite3$/;
+/** The one place a kind meets its filename prefix; the regex and reverse lookup derive from it. */
+const FILE_PREFIX: Record<DatabaseBackupKind, string> = {
+  scheduled: "scheduled",
+  preMigration: "pre-migration",
+  manual: "manual",
+};
+
+const BACKUP_KINDS = Object.keys(FILE_PREFIX) as DatabaseBackupKind[];
+
+const KIND_BY_PREFIX = new Map(BACKUP_KINDS.map((kind) => [FILE_PREFIX[kind], kind]));
+
+const OWNED_BACKUP = new RegExp(
+  `^(${Object.values(FILE_PREFIX).join("|")})-(\\d{8}T\\d{9}Z)-([a-f0-9]{32})\\.sqlite3$`,
+);
+
 const OWNED_TEMPORARY = /^\.database-backup-[a-f0-9]{32}\.tmp(?:-wal|-shm|-journal)?$/;
+/** The files SQLite may leave beside a database, removed with the file they belong to. */
 const SQLITE_SIDECARS = ["-wal", "-shm", "-journal"] as const;
 
 function errorMessage(error: unknown): string {
@@ -60,10 +110,6 @@ function errorMessage(error: unknown): string {
 
 function timestampForFilename(date: Date): string {
   return date.toISOString().replace(/[-:.]/g, "");
-}
-
-function filePrefix(kind: DatabaseBackupKind): "scheduled" | "pre-migration" {
-  return kind === "scheduled" ? "scheduled" : "pre-migration";
 }
 
 function syncFile(path: string): void {
@@ -160,7 +206,7 @@ export function validateDatabaseBackupForRestore(path: string): DatabaseBackupVa
  */
 export class DatabaseBackupService {
   readonly root: string;
-  private readonly retention: DatabaseBackupRetention;
+  private readonly retention: DatabaseBackupRetention | undefined;
   private readonly now: () => Date;
   private readonly onlineBackup: (source: DatabaseSync, destination: string) => Promise<void>;
   private readonly selfContain: (temporary: string) => void;
@@ -172,14 +218,14 @@ export class DatabaseBackupService {
     options: DatabaseBackupServiceOptions = {},
   ) {
     this.root = options.root ?? DATABASE_BACKUPS_DIR;
-    this.retention = options.retention ?? DATABASE_BACKUP_RETENTION;
+    this.retention = options.retention;
     this.now = options.now ?? (() => new Date());
     this.onlineBackup = options.onlineBackup ?? (async (db, destination) => {
       await sqliteBackup(db, destination);
     });
     this.selfContain = options.selfContain ?? useRollbackJournal;
     this.validate = options.validate ?? validateDatabaseBackupForRestore;
-    for (const [kind, count] of Object.entries(this.retention)) {
+    for (const [kind, count] of Object.entries(this.retention ?? {})) {
       if (!Number.isSafeInteger(count) || count < 1) {
         throw new RangeError(`Database backup retention for ${kind} must be a positive integer`);
       }
@@ -207,7 +253,7 @@ export class DatabaseBackupService {
     this.ensureRoot();
     const createdAt = this.now().toISOString();
     const nonce = randomUUID().replaceAll("-", "");
-    const filename = `${filePrefix(kind)}-${timestampForFilename(new Date(createdAt))}-${nonce}.sqlite3`;
+    const filename = `${FILE_PREFIX[kind]}-${timestampForFilename(new Date(createdAt))}-${nonce}.sqlite3`;
     const path = join(this.root, filename);
     if (dirname(path) !== this.root || basename(path) !== filename || !OWNED_BACKUP.test(filename)) {
       throw new TypeError("Database backup path escaped its root");
@@ -252,10 +298,26 @@ export class DatabaseBackupService {
     syncFile(this.root);
   }
 
-  private prune(): void {
+  /**
+   * Delete every copy above its kind's count, newest kept, with any SQLite sidecar beside it.
+   * Runs after every capture; the daemon also calls it at startup and when the counts are
+   * saved, so a lowered count takes effect without waiting for the next capture.
+   */
+  prune(): void {
+    if (!existsSync(this.root)) return;
+    // Startup and save prune outside a capture, so they refuse a symlinked root the same way.
+    this.ensureRoot();
+    const retention = this.retention ?? databaseBackupRetention(
+      storedDatabaseBackupsConfig(this.source),
+    );
+    const keep: Record<DatabaseBackupKind, number> = {
+      ...retention,
+      manual: MANUAL_BACKUP_RETENTION,
+    };
     const groups: Record<DatabaseBackupKind, string[]> = {
       scheduled: [],
       preMigration: [],
+      manual: [],
     };
     for (const filename of readdirSync(this.root)) {
       const match = OWNED_BACKUP.exec(filename);
@@ -263,13 +325,17 @@ export class DatabaseBackupService {
       const path = join(this.root, filename);
       const stat = lstatSync(path);
       if (stat.isSymbolicLink() || !stat.isFile()) continue;
-      groups[match[1] === "scheduled" ? "scheduled" : "preMigration"].push(filename);
+      groups[KIND_BY_PREFIX.get(match[1]!)!].push(filename);
     }
-    for (const kind of ["scheduled", "preMigration"] as const) {
+    for (const kind of BACKUP_KINDS) {
       const expired = groups[kind]
         .sort((left, right) => right.localeCompare(left))
-        .slice(this.retention[kind]);
-      for (const filename of expired) safeUnlink(join(this.root, filename));
+        .slice(keep[kind]);
+      for (const filename of expired) {
+        const path = join(this.root, filename);
+        safeUnlink(path);
+        for (const suffix of SQLITE_SIDECARS) safeUnlink(`${path}${suffix}`);
+      }
     }
     syncFile(this.root);
   }

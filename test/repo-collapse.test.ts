@@ -82,10 +82,9 @@ test("folding a frame hides the members of a run cluster nested inside it", () =
 });
 
 test("a key nothing draws hides nothing, so a stale fold cannot blank the board", () => {
-  // A row key carries the frame's first member, so it changes when that member leaves the
-  // column. The stale key has to be inert rather than matching something else: a fold that
-  // outlived its frame and started hiding a different repository's cards would be a board
-  // silently missing sessions.
+  // A fold outlives its frame when the frame's last session leaves the column. The stale key
+  // has to be inert rather than matching something else: a fold that started hiding a
+  // different repository's cards would be a board silently missing sessions.
   const fleet = [inRepo("alpha", REPO_A), inRepo("bravo", REPO_B)];
   const groups = orderSessions(fleet, new Set(), true).groups;
   assert.equal(hiddenSessionIds(groups, new Set(["repo-working-/work/gone-s-vanished"])).size, 0);

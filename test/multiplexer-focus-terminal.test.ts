@@ -227,7 +227,7 @@ const DOMAINS_BEFORE = [
 ] as const;
 
 /** Ids appended after the terminals change, at the end of the list, by later features. */
-const DOMAINS_APPENDED_SINCE: readonly string[] = ["testing-settings"];
+const DOMAINS_APPENDED_SINCE: readonly string[] = ["testing-settings", "database-backups"];
 
 test("the terminals backup domain is appended, and every id that existed stays where it was", () => {
   assert.deepEqual(

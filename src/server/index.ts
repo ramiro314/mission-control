@@ -747,6 +747,7 @@ const app = buildApp({
   fileComments,
   fileCommentWalkthrough,
   settingsBackups,
+  databaseBackups,
   prConflicts,
 });
 
