@@ -37,7 +37,11 @@ import { SetupBannerDismissalSchema } from "./setup-catalog.ts";
 import { RepoIndexConfigSchema, type RepoIndexConfig } from "./repo-index.ts";
 import { TelemetryConfigSchema } from "./telemetry.ts";
 import { TelemetryOrganizationRecordSchema } from "./organizations.ts";
-import { DatabaseBackupsConfigSchema, type DatabaseBackupsConfig } from "./database-backups.ts";
+import {
+  DatabaseBackupsConfigSchema,
+  DatabaseBackupStatusSchema,
+  type DatabaseBackupsConfig,
+} from "./database-backups.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -362,6 +366,13 @@ export const APP_CONFIG_ENTRIES = {
   backups: fieldsEntry(
     "backups", DatabaseBackupsConfigSchema, "database-backups", backupsFields,
   ),
+  /**
+   * What the full-database backup captures last did: attempts, successes and the current
+   * failure streak per kind. The daemon writes it through the same raw handle as the backup
+   * service reads `backups`. `operational` with no backup domain: it describes this machine's
+   * disk, and restored onto another installation it would report captures that never ran there.
+   */
+  backupsStatus: wholeEntry("backups.status", DatabaseBackupStatusSchema, "operational", null),
   /**
    * General telemetry collection and export.
    *

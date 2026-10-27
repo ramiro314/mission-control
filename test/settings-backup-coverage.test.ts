@@ -97,6 +97,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "away",
       "backlog.plan",
       "backups",
+      // What the database backup captures last did on this machine. `operational`, never
+      // restored: another installation's outcomes describe captures that never ran here.
+      "backups.status",
       "cost",
       "costOtelLastSeen",
       "costTelemetryEnabledAt",
@@ -171,6 +174,8 @@ test("the initial app_config key and value-class partition is pinned", () => {
   });
   assert.equal(APP_CONFIG_ENTRIES.foremanInstructions.classification.valueClass, "setting");
   assert.equal(APP_CONFIG_ENTRIES.foremanLease.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.backupsStatus.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.backupsStatus.backupDomain, null);
   assert.equal(APP_CONFIG_ENTRIES.backlogPlan.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costTelemetryEnabledAt.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costOtelLastSeen.classification.valueClass, "operational");

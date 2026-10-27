@@ -15,13 +15,16 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
-import { DatabaseSync } from "node:sqlite";
+import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
 import {
   DATABASE_BACKUP_RETENTION,
   DatabaseBackupService,
   validateDatabaseBackupForRestore,
 } from "../src/server/database-backups/service.ts";
-import { startDatabaseBackupLoop } from "../src/server/database-backups/loop.ts";
+import {
+  DATABASE_BACKUP_WAKE_MS,
+  startDatabaseBackupLoop,
+} from "../src/server/database-backups/loop.ts";
 import { verifyDatabaseBackupForRestore } from "../src/server/database-backups/restore.ts";
 import { CURRENT_DATABASE_SCHEMA_VERSION } from "../src/server/db.ts";
 
@@ -523,6 +526,7 @@ test("starting the backup loop prunes 24 hourly copies to 3 before any capture",
         return service.captureScheduled();
       },
       prune: () => service.prune(),
+      scheduledDue: () => service.scheduledDue(),
     },
     idleTimers,
   );
@@ -542,6 +546,7 @@ test("a prune that throws at loop start only warns, and the loop still schedules
       {
         captureScheduled: () => Promise.reject(new Error("not reached")),
         prune: () => { throw new Error("backup root is a symlink"); },
+        scheduledDue: () => false,
       },
       { ...idleTimers, setTimer: () => { armed += 1; return { unref() {} }; } },
     );
@@ -554,45 +559,335 @@ test("a prune that throws at loop start only warns, and the loop still schedules
   }
 });
 
-test("the recurring loop waits one interval, contains failures, and never overlaps", async () => {
-  let calls = 0;
-  let reject: (error: Error) => void = () => { throw new Error("capture did not start"); };
-  let scheduled: (() => void) | undefined;
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+/**
+ * A backup loop on an injected wall clock and timers. `wake()` advances the clock by one wake
+ * interval, fires the loop's timer, and resolves once the tick has finished and re-armed.
+ * `restart()` stops the loop and starts a fresh service and loop on the same database, as a
+ * daemon restart does, keeping the clock where it is.
+ */
+function wallClockLoop(t: test.TestContext, options: { intervalHours?: number } = {}) {
+  // Every injected failure is logged by the loop; the assertions read the status record.
+  t.mock.method(console, "warn", () => undefined);
+  const root = fixture("mission-database-backup-wall-clock-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const backupRoot = join(root, "backups");
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL)");
+  storeBackupsConfig(source, JSON.stringify({ intervalHours: options.intervalHours ?? 1 }));
+
+  const state = {
+    clock: Date.UTC(2026, 9, 27, 12),
+    failing: false,
+    /** Every online capture's clock time, scheduled and manual alike. */
+    attempts: [] as number[],
+  };
+  const newService = () => new DatabaseBackupService(source, {
+    root: backupRoot,
+    now: () => new Date(state.clock),
+    onlineBackup: async (db, destination) => {
+      state.attempts.push(state.clock);
+      if (state.failing) throw new Error("ENOSPC: no space left on device");
+      await sqliteBackup(db, destination);
+    },
+  });
+  let service = newService();
+  let pending: (() => void) | null = null;
+  let armed: () => void = () => undefined;
+  const start = () => startDatabaseBackupLoop(service, {
+    setTimer: (callback, delayMs) => {
+      assert.equal(delayMs, DATABASE_BACKUP_WAKE_MS);
+      pending = callback;
+      armed();
+      return { unref() {} };
+    },
+    clearTimer: () => { pending = null; },
+  });
+  let stop = start();
+  t.after(() => stop());
+
+  return {
+    state,
+    backupRoot,
+    get service() { return service; },
+    seedScheduled(at: number, index: number): string {
+      mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+      const stamp = new Date(at).toISOString().replace(/[-:.]/g, "");
+      const name = `scheduled-${stamp}-${String(index).padStart(32, "c")}.sqlite3`;
+      writeFileSync(join(backupRoot, name), "seeded copy");
+      return name;
+    },
+    async wake(): Promise<void> {
+      state.clock += DATABASE_BACKUP_WAKE_MS;
+      const callback = pending;
+      assert.ok(callback, "the loop must have armed its next wake");
+      pending = null;
+      const rearmed = new Promise<void>((resolve) => { armed = resolve; });
+      callback();
+      await rearmed;
+    },
+    async restart(): Promise<void> {
+      await stop();
+      service = newService();
+      stop = start();
+    },
+    /** Wake until `count` more online captures have been attempted. */
+    async wakeUntilAttempts(count: number): Promise<void> {
+      const target = state.attempts.length + count;
+      for (let wakes = 0; state.attempts.length < target; wakes += 1) {
+        assert.ok(wakes < 2_000, "the expected attempts never came");
+        await this.wake();
+      }
+    },
+  };
+}
+
+function gapsInMinutes(times: number[]): number[] {
+  return times.slice(1).map((at, index) => (at - times[index]!) / MINUTE);
+}
+
+test("no capture runs before the first wake, 5 minutes after start, even with no copy at all", async (t) => {
+  const loop = wallClockLoop(t);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(loop.state.attempts, [], "startup must not compete with scheduled backup I/O");
+
+  const started = loop.state.clock;
+  await loop.wake();
+  assert.deepEqual(loop.state.attempts, [started + 5 * MINUTE]);
+  assert.equal(kept(loop.backupRoot, "scheduled").length, 1);
+});
+
+test("a restart 50 minutes after the newest copy captures about 10 minutes later, not 60", async (t) => {
+  const loop = wallClockLoop(t);
+  loop.seedScheduled(loop.state.clock - 50 * MINUTE, 1);
+  const restartedAt = loop.state.clock;
+
+  await loop.wake();
+  assert.deepEqual(loop.state.attempts, [], "55 minutes after the newest copy is not yet due");
+  await loop.wake();
+  assert.deepEqual(loop.state.attempts, [restartedAt + 10 * MINUTE]);
+  await loop.wake();
+  assert.equal(loop.state.attempts.length, 1, "the new copy restarts the interval");
+});
+
+test("a forward wall-clock jump past the interval captures at the next wake", async (t) => {
+  const loop = wallClockLoop(t);
+  await loop.wake();
+  assert.equal(loop.state.attempts.length, 1);
+  await loop.wake();
+  assert.equal(loop.state.attempts.length, 1);
+
+  loop.state.clock += 3 * HOUR;
+  await loop.wake();
+  assert.equal(loop.state.attempts.length, 2);
+});
+
+test("a copy dated 2 hours in the future is ignored by the due check and pruned first", async (t) => {
+  const loop = wallClockLoop(t);
+  const future = loop.seedScheduled(loop.state.clock + 2 * HOUR, 1);
+  const older = [
+    loop.seedScheduled(loop.state.clock - 3 * HOUR, 2),
+    loop.seedScheduled(loop.state.clock - 2 * HOUR, 3),
+  ];
+
+  await loop.wake();
+  assert.equal(loop.state.attempts.length, 1, "the future copy must not postpone a capture");
+  const scheduled = kept(loop.backupRoot, "scheduled");
+  assert.equal(scheduled.length, 3);
+  assert.equal(scheduled.includes(future), false, "the future-dated copy is the first one expired");
+  assert.deepEqual(scheduled.filter((name) => older.includes(name)), older);
+
+  await loop.wake();
+  assert.equal(loop.state.attempts.length, 1, "the fresh copy is not captured again on the next wake");
+});
+
+test("a future lastAttemptAt counts as now and does not lengthen the backoff", async (t) => {
+  const loop = wallClockLoop(t);
+  loop.state.failing = true;
+  await loop.wake();
+  assert.equal(loop.service.status().scheduled.consecutiveFailures, 1);
+  // The clock moves back 10 hours after the failure, leaving the last attempt in the future.
+  loop.state.clock -= 10 * HOUR;
+  const movedBack = loop.state.clock;
+
+  await loop.wake();
+  const noticedAt = movedBack + 5 * MINUTE;
+  assert.equal(loop.state.attempts.length, 1);
+  assert.equal(loop.service.status().scheduled.lastAttemptAt, noticedAt, "stored as the time it was noticed");
+  await loop.wake();
+  assert.equal(loop.state.attempts.at(-1), noticedAt + 5 * MINUTE, "waits 5 minutes, not 10 hours");
+});
+
+test("persistent failures back off 5, 10, 20, 40, then 60 minutes at a 1-hour interval, across a restart, and reset on success", async (t) => {
+  const loop = wallClockLoop(t);
+  loop.state.failing = true;
+  await loop.wakeUntilAttempts(3);
+  const firstFailure = loop.state.attempts[0]!;
+  assert.deepEqual(gapsInMinutes(loop.state.attempts), [5, 10]);
+
+  await loop.restart();
+  const recorded = loop.service.status().scheduled;
+  assert.equal(recorded.consecutiveFailures, 3, "the streak survives a restart");
+  assert.equal(recorded.failingSince, firstFailure);
+  assert.equal(recorded.lastAttemptAt, loop.state.attempts.at(-1));
+  assert.equal(recorded.lastFailure?.at, loop.state.attempts.at(-1));
+  assert.equal(recorded.lastFailure?.kind, "scheduled");
+  assert.match(recorded.lastFailure?.message ?? "", /ENOSPC/);
+  assert.equal(recorded.lastSuccessAt, null);
+
+  await loop.wakeUntilAttempts(4);
+  assert.deepEqual(gapsInMinutes(loop.state.attempts), [5, 10, 20, 40, 60, 60]);
+  assert.deepEqual(kept(loop.backupRoot, "scheduled"), [], "a failed capture publishes nothing");
+
+  loop.state.failing = false;
+  await loop.wakeUntilAttempts(1);
+  const succeededAt = loop.state.attempts.at(-1)!;
+  assert.equal(succeededAt - loop.state.attempts.at(-2)!, 60 * MINUTE);
+  assert.deepEqual(loop.service.status().scheduled, {
+    lastAttemptAt: succeededAt,
+    lastSuccessAt: succeededAt,
+    consecutiveFailures: 0,
+    failingSince: null,
+    lastFailure: null,
+  });
+
+  // The next failure starts a new streak at the 5-minute wait.
+  loop.state.clock += HOUR - DATABASE_BACKUP_WAKE_MS;
+  loop.state.failing = true;
+  await loop.wakeUntilAttempts(2);
+  assert.equal(loop.state.attempts.at(-1)! - loop.state.attempts.at(-2)!, 5 * MINUTE);
+});
+
+test("persistent failures at a 24-hour interval keep doubling until they reach 1440 minutes", async (t) => {
+  const loop = wallClockLoop(t, { intervalHours: 24 });
+  loop.state.failing = true;
+  await loop.wakeUntilAttempts(12);
+  assert.deepEqual(
+    gapsInMinutes(loop.state.attempts),
+    [5, 10, 20, 40, 80, 160, 320, 640, 1280, 1440, 1440],
+  );
+});
+
+test("a Back up now failure moves the next scheduled attempt out and leaves the scheduled failure unset", async (t) => {
+  const loop = wallClockLoop(t);
+  loop.seedScheduled(loop.state.clock - 55 * MINUTE, 1);
+  loop.state.failing = true;
+  const failedAt = loop.state.clock;
+  await assert.rejects(loop.service.captureManual(), /Manual database backup failed: ENOSPC/);
+  await assert.rejects(loop.service.captureManual(), /ENOSPC/);
+
+  const status = loop.service.status();
+  assert.equal(status.manual.consecutiveFailures, 2);
+  assert.equal(status.manual.failingSince, failedAt);
+  assert.equal(status.manual.lastFailure?.kind, "manual");
+  assert.deepEqual(status.scheduled, {
+    lastAttemptAt: failedAt,
+    lastSuccessAt: null,
+    consecutiveFailures: 2,
+    failingSince: null,
+    lastFailure: null,
+  });
+
+  loop.state.failing = false;
+  await loop.wake();
+  assert.equal(loop.state.attempts.length, 2, "due by the interval, but two failures wait 10 minutes");
+  await loop.wake();
+  assert.equal(loop.state.attempts.at(-1), failedAt + 10 * MINUTE);
+});
+
+test("Back up now is never refused by the backoff, clears the scheduled streak, and never restarts the interval", async (t) => {
+  const loop = wallClockLoop(t);
+  loop.state.failing = true;
+  await loop.wakeUntilAttempts(3);
+  const failing = loop.service.status().scheduled;
+  assert.equal(failing.consecutiveFailures, 3);
+  assert.notEqual(failing.failingSince, null);
+  assert.equal(loop.service.scheduledDue(), false, "the scheduled attempt is backing off");
+
+  loop.state.failing = false;
+  const manual = await loop.service.captureManual();
+  assert.equal(manual.kind, "manual");
+  assert.deepEqual(kept(loop.backupRoot, "manual"), [manual.filename]);
+  const status = loop.service.status();
+  assert.equal(status.manual.lastSuccessAt, loop.state.clock);
+  assert.equal(status.manual.lastFailure, null);
+  assert.equal(status.scheduled.consecutiveFailures, 0);
+  assert.equal(status.scheduled.failingSince, null);
+  assert.equal(status.scheduled.lastFailure, null);
+  assert.equal(loop.service.scheduledDue(), true, "a manual copy does not count as an hourly one");
+
+  // With an hourly copy 50 minutes old, a fresh manual copy still leaves it due 10 minutes later.
+  rmSync(loop.backupRoot, { recursive: true, force: true });
+  loop.seedScheduled(loop.state.clock - 50 * MINUTE, 1);
+  await loop.service.captureManual();
+  const before = loop.state.attempts.length;
+  const manualAt = loop.state.clock;
+  await loop.wake();
+  assert.equal(loop.state.attempts.length, before);
+  await loop.wake();
+  assert.equal(loop.state.attempts.at(-1), manualAt + 10 * MINUTE);
+});
+
+test("captures are single-flight: the same kind joins, the other kind waits its turn", async (t) => {
+  const root = fixture("mission-database-backup-single-flight-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL)");
+  const releases: Array<() => void> = [];
+  let running = 0;
+  let overlapped = false;
+  const service = new DatabaseBackupService(source, {
+    root: join(root, "backups"),
+    onlineBackup: async (db, destination) => {
+      running += 1;
+      overlapped ||= running > 1;
+      await new Promise<void>((resolve) => releases.push(resolve));
+      await sqliteBackup(db, destination);
+      running -= 1;
+    },
+  });
+
+  const scheduled = service.captureScheduled();
+  assert.equal(service.captureScheduled(), scheduled, "a second scheduled request joins the first");
+  const manual = service.captureManual();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(releases.length, 1, "the manual capture waits for the scheduled one");
+  releases.shift()!();
+  assert.equal((await scheduled).kind, "scheduled");
+  while (!releases[0]) await new Promise<void>((resolve) => setImmediate(resolve));
+  releases.shift()!();
+  assert.equal((await manual).kind, "manual");
+  assert.equal(overlapped, false);
+});
+
+test("a recurring loop contains a failed due check and keeps waking", async () => {
   const warnings: unknown[][] = [];
   const originalWarn = console.warn;
   console.warn = (...args: unknown[]) => { warnings.push(args); };
+  let scheduled: (() => void) | undefined;
   try {
     const stop = startDatabaseBackupLoop(
       {
-        captureScheduled: () => {
-          calls += 1;
-          return new Promise((_, rejectCapture) => { reject = rejectCapture; }) as never;
-        },
+        captureScheduled: () => Promise.reject(new Error("not reached")),
         prune: () => undefined,
+        scheduledDue: () => { throw new Error("backup root is a symlink"); },
       },
       {
-        intervalMs: 123,
-        setTimer: (callback, delayMs) => {
-          assert.equal(delayMs, 123);
-          scheduled = callback;
-          return { unref() {} };
-        },
+        setTimer: (callback) => { scheduled = callback; return { unref() {} }; },
         clearTimer: () => undefined,
       },
     );
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(calls, 0, "startup must not compete with scheduled backup I/O");
-    assert.ok(scheduled, "the first capture must be scheduled");
-    const firstTick = scheduled;
+    const firstTick = scheduled!;
     scheduled = undefined;
     firstTick();
     await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(calls, 1);
-    assert.equal(scheduled, undefined, "no timer is armed while capture is in flight");
-    reject(new Error("disk unavailable"));
-    await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(warnings.length, 1);
-    assert.ok(scheduled);
+    assert.match(String(warnings[0]![0]), /database backup failed: backup root is a symlink/);
+    assert.ok(scheduled, "the next wake is armed");
     await stop();
   } finally {
     console.warn = originalWarn;

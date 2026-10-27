@@ -8562,16 +8562,30 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Database backups: how many full recovery points of each kind are kept ---
   //
   // Saving prunes at once, so a lowered count frees its copies on save.
+  const databaseBackupsUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Database backup service is unavailable",
+  }, 503);
   app.put("/api/storage/backups/config", async (c) => {
-    if (!databaseBackups) {
-      return c.json({
-        error: "service_unavailable" as const,
-        message: "Database backup service is unavailable",
-      }, 503);
-    }
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
     const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     return c.json(setDatabaseBackupsConfig(parsed.data, databaseBackups));
+  });
+
+  // Back up now: a `manual` copy through the same single-flight capture as the hourly one.
+  // It is never refused by the scheduled backoff; the service records its outcome either way.
+  app.post("/api/storage/backups", async (c) => {
+    if (!databaseBackups) return databaseBackupsUnavailable(c);
+    try {
+      const { kind, filename, createdAt } = await databaseBackups.captureManual();
+      return c.json({ kind, filename, createdAt }, 201);
+    } catch (error) {
+      return c.json({
+        error: "backup_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
   });
 
   // --- Environment checks: what the MACHINE says about the tooling a dispatch inherits ---
