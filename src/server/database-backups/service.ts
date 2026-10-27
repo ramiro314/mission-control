@@ -83,20 +83,20 @@ interface DatabaseBackupServiceOptions {
   onlineBackup?: (source: DatabaseSync, destination: string) => Promise<void>;
 }
 
-const OWNED_BACKUP =
-  /^(scheduled|pre-migration|manual)-(\d{8}T\d{9}Z)-([a-f0-9]{32})\.sqlite3$/;
-
+/** The one place a kind meets its filename prefix; the regex and reverse lookup derive from it. */
 const FILE_PREFIX: Record<DatabaseBackupKind, string> = {
   scheduled: "scheduled",
   preMigration: "pre-migration",
   manual: "manual",
 };
 
-const KIND_BY_PREFIX: Record<string, DatabaseBackupKind> = {
-  scheduled: "scheduled",
-  "pre-migration": "preMigration",
-  manual: "manual",
-};
+const BACKUP_KINDS = Object.keys(FILE_PREFIX) as DatabaseBackupKind[];
+
+const KIND_BY_PREFIX = new Map(BACKUP_KINDS.map((kind) => [FILE_PREFIX[kind], kind]));
+
+const OWNED_BACKUP = new RegExp(
+  `^(${Object.values(FILE_PREFIX).join("|")})-(\\d{8}T\\d{9}Z)-([a-f0-9]{32})\\.sqlite3$`,
+);
 
 /** The files SQLite may leave beside a database, removed with the copy they belong to. */
 const SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
@@ -277,9 +277,9 @@ export class DatabaseBackupService {
       const path = join(this.root, filename);
       const stat = lstatSync(path);
       if (stat.isSymbolicLink() || !stat.isFile()) continue;
-      groups[KIND_BY_PREFIX[match[1]!]!].push(filename);
+      groups[KIND_BY_PREFIX.get(match[1]!)!].push(filename);
     }
-    for (const kind of ["scheduled", "preMigration", "manual"] as const) {
+    for (const kind of BACKUP_KINDS) {
       const expired = groups[kind]
         .sort((left, right) => right.localeCompare(left))
         .slice(keep[kind]);

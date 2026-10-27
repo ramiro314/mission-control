@@ -5,12 +5,11 @@ export const DATABASE_BACKUP_INTERVAL_HOURS = [1, 3, 6, 12, 24] as const;
 
 const scheduledCount = z.number().int().min(1).max(48);
 const preMigrationCount = z.number().int().min(1).max(10);
+const [firstInterval, secondInterval, ...otherIntervals] = DATABASE_BACKUP_INTERVAL_HOURS;
 const intervalHours = z.union([
-  z.literal(1),
-  z.literal(3),
-  z.literal(6),
-  z.literal(12),
-  z.literal(24),
+  z.literal(firstInterval),
+  z.literal(secondInterval),
+  ...otherIntervals.map((hours) => z.literal(hours)),
 ]);
 
 /**

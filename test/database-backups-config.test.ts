@@ -8,6 +8,7 @@ import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import {
+  DATABASE_BACKUP_INTERVAL_HOURS,
   DatabaseBackupsConfigPatchSchema,
   DatabaseBackupsConfigSchema,
   DEFAULT_DATABASE_BACKUPS_CONFIG,
@@ -68,6 +69,9 @@ test("the shared schema refuses out-of-range counts and intervals, and never acc
   }
   for (const preMigrationCount of [0, 11, 1.5]) {
     assert.equal(DatabaseBackupsConfigSchema.safeParse({ preMigrationCount }).success, false);
+  }
+  for (const intervalHours of DATABASE_BACKUP_INTERVAL_HOURS) {
+    assert.equal(DatabaseBackupsConfigSchema.parse({ intervalHours }).intervalHours, intervalHours);
   }
   for (const intervalHours of [0, 2, 4, 48]) {
     assert.equal(DatabaseBackupsConfigSchema.safeParse({ intervalHours }).success, false);
