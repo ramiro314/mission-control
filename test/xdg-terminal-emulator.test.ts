@@ -151,12 +151,16 @@ test("a dispatch is rooted in its worktree whichever terminal runs it", async ()
 
 test("the rooting wrapper really runs the command in the directory", async () => {
   const { execFileSync } = await import("node:child_process");
+  const { realpathSync } = await import("node:fs");
   const dir = tmpdir();
   const out = execFileSync(rootedArgv(["pwd"], dir)[0]!, rootedArgv(["pwd"], dir).slice(1), {
     cwd: "/",
     encoding: "utf8",
   });
-  assert.equal(out.trim(), execFileSync("pwd", { cwd: dir, encoding: "utf8" }).trim());
+  // Compared as resolved paths: the wrapper's `cd` exports a logical $PWD that `pwd` prints,
+  // so where the temp dir sits behind a symlink (macOS's /var -> /private/var) the same
+  // directory is spelled two ways.
+  assert.equal(realpathSync(out.trim()), realpathSync(dir));
 });
 
 test("launchers resolve xdg-terminal-exec first, then $TERMINAL, skipping what is absent", () => {
