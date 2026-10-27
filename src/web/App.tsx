@@ -166,6 +166,7 @@ import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { UpdateDialog } from "./components/UpdateDialog.tsx";
 import { SettingsRestoredBanner } from "./components/SettingsRestoredBanner.tsx";
 import { SetupBanner } from "./components/SetupBanner.tsx";
+import { StorageBanner } from "./components/StorageBanner.tsx";
 import { OrganizationTelemetryNotice } from "./components/OrganizationTelemetryNotice.tsx";
 import { useSetupChecks } from "./useSetupChecks.ts";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
@@ -4109,6 +4110,7 @@ export function App(): React.JSX.Element {
           onReload={() => window.location.reload()}
         />
         <SetupBanner view={setup.view} onDismiss={setup.dismissBanner} />
+        <StorageBanner health={storageHealth} />
         <OrganizationTelemetryNotice
           notice={settingsStatus?.telemetry?.organizationNotice ?? null}
           onDismiss={async () => {
