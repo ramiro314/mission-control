@@ -517,7 +517,12 @@ export function fleetRows(group: FleetToneGroup): FleetRow[] {
       // reason above. The walk can only land exactly ON the span's end, because a repository
       // partitions before the run clustering does - a cluster straddling a repository boundary
       // cannot exist, so this never steps past `end` and leaves a block orphaned.
-      const key = `repo-${group.tone}-${span.repoRoot}-${group.sessions[span.startIndex]!.id}`;
+      // Tone, side and root name exactly one frame: a repository is one bucket per side of
+      // the free/held split within a tone. Never a member's id - a session sorting in ahead of
+      // the first member would change the key, React would remount the whole frame, and a
+      // focused rail row inside it would drop focus to the document body.
+      const side = heldFrom !== null && index >= heldFrom ? "held" : "free";
+      const key = `repo-${group.tone}-${side}-${span.repoRoot}`;
       const end = index + span.length;
       const inner: FleetBlock[] = [];
       while (index < end) {
