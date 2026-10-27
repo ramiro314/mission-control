@@ -24,7 +24,7 @@
 // Plain `.mjs` with only Node built-ins, for the reason `setup-state.mjs` gives.
 
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, writeSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync, writeSync } from "node:fs";
 
 export const LEAK_TAG = "MISSION_TEST_LEAK_TAG";
 
@@ -51,8 +51,13 @@ function listFromProc() {
   } catch {
     return null;
   }
+  // A process in another PID namespace - a rootless container's test run, which this user can
+  // read - wrote its tag with a PID that means nothing here, so every live tag of its would look
+  // stale and be killed mid-run. Only processes in this worker's own namespace are judged.
+  const namespace = pidNamespace("self");
   for (const entry of entries) {
     if (!/^\d+$/.test(entry)) continue;
+    if (namespace && pidNamespace(entry) !== namespace) continue;
     try {
       // The command name sits in parentheses and may itself contain spaces or parentheses, so
       // the fields are read from after the last one: state, ppid, ... starttime is field 22.
@@ -66,6 +71,15 @@ function listFromProc() {
     }
   }
   return rows;
+}
+
+/** The PID namespace `/proc/<pid>` is in, or null where the kernel does not say. */
+function pidNamespace(pid) {
+  try {
+    return readlinkSync(`/proc/${pid}/ns/pid`);
+  } catch {
+    return null;
+  }
 }
 
 function listFromPs() {

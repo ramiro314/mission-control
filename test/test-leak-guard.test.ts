@@ -239,3 +239,39 @@ test("a tag whose worker pid is alive but started at another time is stale, so i
 
   assert.equal(reported, true, "the next worker should have reported the reused-pid orphan");
 });
+
+// A rootless container's test run is readable from the host, and its tags name PIDs from its
+// own namespace. `unshare` builds one where the kernel lets an ordinary user, and the test is
+// skipped where it does not.
+const namespaces =
+  process.platform === "linux" && spawnSync("unshare", ["-Urpf", "--mount-proc", "true"]).status === 0;
+
+test("a tagged process in another PID namespace is not judged by this one's process table", { skip: !namespaces }, async (t) => {
+  // Inside the namespace the process is PID 1, so its tag names a live owner there. Here, PID 1
+  // is init with another start time, which would read as stale without the namespace check.
+  const container = spawn(
+    "unshare",
+    ["-Urpf", "--mount-proc", "env", "MISSION_TEST_LEAK_TAG=1:inside-the-container", process.execPath, "-e", "setInterval(() => {}, 1000)"],
+    { stdio: "ignore" },
+  );
+  t.after(() => kill(container.pid));
+  await once(container, "spawn");
+
+  // The tagged process is `unshare`'s forked child; its host pid is what this worker sees.
+  let tagged: number | undefined;
+  const deadline = Date.now() + 5_000;
+  while (!tagged && Date.now() < deadline) {
+    const children = spawnSync("pgrep", ["-P", String(container.pid)], { encoding: "utf8" }).stdout.trim();
+    const pid = Number(children.split("\n")[0]);
+    if (pid && readFileSync(`/proc/${pid}/environ`, "utf8").includes("MISSION_TEST_LEAK_TAG=1:inside")) tagged = pid;
+    else await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.ok(tagged, "the namespaced process should have started with its tag");
+  t.after(() => kill(tagged));
+
+  const [command, args, options] = workerArgs(fixture("noop.mjs", ""));
+  const next = spawnSync(command, args, { ...options, encoding: "utf8", timeout: 30_000 });
+  assert.equal(next.status, 0, next.stderr);
+  assert.doesNotMatch(next.stderr, new RegExp(`pid ${tagged}:`));
+  assert.equal(alive(tagged!), true, "a live process in another namespace must survive");
+});
