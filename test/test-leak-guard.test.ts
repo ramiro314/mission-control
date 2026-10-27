@@ -122,6 +122,38 @@ test("passes, but forgets its child", () => {
   assert.equal(await gone(leaked!), true, "the leaked grandchild should be dead");
 });
 
+test("a leak is killed before the worker's state home is removed", { skip: !supported }, (t) => {
+  // `exit` listeners run in registration order. Were the home removed first, a leaked process
+  // still writing into it (a daemon and its WAL) would recreate it after the delete, or make
+  // `rmSync` throw and skip the leak report altogether.
+  const homeFile = join(dir, "writer-home.txt");
+  const file = fixture(
+    "writes-home.test.mjs",
+    `import test from "node:test";
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+test("leaks a process that keeps writing into the state home", () => {
+  const home = process.env.HARNESS_HOME;
+  writeFileSync(${JSON.stringify(homeFile)}, home);
+  const writer = spawn(process.execPath, ["-e", ${JSON.stringify(
+    "const { mkdirSync, writeFileSync } = require('node:fs'); const home = process.argv[1]; " +
+      "setInterval(() => { mkdirSync(home, { recursive: true }); writeFileSync(home + '/harness.db-wal', 'x'); }, 1);",
+  )}, home], { detached: true, stdio: "ignore" });
+  writer.unref();
+});
+`,
+  );
+
+  const result = runTestFile(file);
+  const output = `${result.stdout}\n${result.stderr}`;
+  const home = existsSync(homeFile) ? readFileSync(homeFile, "utf8") : "";
+  t.after(() => home && rmSync(home, { recursive: true, force: true }));
+  assert.ok(home, `the fixture should have recorded its state home: ${output}`);
+
+  assert.match(output, /this test file left 1 process\(es\) running; killed:/);
+  assert.equal(existsSync(home), false, "the home should be removed after the leak was killed, not before");
+});
+
 test("a test file that waits for its own child passes", { skip: !supported }, () => {
   const file = fixture(
     "tidy.test.mjs",
