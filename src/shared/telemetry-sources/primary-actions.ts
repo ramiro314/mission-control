@@ -157,6 +157,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/settings-backups/:id/restore", "settings.restore", "settings"],
   ["PUT", "/api/worktrees/config", "settings.worktrees", "settings"],
   ["PUT", "/api/storage/backups/config", "settings.database_backups", "settings"],
+  ["POST", "/api/storage/backups", "settings.database_backup_now", "settings"],
   ["POST", "/api/worktrees/manual/acquire", "worktree.acquire", "settings"],
   ["POST", "/api/worktrees/manual/return", "worktree.return", "settings"],
   ["POST", "/api/worktrees/actions/preview", "worktree.preview", "settings"],

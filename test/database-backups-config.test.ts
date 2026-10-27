@@ -45,6 +45,10 @@ function putConfig(body: unknown): Promise<Response> {
   }));
 }
 
+function postBackup(target = app): Promise<Response> {
+  return Promise.resolve(target.request("/api/storage/backups", { method: "POST", headers: HEADERS }));
+}
+
 function seedScheduled(count: number): void {
   mkdirSync(backupRoot, { recursive: true });
   for (let index = 0; index < count; index += 1) {
@@ -131,4 +135,57 @@ test("a prune that throws after saving still reports the save, and only warns", 
   } finally {
     console.warn = originalWarn;
   }
+});
+
+test("Back up now takes a manual copy, and its failure is recorded on the manual kind", async () => {
+  const taken = await postBackup();
+  assert.equal(taken.status, 201);
+  const body = await taken.json() as { kind: string; filename: string; createdAt: string };
+  assert.equal(body.kind, "manual");
+  assert.match(body.filename, /^manual-\d{8}T\d{9}Z-[a-f0-9]{32}\.sqlite3$/);
+  assert.deepEqual(readdirSync(backupRoot).filter((name) => name.startsWith("manual-")), [body.filename]);
+  assert.notEqual(databaseBackups.status().manual.lastSuccessAt, null);
+
+  // The same database, served by a capture that always fails.
+  const failing = buildApp({
+    registry: {} as Registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    databaseBackups: new DatabaseBackupService(openDb(), {
+      root: backupRoot,
+      onlineBackup: async () => { throw new Error("ENOSPC: no space left on device"); },
+    }),
+  });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const refused = await postBackup(failing);
+    assert.equal(refused.status, 500, "a failure is reported, and the backoff never refuses the request");
+    assert.deepEqual(await refused.json(), {
+      error: "backup_failed",
+      message: "Manual database backup failed: ENOSPC: no space left on device",
+    });
+  }
+  const failed = databaseBackups.status();
+  assert.equal(failed.manual.consecutiveFailures, 3);
+  assert.match(failed.manual.lastFailure?.message ?? "", /ENOSPC/);
+  assert.equal(failed.scheduled.consecutiveFailures, 3, "a manual failure feeds the scheduled backoff");
+  assert.equal(failed.scheduled.lastFailure, null);
+  assert.equal(failed.scheduled.failingSince, null);
+
+  const recovered = await postBackup();
+  assert.equal(recovered.status, 201);
+  const status = databaseBackups.status();
+  assert.equal(status.manual.consecutiveFailures, 0);
+  assert.equal(status.manual.failingSince, null);
+  assert.equal(status.scheduled.consecutiveFailures, 0, "a manual success clears the scheduled streak");
+});
+
+test("Back up now answers 503 without a backup service", async () => {
+  const bare = buildApp({
+    registry: {} as Registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+  });
+  assert.equal((await postBackup(bare)).status, 503);
 });

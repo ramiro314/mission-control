@@ -44,3 +44,45 @@ export function databaseBackupsConfigFrom(stored: unknown): DatabaseBackupsConfi
   const parsed = DatabaseBackupsConfigSchema.safeParse(stored ?? {});
   return parsed.success ? parsed.data : { ...DEFAULT_DATABASE_BACKUPS_CONFIG };
 }
+
+/** The kinds whose captures the running daemon takes, and therefore records an outcome for. */
+export const RECORDED_DATABASE_BACKUP_KINDS = ["scheduled", "manual"] as const;
+export type RecordedDatabaseBackupKind = (typeof RECORDED_DATABASE_BACKUP_KINDS)[number];
+
+const epochMs = z.number().int().nonnegative();
+
+export const DatabaseBackupFailureSchema = z.object({
+  at: epochMs,
+  kind: z.enum(RECORDED_DATABASE_BACKUP_KINDS),
+  message: z.string(),
+});
+
+/**
+ * The durable outcome of one kind's captures, in epoch milliseconds. `failingSince` is the
+ * first failure of the current streak, so it is set exactly while that kind is failing. A
+ * Back up now failure also counts on the scheduled kind's `consecutiveFailures` and
+ * `lastAttemptAt`, so the scheduled backoff sees it, without ever setting the scheduled
+ * `failingSince` or `lastFailure`.
+ */
+export const DatabaseBackupKindStatusSchema = z.object({
+  lastAttemptAt: epochMs.nullable().default(null),
+  lastSuccessAt: epochMs.nullable().default(null),
+  consecutiveFailures: z.number().int().nonnegative().default(0),
+  failingSince: epochMs.nullable().default(null),
+  lastFailure: DatabaseBackupFailureSchema.nullable().default(null),
+});
+
+export type DatabaseBackupKindStatus = z.output<typeof DatabaseBackupKindStatusSchema>;
+
+export const DatabaseBackupStatusSchema = z.object({
+  scheduled: DatabaseBackupKindStatusSchema.default({}),
+  manual: DatabaseBackupKindStatusSchema.default({}),
+});
+
+export type DatabaseBackupStatus = z.output<typeof DatabaseBackupStatusSchema>;
+
+/** A stored status as the record it means. Anything missing or malformed reads as no history. */
+export function databaseBackupStatusFrom(stored: unknown): DatabaseBackupStatus {
+  const parsed = DatabaseBackupStatusSchema.safeParse(stored ?? {});
+  return parsed.success ? parsed.data : DatabaseBackupStatusSchema.parse({});
+}

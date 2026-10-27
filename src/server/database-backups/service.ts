@@ -17,8 +17,11 @@ import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   databaseBackupsConfigFrom,
+  databaseBackupStatusFrom,
   DEFAULT_DATABASE_BACKUPS_CONFIG,
   type DatabaseBackupsConfig,
+  type DatabaseBackupStatus,
+  type RecordedDatabaseBackupKind,
 } from "@shared/database-backups.ts";
 import { DATABASE_BACKUPS_DIR } from "../config.ts";
 
@@ -40,6 +43,49 @@ export const DATABASE_BACKUP_RETENTION: Readonly<DatabaseBackupRetention> = Obje
 
 const MANUAL_BACKUP_RETENTION = 1;
 
+/** The first wait after a failed scheduled capture; each further failure doubles it. */
+export const DATABASE_BACKUP_BACKOFF_BASE_MS = 5 * 60 * 1_000;
+
+/** A copy dated further than this past `now` is treated as written under a wrong clock. */
+export const DATABASE_BACKUP_FUTURE_TOLERANCE_MS = 60 * 1_000;
+
+const HOUR_MS = 60 * 60 * 1_000;
+
+/** A stored failure message is bounded, so a pathological error cannot bloat the record. */
+const FAILURE_MESSAGE_CHARACTERS = 1_000;
+
+/**
+ * How long a scheduled attempt waits after the last one, given the current failure streak:
+ * `min(5 min x 2^(n-1), intervalHours)`, and no wait at all without a failure.
+ */
+export function scheduledBackupBackoffMs(
+  consecutiveFailures: number,
+  intervalHours: number,
+): number {
+  if (consecutiveFailures < 1) return 0;
+  const doubled = DATABASE_BACKUP_BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1);
+  return Math.min(doubled, intervalHours * HOUR_MS);
+}
+
+function hasAppConfigTable(db: DatabaseSync): boolean {
+  return Boolean(
+    db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'app_config'").get(),
+  );
+}
+
+/** One raw `app_config` value, or `undefined` when the table, the row, or valid JSON is missing. */
+function storedAppConfigValue(db: DatabaseSync, key: string): unknown {
+  try {
+    if (!hasAppConfigTable(db)) return undefined;
+    const row = db.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as
+      | { value: string }
+      | undefined;
+    return row ? JSON.parse(row.value) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The stored backups config, read through the given handle rather than `getAppConfig`.
  *
@@ -48,18 +94,24 @@ const MANUAL_BACKUP_RETENTION = 1;
  * table, a missing row, or a malformed value reads as the default and never throws.
  */
 export function storedDatabaseBackupsConfig(db: DatabaseSync): DatabaseBackupsConfig {
-  try {
-    const table = db
-      .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'app_config'")
-      .get();
-    if (!table) return databaseBackupsConfigFrom(undefined);
-    const row = db
-      .prepare("SELECT value FROM app_config WHERE key = ?")
-      .get(APP_CONFIG_ENTRIES.backups.key) as { value: string } | undefined;
-    return databaseBackupsConfigFrom(row ? JSON.parse(row.value) : undefined);
-  } catch {
-    return databaseBackupsConfigFrom(undefined);
-  }
+  return databaseBackupsConfigFrom(storedAppConfigValue(db, APP_CONFIG_ENTRIES.backups.key));
+}
+
+/** The stored capture outcomes, read through the same handle as the config. */
+export function storedDatabaseBackupStatus(db: DatabaseSync): DatabaseBackupStatus {
+  return databaseBackupStatusFrom(storedAppConfigValue(db, APP_CONFIG_ENTRIES.backupsStatus.key));
+}
+
+/**
+ * Persist the capture outcomes. A handle without `app_config` (a bare fixture database) keeps
+ * no record; the daemon's database always has the table.
+ */
+function storeDatabaseBackupStatus(db: DatabaseSync, status: DatabaseBackupStatus): void {
+  if (!hasAppConfigTable(db)) return;
+  db.prepare(
+    `INSERT INTO app_config (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(APP_CONFIG_ENTRIES.backupsStatus.key, JSON.stringify(status));
 }
 
 export interface DatabaseBackupRecord {
@@ -67,6 +119,17 @@ export interface DatabaseBackupRecord {
   filename: string;
   path: string;
   createdAt: string;
+}
+
+interface InFlightCapture {
+  kind: RecordedDatabaseBackupKind;
+  capture: Promise<DatabaseBackupRecord>;
+}
+
+interface OwnedCopy {
+  filename: string;
+  /** The capture time its filename names, in epoch milliseconds. */
+  at: number;
 }
 
 export interface DatabaseBackupValidation {
@@ -99,6 +162,14 @@ const KIND_BY_PREFIX = new Map(BACKUP_KINDS.map((kind) => [FILE_PREFIX[kind], ki
 const OWNED_BACKUP = new RegExp(
   `^(${Object.values(FILE_PREFIX).join("|")})-(\\d{8}T\\d{9}Z)-([a-f0-9]{32})\\.sqlite3$`,
 );
+
+/** The UTC instant a copy's filename stamp names, such as `20261027T120000000Z`. */
+function copyTime(stamp: string): number {
+  return Date.parse(
+    `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}T` +
+      `${stamp.slice(9, 11)}:${stamp.slice(11, 13)}:${stamp.slice(13, 15)}.${stamp.slice(15, 18)}Z`,
+  );
+}
 
 const OWNED_TEMPORARY = /^\.database-backup-[a-f0-9]{32}\.tmp(?:-wal|-shm|-journal)?$/;
 /** The files SQLite may leave beside a database, removed with the file they belong to. */
@@ -211,7 +282,7 @@ export class DatabaseBackupService {
   private readonly onlineBackup: (source: DatabaseSync, destination: string) => Promise<void>;
   private readonly selfContain: (temporary: string) => void;
   private readonly validate: (temporary: string) => DatabaseBackupValidation;
-  private scheduledCapture: Promise<DatabaseBackupRecord> | null = null;
+  private inFlight: InFlightCapture | null = null;
 
   constructor(
     private readonly source: DatabaseSync,
@@ -298,6 +369,23 @@ export class DatabaseBackupService {
     syncFile(this.root);
   }
 
+  private ownedCopies(): Record<DatabaseBackupKind, OwnedCopy[]> {
+    const groups: Record<DatabaseBackupKind, OwnedCopy[]> = {
+      scheduled: [],
+      preMigration: [],
+      manual: [],
+    };
+    for (const filename of readdirSync(this.root)) {
+      const match = OWNED_BACKUP.exec(filename);
+      if (!match) continue;
+      const path = join(this.root, filename);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink() || !stat.isFile()) continue;
+      groups[KIND_BY_PREFIX.get(match[1]!)!].push({ filename, at: copyTime(match[2]!) });
+    }
+    return groups;
+  }
+
   /**
    * Delete every copy above its kind's count, newest kept, with any SQLite sidecar beside it.
    * Runs after every capture; the daemon also calls it at startup and when the counts are
@@ -314,23 +402,16 @@ export class DatabaseBackupService {
       ...retention,
       manual: MANUAL_BACKUP_RETENTION,
     };
-    const groups: Record<DatabaseBackupKind, string[]> = {
-      scheduled: [],
-      preMigration: [],
-      manual: [],
-    };
-    for (const filename of readdirSync(this.root)) {
-      const match = OWNED_BACKUP.exec(filename);
-      if (!match) continue;
-      const path = join(this.root, filename);
-      const stat = lstatSync(path);
-      if (stat.isSymbolicLink() || !stat.isFile()) continue;
-      groups[KIND_BY_PREFIX.get(match[1]!)!].push(filename);
-    }
+    const groups = this.ownedCopies();
+    // Newest first, except that a copy dated in the future, left by a clock that moved
+    // backward, sorts as the oldest: it is the first one expired once newer copies exist.
+    const horizon = this.now().getTime() + DATABASE_BACKUP_FUTURE_TOLERANCE_MS;
+    const rank = (copy: OwnedCopy) => (copy.at > horizon ? -Infinity : copy.at);
     for (const kind of BACKUP_KINDS) {
       const expired = groups[kind]
-        .sort((left, right) => right.localeCompare(left))
-        .slice(keep[kind]);
+        .sort((left, right) => rank(right) - rank(left) || right.filename.localeCompare(left.filename))
+        .slice(keep[kind])
+        .map((copy) => copy.filename);
       for (const filename of expired) {
         const path = join(this.root, filename);
         safeUnlink(path);
@@ -340,25 +421,155 @@ export class DatabaseBackupService {
     syncFile(this.root);
   }
 
-  private async captureScheduledOnce(): Promise<DatabaseBackupRecord> {
-    const capture = this.paths("scheduled");
+  /** What the scheduled and manual captures last did, as persisted. */
+  status(): DatabaseBackupStatus {
+    return storedDatabaseBackupStatus(this.source);
+  }
+
+  private updateStatus(change: (status: DatabaseBackupStatus) => void): void {
+    const status = this.status();
+    change(status);
+    storeDatabaseBackupStatus(this.source, status);
+  }
+
+  /**
+   * Whether the backup loop should take a scheduled copy now. It is due when the newest
+   * `scheduled-*` copy is at least `intervalHours` old by wall clock, so restarts, sleep and a
+   * changed interval all take effect at the next wake. A copy dated more than a minute in the
+   * future is ignored, so a clock that moved backward makes a capture due rather than stalling
+   * it. After `n` consecutive failures the attempt also waits
+   * `min(5 min x 2^(n-1), intervalHours)` from the last attempt, read from the persisted
+   * record so a restart keeps the wait.
+   *
+   * A last attempt dated in the future counts as now, and is stored as now: compared afresh at
+   * every wake, "now" would keep moving and the wait would never end.
+   */
+  scheduledDue(): boolean {
+    const now = this.now().getTime();
+    const { intervalHours } = storedDatabaseBackupsConfig(this.source);
+    const { consecutiveFailures, lastAttemptAt } = this.status().scheduled;
+    if (lastAttemptAt !== null && lastAttemptAt > now) {
+      this.record(() => this.recordAttempt("scheduled", now));
+      if (consecutiveFailures > 0) return false;
+    } else if (lastAttemptAt !== null) {
+      if (now - lastAttemptAt < scheduledBackupBackoffMs(consecutiveFailures, intervalHours)) {
+        return false;
+      }
+    }
+    if (!existsSync(this.root)) return true;
     try {
-      await this.onlineBackup(this.source, capture.temporary);
-      return this.publish(capture);
+      this.ensureRoot();
+    } catch {
+      // A root that cannot be prepared is due, so the capture fails on it and records that
+      // failure on the scheduled kind, backing off like any other, instead of every wake
+      // warning while the persisted status says nothing is wrong.
+      return true;
+    }
+    const horizon = now + DATABASE_BACKUP_FUTURE_TOLERANCE_MS;
+    const newest = Math.max(
+      -Infinity,
+      ...this.ownedCopies().scheduled.map((copy) => copy.at).filter((at) => at <= horizon),
+    );
+    return now - newest >= intervalHours * HOUR_MS;
+  }
+
+  private recordAttempt(kind: RecordedDatabaseBackupKind, at: number): void {
+    this.updateStatus((status) => {
+      status[kind].lastAttemptAt = at;
+    });
+  }
+
+  private recordSuccess(kind: RecordedDatabaseBackupKind, at: number): void {
+    this.updateStatus((status) => {
+      // A manual success proves the capture path works, so it also ends the scheduled streak.
+      const cleared = kind === "manual" ? (["manual", "scheduled"] as const) : [kind];
+      for (const each of cleared) {
+        Object.assign(status[each], { consecutiveFailures: 0, failingSince: null, lastFailure: null });
+      }
+      status[kind].lastSuccessAt = at;
+    });
+  }
+
+  private recordFailure(kind: RecordedDatabaseBackupKind, at: number, error: unknown): void {
+    this.updateStatus((status) => {
+      const own = status[kind];
+      own.consecutiveFailures += 1;
+      own.failingSince ??= at;
+      own.lastFailure = {
+        at,
+        kind,
+        message: errorMessage(error).slice(0, FAILURE_MESSAGE_CHARACTERS),
+      };
+      // A manual failure feeds only the scheduled backoff, so it never reports a scheduled
+      // failure that did not happen.
+      if (kind === "manual") {
+        status.scheduled.consecutiveFailures += 1;
+        status.scheduled.lastAttemptAt = at;
+      }
+    });
+  }
+
+  /** A status write failure is reported but never turns the capture's own outcome around. */
+  private record(update: () => void): void {
+    try {
+      update();
     } catch (error) {
-      throw new Error(`Scheduled database backup failed: ${errorMessage(error)}`, { cause: error });
-    } finally {
-      removeTemporary(capture.temporary);
+      console.warn(`[mission-control] database backup status was not saved: ${errorMessage(error)}`);
     }
   }
 
-  captureScheduled(): Promise<DatabaseBackupRecord> {
-    if (this.scheduledCapture) return this.scheduledCapture;
-    const capture = this.captureScheduledOnce().finally(() => {
-      if (this.scheduledCapture === capture) this.scheduledCapture = null;
+  private async captureOnline(kind: RecordedDatabaseBackupKind): Promise<DatabaseBackupRecord> {
+    const attemptedAt = this.now().getTime();
+    this.record(() => this.recordAttempt(kind, attemptedAt));
+    let temporary: string | undefined;
+    try {
+      // Inside the try: a backup root that cannot be prepared is a failed attempt too, so it
+      // backs off like any other failure.
+      const capture = this.paths(kind);
+      temporary = capture.temporary;
+      await this.onlineBackup(this.source, capture.temporary);
+      const record = this.publish(capture);
+      this.record(() => this.recordSuccess(kind, this.now().getTime()));
+      return record;
+    } catch (error) {
+      const label = kind === "manual" ? "Manual" : "Scheduled";
+      const failure = new Error(`${label} database backup failed: ${errorMessage(error)}`, {
+        cause: error,
+      });
+      this.record(() => this.recordFailure(kind, attemptedAt, error));
+      throw failure;
+    } finally {
+      if (temporary) removeTemporary(temporary);
+    }
+  }
+
+  /**
+   * One online capture at a time. A request for the kind already in flight joins it; a request
+   * for the other kind starts once the one in flight settles, so the two never write at once.
+   */
+  private captureSingleFlight(kind: RecordedDatabaseBackupKind): Promise<DatabaseBackupRecord> {
+    if (this.inFlight?.kind === kind) return this.inFlight.capture;
+    const previous = this.inFlight?.capture.then(() => undefined, () => undefined);
+    const capture = (async () => {
+      await previous;
+      return this.captureOnline(kind);
+    })().finally(() => {
+      if (this.inFlight?.capture === capture) this.inFlight = null;
     });
-    this.scheduledCapture = capture;
+    this.inFlight = { kind, capture };
     return capture;
+  }
+
+  captureScheduled(): Promise<DatabaseBackupRecord> {
+    return this.captureSingleFlight("scheduled");
+  }
+
+  /**
+   * Back up now. Never gated by the scheduled backoff, and never restarts the hourly interval:
+   * the scheduled due check measures only from `scheduled-*` copies.
+   */
+  captureManual(): Promise<DatabaseBackupRecord> {
+    return this.captureSingleFlight("manual");
   }
 
   capturePreMigration(): DatabaseBackupRecord {
