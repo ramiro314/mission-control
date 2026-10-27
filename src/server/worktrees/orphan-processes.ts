@@ -35,21 +35,35 @@ export interface FinishedTree {
 /**
  * Every tree whose owner has finished: a task's pending return, a check lease stuck in
  * `returning`, and a quarantined slot. One path can be all three; the scan merges them.
+ *
+ * A pool slot that holds a lease belongs to that lease's holder, so it is a finished tree only
+ * for the owner whose lease it is. A completed task can keep owing a return after its slot was
+ * reset and leased to a live task (the return is then retained as "task ownership changed"),
+ * and a quarantine can keep a live lease. Inspecting either would offer the live owner's
+ * processes for Kill.
  */
 export function finishedTrees(input: {
   slots: readonly WorktreeSlotRow[];
-  taskReturns: ReadonlyArray<{ taskId: string; paths: readonly string[] }>;
-  returningChecks: ReadonlyArray<{ attemptId: string; path: string }>;
+  taskReturns: ReadonlyArray<{ taskId: string; trees: ReadonlyArray<{ path: string; leaseId: string | null }> }>;
+  returningChecks: ReadonlyArray<{ attemptId: string; path: string; leaseId: string | null }>;
 }): FinishedTree[] {
-  const slotAt = new Map(input.slots.map((slot) => [slot.path, slot.id]));
+  const slotAt = new Map(input.slots.map((slot) => [slot.path, slot]));
+  const finishedFor = (path: string, leaseId: string | null): boolean => {
+    const slot = slotAt.get(path);
+    return !slot || slot.activeLeaseId === null || slot.activeLeaseId === leaseId;
+  };
   return [
-    ...input.taskReturns.flatMap(({ taskId, paths }) => paths.map((path) => ({
-      path, slotId: slotAt.get(path) ?? null, owner: { kind: "task", taskId } as const,
-    }))),
-    ...input.returningChecks.map(({ attemptId, path }) => ({
-      path, slotId: slotAt.get(path) ?? null, owner: { kind: "check", attemptId } as const,
-    })),
-    ...input.slots.filter((slot) => slot.state === "quarantined").map((slot) => ({
+    ...input.taskReturns.flatMap(({ taskId, trees }) => trees
+      .filter(({ path, leaseId }) => finishedFor(path, leaseId))
+      .map(({ path }) => ({
+        path, slotId: slotAt.get(path)?.id ?? null, owner: { kind: "task", taskId } as const,
+      }))),
+    ...input.returningChecks
+      .filter(({ path, leaseId }) => finishedFor(path, leaseId))
+      .map(({ attemptId, path }) => ({
+        path, slotId: slotAt.get(path)?.id ?? null, owner: { kind: "check", attemptId } as const,
+      })),
+    ...input.slots.filter((slot) => slot.state === "quarantined" && slot.activeLeaseId === null).map((slot) => ({
       path: slot.path, slotId: slot.id, owner: { kind: "slot", slotId: slot.id } as const,
     })),
   ];

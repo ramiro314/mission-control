@@ -755,7 +755,8 @@ test("a returning lease is listed, and retryReturning completes it at once, skip
   m.fail.return = true;
   await m.manager.releaseForAttempt("att-orphan");
   assert.equal(store.get("att-orphan")?.cleanupState, "returning");
-  assert.ok(m.manager.returningLeases().some((lease) => lease.attemptId === "att-orphan" && lease.path === path));
+  assert.ok(m.manager.returningLeases().some((lease) =>
+    lease.attemptId === "att-orphan" && lease.path === path && lease.leaseId === store.get("att-orphan")?.leaseId));
 
   // The failure put the row in backoff, so a reclamation pass would skip it. A kill of the
   // process that blocked it retries straight away instead.

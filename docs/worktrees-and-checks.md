@@ -700,7 +700,10 @@ A tree whose owner has finished is one a completed task still owes a return, a c
 `returning`, or a quarantined slot. After each maintenance pass (`MISSION_WORKTREE_SWEEP_MS`,
 5 minutes by default), and whenever Settings > Storage is opened, Mission Control runs the same
 occupancy inspection the return guard uses (`ps` plus one batched `lsof`) over every such tree.
-Only pool slots and children of `worktrees/` and `check-worktrees/` are inspected. Each process
+Only pool slots and children of `worktrees/` and `check-worktrees/` are inspected. A pool slot
+that holds a lease belongs to that lease's holder, so it is skipped unless the lease is the finished
+owner's own: a completed task can keep owing a return after its slot was reset and leased to a live
+task, and a quarantine can keep a live lease, and neither live owner's processes are orphans. Each process
 found is reported as a bannered `orphan-process` problem in Settings > Storage, with its PID,
 parent PID, command, start time and tree. Its id is
 `orphan-process:<tree>:<pid>:<start time>`, so it survives a daemon restart. A pass that cannot

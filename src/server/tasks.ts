@@ -6316,11 +6316,12 @@ export class TaskManager {
     }
   }
 
-  /** Every completed task still owed its worktree return, with the checkouts it holds. */
-  pendingWorktreeReturns(): Array<{ taskId: string; paths: string[] }> {
+  /** Every completed task still owed its worktree return, with the checkouts and leases it holds. */
+  pendingWorktreeReturns(): Array<{ taskId: string; trees: Array<{ path: string; leaseId: string | null }> }> {
     return this.registry.listTasks().filter(taskOwesWorktreeReturn).map((task) => ({
       taskId: task.id,
-      paths: taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []),
+      trees: taskRepoRefs(task).flatMap((ref) =>
+        ref.worktreePath ? [{ path: ref.worktreePath, leaseId: ref.worktreeLeaseId }] : []),
     }));
   }
 

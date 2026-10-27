@@ -377,7 +377,7 @@ test("a return refused by an occupant is listed as pending, and retryWorktreeRet
   await w.manager.complete(w.task.id, "finished");
   await w.manager.settleWorktreeReturns();
   assert.deepEqual(w.state.released, [], "the orphan process blocks the return");
-  assert.deepEqual(w.manager.pendingWorktreeReturns(), [{ taskId: w.task.id, paths: ["/pool/one"] }]);
+  assert.deepEqual(w.manager.pendingWorktreeReturns(), [{ taskId: w.task.id, trees: [{ path: "/pool/one", leaseId: "lease-one" }] }]);
 
   // The clock has not moved, so the ordinary sweep is still inside the refusal backoff.
   w.state.occupancy = { status: "known", occupants: [] };

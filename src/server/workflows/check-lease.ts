@@ -1224,10 +1224,10 @@ export class CheckLeaseManager {
   }
 
   /** Leases whose return was authorized and has not completed yet. */
-  returningLeases(): Array<{ attemptId: string; path: string }> {
+  returningLeases(): Array<{ attemptId: string; path: string; leaseId: string | null }> {
     return this.store.listLive()
       .filter((row) => row.cleanupState === "returning")
-      .map((row) => ({ attemptId: row.attemptId, path: row.leasePath }));
+      .map((row) => ({ attemptId: row.attemptId, path: row.leasePath, leaseId: row.leaseId }));
   }
 
   /**
