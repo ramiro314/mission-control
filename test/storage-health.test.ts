@@ -154,6 +154,38 @@ test("the aggregate lists kept copies newest first with their total size, and pu
   assert.equal(published.length, 2);
 });
 
+test("a throwing change listener is reported and never turns a capture or prune around", async () => {
+  const warnings: unknown[] = [];
+  const originalWarn = console.warn;
+  console.warn = (message: unknown) => { warnings.push(message); };
+  const throwing = () => { throw new Error("listener exploded"); };
+  try {
+    const working = new DatabaseBackupService(openDb(), { root: backupRoot });
+    working.onChange(throwing);
+    const record = await working.captureManual();
+    assert.equal(record.kind, "manual", "a successful capture still resolves");
+    assert.deepEqual(working.keptCopies().map((copy) => copy.filename), [record.filename]);
+
+    const failing = new DatabaseBackupService(openDb(), { root: backupRoot, onlineBackup: ENOSPC });
+    failing.onChange(throwing);
+    await assert.rejects(failing.captureScheduled(), /ENOSPC: no space left on device/);
+
+    for (let hour = 10; hour < 15; hour += 1) {
+      writeFileSync(join(backupRoot, `scheduled-20261027T${hour}0000000Z-${String(hour).padStart(32, "e")}.sqlite3`), "copy");
+    }
+    working.prune();
+    assert.equal(
+      working.keptCopies().filter((copy) => copy.kind === "scheduled").length,
+      3,
+      "prune still removed the copies above the default count",
+    );
+    assert.ok(warnings.length >= 3, "each throw is reported");
+    assert.ok(warnings.every((warning) => /change listener failed: listener exploded/.test(String(warning))));
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test("a source that throws is left out and the rest of the aggregate still lands", () => {
   const warnings: unknown[] = [];
   const originalWarn = console.warn;
