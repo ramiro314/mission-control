@@ -747,6 +747,7 @@ const app = buildApp({
   fileComments,
   fileCommentWalkthrough,
   settingsBackups,
+  databaseBackups,
   prConflicts,
 });
 
@@ -785,6 +786,14 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
+  // A lowered count, or the old fixed 24 hourly copies, is pruned now rather than after the
+  // first capture an interval away. A failure here never stops the daemon.
+  try {
+    databaseBackups.prune();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[mission-control] database backup prune failed: ${reason}`);
+  }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
   // Adopt every review the store still believes is running, so a daemon restart RESUMES a
   // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:
