@@ -22,7 +22,9 @@ after(() => rmSync(stateHome, { recursive: true, force: true }));
 const { openDb } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { DatabaseBackupService } = await import("../src/server/database-backups/service.ts");
-const { getDatabaseBackupsConfig } = await import("../src/server/database-backups/config.ts");
+const { getDatabaseBackupsConfig, setDatabaseBackupsConfig } = await import(
+  "../src/server/database-backups/config.ts"
+);
 
 const backupRoot = join(stateHome, "backups", "database");
 const databaseBackups = new DatabaseBackupService(openDb(), { root: backupRoot });
@@ -111,4 +113,22 @@ test("saving lowered counts prunes at once, and a refused save changes nothing",
     intervalHours: 6,
   });
   assert.equal(scheduledCopies().length, 1);
+});
+
+test("a prune that throws after saving still reports the save, and only warns", () => {
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    const saved = setDatabaseBackupsConfig(
+      { preMigrationCount: 7 },
+      { prune: () => { throw new Error("backup root is a symlink"); } },
+    );
+    assert.equal(saved.preMigrationCount, 7);
+    assert.equal(getDatabaseBackupsConfig().preMigrationCount, 7, "the save was persisted");
+    assert.equal(warnings.length, 1);
+    assert.match(String(warnings[0]![0]), /prune failed after saving: backup root is a symlink/);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
