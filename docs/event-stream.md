@@ -84,3 +84,13 @@ The loopback HTTP surface is likewise bounded:
 
 These routes consume the verified snapshot service. They do not parse snapshot payloads or repeat
 digest, preflight, transaction, rollback, or reconciliation logic at the HTTP boundary.
+
+## Storage health
+
+`storage_health` carries the whole storage aggregate from `src/shared/storage-health.ts`: backup
+status per kind, the kept copies with their sizes, the total size, and the current problems. The
+daemon's `StorageHealthService` recomputes it after every database backup capture and prune and
+after every worktree maintenance pass, and emits the event only when the result changed. The
+reconnect snapshot carries the same value as `storageHealth`, and `GET /api/storage` returns it
+with the backup config. Each problem's id names one occurrence and is built only from durable
+state, so a daemon restart never changes it. See [Backup and restore](sqlite-database.html#backup).

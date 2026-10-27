@@ -65,6 +65,7 @@ import type {
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
+import { EMPTY_STORAGE_HEALTH, type StorageHealth } from "@shared/storage-health.ts";
 import {
   mergeabilityEqual,
   nextMergeability,
@@ -1180,6 +1181,11 @@ export class Registry extends EventEmitter {
     since: null,
     error: null,
   };
+  /**
+   * The storage aggregate, held for the snapshot. `StorageHealthService` computes it and pushes
+   * only changed values here; until it does, the registry reports no copies and no problems.
+   */
+  private storageHealth: StorageHealth = EMPTY_STORAGE_HEALTH;
   /** Last Line fold emitted, for the same reason as the two above. */
   private lastLineSummary: LineSummary | null = null;
   private lastLineSummaryAt = 0;
@@ -1275,6 +1281,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
+    storageHealth: StorageHealth;
     latestSettingsRestore: SettingsRestoredEvent | null;
     home: string;
   } {
@@ -1324,9 +1331,16 @@ export class Registry extends EventEmitter {
       // and a daemon that just started holds the seeded `off` - which is exactly the
       // restart-reset a reconnecting dashboard must converge on.
       keepAwake: this.keepAwake,
+      storageHealth: this.storageHealth,
       latestSettingsRestore: this.latestSettingsRestore,
       home: homedir(),
     };
+  }
+
+  /** Adopt a recomputed storage aggregate. The service already dropped unchanged ones. */
+  setStorageHealth(health: StorageHealth): void {
+    this.storageHealth = health;
+    this.emitEvent({ type: "storage_health", health });
   }
 
   /**

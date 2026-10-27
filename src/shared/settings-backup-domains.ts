@@ -34,10 +34,9 @@ export const SETTINGS_BACKUP_DOMAINS = [
   // Stored testing settings, edited on the affected-tests page of Library › Commands. Added
   // after format v1 shipped, so a snapshot without it restores the catalog empty.
   { id: "testing-settings", surface: "library" },
-  // Database backup counts and interval. Saved through `PUT /api/storage/backups/config`
-  // until Settings > Storage gives them controls, which moves this surface to `settings`.
-  // Added after format v1 shipped.
-  { id: "database-backups", surface: "runtime" },
+  // Database backup counts and interval, edited in Settings > Storage. Added after format
+  // v1 shipped.
+  { id: "database-backups", surface: "settings" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

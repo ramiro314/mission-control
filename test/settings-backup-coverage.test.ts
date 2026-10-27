@@ -115,6 +115,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "setup.banner",
       "shipping",
       "skills",
+      // When each storage problem without a timestamp of its own was first seen on this
+      // machine. `operational`, never restored, for `backups.status`'s reason.
+      "storage.firstSeen",
       "taskSources",
       // Telemetry consent and the installation pseudonym. Both are `operational` with NO backup
       // domain: restoring either from another installation, or from before a withdrawal, could

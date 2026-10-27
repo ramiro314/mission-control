@@ -366,6 +366,7 @@ export function App(): React.JSX.Element {
     lineSummary,
     settingsStatus,
     keepAwakeStatus,
+    storageHealth,
     harnessesRevision,
     worktreesRevision,
     // One counter, bumped per reconciled batch of archives and once per reconnect. It is
@@ -4290,6 +4291,7 @@ export function App(): React.JSX.Element {
               layout={layout}
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
+              storageHealth={storageHealth}
               harnessesRevision={harnessesRevision}
               worktreesRevision={worktreesRevision}
               workflowSummaries={workflowSummaries}
