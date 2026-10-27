@@ -103,7 +103,8 @@ test("scheduled and pre-migration generations have independent bounded retention
 const SEED_PREFIX = { scheduled: "scheduled", preMigration: "pre-migration", manual: "manual" };
 
 /**
- * Plant `count` copies of a kind dated in 2020, oldest first, so every real capture sorts newer.
+ * Plant `count` hourly copies of a kind dated in 2020, oldest first, so every real capture
+ * sorts newer.
  * The content is never opened: prune decides by name alone.
  */
 function seedCopies(
@@ -114,7 +115,7 @@ function seedCopies(
   mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
   const names: string[] = [];
   for (let index = 0; index < count; index += 1) {
-    const stamp = `2020010${index + 1}T000000000Z`;
+    const stamp = new Date(Date.UTC(2020, 0, 1) + index * 3_600_000).toISOString().replace(/[-:.]/g, "");
     const name = `${SEED_PREFIX[kind]}-${stamp}-${String(index).padStart(32, "a")}.sqlite3`;
     writeFileSync(join(backupRoot, name), "seeded copy");
     names.push(name);
@@ -178,7 +179,7 @@ test("saved counts change what prune keeps, and a malformed value reads as the d
   assert.equal(kept(backupRoot, "pre-migration").length, 2);
 });
 
-test("prune at startup deletes copies above a lowered limit with their sidecars", (t) => {
+test("prune deletes copies above a lowered limit with their sidecars", (t) => {
   const root = fixture("mission-database-backup-startup-prune-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const backupRoot = join(root, "backups");
@@ -394,6 +395,59 @@ for (const [label, storedValue, expected] of [
   });
 }
 
+const idleTimers = {
+  setTimer: () => ({ unref() {} }),
+  clearTimer: () => undefined,
+};
+
+test("starting the backup loop prunes 24 hourly copies to 3 before any capture", async (t) => {
+  const root = fixture("mission-database-backup-loop-start-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const backupRoot = join(root, "backups");
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  const scheduled = seedCopies(backupRoot, "scheduled", 24);
+  const service = new DatabaseBackupService(source, { root: backupRoot });
+  let captures = 0;
+
+  const stop = startDatabaseBackupLoop(
+    {
+      captureScheduled: () => {
+        captures += 1;
+        return service.captureScheduled();
+      },
+      prune: () => service.prune(),
+    },
+    idleTimers,
+  );
+  t.after(stop);
+
+  assert.equal(captures, 0);
+  assert.deepEqual(kept(backupRoot, "scheduled"), scheduled.slice(-3));
+});
+
+test("a prune that throws at loop start only warns, and the loop still schedules", async () => {
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  let armed = 0;
+  try {
+    const stop = startDatabaseBackupLoop(
+      {
+        captureScheduled: () => Promise.reject(new Error("not reached")),
+        prune: () => { throw new Error("backup root is a symlink"); },
+      },
+      { ...idleTimers, setTimer: () => { armed += 1; return { unref() {} }; } },
+    );
+    assert.equal(armed, 1, "the first capture is still scheduled");
+    assert.equal(warnings.length, 1);
+    assert.match(String(warnings[0]![0]), /database backup prune failed: backup root is a symlink/);
+    await stop();
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test("the recurring loop waits one interval, contains failures, and never overlaps", async () => {
   let calls = 0;
   let reject: (error: Error) => void = () => { throw new Error("capture did not start"); };
@@ -408,6 +462,7 @@ test("the recurring loop waits one interval, contains failures, and never overla
           calls += 1;
           return new Promise((_, rejectCapture) => { reject = rejectCapture; }) as never;
         },
+        prune: () => undefined,
       },
       {
         intervalMs: 123,

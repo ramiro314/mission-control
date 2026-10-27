@@ -19,7 +19,7 @@ const defaultDeps: DatabaseBackupLoopDeps = {
 };
 
 export function startDatabaseBackupLoop(
-  service: Pick<DatabaseBackupService, "captureScheduled">,
+  service: Pick<DatabaseBackupService, "captureScheduled" | "prune">,
   overrides: Partial<DatabaseBackupLoopDeps> = {},
 ): () => Promise<void> {
   const deps = { ...defaultDeps, ...overrides };
@@ -54,6 +54,14 @@ export function startDatabaseBackupLoop(
     });
   };
 
+  // A lowered count, or the old fixed 24 hourly copies, is pruned at startup rather than after
+  // the first capture an interval away. A failure here only warns: it never stops the daemon.
+  try {
+    service.prune();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[mission-control] database backup prune failed: ${reason}`);
+  }
   schedule();
   return async () => {
     stopped = true;
