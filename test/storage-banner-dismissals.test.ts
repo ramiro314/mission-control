@@ -66,6 +66,22 @@ test("at most the limit is kept, evicting the oldest lastSeenAt first", () => {
   assert.ok(kept.includes("old-2") && kept.includes("new-a") && kept.includes("new-b"));
 });
 
+test("the cap evicts by lastSeenAt, not insertion order, so an early dismissal still present survives", () => {
+  let entries = {};
+  for (let index = 0; index < STORAGE_DISMISSAL_LIMIT; index += 1) {
+    entries = dismissStorageProblems(entries, [`old-${index}`], index);
+  }
+  // The first dismissal is still present, so an aggregate refreshes it while it keeps its
+  // place at the front of the record's key order.
+  entries = observeStorageProblems(entries, ["old-0"], 1_000);
+  assert.equal(Object.keys(entries)[0], "old-0");
+  entries = dismissStorageProblems(entries, ["new-a"], 1_001);
+  assert.equal(Object.keys(entries).length, STORAGE_DISMISSAL_LIMIT);
+  assert.deepEqual(entries["old-0" as keyof typeof entries], { lastSeenAt: 1_000 });
+  assert.equal(entries["old-1" as keyof typeof entries], undefined);
+  assert.ok("old-2" in entries && "new-a" in entries);
+});
+
 test("the banner names a single problem, counts several, and links to Settings > Storage", () => {
   const one = renderToStaticMarkup(createElement(StorageBanner, { health: health(quarantined, staleLease) }));
   assert.match(one, /Slot 1 is quarantined/);
