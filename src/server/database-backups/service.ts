@@ -81,6 +81,8 @@ interface DatabaseBackupServiceOptions {
   retention?: DatabaseBackupRetention;
   now?: () => Date;
   onlineBackup?: (source: DatabaseSync, destination: string) => Promise<void>;
+  selfContain?: (temporary: string) => void;
+  validate?: (temporary: string) => DatabaseBackupValidation;
 }
 
 /** The one place a kind meets its filename prefix; the regex and reverse lookup derive from it. */
@@ -98,8 +100,9 @@ const OWNED_BACKUP = new RegExp(
   `^(${Object.values(FILE_PREFIX).join("|")})-(\\d{8}T\\d{9}Z)-([a-f0-9]{32})\\.sqlite3$`,
 );
 
-/** The files SQLite may leave beside a database, removed with the copy they belong to. */
-const SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
+const OWNED_TEMPORARY = /^\.database-backup-[a-f0-9]{32}\.tmp(?:-wal|-shm|-journal)?$/;
+/** The files SQLite may leave beside a database, removed with the file they belong to. */
+const SQLITE_SIDECARS = ["-wal", "-shm", "-journal"] as const;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -123,6 +126,29 @@ function safeUnlink(path: string): void {
     unlinkSync(path);
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+}
+
+/** Remove a capture's temporary file and every journal file SQLite may have left beside it. */
+function removeTemporary(temporary: string): void {
+  safeUnlink(temporary);
+  for (const suffix of SQLITE_SIDECARS) safeUnlink(`${temporary}${suffix}`);
+}
+
+/**
+ * An online backup copies the source's WAL journal mode, and a read-only validation of a WAL
+ * file cannot clean up its WAL index. Switching the copy to rollback mode before validation
+ * makes every published copy one self-contained file that opens without creating sidecars.
+ */
+function useRollbackJournal(temporary: string): void {
+  const copy = new DatabaseSync(temporary);
+  try {
+    const row = copy.prepare("PRAGMA journal_mode = DELETE").get() as { journal_mode: string };
+    if (row.journal_mode !== "delete") {
+      throw new Error(`journal mode stayed ${row.journal_mode}`);
+    }
+  } finally {
+    copy.close();
   }
 }
 
@@ -183,6 +209,8 @@ export class DatabaseBackupService {
   private readonly retention: DatabaseBackupRetention | undefined;
   private readonly now: () => Date;
   private readonly onlineBackup: (source: DatabaseSync, destination: string) => Promise<void>;
+  private readonly selfContain: (temporary: string) => void;
+  private readonly validate: (temporary: string) => DatabaseBackupValidation;
   private scheduledCapture: Promise<DatabaseBackupRecord> | null = null;
 
   constructor(
@@ -195,6 +223,8 @@ export class DatabaseBackupService {
     this.onlineBackup = options.onlineBackup ?? (async (db, destination) => {
       await sqliteBackup(db, destination);
     });
+    this.selfContain = options.selfContain ?? useRollbackJournal;
+    this.validate = options.validate ?? validateDatabaseBackupForRestore;
     for (const [kind, count] of Object.entries(this.retention ?? {})) {
       if (!Number.isSafeInteger(count) || count < 1) {
         throw new RangeError(`Database backup retention for ${kind} must be a positive integer`);
@@ -240,14 +270,32 @@ export class DatabaseBackupService {
   private publish(
     capture: DatabaseBackupRecord & { temporary: string },
   ): DatabaseBackupRecord {
+    this.selfContain(capture.temporary);
     chmodSync(capture.temporary, 0o600);
     syncFile(capture.temporary);
-    validateDatabaseBackupForRestore(capture.temporary);
+    this.validate(capture.temporary);
     renameSync(capture.temporary, capture.path);
     syncFile(this.root);
     this.prune();
     const { temporary: _temporary, ...record } = capture;
     return record;
+  }
+
+  /**
+   * Remove temporary files and sidecars that an interrupted capture left in the backup root.
+   * Call it once at startup, before the first capture: that is the only time no capture of
+   * this daemon can be in flight. Published copies and unrelated files are never touched.
+   */
+  removeLeftoverTemporaries(): void {
+    this.ensureRoot();
+    for (const filename of readdirSync(this.root)) {
+      if (!OWNED_TEMPORARY.test(filename)) continue;
+      const path = join(this.root, filename);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink() || !stat.isFile()) continue;
+      safeUnlink(path);
+    }
+    syncFile(this.root);
   }
 
   /**
@@ -286,7 +334,7 @@ export class DatabaseBackupService {
       for (const filename of expired) {
         const path = join(this.root, filename);
         safeUnlink(path);
-        for (const suffix of SIDECAR_SUFFIXES) safeUnlink(`${path}${suffix}`);
+        for (const suffix of SQLITE_SIDECARS) safeUnlink(`${path}${suffix}`);
       }
     }
     syncFile(this.root);
@@ -298,8 +346,9 @@ export class DatabaseBackupService {
       await this.onlineBackup(this.source, capture.temporary);
       return this.publish(capture);
     } catch (error) {
-      safeUnlink(capture.temporary);
       throw new Error(`Scheduled database backup failed: ${errorMessage(error)}`, { cause: error });
+    } finally {
+      removeTemporary(capture.temporary);
     }
   }
 
@@ -318,10 +367,11 @@ export class DatabaseBackupService {
       this.source.prepare("VACUUM INTO ?").run(capture.temporary);
       return this.publish(capture);
     } catch (error) {
-      safeUnlink(capture.temporary);
       throw new Error(`Pre-migration database backup failed: ${errorMessage(error)}`, {
         cause: error,
       });
+    } finally {
+      removeTemporary(capture.temporary);
     }
   }
 }
