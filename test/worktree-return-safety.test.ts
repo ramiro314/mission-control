@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { worktreeReturnBlocker } from "../src/server/git/worktree-return-safety.ts";
+import { REGENERABLE_IGNORED_PATHS, worktreeReturnBlocker } from "../src/server/git/worktree-return-safety.ts";
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "mission-return-git-"));
@@ -40,12 +40,81 @@ test("Kill preserves ignored local files even when ordinary Git status is clean"
 });
 
 for (const kind of ["unstaged", "staged", "untracked", "unpublished"] as const) {
-  test(`Kill preserves ${kind} work`, async (t) => {
+  test(`Kill and reclaim both preserve ${kind} work`, async (t) => {
     const { path, git } = fixture(t);
     writeFileSync(join(path, kind === "untracked" ? "notes" : "tracked"), "valuable work\n");
     if (kind === "staged" || kind === "unpublished") git("add", ".");
     if (kind === "unpublished") git("commit", "-m", "local only");
-    assert.match((await worktreeReturnBlocker(path, { fetch: true }))!, /uncommitted|unpublished/);
+    for (const regenerableIgnored of [false, true]) {
+      assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored }))!, /uncommitted|unpublished/);
+    }
+  });
+}
+
+/** A published checkout that ignores the regenerable directories and the work kinds that must survive. */
+function ignoringFixture(t: TestContext) {
+  const repo = fixture(t);
+  writeFileSync(join(repo.path, ".gitignore"), "node_modules/\ndist/\nbuild/\ncoverage/\n.cache/\n.turbo/\n.next/\n.evidence/\ne2e/.artifacts/\n.env\n");
+  repo.git("add", ".gitignore"); repo.git("commit", "-m", "ignore");
+  repo.git("push", "origin", "main");
+  const put = (file: string) => {
+    mkdirSync(join(repo.path, file, ".."), { recursive: true });
+    writeFileSync(join(repo.path, file), "x\n");
+  };
+  return { ...repo, put };
+}
+
+test("reclaim discounts ignored files under every regenerable path at any depth; Kill still counts them", async (t) => {
+  const { path, put } = ignoringFixture(t);
+  for (const dir of REGENERABLE_IGNORED_PATHS) {
+    put(`${dir}top`);
+    put(`packages/app/${dir}deep/nested`);
+  }
+  assert.equal(await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }), null);
+  assert.match((await worktreeReturnBlocker(path, { fetch: true }))!, /ignored/);
+});
+
+for (const file of [".evidence/report.md", "e2e/.artifacts/run/trace.zip", ".env", ".evidence/node_modules/kept"]) {
+  test(`reclaim keeps a tree holding non-regenerable ignored ${file}`, async (t) => {
+    const { path, put } = ignoringFixture(t);
+    put("node_modules/pkg/index.js");
+    put(file);
+    assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }))!, /ignored/);
+    assert.match((await worktreeReturnBlocker(path, { fetch: true }))!, /ignored/);
+  });
+}
+
+test("reclaim discounts only ignored entries: untracked and modified files under regenerable paths still block", async (t) => {
+  const { path, git } = fixture(t);
+  mkdirSync(join(path, "node_modules"));
+  writeFileSync(join(path, "node_modules", "vendored.js"), "base\n");
+  git("add", "."); git("commit", "-m", "vendor"); git("push", "origin", "main");
+  writeFileSync(join(path, "node_modules", "vendored.js"), "patched\n");
+  assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }))!, /uncommitted/);
+  git("checkout", "--", "node_modules/vendored.js");
+  mkdirSync(join(path, "dist"));
+  writeFileSync(join(path, "dist", "out.js"), "built by hand\n");
+  assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }))!, /untracked/);
+});
+
+test("reclaim keeps an ignored file inside a tracked directory that shares a regenerable name", async (t) => {
+  const { path, git } = fixture(t);
+  mkdirSync(join(path, "build"));
+  writeFileSync(join(path, "build", "icon.png"), "source asset\n");
+  writeFileSync(join(path, ".gitignore"), ".env\n");
+  git("add", "."); git("commit", "-m", "tracked build resources"); git("push", "origin", "main");
+  writeFileSync(join(path, "build", ".env"), "SECRET=local\n");
+  assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }))!, /ignored/);
+});
+
+for (const file of ["dist", "mybuild/notes", "node_modules_backup/kept"]) {
+  test(`reclaim keeps ignored ${file}, a near miss of a regenerable directory name`, async (t) => {
+    const { path, git } = fixture(t);
+    writeFileSync(join(path, ".gitignore"), "dist\nmybuild/\nnode_modules_backup/\n");
+    git("add", ".gitignore"); git("commit", "-m", "ignore near misses"); git("push", "origin", "main");
+    mkdirSync(join(path, file, ".."), { recursive: true });
+    writeFileSync(join(path, file), "real work\n");
+    assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }))!, /ignored/);
   });
 }
 
