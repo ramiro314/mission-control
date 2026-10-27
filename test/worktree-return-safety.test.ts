@@ -84,6 +84,30 @@ for (const file of [".evidence/report.md", "e2e/.artifacts/run/trace.zip", ".env
   });
 }
 
+test("reclaim discounts only ignored entries: untracked and modified files under regenerable paths still block", async (t) => {
+  const { path, git } = fixture(t);
+  mkdirSync(join(path, "node_modules"));
+  writeFileSync(join(path, "node_modules", "vendored.js"), "base\n");
+  git("add", "."); git("commit", "-m", "vendor"); git("push", "origin", "main");
+  writeFileSync(join(path, "node_modules", "vendored.js"), "patched\n");
+  assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }))!, /uncommitted/);
+  git("checkout", "--", "node_modules/vendored.js");
+  mkdirSync(join(path, "dist"));
+  writeFileSync(join(path, "dist", "out.js"), "built by hand\n");
+  assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }))!, /untracked/);
+});
+
+for (const file of ["dist", "mybuild/notes", "node_modules_backup/kept"]) {
+  test(`reclaim keeps ignored ${file}, a near miss of a regenerable directory name`, async (t) => {
+    const { path, git } = fixture(t);
+    writeFileSync(join(path, ".gitignore"), "dist\nmybuild/\nnode_modules_backup/\n");
+    git("add", ".gitignore"); git("commit", "-m", "ignore near misses"); git("push", "origin", "main");
+    mkdirSync(join(path, file, ".."), { recursive: true });
+    writeFileSync(join(path, file), "real work\n");
+    assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }))!, /ignored/);
+  });
+}
+
 test("deleted upstream branches cannot vouch for local commits through stale refs", async (t) => {
   const { path, git } = fixture(t);
   git("checkout", "-b", "task");
