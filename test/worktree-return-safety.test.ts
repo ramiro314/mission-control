@@ -97,6 +97,16 @@ test("reclaim discounts only ignored entries: untracked and modified files under
   assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }))!, /untracked/);
 });
 
+test("reclaim keeps an ignored file inside a tracked directory that shares a regenerable name", async (t) => {
+  const { path, git } = fixture(t);
+  mkdirSync(join(path, "build"));
+  writeFileSync(join(path, "build", "icon.png"), "source asset\n");
+  writeFileSync(join(path, ".gitignore"), ".env\n");
+  git("add", "."); git("commit", "-m", "tracked build resources"); git("push", "origin", "main");
+  writeFileSync(join(path, "build", ".env"), "SECRET=local\n");
+  assert.match((await worktreeReturnBlocker(path, { fetch: true, regenerableIgnored: true }))!, /ignored/);
+});
+
 for (const file of ["dist", "mybuild/notes", "node_modules_backup/kept"]) {
   test(`reclaim keeps ignored ${file}, a near miss of a regenerable directory name`, async (t) => {
     const { path, git } = fixture(t);

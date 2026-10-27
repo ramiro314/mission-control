@@ -4,11 +4,14 @@ import { run } from "../util/exec.ts";
 /** Ignored directories an install or build recreates, discounted at any depth by `regenerableIgnored`. */
 export const REGENERABLE_IGNORED_PATHS = ["node_modules/", "dist/", "build/", "coverage/", ".cache/", ".turbo/", ".next/"] as const;
 
-/** An ignored `-z` status entry lies under a regenerable directory; a quoted, odd or non-ignored entry never does. */
+/**
+ * An ignored `-z` status entry is a regenerable directory itself, which is how `--ignored=matching`
+ * reports one. A file merely under a tracked `build/` (`!! build/.env`) is not, nor is a non-ignored entry.
+ */
 function regenerable(entry: string): boolean {
   if (!entry.startsWith("!! ")) return false;
   const path = `/${entry.slice(3)}`;
-  return REGENERABLE_IGNORED_PATHS.some((dir) => path.includes(`/${dir}`));
+  return REGENERABLE_IGNORED_PATHS.some((dir) => path.endsWith(`/${dir}`));
 }
 
 /**
