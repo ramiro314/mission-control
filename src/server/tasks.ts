@@ -6316,6 +6316,25 @@ export class TaskManager {
     }
   }
 
+  /** Every completed task still owed its worktree return, with the checkouts it holds. */
+  pendingWorktreeReturns(): Array<{ taskId: string; paths: string[] }> {
+    return this.registry.listTasks().filter(taskOwesWorktreeReturn).map((task) => ({
+      taskId: task.id,
+      paths: taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []),
+    }));
+  }
+
+  /**
+   * Try a completed task's pending return now, skipping its refusal backoff. Called after an
+   * orphan process blocking it was killed, so the return need not wait up to 15 minutes.
+   */
+  retryWorktreeReturn(taskId: string): boolean {
+    const task = this.registry.getTask(taskId);
+    if (!task || !taskOwesWorktreeReturn(task) || getTaskSessionClosure(task.id)) return false;
+    this.nextCompletedReturn.delete(task.id);
+    return this.enqueueFinishedWorktreeReturn(task, "complete");
+  }
+
   private resumeCompletedWorktreeReturns(): void {
     if (this.closuresStopped) return;
     for (const task of this.registry.listTasks()) {

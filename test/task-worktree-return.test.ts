@@ -367,6 +367,31 @@ test("a completion return that keeps being refused backs off instead of retrying
   assert.equal(completedReturnRetryDelay(40), COMPLETED_RETURN_RETRY_CAP_MS, "the wait is capped");
 });
 
+test("a return refused by an occupant is listed as pending, and retryWorktreeReturn skips its backoff", async (t) => {
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  t.mock.method(console, "info", () => {});
+  const w = world({ sessionId: null });
+  w.sessions.clear();
+  w.state.occupancy = { status: "known", occupants: [{} as never] };
+  await w.manager.complete(w.task.id, "finished");
+  await w.manager.settleWorktreeReturns();
+  assert.deepEqual(w.state.released, [], "the orphan process blocks the return");
+  assert.deepEqual(w.manager.pendingWorktreeReturns(), [{ taskId: w.task.id, paths: ["/pool/one"] }]);
+
+  // The clock has not moved, so the ordinary sweep is still inside the refusal backoff.
+  w.state.occupancy = { status: "known", occupants: [] };
+  await w.manager.sweepMissionSessionClosures();
+  await w.manager.settleWorktreeReturns();
+  assert.deepEqual(w.state.released, []);
+
+  assert.equal(w.manager.retryWorktreeReturn(w.task.id), true);
+  await w.manager.settleWorktreeReturns();
+  assert.deepEqual(w.state.released, ["/pool/one"]);
+  assert.deepEqual(w.manager.pendingWorktreeReturns(), []);
+  assert.equal(w.manager.retryWorktreeReturn(w.task.id), false, "nothing is owed any more");
+});
+
 test("reopening an attempt clears its completion-return obligation", async () => {
   const w = world({ sessionId: null }, false);
   w.sessions.clear();

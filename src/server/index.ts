@@ -122,6 +122,7 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { StorageHealthService } from "./storage-health.ts";
+import { finishedTrees, OrphanProcessMonitor } from "./worktrees/orphan-processes.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import { holdIdleConnections } from "./http-keep-alive.ts";
 import {
@@ -435,9 +436,25 @@ const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune
 // (the backup loop's startup prune seeds it) and after every worktree maintenance pass.
+// Processes still inside a tree whose owner has finished (a pending task return, a check
+// lease stuck in `returning`, a quarantined slot). Scanned after each maintenance pass and
+// reported as `orphan-process` problems; Kill retries the blocked return at once.
+const orphanProcesses = new OrphanProcessMonitor({
+  trees: () => finishedTrees({
+    slots: worktrees.store.slots(),
+    taskReturns: tasks.pendingWorktreeReturns(),
+    returningChecks: checkLeases.returningLeases(),
+  }),
+  retryReturn: (owner) => {
+    if (owner.kind === "task") return tasks.retryWorktreeReturn(owner.taskId);
+    if (owner.kind === "check") return checkLeases.retryReturning(owner.attemptId);
+  },
+  changed: () => storageHealth.recompute(),
+});
 const storageHealth = new StorageHealthService({
   backups: databaseBackups,
   publish: (health) => registry.setStorageHealth(health),
+  sources: [() => ({ problems: orphanProcesses.problems() })],
 });
 databaseBackups.onChange(() => storageHealth.recompute());
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
@@ -596,7 +613,8 @@ const stopHeadlessPruner = startHeadlessPruner();
 // native pool exists because persisted legacy check rows remain domain-owned resources.
 worktrees.startMaintenance(
   () => checkLeases.reclaimLeaked(checkRuntime.groupRecovery),
-  () => storageHealth.recompute(),
+  // The scan's change listener recomputes storage health, so the pass ends with one recompute.
+  () => orphanProcesses.scan(),
 );
 const stopSkillsReloader = startSkillsReloader(registry);
 // Pulls work INTO the backlog from systems that already hold it. In the daemon because
@@ -760,6 +778,7 @@ const app = buildApp({
   settingsBackups,
   databaseBackups,
   storageHealth,
+  orphanProcesses,
   prConflicts,
 });
 

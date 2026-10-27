@@ -335,7 +335,8 @@ import {
 import { getDatabaseBackupsConfig, setDatabaseBackupsConfig } from "./database-backups/config.ts";
 import type { DatabaseBackupService } from "./database-backups/service.ts";
 import type { StorageHealthService } from "./storage-health.ts";
-import type { StorageView } from "@shared/storage-health.ts";
+import type { OrphanProcessMonitor } from "./worktrees/orphan-processes.ts";
+import { OrphanProcessKillRequestSchema, type StorageView } from "@shared/storage-health.ts";
 import { DatabaseBackupsConfigPatchSchema } from "@shared/database-backups.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
@@ -1276,6 +1277,11 @@ export interface RouteDeps {
   databaseBackups?: DatabaseBackupService;
   /** The storage aggregate behind Settings > Storage. `GET /api/storage` returns 503 without it. */
   storageHealth?: StorageHealthService;
+  /**
+   * Orphan processes in finished trees. `GET /api/storage` scans first when present, and
+   * `POST /api/worktrees/processes/kill` answers 503 without it.
+   */
+  orphanProcesses?: OrphanProcessMonitor;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
@@ -1337,6 +1343,7 @@ export const ROUTE_DEP_NAMES = [
   "settingsBackups",
   "databaseBackups",
   "storageHealth",
+  "orphanProcesses",
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
@@ -1632,6 +1639,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     settingsBackups,
     databaseBackups,
     storageHealth,
+    orphanProcesses,
     setupDeps,
     setupInstallDeps,
     focusTerminals,
@@ -1966,6 +1974,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const failure = worktreeFailure(error);
       return c.json(failure.body, failure.status);
     }
+  });
+
+  // Kill one orphan process the storage report listed. Refused, with nothing signalled,
+  // unless the path resolves to a reported tree, that report lists the same PID, start time
+  // and command, and a fresh inspection still finds it there. See `OrphanProcessMonitor`.
+  app.post("/api/worktrees/processes/kill", async (c) => {
+    if (!orphanProcesses) return c.json({ error: "orphan process monitor unavailable" }, 503);
+    const parsed = await parseBody(c, OrphanProcessKillRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await orphanProcesses.kill(parsed.data);
+    return result.ok ? c.json(result) : c.json(result, 409);
   });
 
   app.post("/api/worktrees/operations/:id/dismiss", (c) => {
@@ -8574,13 +8593,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   }, 503);
   // Recomputed on read, so a copy written or removed behind the daemon's back shows at once
   // and reaches every open dashboard through the same `storage_health` event.
-  app.get("/api/storage", (c) => {
+  app.get("/api/storage", async (c) => {
     if (!storageHealth) {
       return c.json({
         error: "service_unavailable" as const,
         message: "Storage health service is unavailable",
       }, 503);
     }
+    // Opening Storage looks at the finished trees now rather than showing the last pass's
+    // processes, which can be a maintenance interval old. The scan is single-flight.
+    if (orphanProcesses) await orphanProcesses.scan();
     const view: StorageView = { health: storageHealth.recompute(), config: getDatabaseBackupsConfig() };
     return c.json(view);
   });

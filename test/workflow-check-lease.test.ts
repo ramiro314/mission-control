@@ -749,6 +749,25 @@ test("reconciliation retries a returning row without re-asking about its group",
   assert.equal(store.get("att-resume")?.cleanupState, "returned");
 });
 
+test("a returning lease is listed, and retryReturning completes it at once, skipping its backoff", async () => {
+  const m = mkManager();
+  const path = await acquire(m, "att-orphan");
+  m.fail.return = true;
+  await m.manager.releaseForAttempt("att-orphan");
+  assert.equal(store.get("att-orphan")?.cleanupState, "returning");
+  assert.ok(m.manager.returningLeases().some((lease) => lease.attemptId === "att-orphan" && lease.path === path));
+
+  // The failure put the row in backoff, so a reclamation pass would skip it. A kill of the
+  // process that blocked it retries straight away instead.
+  m.fail.return = false;
+  await m.manager.reclaimLeaked();
+  assert.equal(store.get("att-orphan")?.cleanupState, "returning", "backoff holds the ordinary pass");
+  assert.deepEqual(await m.manager.retryReturning("att-orphan"), { outcome: "returned" });
+  assert.equal(store.get("att-orphan")?.cleanupState, "returned");
+  assert.equal(m.manager.returningLeases().some((lease) => lease.attemptId === "att-orphan"), false);
+  assert.equal(await m.manager.retryReturning("att-orphan"), null, "only a returning lease is retried");
+});
+
 // ---- reclamation -----------------------------------------------------------
 
 test("reclamation collects a leaked lease and leaves a live attempt's alone", async () => {

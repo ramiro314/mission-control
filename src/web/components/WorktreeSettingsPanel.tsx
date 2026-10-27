@@ -15,9 +15,10 @@ import type {
   WorktreeWarmTargetOutcome,
 } from "@shared/worktrees.ts";
 import { worktreeOperationPending, worktreeRetryRequest } from "@shared/worktrees.ts";
+import type { OrphanProcess, StorageHealth } from "@shared/storage-health.ts";
 import type { WorktreesConfigUpdate, WorktreesState } from "../useWorktrees.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
-import { openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
+import { api, openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
 import { BULK_SELECTION_LIMIT, changeSelection } from "../lib/worktree-selection.ts";
@@ -491,6 +492,8 @@ function SlotCard({
   selectionFull,
   onSelect,
   onAction,
+  orphans,
+  onKill,
 }: {
   slot: NativeWorktreeSlotView;
   /** A queued or running cleanup already covers this slot; no second one may be started. */
@@ -500,6 +503,9 @@ function SlotCard({
   selectionFull: boolean;
   onSelect: (slotId: string, selected: boolean) => void;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
+  /** Processes still running in this slot after its owner finished, from the storage report. */
+  orphans: readonly OrphanProcess[];
+  onKill: (orphan: OrphanProcess, trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
   const copy = useCopyFeedback({ resetOn: slot.path });
   const terminals = useTerminalTargets();
@@ -581,6 +587,26 @@ function SlotCard({
       {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
         <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>
       )}
+      {orphans.length > 0 && (
+        <section className="wt-orphans" aria-label={`Orphan processes in slot ${slot.ordinal}`}>
+          <h5>Orphan processes</h5>
+          <ul>
+            {orphans.map((orphan) => (
+              <li key={`${orphan.pid}:${orphan.startedAt}`} className="wt-orphan">
+                <div>
+                  <code>{orphan.command}</code>
+                  <span>PID {orphan.pid} · parent {orphan.ppid} · started {startedLabel(orphan.startedAt)}</span>
+                </div>
+                <Tooltip label="Confirm stopping this process, which outlived the slot's owner and blocks its return">
+                  <button className="btn btn-danger" type="button" aria-label={`Kill process ${orphan.pid}`} onClick={(event) => onKill(orphan, event.currentTarget)}>
+                    Kill
+                  </button>
+                </Tooltip>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <div className="wt-slot-actions">
         <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : "Copy exact worktree path"}>
           <button className="btn btn-ghost" type="button" onClick={() => void copy.copy(slot.path)}>
@@ -625,6 +651,59 @@ function SlotCard({
       </div>
       {(copy.error || openError) && <p className="settings-error">{copy.error ?? openError}</p>}
     </article>
+  );
+}
+
+function startedLabel(at: number): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(at));
+}
+
+/** The Kill confirmation: what will be signalled, and what happens after. */
+function KillDialog({
+  orphan,
+  busy,
+  error,
+  onClose,
+  onConfirm,
+}: {
+  orphan: OrphanProcess;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}): React.JSX.Element {
+  return (
+    <Overlay id={OVERLAY_IDS.worktreeKill} onClose={onClose} className="modal wt-action-modal" role="dialog" ariaLabel="Kill orphan process" closable={!busy}>
+      <header className="modal-head">
+        <div><span className="wt-eyebrow">Confirm first</span><h3>Kill process {orphan.pid}</h3></div>
+      </header>
+      <div className="modal-body wt-action-body">
+        <dl className="wt-facts wt-kill-facts">
+          <div><dt>PID</dt><dd>{orphan.pid}</dd></div>
+          <div><dt>Parent PID</dt><dd>{orphan.ppid}</dd></div>
+          <div><dt>Started</dt><dd>{startedLabel(orphan.startedAt)}</dd></div>
+        </dl>
+        <section><h4>Command</h4><code className="wt-kill-text">{orphan.command}</code></section>
+        <section><h4>Tree</h4><code className="wt-kill-text">{orphan.tree}</code></section>
+        <section>
+          <h4>What happens</h4>
+          <ul>
+            <li>Mission Control checks that this process is still in the tree with the same start time and command, and refuses otherwise.</li>
+            <li>It sends SIGTERM, then SIGKILL if the process is still running 5 seconds later.</li>
+            <li>Any return this tree was waiting on is retried at once.</li>
+          </ul>
+        </section>
+        {error && <p className="settings-error">{error}</p>}
+      </div>
+      <footer className="modal-foot">
+        <Tooltip label="Close without signalling the process">
+          <button className="btn btn-ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button>
+        </Tooltip>
+        <Tooltip label="Send SIGTERM now, and SIGKILL after 5 seconds if it is still running">
+          <button className="btn btn-danger" type="button" onClick={onConfirm} disabled={busy}>{busy ? "Killing…" : "Kill process"}</button>
+        </Tooltip>
+      </footer>
+    </Overlay>
   );
 }
 
@@ -913,6 +992,8 @@ function PoolRow({
   selected,
   onSelect,
   onAction,
+  orphansBySlot,
+  onKill,
 }: {
   repo: WorktreeRepositoryView;
   overridden: boolean;
@@ -921,8 +1002,12 @@ function PoolRow({
   selected: ReadonlySet<string>;
   onSelect: (slotIds: string[], selected: boolean) => void;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
+  orphansBySlot: ReadonlyMap<string, readonly OrphanProcess[]>;
+  onKill: (orphan: OrphanProcess, trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
-  const [open, setOpen] = useState(repo.status !== "ready");
+  // Opened when it needs attention, which includes a slot with an orphan process: a Storage
+  // problem link lands here, and its Kill must be in view.
+  const [open, setOpen] = useState(repo.status !== "ready" || repo.slots.some((slot) => orphansBySlot.has(slot.id)));
   const [setup, setSetup] = useState(repo.policy.setupArgv ?? []);
   const [slotLimit, setSlotLimit] = useState(12);
   useEffect(() => setSetup(repo.policy.setupArgv ?? []), [repo.policy.setupArgv]);
@@ -1055,6 +1140,8 @@ function PoolRow({
                   selectionFull={selected.size >= BULK_SELECTION_LIMIT}
                   onSelect={(slotId, next) => onSelect([slotId], next)}
                   onAction={onAction}
+                  orphans={orphansBySlot.get(slot.id) ?? []}
+                  onKill={onKill}
                 />
               ))}
             </div>
@@ -1168,8 +1255,52 @@ function ActionDialog({
 
 const LEGACY_KINDS = ["ownedExact", "identityUnverifiable", "foreign", "unreadable"] as const;
 
-export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): React.JSX.Element {
+export function WorktreeSettingsPanel({
+  state,
+  storageHealth = null,
+}: {
+  state: WorktreesState;
+  /** `MissionState.storageHealth`, whose `orphan-process` problems the slot cards list. */
+  storageHealth?: StorageHealth | null;
+}): React.JSX.Element {
   const { inventory, loading, error, preview, previewError, previewChanged, busy, operations } = state;
+  const orphansBySlot = useMemo(() => {
+    const bySlot = new Map<string, OrphanProcess[]>();
+    for (const problem of storageHealth?.problems ?? []) {
+      if (problem.kind !== "orphan-process" || problem.link.target !== "slot" || !problem.process) continue;
+      bySlot.set(problem.link.slotId, [...(bySlot.get(problem.link.slotId) ?? []), problem.process]);
+    }
+    return bySlot;
+  }, [storageHealth]);
+  const [killing, setKilling] = useState<{ orphan: OrphanProcess; trigger: HTMLButtonElement } | null>(null);
+  const [killBusy, setKillBusy] = useState(false);
+  const [killError, setKillError] = useState<string | null>(null);
+
+  function closeKill(): void {
+    killing?.trigger.focus();
+    setKilling(null);
+    setKillError(null);
+  }
+
+  async function confirmKill(): Promise<void> {
+    if (!killing) return;
+    const { orphan } = killing;
+    setKillBusy(true);
+    try {
+      const result = await api.killOrphanProcess({
+        path: orphan.tree, pid: orphan.pid, startedAt: orphan.startedAt, command: orphan.command,
+      });
+      if (result.ok) {
+        setKilling(null);
+        setKillError(null);
+        void state.refresh();
+      } else {
+        setKillError(result.error ?? "The daemon refused the kill.");
+      }
+    } finally {
+      setKillBusy(false);
+    }
+  }
   const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
   const [lastRequest, setLastRequest] = useState<WorktreeActionRequest | null>(null);
   // The failed operation the open preview is retrying. Its report - and the fixed set of
@@ -1306,7 +1437,7 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
             <p><strong>No pools yet.</strong> Mission Control creates one the first time something needs a checkout in a repository.</p>
           </div>
         )}
-        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} selected={selected} onSelect={select} onAction={request} />)}</div>
+        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} selected={selected} onSelect={select} onAction={request} orphansBySlot={orphansBySlot} onKill={(orphan, trigger) => { setKillError(null); setKilling({ orphan, trigger }); }} />)}</div>
       </section>
 
       <section className="wt-group" data-anchor="worktrees/policy">
@@ -1379,6 +1510,7 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
         </div>
       </section>
 
+      {killing && <KillDialog orphan={killing.orphan} busy={killBusy} error={killError} onClose={closeKill} onConfirm={() => void confirmKill()} />}
       {preview && <ActionDialog preview={preview} error={previewError} changed={previewChanged} busy={busy} onClose={close} onExecute={execute} onRefresh={() => { if (lastRequest) void state.requestPreview(lastRequest); }} />}
       {!preview && busy && <p className="wt-preview-loading" role="status">Building a fresh safety preview…</p>}
       {!preview && previewError && <p className="settings-error">{previewError}</p>}

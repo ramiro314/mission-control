@@ -2,7 +2,7 @@ import type { SessionTransferPage, SessionTransferSummary } from "@shared/sessio
 import { actionFetch } from "./experience.ts";
 import type { KindWorkflowDefaults } from "@shared/task.ts";
 import type { DatabaseBackupsConfigPatch } from "@shared/database-backups.ts";
-import type { StorageView } from "@shared/storage-health.ts";
+import type { OrphanProcessKillRequest, StorageView } from "@shared/storage-health.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -2102,6 +2102,9 @@ export const api = {
     put<ActionResult & { message?: string }>(`/api/storage/backups/config`, patch),
   /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
+  /** Kill one orphan process the storage report listed, named exactly as it was listed. */
+  killOrphanProcess: (request: OrphanProcessKillRequest) =>
+    post<ActionResult & { signal?: "SIGTERM" | "SIGKILL" }>(`/api/worktrees/processes/kill`, request),
 
   // --- Repository discovery roots ---
   setRepoIndex: (cfg: RepoIndexConfigPatch) =>

@@ -690,6 +690,41 @@ The operations have deliberately narrow meanings:
   it to origin's default branch, seeds or claims it under the pool's claim, and returns it. It is
   offered on an available slot's card and, as **Warm idle slots**, among a pool's maintenance
   actions. It never touches a leased or quarantined slot. See [Warm](#warm).
+- **Kill** stops one orphan process: a process still running inside a tree whose owner has
+  finished. It is offered on the process's row in the slot card, behind a confirmation. See
+  [Orphan processes](#orphan-processes).
+
+#### Orphan processes
+
+A tree whose owner has finished is one a completed task still owes a return, a check lease left in
+`returning`, or a quarantined slot. After each maintenance pass (`MISSION_WORKTREE_SWEEP_MS`,
+5 minutes by default), and whenever Settings > Storage is opened, Mission Control runs the same
+occupancy inspection the return guard uses (`ps` plus one batched `lsof`) over every such tree.
+Only pool slots and children of `worktrees/` and `check-worktrees/` are inspected. Each process
+found is reported as a bannered `orphan-process` problem in Settings > Storage, with its PID,
+parent PID, command, start time and tree. Its id is
+`orphan-process:<tree>:<pid>:<start time>`, so it survives a daemon restart. A pass that cannot
+inspect a tree keeps the last report for it rather than dropping it.
+
+Such a process blocks the tree's return, because the return guard refuses an occupied tree.
+The Storage problem links to the Worktrees section, where the slot card lists each orphan process
+with **Kill**. The confirmation names the process and what happens.
+`POST /api/worktrees/processes/kill` takes `{ path, pid, startedAt, command }` and signals nothing
+unless all of these hold:
+
+1. `path` resolves through `realpath` to a tree in the current report. A request naming `$HOME`, or
+   a symlink that resolves anywhere else, is refused before any process is inspected.
+2. That report lists the same PID with the same start time and command.
+3. A fresh inspection still finds that PID inside the tree with the same start time and command.
+
+It then sends `SIGTERM`, and `SIGKILL` 5 seconds later if the same process (same start time) is
+still running. It retries the tree's pending task or check return at once, skipping that
+return's backoff, and scans again, so the problem clears with the next `storage_health` event.
+A refusal answers 409 with its reason. A tree that is not a pool slot has no slot card, so its
+orphan processes are listed in Storage only, and the route is the way to kill one.
+
+Unlike the inventory, the storage report carries each orphan process's command line, bounded to
+512 bytes, because the confirmation must show what will be signalled.
 
 Native slot cleanliness allows a narrow set of untracked ai-conductor scratch files at the
 checkout root: `.pipeline/.memory-count-at-start`, `conduct-state.json`, `engineer-run.json`,

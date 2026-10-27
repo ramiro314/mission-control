@@ -1223,6 +1223,24 @@ export class CheckLeaseManager {
     }
   }
 
+  /** Leases whose return was authorized and has not completed yet. */
+  returningLeases(): Array<{ attemptId: string; path: string }> {
+    return this.store.listLive()
+      .filter((row) => row.cleanupState === "returning")
+      .map((row) => ({ attemptId: row.attemptId, path: row.leasePath }));
+  }
+
+  /**
+   * Retry one `returning` lease now, skipping its backoff. Called after an orphan process
+   * blocking its return was killed. A lease this process is working on is left alone.
+   */
+  async retryReturning(attemptId: string): Promise<CheckLeaseRelease | null> {
+    const row = this.store.get(attemptId);
+    if (row?.cleanupState !== "returning" || this.owned.has(attemptId) || this.busy.has(attemptId)) return null;
+    this.backoff.delete(attemptId);
+    return await this.releaseForAttempt(attemptId);
+  }
+
   /**
    * Non-mutating operator preview through the check domain's own process-group authority.
    * A check this process still owns, an in-flight transition, and an unproven group all

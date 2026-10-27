@@ -636,7 +636,7 @@ export class WorktreeManager {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private maintenance: Promise<void> | null = null;
   private reclaimDomainLeases: () => Promise<void> = async () => {};
-  private afterMaintenance: () => void = () => {};
+  private afterMaintenance: () => void | Promise<void> = () => {};
   /** Grants protected until their task/check row durably records the random lease ID. */
   private readonly pendingDomainLeases = new Set<string>();
   /** Dependency claims running right now. Maintenance skips their slots; shutdown stops them. */
@@ -3062,7 +3062,7 @@ export class WorktreeManager {
    */
   startMaintenance(
     reclaimDomainLeases: () => Promise<void> = async () => {},
-    afterPass: () => void = () => {},
+    afterPass: () => void | Promise<void> = () => {},
   ): void {
     this.reclaimDomainLeases = reclaimDomainLeases;
     this.afterMaintenance = afterPass;
@@ -3104,7 +3104,7 @@ export class WorktreeManager {
       console.error("[worktrees] domain lease reclamation failed:", error);
     }
     try {
-      this.afterMaintenance();
+      await this.afterMaintenance();
     } catch (error) {
       console.error("[worktrees] after-maintenance hook failed:", error);
     }
