@@ -42,6 +42,7 @@ import {
   DatabaseBackupStatusSchema,
   type DatabaseBackupsConfig,
 } from "./database-backups.ts";
+import { StorageFirstSeenSchema } from "./storage-health.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -373,6 +374,14 @@ export const APP_CONFIG_ENTRIES = {
    * disk, and restored onto another installation it would report captures that never ran there.
    */
   backupsStatus: wholeEntry("backups.status", DatabaseBackupStatusSchema, "operational", null),
+  /**
+   * When each storage problem without a timestamp of its own was first and last seen, so its
+   * occurrence id survives a restart and a pass that briefly misses it. `operational` with no
+   * backup domain for `backups.status`'s reason: it describes this machine's trees.
+   */
+  storageFirstSeen: wholeEntry(
+    "storage.firstSeen", StorageFirstSeenSchema, "operational", null,
+  ),
   /**
    * General telemetry collection and export.
    *

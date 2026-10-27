@@ -332,8 +332,10 @@ import {
   getTerminalsConfig,
   setTerminalsConfig,
 } from "./terminals-config.ts";
-import { setDatabaseBackupsConfig } from "./database-backups/config.ts";
+import { getDatabaseBackupsConfig, setDatabaseBackupsConfig } from "./database-backups/config.ts";
 import type { DatabaseBackupService } from "./database-backups/service.ts";
+import type { StorageHealthService } from "./storage-health.ts";
+import type { StorageView } from "@shared/storage-health.ts";
 import { DatabaseBackupsConfigPatchSchema } from "@shared/database-backups.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
@@ -1272,6 +1274,8 @@ export interface RouteDeps {
   settingsBackups?: SettingsBackupService;
   /** The daemon's full-database backup owner. Its routes return 503 without it. */
   databaseBackups?: DatabaseBackupService;
+  /** The storage aggregate behind Settings > Storage. `GET /api/storage` returns 503 without it. */
+  storageHealth?: StorageHealthService;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
@@ -1332,6 +1336,7 @@ export const ROUTE_DEP_NAMES = [
   "fileCommentWalkthrough",
   "settingsBackups",
   "databaseBackups",
+  "storageHealth",
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
@@ -1626,6 +1631,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     fileCommentWalkthrough,
     settingsBackups,
     databaseBackups,
+    storageHealth,
     setupDeps,
     setupInstallDeps,
     focusTerminals,
@@ -8566,6 +8572,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     error: "service_unavailable" as const,
     message: "Database backup service is unavailable",
   }, 503);
+  // Recomputed on read, so a copy written or removed behind the daemon's back shows at once
+  // and reaches every open dashboard through the same `storage_health` event.
+  app.get("/api/storage", (c) => {
+    if (!storageHealth) {
+      return c.json({
+        error: "service_unavailable" as const,
+        message: "Storage health service is unavailable",
+      }, 503);
+    }
+    const view: StorageView = { health: storageHealth.recompute(), config: getDatabaseBackupsConfig() };
+    return c.json(view);
+  });
   app.put("/api/storage/backups/config", async (c) => {
     if (!databaseBackups) return databaseBackupsUnavailable(c);
     const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);

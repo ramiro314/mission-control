@@ -114,6 +114,15 @@ function storeDatabaseBackupStatus(db: DatabaseSync, status: DatabaseBackupStatu
   ).run(APP_CONFIG_ENTRIES.backupsStatus.key, JSON.stringify(status));
 }
 
+/** One published copy, as Settings > Storage lists it. */
+export interface DatabaseBackupCopy {
+  kind: DatabaseBackupKind;
+  filename: string;
+  /** The capture time its filename names, in epoch milliseconds. */
+  at: number;
+  bytes: number;
+}
+
 export interface DatabaseBackupRecord {
   kind: DatabaseBackupKind;
   filename: string;
@@ -130,6 +139,7 @@ interface OwnedCopy {
   filename: string;
   /** The capture time its filename names, in epoch milliseconds. */
   at: number;
+  bytes: number;
 }
 
 export interface DatabaseBackupValidation {
@@ -283,6 +293,7 @@ export class DatabaseBackupService {
   private readonly selfContain: (temporary: string) => void;
   private readonly validate: (temporary: string) => DatabaseBackupValidation;
   private inFlight: InFlightCapture | null = null;
+  private readonly changeListeners = new Set<() => void>();
 
   constructor(
     private readonly source: DatabaseSync,
@@ -338,6 +349,26 @@ export class DatabaseBackupService {
     };
   }
 
+  /**
+   * Call `listener` whenever what this service reports may have moved: after every online
+   * capture settles, whatever its outcome, and after every prune requested from outside a
+   * capture. A listener that throws is reported and never turns a capture around.
+   */
+  onChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  private notifyChange(): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.warn(`[mission-control] database backup change listener failed: ${errorMessage(error)}`);
+      }
+    }
+  }
+
   private publish(
     capture: DatabaseBackupRecord & { temporary: string },
   ): DatabaseBackupRecord {
@@ -347,7 +378,7 @@ export class DatabaseBackupService {
     this.validate(capture.temporary);
     renameSync(capture.temporary, capture.path);
     syncFile(this.root);
-    this.prune();
+    this.pruneCopies();
     const { temporary: _temporary, ...record } = capture;
     return record;
   }
@@ -381,9 +412,29 @@ export class DatabaseBackupService {
       const path = join(this.root, filename);
       const stat = lstatSync(path);
       if (stat.isSymbolicLink() || !stat.isFile()) continue;
-      groups[KIND_BY_PREFIX.get(match[1]!)!].push({ filename, at: copyTime(match[2]!) });
+      groups[KIND_BY_PREFIX.get(match[1]!)!].push({
+        filename,
+        at: copyTime(match[2]!),
+        bytes: stat.size,
+      });
     }
     return groups;
+  }
+
+  /**
+   * Every published copy, newest first, with its size. Read-only: a missing root, or one that
+   * is not a real directory, lists nothing rather than being created or refused.
+   */
+  keptCopies(): DatabaseBackupCopy[] {
+    try {
+      const rootStat = lstatSync(this.root);
+      if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return [];
+    } catch {
+      return [];
+    }
+    const groups = this.ownedCopies();
+    return BACKUP_KINDS.flatMap((kind) => groups[kind].map((copy) => ({ kind, ...copy })))
+      .sort((left, right) => right.at - left.at || right.filename.localeCompare(left.filename));
   }
 
   /**
@@ -392,6 +443,14 @@ export class DatabaseBackupService {
    * saved, so a lowered count takes effect without waiting for the next capture.
    */
   prune(): void {
+    try {
+      this.pruneCopies();
+    } finally {
+      this.notifyChange();
+    }
+  }
+
+  private pruneCopies(): void {
     if (!existsSync(this.root)) return;
     // Startup and save prune outside a capture, so they refuse a symlinked root the same way.
     this.ensureRoot();
@@ -540,6 +599,7 @@ export class DatabaseBackupService {
       throw failure;
     } finally {
       if (temporary) removeTemporary(temporary);
+      this.notifyChange();
     }
   }
 

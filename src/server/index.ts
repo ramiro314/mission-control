@@ -121,6 +121,7 @@ import { SettingsBackupService } from "./settings-backups/service.ts";
 import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
+import { StorageHealthService } from "./storage-health.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import { holdIdleConnections } from "./http-keep-alive.ts";
 import {
@@ -432,6 +433,13 @@ let stopSettingsBackups = () => {};
 // SQLite database through SQLite itself and are never restored by the running daemon.
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
+// The storage aggregate behind Settings > Storage. It recomputes after every capture and prune
+// (the backup loop's startup prune seeds it) and after every worktree maintenance pass.
+const storageHealth = new StorageHealthService({
+  backups: databaseBackups,
+  publish: (health) => registry.setStorageHealth(health),
+});
+databaseBackups.onChange(() => storageHealth.recompute());
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
@@ -586,7 +594,10 @@ const away = startAwayWatcher(registry, undefined, {
 const stopHeadlessPruner = startHeadlessPruner();
 // Check-domain crash recovery rides the native manager's cadence. It still runs when no
 // native pool exists because persisted legacy check rows remain domain-owned resources.
-worktrees.startMaintenance(() => checkLeases.reclaimLeaked(checkRuntime.groupRecovery));
+worktrees.startMaintenance(
+  () => checkLeases.reclaimLeaked(checkRuntime.groupRecovery),
+  () => storageHealth.recompute(),
+);
 const stopSkillsReloader = startSkillsReloader(registry);
 // Pulls work INTO the backlog from systems that already hold it. In the daemon because
 // ingest writes to the DB and the daemon is the only writer; needs none of the reload
@@ -748,6 +759,7 @@ const app = buildApp({
   fileCommentWalkthrough,
   settingsBackups,
   databaseBackups,
+  storageHealth,
   prConflicts,
 });
 
