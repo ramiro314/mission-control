@@ -24,6 +24,7 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { armLeakGuard } from "./leak-guard.mjs";
 
 // `node --test` sets this in each test process it spawns, which is the scope wanted: the
 // runner's PARENT process gets `--import` too (it propagates through `execArgv`) and has no
@@ -141,6 +142,13 @@ if (process.env.NODE_TEST_CONTEXT) {
   // The desktop's `$TERMINAL` is the default-terminal emulator's second launcher, so a
   // developer's value would let a test reaching the real registry open a real window.
   delete process.env.TERMINAL;
+
+  // Tag the worker before its test file can spawn anything. See `leak-guard.mjs`. Armed before
+  // the cleanup below because `exit` listeners run in registration order: a leaked process,
+  // such as a daemon writing `harness.db` under this home, must be dead before the home is
+  // removed, or it can recreate files mid-delete and make `rmSync` throw, which skips every
+  // listener after it, the leak report included.
+  armLeakGuard();
 
   // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
   // free to replace that value, and cleanup that resolved the variable here would delete a
