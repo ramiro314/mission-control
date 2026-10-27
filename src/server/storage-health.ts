@@ -1,13 +1,16 @@
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { databaseBackupStatusFrom, type DatabaseBackupStatus } from "@shared/database-backups.ts";
+import { taskRepoRefs, type TaskRepoSource } from "@shared/task-repos.ts";
 import {
   backupFailedProblems,
   STORAGE_PROBLEM_KINDS,
+  stuckReturnProblems,
   StorageFirstSeenSchema,
   type StorageBackupCopy,
   type StorageFirstSeen,
   type StorageHealth,
   type StorageProblem,
+  type WorktreeReturnRefusal,
 } from "@shared/storage-health.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
@@ -32,7 +35,8 @@ export interface StorageProblemObservation {
   goneSubjects?: string[];
 }
 
-export type StorageProblemSource = () => StorageProblemObservation;
+/** One source of storage problems, read with the pass's clock. */
+export type StorageProblemSource = (now: number) => StorageProblemObservation;
 
 /**
  * Advance the first-seen record by one pass. A subject seen now keeps its first-seen time,
@@ -56,6 +60,53 @@ export function advanceFirstSeen(
     next[subject] = { firstSeenAt: record[subject]?.firstSeenAt ?? now, lastSeenAt: now };
   }
   return next;
+}
+
+interface RefusalRow {
+  firstRefusedAt: number;
+  refusal: WorktreeReturnRefusal;
+}
+
+/**
+ * `stuck-return` problems, from the refusal columns task returns and check-lease returns
+ * record. Each links to the native slot holding the owner's tree, read from its lease id, so
+ * the Storage row opens that slot card.
+ */
+export function stuckReturnSource(deps: {
+  taskRefusals: () => Array<RefusalRow & { taskId: string }>;
+  task: (id: string) => (TaskRepoSource & { title: string }) | undefined;
+  checkRefusals: () => Array<RefusalRow & { attemptId: string; nodeId: string; leaseId: string | null }>;
+  slotForLease: (leaseId: string) => string | null;
+}): StorageProblemSource {
+  const slotFor = (leaseIds: Array<string | null>): string | null => {
+    for (const leaseId of leaseIds) {
+      const slotId = leaseId ? deps.slotForLease(leaseId) : null;
+      if (slotId) return slotId;
+    }
+    return null;
+  };
+  return (now) => {
+    const tasks = deps.taskRefusals().map((row) => {
+      const task = deps.task(row.taskId);
+      return {
+        owner: "task" as const,
+        ownerId: row.taskId,
+        label: task ? `Task "${task.title}"` : `Task ${row.taskId}`,
+        firstRefusedAt: row.firstRefusedAt,
+        refusal: row.refusal,
+        slotId: task ? slotFor(taskRepoRefs(task).map((ref) => ref.worktreeLeaseId)) : null,
+      };
+    });
+    const checks = deps.checkRefusals().map((row) => ({
+      owner: "check" as const,
+      ownerId: row.attemptId,
+      label: `Check "${row.nodeId}"`,
+      firstRefusedAt: row.firstRefusedAt,
+      refusal: row.refusal,
+      slotId: slotFor([row.leaseId]),
+    }));
+    return { problems: stuckReturnProblems([...tasks, ...checks], now) };
+  };
 }
 
 interface StorageHealthDeps {
@@ -119,7 +170,7 @@ export class StorageHealthService {
     const firstSeen: NonNullable<StorageProblemObservation["firstSeen"]> = [];
     const gone: string[] = [];
     for (const source of this.sources) {
-      const observation = this.attempt("problem source", source, {});
+      const observation = this.attempt("problem source", () => source(now), {});
       problems.push(...(observation.problems ?? []));
       firstSeen.push(...(observation.firstSeen ?? []));
       gone.push(...(observation.goneSubjects ?? []));

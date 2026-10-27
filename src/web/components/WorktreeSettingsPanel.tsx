@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorktreeClaim, WorktreesConfigPatch } from "@shared/protocol.ts";
+import type { StorageHealth, StorageProblem } from "@shared/storage-health.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
 import type {
   NativeWorktreeSlotView,
@@ -484,9 +485,15 @@ function SlotDependencies({
   );
 }
 
+/** The settings anchor of one slot card, which a Storage problem links to. */
+export function worktreeSlotAnchor(slotId: string): string {
+  return `worktrees/slot/${slotId}`;
+}
+
 function SlotCard({
   slot,
   pending,
+  stuckReturn,
   selected,
   selectionFull,
   onSelect,
@@ -495,6 +502,8 @@ function SlotCard({
   slot: NativeWorktreeSlotView;
   /** A queued or running cleanup already covers this slot; no second one may be started. */
   pending: WorktreeOperationView | null;
+  /** The `stuck-return` storage problem of the owner holding this slot, if its return is stuck. */
+  stuckReturn: StorageProblem | null;
   selected: boolean;
   /** The bulk selection holds its maximum; an unticked slot cannot join it. */
   selectionFull: boolean;
@@ -527,7 +536,7 @@ function SlotCard({
   }
 
   return (
-    <article className={`wt-slot wt-slot-${tone}`} aria-label={`Slot ${slot.ordinal}`}>
+    <article className={`wt-slot wt-slot-${tone}`} aria-label={`Slot ${slot.ordinal}`} data-anchor={worktreeSlotAnchor(slot.id)}>
       <div className="wt-slot-head">
         {slot.actions.includes("destroy") && (
           <Tooltip label={pending
@@ -553,6 +562,7 @@ function SlotCard({
         {slot.dirty === true && <StateChip label="dirty" tone="danger" />}
         {slot.defaultRelation === "unmerged" && <StateChip label="unlanded" tone="attention" />}
         {slot.processes.state === "unknown" && <StateChip label="processes unknown" tone="danger" />}
+        {stuckReturn && <StateChip label="return stuck" tone="danger" />}
       </div>
       <Tooltip label={slot.path}>
         <code className="wt-path">{slot.path}</code>
@@ -578,6 +588,7 @@ function SlotCard({
         </p>
       )}
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
+      {stuckReturn && <p className="wt-diagnostic wt-stuck-return">{stuckReturn.message}</p>}
       {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
         <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>
       )}
@@ -910,6 +921,7 @@ function PoolRow({
   overridden,
   updateConfig,
   pendingBySlot,
+  stuckBySlot,
   selected,
   onSelect,
   onAction,
@@ -918,14 +930,21 @@ function PoolRow({
   overridden: boolean;
   updateConfig: WorktreesState["updateConfig"];
   pendingBySlot: ReadonlyMap<string, WorktreeOperationView>;
+  stuckBySlot: ReadonlyMap<string, StorageProblem>;
   selected: ReadonlySet<string>;
   onSelect: (slotIds: string[], selected: boolean) => void;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
-  const [open, setOpen] = useState(repo.status !== "ready");
+  // A slot whose return is stuck opens its pool and is always rendered, so the Storage
+  // problem that links to its card finds it.
+  const hasStuck = repo.slots.some((slot) => stuckBySlot.has(slot.id));
+  const [open, setOpen] = useState(repo.status !== "ready" || hasStuck);
   const [setup, setSetup] = useState(repo.policy.setupArgv ?? []);
   const [slotLimit, setSlotLimit] = useState(12);
   useEffect(() => setSetup(repo.policy.setupArgv ?? []), [repo.policy.setupArgv]);
+  useEffect(() => {
+    if (hasStuck) setOpen(true);
+  }, [hasStuck]);
   const tone = repo.status === "ready" ? "ready" : repo.status === "attention" ? "attention" : "danger";
   const geometry = capacityGeometry(repo.counts, repo.policy.maxSlots);
   const selectable = repo.slots.filter((slot) => slot.actions.includes("destroy") && !pendingBySlot.has(slot.id));
@@ -1046,11 +1065,12 @@ function PoolRow({
           </div>
           <div className="wt-slot-scroll" role="region" aria-label={`${repo.name} native slot details`} tabIndex={0}>
             <div className="wt-slots">
-              {repo.slots.slice(0, slotLimit).map((slot) => (
+              {repo.slots.filter((slot, index) => index < slotLimit || stuckBySlot.has(slot.id)).map((slot) => (
                 <SlotCard
                   key={slot.id}
                   slot={slot}
                   pending={pendingBySlot.get(slot.id) ?? null}
+                  stuckReturn={stuckBySlot.get(slot.id) ?? null}
                   selected={selected.has(slot.id)}
                   selectionFull={selected.size >= BULK_SELECTION_LIMIT}
                   onSelect={(slotId, next) => onSelect([slotId], next)}
@@ -1168,7 +1188,14 @@ function ActionDialog({
 
 const LEGACY_KINDS = ["ownedExact", "identityUnverifiable", "foreign", "unreadable"] as const;
 
-export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): React.JSX.Element {
+export function WorktreeSettingsPanel({
+  state,
+  storageHealth = null,
+}: {
+  state: WorktreesState;
+  /** The live storage aggregate, whose `stuck-return` problems the slot cards show. */
+  storageHealth?: StorageHealth | null;
+}): React.JSX.Element {
   const { inventory, loading, error, preview, previewError, previewChanged, busy, operations } = state;
   const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
   const [lastRequest, setLastRequest] = useState<WorktreeActionRequest | null>(null);
@@ -1187,6 +1214,13 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
     }
     return pending;
   }, [operations]);
+  const stuckBySlot = useMemo(() => {
+    const stuck = new Map<string, StorageProblem>();
+    for (const problem of storageHealth?.problems ?? []) {
+      if (problem.kind === "stuck-return" && problem.link.target === "slot") stuck.set(problem.link.slotId, problem);
+    }
+    return stuck;
+  }, [storageHealth]);
   // The selection is exactly what the operator ticked, and it is never narrowed behind their
   // back. A slot that vanished or picked up a cleanup of its own stays in it and is counted
   // here, so the bulk preview still names it and the server blocks the changed set; only
@@ -1306,7 +1340,7 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
             <p><strong>No pools yet.</strong> Mission Control creates one the first time something needs a checkout in a repository.</p>
           </div>
         )}
-        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} selected={selected} onSelect={select} onAction={request} />)}</div>
+        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} stuckBySlot={stuckBySlot} selected={selected} onSelect={select} onAction={request} />)}</div>
       </section>
 
       <section className="wt-group" data-anchor="worktrees/policy">

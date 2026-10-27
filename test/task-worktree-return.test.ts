@@ -16,7 +16,8 @@ const { TaskManager, completedReturnRetryDelay, COMPLETED_RETURN_RETRY_CAP_MS } 
 const { WorktreeTeardownError, teardownWorktree } = await import("../src/server/dispatcher.ts");
 const { worktreeReturnBlocker } = await import("../src/server/git/worktree-return-safety.ts");
 const { getTaskSessionClosure, openTaskSessionClosure, openDb, closeDb, taskOwesWorktreeReturn,
-  getTask: durableTask, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
+  getTask: durableTask, CURRENT_DATABASE_SCHEMA_VERSION, listTaskWorktreeReturnRefusals } =
+  await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 function world(over: Partial<Task> = {}, observed = true, deps: TaskManagerStartupDeps = {}) {
@@ -365,6 +366,44 @@ test("a completion return that keeps being refused backs off instead of retrying
   assert.equal(attempts(), 4);
   assert.deepEqual(w.state.released, ["/pool/one"]);
   assert.equal(completedReturnRetryDelay(40), COMPLETED_RETURN_RETRY_CAP_MS, "the wait is capped");
+});
+
+test("a refused completion return records its first refusal and latest reason, and success clears them", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  t.mock.method(console, "info", () => {});
+  const w = world({ sessionId: null });
+  w.sessions.clear();
+  const outcomes: number[] = [];
+  w.manager.onWorktreeReturnOutcome(() => outcomes.push(now));
+  const occupant = { pid: 4242, ppid: 1, startRaw: "", startMs: 0, command: "node vite", cwd: "/pool/one", knownOwner: null };
+  w.state.occupancy = { status: "known", occupants: [occupant] };
+  await w.manager.complete(w.task.id, "finished");
+  await w.manager.settleWorktreeReturns();
+  const first = now;
+  assert.deepEqual(listTaskWorktreeReturnRefusals(), [{
+    taskId: w.task.id,
+    firstRefusedAt: first,
+    refusal: { reason: "a process still uses a checkout", processes: [{ pid: 4242, command: "node vite" }] },
+  }]);
+
+  w.state.occupancy = { status: "unknown", reason: "ps timed out" };
+  now += 30_001;
+  await w.manager.sweepMissionSessionClosures();
+  await w.manager.settleWorktreeReturns();
+  assert.deepEqual(listTaskWorktreeReturnRefusals(), [{
+    taskId: w.task.id,
+    firstRefusedAt: first,
+    refusal: { reason: "checkout occupancy is unknown", processes: [] },
+  }], "a later refusal keeps the first time and replaces the reason");
+
+  w.state.occupancy = { status: "known", occupants: [] };
+  now += 60_001;
+  await w.manager.sweepMissionSessionClosures();
+  await w.manager.settleWorktreeReturns();
+  assert.deepEqual(w.state.released, ["/pool/one"]);
+  assert.deepEqual(listTaskWorktreeReturnRefusals(), [], "a successful return clears the refusal");
+  assert.equal(outcomes.length, 3, "every outcome is announced");
 });
 
 test("reopening an attempt clears its completion-return obligation", async () => {

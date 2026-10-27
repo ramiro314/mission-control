@@ -136,7 +136,7 @@ function fakePool(slots: number, dir: string) {
 let seq = 0;
 /** A manager over a fresh fake pool, with the git work stubbed unless a test wants it. */
 function mkManager(
-  opts: { slots?: number; pin?: (r: string, p: string, s: string) => Promise<void> } = {},
+  opts: { slots?: number; pin?: (r: string, p: string, s: string) => Promise<void>; now?: () => number } = {},
 ) {
   const dir = mkdtempSync(join(home, `pool-${seq++}-`));
   const pool = fakePool(opts.slots ?? 3, dir);
@@ -146,6 +146,7 @@ function mkManager(
     // so it is stubbed unless the case is specifically about a pin failing.
     verifyBase: async (_repoRoot, sha) => sha,
     acquisitionProvider: modeledProvider(pool.cli, pin),
+    ...(opts.now ? { now: opts.now } : {}),
   });
   return { ...pool, manager, repoRoot: dir };
 }
@@ -590,6 +591,39 @@ test("a failed return keeps the row in returning, keeps the pin, and permits no 
   m.fail.return = false;
   assert.deepEqual(await m.manager.releaseForAttempt("att-retry"), { outcome: "returned" });
   assert.deepEqual(m.manager.pinnedPaths(), []);
+});
+
+test("a refused return records its first refusal and latest reason, and a successful return clears both", async () => {
+  let clock = 1_000_000;
+  const m = mkManager({ now: () => clock });
+  await acquire(m, "att-refused", { nodeId: "unit" });
+  const refusalColumns = () => ({
+    ...db.prepare(`SELECT first_refused_at, last_refusal FROM workflow_check_leases WHERE attempt_id = ?`)
+      .get("att-refused"),
+  });
+  m.fail.return = true;
+  assert.equal((await m.manager.releaseForAttempt("att-refused")).outcome, "retry");
+  assert.deepEqual(m.manager.refusedReturns(), [{
+    attemptId: "att-refused",
+    nodeId: "unit",
+    leaseId: null,
+    firstRefusedAt: 1_000_000,
+    refusal: { reason: "tree is busy", processes: [] },
+  }]);
+
+  // A later refusal, for another reason, keeps the time the refusals began.
+  clock += 60_000;
+  m.fail.return = false;
+  m.fail.status = true;
+  assert.equal((await m.manager.releaseForAttempt("att-refused")).outcome, "retry");
+  const [later] = m.manager.refusedReturns();
+  assert.equal(later?.firstRefusedAt, 1_000_000);
+  assert.notEqual(later?.refusal.reason, "tree is busy");
+
+  m.fail.status = false;
+  assert.deepEqual(await m.manager.releaseForAttempt("att-refused"), { outcome: "returned" });
+  assert.deepEqual(m.manager.refusedReturns(), []);
+  assert.deepEqual(refusalColumns(), { first_refused_at: null, last_refusal: null });
 });
 
 test("a release that cannot read the pool does not become an authorised return", async () => {

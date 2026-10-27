@@ -10,6 +10,7 @@ import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { CiObservationSchema, type CiObservation } from "@shared/wait-for-ci.ts";
+import { parseWorktreeReturnRefusal, type WorktreeReturnRefusal } from "@shared/storage-health.ts";
 import {
   APP_CONFIG_ENTRIES,
   type AppConfigEntry,
@@ -186,7 +187,9 @@ let db: DatabaseSync | undefined;
 //    gains upstream's managed-plan schema (`test/managed-plans.test.ts` pins that path).
 // 8: fork - pending Command document proposals (`command_document_proposals`), empty on an
 //    upgraded database. Machine state rather than configuration: no settings backup domain.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 8;
+// 9: fork - refused worktree return columns (`first_refused_at`, `last_refusal`) on
+//    `task_worktree_returns` and `workflow_check_leases`, NULL on every upgraded row.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 9;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4077,6 +4080,17 @@ function migrate(d: DatabaseSync): void {
   // selects the row it already has by primary key.
   addColumn(d, "workflow_check_leases", "provider", "TEXT NOT NULL DEFAULT 'treehouse'");
   addColumn(d, "workflow_check_leases", "lease_id", "TEXT");
+
+  // A worktree return that keeps being refused is recorded rather than silent: when the
+  // owner's return was first refused, and the latest refusal (a JSON reason plus any blocking
+  // processes). Both are NULL until a refusal and are cleared by a successful return, and the
+  // first time is what names the `stuck-return` storage problem, so it is never rewritten
+  // while the refusals continue. Nullable with no backfill: an existing row has simply never
+  // recorded a refusal.
+  addColumn(d, "workflow_check_leases", "first_refused_at", "INTEGER");
+  addColumn(d, "workflow_check_leases", "last_refusal", "TEXT");
+  addColumn(d, "task_worktree_returns", "first_refused_at", "INTEGER");
+  addColumn(d, "task_worktree_returns", "last_refusal", "TEXT");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather
@@ -8030,6 +8044,40 @@ export function taskOwesWorktreeReturn(task: Task): boolean {
   return Boolean(openDb().prepare(`SELECT 1 FROM task_worktree_returns
     WHERE task_id = ? AND completed_at = ? AND dispatched_at IS ?`)
     .get(task.id, task.completedAt, task.dispatchedAt));
+}
+
+/**
+ * Record one refusal of a task's owed worktree return. The first refusal time is kept while
+ * the refusals continue, because it names the `stuck-return` problem; the reason is the latest.
+ */
+export function recordTaskWorktreeReturnRefusal(
+  taskId: string, refusal: WorktreeReturnRefusal, now: number,
+): void {
+  openDb().prepare(`UPDATE task_worktree_returns
+    SET first_refused_at = COALESCE(first_refused_at, ?), last_refusal = ? WHERE task_id = ?`)
+    .run(now, JSON.stringify(refusal), taskId);
+}
+
+/** A successful return ends the refusals. A partial return keeps its row, so clear it here. */
+export function clearTaskWorktreeReturnRefusal(taskId: string): void {
+  openDb().prepare(`UPDATE task_worktree_returns
+    SET first_refused_at = NULL, last_refusal = NULL WHERE task_id = ?`).run(taskId);
+}
+
+/** Every task whose owed return is currently being refused, oldest refusal first. */
+export function listTaskWorktreeReturnRefusals(): Array<{
+  taskId: string; firstRefusedAt: number; refusal: WorktreeReturnRefusal;
+}> {
+  const rows = openDb().prepare(`SELECT task_id, first_refused_at, last_refusal
+    FROM task_worktree_returns WHERE first_refused_at IS NOT NULL
+    ORDER BY first_refused_at ASC, task_id ASC`).all() as Array<{
+      task_id: string; first_refused_at: number; last_refusal: string | null;
+    }>;
+  return rows.map((row) => ({
+    taskId: row.task_id,
+    firstRefusedAt: Number(row.first_refused_at),
+    refusal: parseWorktreeReturnRefusal(row.last_refusal ?? ""),
+  }));
 }
 
 export function getTaskSessionClosure(taskId: string): TaskSessionClosureRow | null {

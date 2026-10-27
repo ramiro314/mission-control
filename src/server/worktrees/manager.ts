@@ -145,8 +145,17 @@ export type WarmSlotResult =
 export type WorktreeReleaseResult =
   | { outcome: "released" }
   | { outcome: "alreadyReleased" }
-  | { outcome: "refused"; reason: string }
+  /** `processes` names what occupied the slot, when occupancy was the refusal. */
+  | { outcome: "refused"; reason: string; processes?: WorktreeBlockingProcess[] }
   | { outcome: "outcomeUnknown"; reason: string };
+
+type ReleaseBlocker = { reason: string; processes?: WorktreeBlockingProcess[] };
+
+/** A process found occupying a slot, as a refused release reports it. */
+export interface WorktreeBlockingProcess {
+  pid: number;
+  command: string;
+}
 
 export type NativeLeaseLookup =
   | { state: "active" | "released"; lease: NativeWorktreeLease }
@@ -807,15 +816,15 @@ export class WorktreeManager {
   private async releaseBlocker(
     reference: WorktreeOwnerReference,
     path: string,
-  ): Promise<string | null> {
+  ): Promise<ReleaseBlocker | null> {
     try {
       if (await this.ownerReferenced(reference)) {
-        return "domain owner still references this lease";
+        return { reason: "domain owner still references this lease" };
       }
     } catch (error) {
-      return `domain ownership is unknown: ${bounded(String(error))}`;
+      return { reason: `domain ownership is unknown: ${bounded(String(error))}` };
     }
-    return this.occupancyBlocker(path);
+    return this.occupancyRefusal(path);
   }
 
   /**
@@ -823,14 +832,21 @@ export class WorktreeManager {
    * lock, so it cannot overlap an inventory observation's Git reads inside this slot; the
    * mutation around it runs unlocked, so a slow removal never holds up a preview.
    */
-  private async occupancyBlocker(path: string): Promise<string | null> {
+  private async occupancyRefusal(path: string): Promise<ReleaseBlocker | null> {
     const occupancy = (await this.withObservation(() => this.occupancy([path]))).get(path);
     if (!occupancy || occupancy.status === "unknown") {
-      return occupancy?.status === "unknown" ? occupancy.reason : "slot occupancy is unknown";
+      return { reason: occupancy?.status === "unknown" ? occupancy.reason : "slot occupancy is unknown" };
     }
     return occupancy.occupants.length > 0
-      ? "one or more processes still occupy the worktree"
+      ? {
+        reason: "one or more processes still occupy the worktree",
+        processes: occupancy.occupants.map(({ pid, command }) => ({ pid, command })),
+      }
       : null;
+  }
+
+  private async occupancyBlocker(path: string): Promise<string | null> {
+    return (await this.occupancyRefusal(path))?.reason ?? null;
   }
 
   private ownerReferenced(reference: WorktreeOwnerReference): Promise<boolean> {
@@ -2336,9 +2352,9 @@ export class WorktreeManager {
       return { outcome: "refused", reason: "active lease identity is incomplete or invalid" };
     }
     const initialBlocker = options.ownerAuthorized
-      ? await this.occupancyBlocker(slot.path)
+      ? await this.occupancyRefusal(slot.path)
       : await this.releaseBlocker(reference, slot.path);
-    if (initialBlocker) return { outcome: "refused", reason: initialBlocker };
+    if (initialBlocker) return { outcome: "refused", ...initialBlocker };
 
     const identity = this.identity(pool.mainCheckoutRoot);
     if (!identity || !exactSlotPath(pool, identity, slot)) {
@@ -2368,9 +2384,9 @@ export class WorktreeManager {
     // Fetch and target validation may take long enough for a process or domain reference
     // to appear. Re-read both immediately before persisting the destructive reset intent.
     const freshBlocker = options.ownerAuthorized
-      ? await this.occupancyBlocker(slot.path)
+      ? await this.occupancyRefusal(slot.path)
       : await this.releaseBlocker(reference, slot.path);
-    if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
+    if (freshBlocker) return { outcome: "refused", ...freshBlocker };
     if (options.requireClean) {
       let clean: Awaited<ReturnType<WorktreeGit["inspect"]>>;
       try {

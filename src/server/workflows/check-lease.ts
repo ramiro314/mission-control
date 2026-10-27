@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeProvider } from "@shared/types.ts";
+import { parseWorktreeReturnRefusal, type WorktreeReturnRefusal } from "@shared/storage-health.ts";
 import { CHECK_WORKTREES_DIR } from "../config.ts";
 import { openDb } from "../db.ts";
 import { verifyPinnedBase } from "../dispatcher.ts";
@@ -153,6 +154,18 @@ export type CheckLeaseRelease =
   /** The return failed. Row and pin retained in `returning`; reclamation will retry. */
   | { outcome: "retry"; reason: string };
 
+/** A live lease whose return keeps being refused, as storage health reads it. */
+export interface CheckLeaseRefusal {
+  attemptId: string;
+  nodeId: string;
+  leaseId: string | null;
+  firstRefusedAt: number;
+  refusal: WorktreeReturnRefusal;
+}
+
+/** A hand-back's result, naming the processes that blocked it when occupancy refused it. */
+export type CheckTreeHandBack = RunResult & { processes?: WorktreeReturnRefusal["processes"] };
+
 export interface CheckOperatorPreview {
   found: boolean;
   allowed: boolean;
@@ -291,6 +304,48 @@ export class CheckLeaseStore {
   }
 
   /**
+   * Record one refused or failed return. The first refusal time is kept while the refusals
+   * continue, because it names the `stuck-return` problem; the reason is the latest.
+   */
+  recordRefusal(attemptId: string, refusal: WorktreeReturnRefusal, now: number): void {
+    this.db
+      .prepare(
+        `UPDATE workflow_check_leases
+            SET first_refused_at = COALESCE(first_refused_at, ?), last_refusal = ?
+          WHERE attempt_id = ?`,
+      )
+      .run(now, JSON.stringify(refusal), attemptId);
+  }
+
+  clearRefusal(attemptId: string): void {
+    this.db
+      .prepare(
+        `UPDATE workflow_check_leases SET first_refused_at = NULL, last_refusal = NULL
+          WHERE attempt_id = ?`,
+      )
+      .run(attemptId);
+  }
+
+  /** Every live lease whose return is currently being refused, oldest refusal first. */
+  listRefused(): CheckLeaseRefusal[] {
+    const rows = this.db
+      .prepare(
+        `SELECT attempt_id, node_id, lease_id, first_refused_at, last_refusal
+           FROM workflow_check_leases
+          WHERE first_refused_at IS NOT NULL AND cleanup_state IN (${LIVE_PLACEHOLDERS})
+          ORDER BY first_refused_at, attempt_id`,
+      )
+      .all(...LIVE_STATES) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      attemptId: String(r.attempt_id),
+      nodeId: String(r.node_id),
+      leaseId: r.lease_id === null || r.lease_id === undefined ? null : String(r.lease_id),
+      firstRefusedAt: Number(r.first_refused_at),
+      refusal: parseWorktreeReturnRefusal(r.last_refusal == null ? "" : String(r.last_refusal)),
+    }));
+  }
+
+  /**
    * Used only to unwind an acquisition whose pin failed and whose tree is CONFIRMED back in
    * the pool. Nothing else deletes: a row that survives is the record of a resource that may
    * still be owned, which is the property this table exists for.
@@ -394,7 +449,7 @@ export interface CheckTreeReleaseProvider {
   /** Who holds this path now, read from the provider's own bookkeeping. */
   ownership(ref: CheckTreeRef): Promise<CheckTreeOwnership>;
   /** Hand the tree back using only the provider's exact persisted identity. */
-  handBack(ref: CheckTreeRef): Promise<RunResult>;
+  handBack(ref: CheckTreeRef): Promise<CheckTreeHandBack>;
   /** Serialize provider work when the provider needs it. */
   withLock<T>(repoRoot: string, fn: () => Promise<T>): Promise<T>;
 }
@@ -633,7 +688,7 @@ export class MissionCheckTreeProvider implements CheckTreeProvider {
     return { state: "held", holder: ref.leaseId };
   }
 
-  async handBack(ref: CheckTreeRef): Promise<RunResult> {
+  async handBack(ref: CheckTreeRef): Promise<CheckTreeHandBack> {
     if (!ref.leaseId) return stubRun({ stdout: "", stderr: "native check lease ID is missing", code: 1 });
     const found = this.manager.lookupLease({
       leaseId: ref.leaseId,
@@ -653,11 +708,10 @@ export class MissionCheckTreeProvider implements CheckTreeProvider {
       this.manager.settleDomainLease(ref.leaseId);
       return stubRun({ stdout: "", stderr: "", code: 0 });
     }
-    return stubRun({
-      stdout: "",
-      stderr: `${released.outcome}: ${released.reason}`,
-      code: 1,
-    });
+    return {
+      ...stubRun({ stdout: "", stderr: `${released.outcome}: ${released.reason}`, code: 1 }),
+      processes: released.outcome === "refused" ? released.processes : undefined,
+    };
   }
 
   withLock<T>(_repoRoot: string, fn: () => Promise<T>): Promise<T> {
@@ -1092,7 +1146,7 @@ export class CheckLeaseManager {
     }
     const returned = await provider.handBack(row);
     if (returned.code !== 0) {
-      return this.failedReturn(row, returned.stderr.trim() || `exit ${returned.code}`);
+      return this.failedReturn(row, returned.stderr.trim() || `exit ${returned.code}`, returned.processes);
     }
     this.settle(row, "returned");
     return { outcome: "returned" };
@@ -1104,11 +1158,15 @@ export class CheckLeaseManager {
    * still owned and saying otherwise is how an attempt rollover ends up with two writers in
    * one tree. Nothing downstream may treat this as clean.
    */
-  private failedReturn(row: CheckLeaseRow, reason: string): CheckLeaseRelease {
+  private failedReturn(
+    row: CheckLeaseRow,
+    reason: string,
+    processes: WorktreeReturnRefusal["processes"] = [],
+  ): CheckLeaseRelease {
     // Authorised: we read the pool, proved the tree was ours, issued the return, and it
     // failed. That verdict survives a restart, which is what `returning` records.
     this.store.setState(row.attemptId, "returning", this.now());
-    return this.retryLater(row, reason);
+    return this.retryLater(row, reason, processes);
   }
 
   /**
@@ -1117,7 +1175,14 @@ export class CheckLeaseManager {
    * Split from `failedReturn` so that "we could not look" can never be mistaken later for
    * "we decided and failed". Only the second may skip the group-emptiness question.
    */
-  private retryLater(row: CheckLeaseRow, reason: string): CheckLeaseRelease {
+  private retryLater(
+    row: CheckLeaseRow,
+    reason: string,
+    processes: WorktreeReturnRefusal["processes"] = [],
+  ): CheckLeaseRelease {
+    // Durable, unlike the backoff, so a return refused across restarts still becomes
+    // `stuck-return` after an hour.
+    this.store.recordRefusal(row.attemptId, { reason, processes }, this.now());
     const prior = this.backoff.get(row.attemptId)?.failures ?? 0;
     const failures = prior + 1;
     this.backoff.set(row.attemptId, {
@@ -1130,6 +1195,7 @@ export class CheckLeaseManager {
   /** Move a row to a terminal state and stop pinning its path. */
   private settle(row: CheckLeaseRow, state: "returned" | "lost"): void {
     this.store.setState(row.attemptId, state, this.now());
+    this.store.clearRefusal(row.attemptId);
     this.forget(row.attemptId, row.leasePath);
   }
 
@@ -1221,6 +1287,11 @@ export class CheckLeaseManager {
         );
       }
     }
+  }
+
+  /** Live leases whose return keeps being refused; storage health reports the stuck ones. */
+  refusedReturns(): CheckLeaseRefusal[] {
+    return this.store.listRefused();
   }
 
   /**

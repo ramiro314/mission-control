@@ -609,7 +609,7 @@ export function SettingsPage({
       case "harnesses":
         return <HarnessesPanel state={harnesses} setup={setup.view} />;
       case "worktrees":
-        return <WorktreeSettingsPanel state={worktrees} />;
+        return <WorktreeSettingsPanel state={worktrees} storageHealth={storageHealth} />;
       case "repositories":
         return <RepositoriesPanel state={repoIndex} />;
       case "task-sources":
