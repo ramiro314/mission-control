@@ -342,12 +342,19 @@ flowchart LR
     failure per kind, the total size, and the list of kept copies;
   - a Problems list where each row links to its slot card or Unowned trees row.
 - **StorageBanner** appears at the top of the dashboard when any bannered problem id is not
-  in the viewer's dismissed set. Dismiss stores each current id with the time it was
-  dismissed. The set is never pruned by an id's absence from the latest problem list, so a
-  problem that one recompute leaves out and the next reports again stays hidden. Because ids
-  name occurrences, a new problem, or a cleared problem that comes back as a new occurrence,
-  still brings the banner back. The set is bounded by age instead: entries dismissed more than
-  30 days ago are dropped, and at most the 500 newest are kept. It links to Settings > Storage.
+  in the viewer's dismissed set. It links to Settings > Storage.
+  - Dismiss stores each current id with a `lastSeenAt` time. On every `storage_health` event
+    the client first sets `lastSeenAt` to now for each dismissed id present in the problem
+    list, then drops entries whose `lastSeenAt` is more than 1 hour old, the same grace the
+    first-seen record uses.
+  - A dismissed problem therefore stays hidden for as long as it lasts, however long that
+    is, and survives a recompute that briefly omits it. Its entry is dropped only once the
+    problem has really gone. Because the refresh runs before the drop, a dashboard reopened
+    after days away keeps the dismissals of problems that are still present.
+  - Because ids name occurrences, a new problem, or a cleared problem that comes back as a
+    new occurrence, still brings the banner back.
+  - As a size bound, at most 500 entries are kept, evicting those with the oldest
+    `lastSeenAt` first, so live problems are the last to go.
 - **Worktrees** gains: a Recover button, orphan-process rows with Kill (behind a confirmation),
   the stuck-return reason, and a `stale` chip on the slot card; `staleLeaseDays` under Policy;
   and the Unowned trees list.
@@ -376,7 +383,7 @@ Playwright specs in `e2e/` (AGENTS.md); any new modal calls `expectContentClears
 | AC15 | Scoped prune removes only missing registrations under the state home | `test/orphan-tree-sweep.test.ts` |
 | AC16 | A fixture test file that leaks a detached grandchild and exits normally fails under the preload, and the grandchild is dead afterwards. A fixture runner killed with SIGKILL leaves its tagged grandchild alive; the next worker's preload start kills it and reports it as leaked by an earlier run, while a tagged child of a concurrently live worker survives. `test/update-build.test.ts` passes, and its escaped children run in their temp clone, not the checkout | `test/test-leak-guard.test.ts` |
 | AC17 | Settings > Storage shows the backup config, status and kept copies; saving counts round-trips; Back up now adds a manual copy | `e2e/storage.spec.ts` |
-| AC18 | The banner appears for a bannered problem, dismisses, stays hidden for the same problems, and returns for a new one. A problem that clears after a dismissal and then recurs, such as a backup that fails, succeeds, then fails again, brings the banner back. After a daemon restart, a dismissed quarantined slot, orphan process, failed backup, stuck return and dirty orphan folder keep their ids and stay hidden. A dismissed problem that one `storage_health` event omits and the next reports again, such as an orphan process missed by a pass whose `lsof` timed out or a dirty orphan folder skipped while occupied, stays hidden. A stale lease alone does not raise it | `e2e/storage.spec.ts` |
+| AC18 | The banner appears for a bannered problem, dismisses, stays hidden for the same problems, and returns for a new one. A problem that clears after a dismissal and then recurs, such as a backup that fails, succeeds, then fails again, brings the banner back. After a daemon restart, a dismissed quarantined slot, orphan process, failed backup, stuck return and dirty orphan folder keep their ids and stay hidden. A dismissed problem that one `storage_health` event omits and the next reports again, such as an orphan process missed by a pass whose `lsof` timed out or a dirty orphan folder skipped while occupied, stays hidden. A dismissed problem that stays present for more than 30 days (with the clock advanced in the fixture) stays hidden, and a dismissed problem absent for more than 1 hour loses its entry. A stale lease alone does not raise it | `e2e/storage.spec.ts` |
 | AC19 | From a Storage problem link, the slot card offers Recover for a quarantined slot and Kill for an orphan process, and each runs through its preview or confirmation | `e2e/worktree-reclaim.spec.ts` |
 | AC20 | A dirty unowned tree under `worktrees/` appears in Worktrees > Unowned trees, and from its Storage problem link too. Its discard-and-remove opens a preview that names the path and the work it discards. Cancel leaves the row and the folder in place. Confirm removes the folder, and the row and the Storage problem disappear after the next `storage_health` event | `e2e/worktree-reclaim.spec.ts` |
 | AC21 | A settled task whose tree holds uncommitted work is listed as `dirty-settled-tree`. Its discard-and-reclaim opens the Return preview with the discard consequence stated. Cancel keeps the tree. Confirm reclaims it, and the problem disappears | `e2e/worktree-reclaim.spec.ts` |
