@@ -349,6 +349,13 @@ each kind, the kept copies and their total size, and a **Problems** list whose r
 where each is fixed. It updates live from the `storage_health` event. See
 [Backup and restore](sqlite-database.html#backup).
 
+A problem that needs a person (a failed backup, a stuck return, a quarantined slot, an orphan
+process, a dirty orphan folder) also raises a banner at the top of the dashboard that links
+here. A stale lease or a dirty settled task tree is listed in Storage only. **Dismiss** hides
+the problems listed at that moment for as long as they last, in this browser, across reloads
+and daemon restarts. A new problem, or one that clears and later recurs, brings the banner
+back. A dismissal is forgotten once its problem has been absent for an hour.
+
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
 settings reach. That is the question a flat list of peers could not answer: which of
 these stays in this browser, and which of them acts publicly under your account.

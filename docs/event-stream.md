@@ -95,4 +95,6 @@ reconnect snapshot carries the same value as `storageHealth`, or null before the
 computed it once, and `GET /api/storage` returns it with the backup config. Settings > Storage
 shows whichever of the two arrived last, so its re-read after a write is not hidden by an older
 stream value while the stream is down. Each problem's id names one occurrence and is built only from durable
-state, so a daemon restart never changes it. See [Backup and restore](sqlite-database.html#backup).
+state, so a daemon restart never changes it. The dashboard's storage banner keys its dismissals
+by that id: each aggregate, snapshot or event, refreshes the dismissals it still lists before
+dropping any unseen for over an hour (`src/web/lib/storageBannerDismissals.ts`). See [Backup and restore](sqlite-database.html#backup).
