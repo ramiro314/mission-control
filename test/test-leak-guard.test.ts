@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -141,18 +142,33 @@ test("cleans up", async () => {
   assert.doesNotMatch(output, /test leak guard/);
 });
 
+/**
+ * Start a fresh worker and check that it reaped and reported `orphan`. False when the orphan
+ * was already gone without this worker reporting it, which happens legitimately: every worker
+ * start on this machine reaps stale tags, so one of a concurrent suite can get there first.
+ * That is the guard working but says nothing about THIS worker, so callers retry. An orphan
+ * that survives the next worker is a failure.
+ */
+async function nextWorkerReaps(orphan: number): Promise<boolean> {
+  const [command, args, options] = workerArgs(fixture("noop.mjs", ""));
+  const next = spawnSync(command, args, { ...options, encoding: "utf8", timeout: 30_000 });
+  if (!next.stderr.includes(`pid ${orphan}:`)) {
+    assert.equal(alive(orphan), false, `the next worker should have reaped the orphan: ${next.stderr}`);
+    return false;
+  }
+  assert.equal(next.status, 0, "an earlier run's leak is reported, not failed");
+  assert.match(next.stderr, /leaked by an earlier test run/);
+  assert.equal(await gone(orphan), true, "the orphan should be dead");
+  return true;
+}
+
 test("a killed worker's leak is reaped and reported by the next worker, and a live worker's child survives", { skip: !supported }, async (t) => {
   const pids: (number | undefined)[] = [];
   t.after(() => pids.forEach(kill));
 
   const live = await startHoldingWorker();
   pids.push(live.child, live.worker.pid);
-  const noop = fixture("noop.mjs", "");
 
-  // Every worker start on this machine reaps stale tags, so a worker of the concurrent suite
-  // can legitimately get to the orphan first, which is the guard working but says nothing
-  // about THIS worker. Such an attempt is retried; one where the orphan survives the next
-  // worker is a failure.
   let reported = false;
   for (let attempt = 0; attempt < 3 && !reported; attempt++) {
     const killed = await startHoldingWorker();
@@ -161,20 +177,33 @@ test("a killed worker's leak is reaped and reported by the next worker, and a li
     killed.worker.kill("SIGKILL");
     await exited;
     if (!alive(killed.child)) continue;
-
-    const [command, args, options] = workerArgs(noop);
-    const next = spawnSync(command, args, { ...options, encoding: "utf8", timeout: 30_000 });
-    if (!next.stderr.includes(`pid ${killed.child}:`)) {
-      assert.equal(alive(killed.child), false, `the next worker should have reaped the orphan: ${next.stderr}`);
-      continue;
-    }
-    reported = true;
-    assert.equal(next.status, 0, "an earlier run's leak is reported, not failed");
-    assert.match(next.stderr, /leaked by an earlier test run/);
-    assert.equal(await gone(killed.child), true, "the orphan should be dead");
+    reported = await nextWorkerReaps(killed.child);
   }
 
   assert.equal(reported, true, "the next worker should have reported the killed worker's orphan");
   assert.equal(alive(live.child), true, "a concurrently live worker's child must survive");
   assert.equal(alive(live.worker.pid!), true);
+});
+
+test("a tag whose worker pid is alive but started at another time is stale, so its process is reaped", { skip: !supported }, async (t) => {
+  // The start time is in the tag for PID reuse: the pid of a dead worker can belong to an
+  // unrelated live process by the next run. This process stands in for one, alive the whole
+  // time, so only a start-time comparison can tell the tag is not its.
+  const pids: number[] = [];
+  t.after(() => pids.forEach(kill));
+
+  let reported = false;
+  for (let attempt = 0; attempt < 3 && !reported; attempt++) {
+    const orphan = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, MISSION_TEST_LEAK_TAG: `${process.pid}:not-this-process-start` },
+    });
+    orphan.unref();
+    pids.push(orphan.pid!);
+    await once(orphan, "spawn");
+    reported = await nextWorkerReaps(orphan.pid!);
+  }
+
+  assert.equal(reported, true, "the next worker should have reported the reused-pid orphan");
 });
