@@ -467,7 +467,9 @@ test("a schema-invalid Claude plugin record is unknown rather than missing", asy
 });
 
 test("one thrown probe becomes its own unknown row", async () => {
+  // Linux offers every catalog dependency; macOS leaves out the Linux-only ones, such as lsof.
   const view = await setupChecksView(deps({
+    platform: "linux",
     conductorProbe: async () => { throw new Error("broken probe"); },
   }));
   assert.equal(view.rows.length, SETUP_DEPENDENCY_IDS.length + 1);
@@ -488,7 +490,7 @@ test("conductor provenance is reported only for the path that was probed", async
 });
 
 test("dependency rows project their catalog requirement without adding a second opinion", async () => {
-  const view = await setupChecksView(deps());
+  const view = await setupChecksView(deps({ platform: "linux" }));
   const familyIndexes = view.rows.map((row) => SETUP_FAMILY_IDS.indexOf(row.family));
   assert.deepEqual(familyIndexes, [...familyIndexes].sort((a, b) => a - b), "rendered rows remain family-grouped even though stable ids append");
   for (const id of SETUP_DEPENDENCY_IDS) {
