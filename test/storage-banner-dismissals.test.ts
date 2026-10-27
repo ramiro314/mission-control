@@ -12,6 +12,7 @@ import {
   STORAGE_DISMISSAL_GRACE_MS,
   STORAGE_DISMISSAL_LIMIT,
   undismissedStorageProblems,
+  updateStorageDismissals,
 } from "../src/web/lib/storageBannerDismissals.ts";
 
 const DAY = 24 * 60 * 60 * 1_000;
@@ -80,6 +81,29 @@ test("the cap evicts by lastSeenAt, not insertion order, so an early dismissal s
   assert.deepEqual(entries["old-0" as keyof typeof entries], { lastSeenAt: 1_000 });
   assert.equal(entries["old-1" as keyof typeof entries], undefined);
   assert.ok("old-2" in entries && "new-a" in entries);
+});
+
+test("an update re-reads the stored record, so another tab's dismissal is kept", (t) => {
+  const stored = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) },
+  });
+  t.after(() => {
+    updateStorageDismissals(() => ({}));
+    Reflect.deleteProperty(globalThis, "localStorage");
+  });
+
+  // This tab dismisses one problem; another tab then writes the record with a second one.
+  updateStorageDismissals((entries) => dismissStorageProblems(entries, [quarantined.id], 0));
+  const [key] = [...stored.keys()];
+  const other = JSON.parse(stored.get(key!)!);
+  stored.set(key!, JSON.stringify({ ...other, [orphan.id]: { lastSeenAt: 5 } }));
+
+  // An aggregate here must not write back a copy that lacks the other tab's dismissal.
+  const next = updateStorageDismissals((entries) => observeStorageProblems(entries, [quarantined.id, orphan.id], 10));
+  assert.deepEqual(next, { [quarantined.id]: { lastSeenAt: 10 }, [orphan.id]: { lastSeenAt: 10 } });
+  assert.deepEqual(JSON.parse(stored.get(key!)!), next);
 });
 
 test("the banner names a single problem, counts several, and links to Settings > Storage", () => {

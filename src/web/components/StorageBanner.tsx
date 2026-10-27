@@ -4,8 +4,9 @@ import {
   dismissStorageProblems,
   observeStorageProblems,
   readStorageDismissals,
+  subscribeStorageDismissals,
   undismissedStorageProblems,
-  writeStorageDismissals,
+  updateStorageDismissals,
   type StorageDismissals,
 } from "../lib/storageBannerDismissals.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -18,16 +19,15 @@ import { Tooltip } from "./Tooltip.tsx";
 export function StorageBanner({ health }: { health: StorageHealth | null }): React.JSX.Element | null {
   const [dismissals, setDismissals] = useState<StorageDismissals>(readStorageDismissals);
 
+  // Another tab's dismissal hides the banner here too.
+  useEffect(() => subscribeStorageDismissals(() => setDismissals(readStorageDismissals())), []);
+
   // Before the first aggregate there is nothing to judge absence against, so no entry ages.
   useEffect(() => {
     if (!health) return;
     const present = health.problems.map((problem) => problem.id);
-    setDismissals((entries) => observeStorageProblems(entries, present, Date.now()));
+    setDismissals(updateStorageDismissals((entries) => observeStorageProblems(entries, present, Date.now())));
   }, [health]);
-
-  useEffect(() => {
-    writeStorageDismissals(dismissals);
-  }, [dismissals]);
 
   const problems = undismissedStorageProblems(health, dismissals);
   if (problems.length === 0) return null;
@@ -51,8 +51,8 @@ export function StorageBanner({ health }: { health: StorageHealth | null }): Rea
             type="button"
             className="btn btn-ghost"
             aria-label="Dismiss storage warning"
-            onClick={() => setDismissals((entries) =>
-              dismissStorageProblems(entries, problems.map((problem) => problem.id), Date.now()))}
+            onClick={() => setDismissals(updateStorageDismissals((entries) =>
+              dismissStorageProblems(entries, problems.map((problem) => problem.id), Date.now())))}
           >
             Dismiss
           </button>

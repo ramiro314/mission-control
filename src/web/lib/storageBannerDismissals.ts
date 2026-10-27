@@ -15,7 +15,9 @@ import type { StorageHealth, StorageProblem } from "@shared/storage-health.ts";
  * daemon's first-seen record, `STORAGE_FIRST_SEEN_GRACE_MS`.
  *
  * In localStorage, like `lastRepo.ts` and for its reason: losing it to a new origin costs one
- * more Dismiss click, and a write per aggregate is no traffic for the daemon to carry.
+ * more Dismiss click, and a write per aggregate is no traffic for the daemon to carry. The
+ * stored record is the truth for every tab on the origin: each change re-reads it before
+ * writing, so one tab never writes back a copy that lacks another tab's dismissal.
  */
 
 export const STORAGE_DISMISSAL_GRACE_MS = 60 * 60 * 1_000;
@@ -71,19 +73,37 @@ export function undismissedStorageProblems(
   return health?.problems.filter((problem) => problem.bannered && !Object.hasOwn(entries, problem.id)) ?? [];
 }
 
+/** The last record this tab read or wrote, standing in when storage is unavailable. */
+let memory: StorageDismissals = {};
+
 export function readStorageDismissals(): StorageDismissals {
   try {
     const parsed = DismissalsSchema.safeParse(JSON.parse(localStorage.getItem(KEY) ?? "{}"));
-    return parsed.success ? parsed.data : {};
-  } catch {
-    return {};
-  }
-}
-
-export function writeStorageDismissals(entries: StorageDismissals): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(entries));
+    memory = parsed.success ? parsed.data : {};
   } catch {
     /* storage unavailable - dismissals last for this tab only */
   }
+  return memory;
+}
+
+/** Apply one change to the stored record, as it stands now, and return what was written. */
+export function updateStorageDismissals(
+  change: (entries: StorageDismissals) => StorageDismissals,
+): StorageDismissals {
+  memory = change(readStorageDismissals());
+  try {
+    localStorage.setItem(KEY, JSON.stringify(memory));
+  } catch {
+    /* storage unavailable - dismissals last for this tab only */
+  }
+  return memory;
+}
+
+/** Call `changed` whenever another tab on this origin writes the record. Returns the unsubscribe. */
+export function subscribeStorageDismissals(changed: () => void): () => void {
+  const listener = (event: StorageEvent): void => {
+    if (event.key === KEY || event.key === null) changed();
+  };
+  window.addEventListener("storage", listener);
+  return () => window.removeEventListener("storage", listener);
 }

@@ -279,6 +279,45 @@ test("a failed backup raises the banner, a dismissal holds across a restart, and
   }
 });
 
+test("a dismissal in one tab hides the banner in another, and that tab's next aggregate keeps it", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  await expect(dashboard.getByText("No storage problems.")).toBeVisible();
+  const other = await dashboard.context().newPage();
+  const elsewhere = mkdtempSync(join(tmpdir(), "mission-storage-elsewhere-"));
+  try {
+    await other.goto(`${daemon.baseURL}/#/fleet`);
+    breakBackupRoot(daemon, elsewhere);
+    const backUpNow = dashboard.getByRole("button", { name: "Back up now" });
+    await backUpNow.click();
+    await expect(storageBanner(dashboard)).toBeVisible();
+    await expect(storageBanner(other)).toBeVisible();
+
+    await storageBanner(dashboard).getByRole("button", { name: "Dismiss storage warning" }).click();
+    await expect(storageBanner(dashboard)).toHaveCount(0);
+    await expect(storageBanner(other)).toHaveCount(0);
+    const dismissedIds = Object.keys(await dismissals(dashboard));
+    expect(dismissedIds).toHaveLength(1);
+
+    // The same failure again reaches both tabs. The other tab applies it to the stored record,
+    // never to a copy read before the dismissal, so the dismissal survives a reload.
+    const seen = await newestSeen(other);
+    await backUpNow.click();
+    await expect.poll(() => newestSeen(other)).toBeGreaterThan(seen);
+    expect(Object.keys(await dismissals(other))).toEqual(dismissedIds);
+    await dashboard.reload();
+    await expect(dashboard.getByRole("list", { name: "Storage problems" }))
+      .toContainText("Manual database backup failed");
+    await expect(storageBanner(dashboard)).toHaveCount(0);
+    await expect(storageBanner(other)).toHaveCount(0);
+  } finally {
+    await other.close();
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 
