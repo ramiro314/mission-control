@@ -704,6 +704,71 @@ test("a copy dated 2 hours in the future is ignored by the due check and pruned 
   assert.equal(loop.state.attempts.length, 1, "the fresh copy is not captured again on the next wake");
 });
 
+test("only a copy more than 1 minute in the future is ignored by the due check and pruned first", (t) => {
+  // 30 seconds ahead is inside the tolerance: it is the newest copy, so nothing is due, and
+  // prune keeps it while expiring the genuinely oldest copy.
+  const near = wallClockLoop(t);
+  const nearCopy = near.seedScheduled(near.state.clock + 30_000, 1);
+  const nearOldest = near.seedScheduled(near.state.clock - 5 * HOUR, 2);
+  near.seedScheduled(near.state.clock - 4 * HOUR, 3);
+  near.seedScheduled(near.state.clock - 3 * HOUR, 4);
+  assert.equal(near.service.scheduledDue(), false);
+  near.service.prune();
+  const nearKept = kept(near.backupRoot, "scheduled");
+  assert.equal(nearKept.includes(nearCopy), true, "a copy 30 s ahead is not ranked oldest");
+  assert.equal(nearKept.includes(nearOldest), false);
+
+  // 2 minutes ahead is past the tolerance: it is ignored, so a capture is due, and it is the
+  // first copy prune expires.
+  const far = wallClockLoop(t);
+  const farCopy = far.seedScheduled(far.state.clock + 2 * MINUTE, 1);
+  const farOldest = far.seedScheduled(far.state.clock - 4 * HOUR, 2);
+  far.seedScheduled(far.state.clock - 3 * HOUR, 3);
+  far.seedScheduled(far.state.clock - 2 * HOUR, 4);
+  assert.equal(far.service.scheduledDue(), true);
+  far.service.prune();
+  const farKept = kept(far.backupRoot, "scheduled");
+  assert.equal(farKept.includes(farCopy), false, "a copy 2 minutes ahead is pruned first");
+  assert.equal(farKept.includes(farOldest), true);
+});
+
+test("a status write that fails never turns a capture's own outcome around", async (t) => {
+  const warn = t.mock.method(console, "warn", () => undefined);
+  const root = fixture("mission-database-backup-status-write-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const backupRoot = join(root, "backups");
+  const source = new DatabaseSync(join(root, "harness.db"));
+  t.after(() => source.close());
+  source.exec("CREATE TABLE recovery_probe (value TEXT NOT NULL)");
+  storeBackupsConfig(source, JSON.stringify({}));
+  let failing = false;
+  const service = new DatabaseBackupService(source, {
+    root: backupRoot,
+    onlineBackup: async (db, destination) => {
+      if (failing) throw new Error("ENOSPC: no space left on device");
+      await sqliteBackup(db, destination);
+    },
+  });
+  source.exec(`
+    CREATE TRIGGER refuse_insert BEFORE INSERT ON app_config BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END;
+    CREATE TRIGGER refuse_update BEFORE UPDATE ON app_config BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END;
+  `);
+
+  const published = await service.captureScheduled();
+  assert.deepEqual(kept(backupRoot, "scheduled"), [published.filename], "the copy is still published");
+  const manual = await service.captureManual();
+  assert.deepEqual(kept(backupRoot, "manual"), [manual.filename]);
+
+  failing = true;
+  await assert.rejects(service.captureScheduled(), /^Error: Scheduled database backup failed: ENOSPC/);
+
+  const warnings = warn.mock.calls.map((call) => String(call.arguments[0]));
+  assert.ok(warnings.length > 0);
+  for (const warning of warnings) {
+    assert.match(warning, /database backup status was not saved: disk I\/O error/);
+  }
+});
+
 test("a future lastAttemptAt counts as now and does not lengthen the backoff", async (t) => {
   const loop = wallClockLoop(t);
   loop.state.failing = true;
