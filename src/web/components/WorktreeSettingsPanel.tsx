@@ -551,6 +551,11 @@ function SlotCard({
         <StateChip label={slot.state} tone={tone} />
         {pending && <StateChip label={`${ACTION_VERBS[pending.request.action].toLowerCase()} ${pending.state === "running" ? "in progress" : "queued"}`} tone="working" />}
         {slot.dirty === true && <StateChip label="dirty" tone="danger" />}
+        {slot.staleSince !== null && (
+          <Tooltip label={`Still leased, with no Git-visible change since ${new Date(slot.staleSince).toLocaleDateString()}. Listed in Settings > Storage; never reclaimed automatically.`}>
+            <StateChip label="stale" tone="attention" />
+          </Tooltip>
+        )}
         {slot.defaultRelation === "unmerged" && <StateChip label="unlanded" tone="attention" />}
         {slot.processes.state === "unknown" && <StateChip label="processes unknown" tone="danger" />}
       </div>
@@ -1353,7 +1358,25 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
             />
           </div>
         </div>
-        <p className="settings-hint">A repository with its own override ignores both of these. Open its pool above to see or clear that override.</p>
+        <div className="kb-row">
+          <div className="kb-row-text">
+            <span className="kb-row-label">Stale lease after (days)</span>
+            <span className="kb-row-desc">A slot whose owner is still live but whose checkout has had no Git-visible change for this many days shows a <strong>stale</strong> chip and is listed in Settings &gt; Storage. It is never reclaimed automatically.</span>
+          </div>
+          <div className="kb-row-controls">
+            <input
+              className="wt-number"
+              aria-label="Stale lease threshold in days"
+              type="number"
+              min={1}
+              max={90}
+              disabled={!config}
+              value={config?.staleLeaseDays ?? 7}
+              onChange={(event) => void state.updateConfig({ staleLeaseDays: Number(event.target.value) })}
+            />
+          </div>
+        </div>
+        <p className="settings-hint">A repository with its own override ignores the first two. Open its pool above to see or clear that override.</p>
       </section>
 
       <section className="wt-group" data-anchor="worktrees/legacy-drain">

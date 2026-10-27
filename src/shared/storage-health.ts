@@ -155,3 +155,16 @@ export const StorageFirstSeenSchema = z.record(
 );
 
 export type StorageFirstSeen = z.output<typeof StorageFirstSeenSchema>;
+
+/**
+ * Each live lease's Git-visible activity clock, keyed by lease id: the digest of the slot's
+ * HEAD, index, tracked changes and untracked files when last probed, and when that digest last
+ * changed. A lease absent here has never been probed successfully, so it is never stale.
+ * Operational state of this machine, never part of a snapshot.
+ */
+export const WorktreeLeaseActivitySchema = z.record(
+  z.string(),
+  z.object({ slotId: z.string(), digest: z.string(), changedAt: epochMs }),
+);
+
+export type WorktreeLeaseActivity = z.output<typeof WorktreeLeaseActivitySchema>;

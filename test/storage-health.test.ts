@@ -14,6 +14,8 @@ import {
   type StorageView,
 } from "../src/shared/storage-health.ts";
 import { databaseBackupStatusFrom } from "../src/shared/database-backups.ts";
+import type { ActivityFingerprint } from "../src/server/git/worktree-activity.ts";
+import type { WorktreeSlotRow } from "../src/server/worktrees/store.ts";
 
 // What is at stake: Settings > Storage and the banner both read one aggregate, and the banner's
 // dismissals are keyed by problem id. An id that changed across a daemon restart, or across one
@@ -36,15 +38,19 @@ const {
   StorageHealthService,
 } = await import("../src/server/storage-health.ts");
 
+const { LeaseActivityObserver } = await import("../src/server/worktrees/lease-activity.ts");
+const { WorktreesConfigSchema, WorktreesConfigPatchSchema } = await import("../src/shared/protocol.ts");
+
 const backupRoot = join(stateHome, "backups", "database");
 const HOUR = 60 * 60 * 1_000;
 const ENOSPC = async () => { throw new Error("ENOSPC: no space left on device"); };
 
 beforeEach(() => {
   rmSync(backupRoot, { recursive: true, force: true });
-  openDb().prepare("DELETE FROM app_config WHERE key IN (?, ?)").run(
+  openDb().prepare("DELETE FROM app_config WHERE key IN (?, ?, ?)").run(
     APP_CONFIG_ENTRIES.backupsStatus.key,
     APP_CONFIG_ENTRIES.storageFirstSeen.key,
+    APP_CONFIG_ENTRIES.worktreeLeaseActivity.key,
   );
 });
 
@@ -360,3 +366,214 @@ test("GET /api/storage answers 503 without a storage service", async () => {
     message: "Storage health service is unavailable",
   });
 });
+
+// Stale live leases (AC11). The fixture stands in for the slot rows, the owner's domain row and
+// the Git-visible probe; the clock itself is the real `worktrees.leaseActivity` record.
+
+const DAY = 24 * HOUR;
+
+function leasedSlot(overrides: Partial<WorktreeSlotRow> = {}): WorktreeSlotRow {
+  return {
+    id: "slot-1",
+    poolId: "pool-1",
+    ordinal: 1,
+    path: "/state/worktrees/pool-1/1/demo",
+    state: "leased",
+    version: 4,
+    requestedHeadSha: null,
+    currentHeadSha: null,
+    activeLeaseId: "lease-1",
+    activeOwnerKind: "manual",
+    activeOwnerKey: "manual-1",
+    leasedAt: 0,
+    lastReleasedLeaseId: null,
+    lastReleasedOwnerKind: null,
+    lastReleasedOwnerKey: null,
+    lastUsedAt: null,
+    quarantineReason: null,
+    lastError: null,
+    depsState: null,
+    depsFingerprint: null,
+    depsFingerprintSha: null,
+    depsClaimedAt: null,
+    depsLastError: null,
+    depsLogPath: null,
+    createdAt: 0,
+    updatedAt: 0,
+    ...overrides,
+  };
+}
+
+/** A daemon generation's lease clock over fixture slots, owners and Git-visible activity. */
+function leaseClock(fixture: {
+  slots: WorktreeSlotRow[];
+  live?: (leaseId: string) => boolean;
+  digest: (path: string) => ActivityFingerprint;
+  days?: () => number;
+  now: () => number;
+}) {
+  const passes: boolean[] = [];
+  const observer = new LeaseActivityObserver({
+    slots: () => fixture.slots,
+    ownerLive: (reference) => fixture.live?.(reference.leaseId) ?? true,
+    probe: async (path) => fixture.digest(path),
+    staleLeaseDays: fixture.days ?? (() => 7),
+    now: fixture.now,
+    schedule: () => () => {},
+  }, (staleChanged) => passes.push(staleChanged));
+  const health = new StorageHealthService({
+    backups: { status: () => databaseBackupStatusFrom(undefined), keptCopies: () => [] },
+    publish: () => {},
+    sources: [() => observer.problems()],
+    now: fixture.now,
+  });
+  return { observer, health, passes };
+}
+
+test("staleLeaseDays defaults to 7, accepts 1 to 90, and refuses anything else", () => {
+  assert.equal(WorktreesConfigSchema.parse({}).staleLeaseDays, 7);
+  for (const days of [1, 90]) {
+    assert.equal(WorktreesConfigSchema.parse({ staleLeaseDays: days }).staleLeaseDays, days);
+    assert.equal(WorktreesConfigPatchSchema.parse({ staleLeaseDays: days }).staleLeaseDays, days);
+  }
+  for (const days of [0, 91, 2.5]) {
+    assert.equal(WorktreesConfigSchema.safeParse({ staleLeaseDays: days }).success, false);
+    assert.equal(WorktreesConfigPatchSchema.safeParse({ staleLeaseDays: days }).success, false);
+  }
+});
+
+test("a live lease with no Git-visible change for staleLeaseDays is listed in Storage only, and a change clears it", async () => {
+  let clock = Date.UTC(2026, 9, 1);
+  let digest = "a";
+  const slot = leasedSlot();
+  const fixture = {
+    slots: [slot],
+    digest: (): ActivityFingerprint => ({ kind: "known", digest }),
+    now: () => clock,
+  };
+  const first = leaseClock(fixture);
+  // The first probe starts the clock now: it is never backdated to when the lease began.
+  await first.observer.pass();
+  assert.deepEqual(first.health.recompute().problems, []);
+
+  clock += 7 * DAY - 1;
+  await first.observer.pass();
+  assert.deepEqual(first.health.recompute().problems, [], "one millisecond short of the threshold");
+
+  clock += 1;
+  await first.observer.pass();
+  const flagged = first.health.recompute().problems;
+  assert.deepEqual(flagged, [{
+    id: "stale-lease:slot-1:lease-1",
+    kind: "stale-lease",
+    bannered: false,
+    message: "/state/worktrees/pool-1/1/demo is still leased but has had no Git-visible change since 2026-10-01",
+    link: { target: "slot", slotId: "slot-1" },
+  }]);
+  assert.deepEqual([...first.observer.staleSinceBySlot()], [["slot-1", Date.UTC(2026, 9, 1)]]);
+  assert.deepEqual(first.passes, [true, false, true], "a pass reports when the stale set moved");
+
+  // Listed, never reclaimed: the lease and its slot are exactly as they were.
+  assert.deepEqual(fixture.slots, [leasedSlot()]);
+
+  // The clock is durable, so a restarted daemon lists the same occurrence.
+  const restarted = leaseClock(fixture);
+  assert.deepEqual(problemIds(restarted.health.recompute()), ["stale-lease:slot-1:lease-1"]);
+
+  // Any Git-visible change restarts the clock and clears the problem.
+  digest = "b";
+  await restarted.observer.pass();
+  assert.deepEqual(restarted.health.recompute().problems, []);
+  assert.deepEqual(stored(), { "lease-1": { slotId: "slot-1", digest: "b", changedAt: clock } });
+});
+
+test("the threshold is read on every recompute, so raising it above a lease's age clears the problem", async () => {
+  let clock = Date.UTC(2026, 9, 1);
+  let days = 3;
+  const { observer, health } = leaseClock({
+    slots: [leasedSlot()],
+    digest: () => ({ kind: "known", digest: "a" }),
+    days: () => days,
+    now: () => clock,
+  });
+  await observer.pass();
+  clock += 5 * DAY;
+  assert.deepEqual(problemIds(health.recompute()), ["stale-lease:slot-1:lease-1"]);
+  days = 10;
+  assert.deepEqual(health.recompute().problems, []);
+  assert.equal(observer.staleSinceBySlot().size, 0);
+});
+
+test("an unreadable probe or owner keeps the clock, a gone owner or a new lease drops it, and a warm owner has none", async () => {
+  let clock = Date.UTC(2026, 9, 1);
+  let probe: ActivityFingerprint = { kind: "known", digest: "a" };
+  let live: boolean | "unknown" = true;
+  const slots = [
+    leasedSlot(),
+    leasedSlot({ id: "slot-2", path: "/w/2", activeLeaseId: "lease-2", activeOwnerKind: "warm", activeOwnerKey: "op-1" }),
+    leasedSlot({ id: "slot-3", path: "/w/3", state: "available", activeLeaseId: null, activeOwnerKind: null, activeOwnerKey: null }),
+  ];
+  const { observer, health } = leaseClock({
+    slots,
+    live: (leaseId) => {
+      if (leaseId !== "lease-1") return true;
+      if (live === "unknown") throw new Error("database is locked");
+      return live;
+    },
+    digest: () => probe,
+    now: () => clock,
+  });
+  await observer.pass();
+  const started = { "lease-1": { slotId: "slot-1", digest: "a", changedAt: clock } };
+  assert.deepEqual(stored(), started, "only the task, check or manual lease has a clock");
+
+  clock += 8 * DAY;
+  probe = { kind: "unknown", reason: "index listing did not complete" };
+  await observer.pass();
+  assert.deepEqual(stored(), started, "a probe that cannot answer moves nothing");
+  assert.deepEqual(problemIds(health.recompute()), ["stale-lease:slot-1:lease-1"]);
+
+  live = "unknown";
+  probe = { kind: "known", digest: "z" };
+  await observer.pass();
+  assert.deepEqual(stored(), started, "an owner that cannot be read keeps its clock");
+  assert.deepEqual(health.recompute().problems, [], "but is not listed as live");
+
+  // A finished owner's lease is not live: no clock and no problem, even before it is returned.
+  live = false;
+  await observer.pass();
+  assert.deepEqual(stored(), {});
+
+  // The same slot under a new lease starts a new clock.
+  live = true;
+  slots[0] = leasedSlot({ activeLeaseId: "lease-9" });
+  await observer.pass();
+  assert.deepEqual(stored(), { "lease-9": { slotId: "slot-1", digest: "z", changedAt: clock } });
+});
+
+test("a request made while a pass runs gets exactly one more pass after it", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let probes = 0;
+  const observer = new LeaseActivityObserver({
+    slots: () => [leasedSlot()],
+    ownerLive: () => true,
+    probe: async () => {
+      probes += 1;
+      await gate;
+      return { kind: "known", digest: "a" };
+    },
+    schedule: () => () => {},
+  });
+  observer.start();
+  const running = observer.request();
+  void observer.request();
+  release();
+  await running;
+  assert.equal(probes, 2);
+  await observer.stop();
+});
+
+function stored(): unknown {
+  return getAppConfig(APP_CONFIG_ENTRIES.worktreeLeaseActivity) ?? {};
+}

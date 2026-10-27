@@ -376,10 +376,10 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "worktree-policy",
     label: "Worktree policy",
-    description: "Default and repository-specific native checkout capacity and setup argv.",
+    description: "Default and repository-specific native checkout capacity and setup argv, and when a live lease counts as stale.",
     category: "worktrees",
     anchor: "worktrees/policy",
-    keywords: ["pool", "capacity", "setup", "argv", "repository", "disable"],
+    keywords: ["pool", "capacity", "setup", "argv", "repository", "disable", "stale", "lease", "idle"],
     kind: "jump",
     backup: backupDomains("worktrees"),
   },
