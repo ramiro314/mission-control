@@ -626,6 +626,50 @@ test("a refused return records its first refusal and latest reason, and a succes
   assert.deepEqual(refusalColumns(), { first_refused_at: null, last_refusal: null });
 });
 
+test("a refused native release stores the processes occupying the slot in the check's refusal", async () => {
+  // The real MissionCheckTreeProvider over a stub allocator, so the processes travel the
+  // whole way: the allocator's refused release, handBack, failedReturn, and last_refusal.
+  type Release = Awaited<ReturnType<import("../src/server/worktrees/manager.ts").WorktreeManager["release"]>>;
+  let next: Release = {
+    outcome: "refused",
+    reason: "one or more processes still occupy the worktree",
+    processes: [{ pid: 4242, command: "node vite" }],
+  };
+  const lease = {
+    slotId: "slot-1", poolId: "pool-1", path: "/pool/slot-1", provider: "mission" as const,
+    leaseId: "lease-native", owner: { kind: "check" as const, key: "att-native" },
+    baseSha: SHA, slotVersion: 1,
+  };
+  const allocator = {
+    lookupLease: () => ({ state: "active" as const, lease }),
+    release: async () => next,
+    settleDomainLease: () => {},
+  } as unknown as import("../src/server/worktrees/manager.ts").WorktreeManager;
+  const manager = new CheckLeaseManager(db, { verifyBase: async (_r, sha) => sha, manager: allocator });
+  store.insertHeld({
+    attemptId: "att-native", submissionId: "sub-native", nodeId: "unit", repoRoot: "/repo",
+    leasePath: "/pool/slot-1", holderToken: "lease-native", provider: "mission", leaseId: "lease-native", now: 1,
+  });
+
+  assert.equal((await manager.releaseForAttempt("att-native")).outcome, "retry");
+  assert.deepEqual(manager.refusedReturns()[0]?.refusal, {
+    reason: "refused: one or more processes still occupy the worktree",
+    processes: [{ pid: 4242, command: "node vite" }],
+  });
+
+  // A failure that is not a refusal names no process, and replaces the earlier list.
+  next = { outcome: "outcomeUnknown", reason: "fetch timed out" };
+  assert.equal((await manager.releaseForAttempt("att-native")).outcome, "retry");
+  assert.deepEqual(manager.refusedReturns()[0]?.refusal, {
+    reason: "outcomeUnknown: fetch timed out",
+    processes: [],
+  });
+
+  next = { outcome: "released" };
+  assert.deepEqual(await manager.releaseForAttempt("att-native"), { outcome: "returned" });
+  assert.deepEqual(manager.refusedReturns(), []);
+});
+
 test("a release that cannot read the pool does not become an authorised return", async () => {
   // `returning` MEANS authorised: startup recovery retries such a row without re-consulting
   // group emptiness, because the decision was already made against a tree proven ours and
