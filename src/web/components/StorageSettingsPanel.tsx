@@ -121,13 +121,10 @@ function ProblemLink({
 }
 
 export function StorageSettingsPanelView({
-  health,
   state,
   actions,
   onNavigate,
 }: {
-  /** The live aggregate, falling back to the route's answer before the stream has one. */
-  health: StorageHealth | null;
   state: StorageState;
   actions: StorageActions;
   onNavigate: SettingsNavigate;
@@ -151,6 +148,7 @@ export function StorageSettingsPanelView({
     || draft.intervalHours !== String(config.intervalHours)
   ));
   const busy = state.saving || state.backingUp;
+  const health = state.health;
   const copies = health?.backups.copies ?? [];
   const problems = health?.problems ?? [];
 
@@ -295,10 +293,9 @@ export function StorageSettingsPanel({
   health: StorageHealth | null;
   onNavigate: SettingsNavigate;
 }): React.JSX.Element {
-  const { save, backUpNow, ...state } = useStorage();
+  const { save, backUpNow, ...state } = useStorage(health);
   return (
     <StorageSettingsPanelView
-      health={health ?? state.view?.health ?? null}
       state={state}
       actions={{ save, backUpNow }}
       onNavigate={onNavigate}

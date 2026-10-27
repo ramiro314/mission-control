@@ -277,7 +277,11 @@ test("the registry carries the aggregate in the snapshot and emits it as storage
   const registry = new Registry();
   const events: ServerEvent[] = [];
   registry.subscribe((event) => events.push(event));
-  assert.deepEqual(registry.snapshot().storageHealth.problems, [], "unseeded: no problems");
+  assert.equal(
+    registry.snapshot().storageHealth,
+    null,
+    "unseeded: unknown, never an empty aggregate that reads as no copies and no problems",
+  );
 
   const health = new StorageHealthService({
     backups: {
@@ -290,7 +294,7 @@ test("the registry carries the aggregate in the snapshot and emits it as storage
   health.recompute();
   const frames = events.filter((event) => event.type === "storage_health");
   assert.equal(frames.length, 1);
-  assert.deepEqual(problemIds(registry.snapshot().storageHealth), ["backup-failed:scheduled:5"]);
+  assert.deepEqual(problemIds(registry.snapshot().storageHealth!), ["backup-failed:scheduled:5"]);
 });
 
 function app(deps: Partial<Parameters<typeof buildApp>[0]> = {}) {

@@ -133,3 +133,52 @@ test("a failed Back up now appears in Problems and clears on the next success", 
     rmSync(elsewhere, { recursive: true, force: true });
   }
 });
+
+/** The daemon's real connect-time snapshot, read once off its event stream. */
+async function realSnapshot(daemon: DaemonHandle): Promise<Record<string, unknown>> {
+  const stream = await fetch(`${daemon.baseURL}/events`);
+  expect(stream.ok).toBe(true);
+  const reader = stream.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (!text.includes("\n\n")) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error("SSE closed before its snapshot");
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+  } finally {
+    await reader.cancel();
+  }
+  const data = text.split("\n").find((line) => line.startsWith("data: "))!;
+  return JSON.parse(data.slice(6)) as Record<string, unknown>;
+}
+
+test("with the stream down after its snapshot, Back up now still shows the copy it took", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The stream delivers one real snapshot, which carries a storage aggregate, and then never
+  // reconnects: no `storage_health` frame can reach this page. The panel's re-read after the
+  // write is the only way it can learn about the new copy, and it must not be outranked by the
+  // older stream value.
+  const snapshot = await realSnapshot(daemon);
+  expect(snapshot.storageHealth).toBeTruthy();
+  let streams = 0;
+  await dashboard.route("**/events", (route) => {
+    streams += 1;
+    if (streams > 1) return route.abort();
+    return route.fulfill({ contentType: "text/event-stream", body: `data: ${JSON.stringify(snapshot)}\n\n` });
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  await dashboard.reload();
+  await expect(dashboard.getByRole("tab", { name: "Storage" })).toHaveAttribute("aria-selected", "true");
+  await expect(dashboard.getByText("No copies are kept yet.", { exact: false })).toBeVisible();
+
+  await dashboard.getByRole("button", { name: "Back up now" }).click();
+  await expect(dashboard.getByText("Backup taken.", { exact: false })).toBeVisible();
+  const copies = dashboard.getByRole("table", { name: "Kept copies, newest first" });
+  await expect(copies.getByRole("row").filter({ hasText: "Manual" })).toHaveCount(1);
+  await expect(dashboard.getByRole("article", { name: "Manual backups" })).not.toContainText("Last success: Never");
+  expect(streams).toBeGreaterThanOrEqual(1);
+});

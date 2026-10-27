@@ -3532,9 +3532,10 @@ export type ServerEvent =
       keepAwake: KeepAwakeStatus;
       /**
        * Backups and storage problems at connect time, so Settings > Storage and the banner
-       * are right from the first render. Optional for an older daemon, which sends none.
+       * are right from the first render. Null until the daemon's storage service has computed
+       * it once; absent from an older daemon, which sends none.
        */
-      storageHealth?: import("./storage-health.ts").StorageHealth;
+      storageHealth?: import("./storage-health.ts").StorageHealth | null;
       /**
        * The latest committed restore marker, or null when this daemon has restored nothing.
        * Bounded to the same three public scalars as the incremental event. A fresh browser

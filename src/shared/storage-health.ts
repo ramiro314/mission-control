@@ -137,12 +137,6 @@ export const StorageHealthSchema = z.object({
 
 export type StorageHealth = z.output<typeof StorageHealthSchema>;
 
-/** What a registry no storage service has seeded yet reports: no copies and no problems. */
-export const EMPTY_STORAGE_HEALTH: StorageHealth = StorageHealthSchema.parse({
-  backups: { status: {}, copies: [], totalBytes: 0 },
-  problems: [],
-});
-
 /** `GET /api/storage`: the aggregate plus the backup config the Backups band edits. */
 export const StorageViewSchema = z.object({
   health: StorageHealthSchema,

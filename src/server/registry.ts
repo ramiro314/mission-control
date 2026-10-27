@@ -65,7 +65,7 @@ import type {
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
-import { EMPTY_STORAGE_HEALTH, type StorageHealth } from "@shared/storage-health.ts";
+import type { StorageHealth } from "@shared/storage-health.ts";
 import {
   mergeabilityEqual,
   nextMergeability,
@@ -1183,9 +1183,10 @@ export class Registry extends EventEmitter {
   };
   /**
    * The storage aggregate, held for the snapshot. `StorageHealthService` computes it and pushes
-   * only changed values here; until it does, the registry reports no copies and no problems.
+   * only changed values here. Null until it does: an empty placeholder would read as "no copies
+   * and no problems" and hide the real answer the Storage panel reads from its route.
    */
-  private storageHealth: StorageHealth = EMPTY_STORAGE_HEALTH;
+  private storageHealth: StorageHealth | null = null;
   /** Last Line fold emitted, for the same reason as the two above. */
   private lastLineSummary: LineSummary | null = null;
   private lastLineSummaryAt = 0;
@@ -1281,7 +1282,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
-    storageHealth: StorageHealth;
+    storageHealth: StorageHealth | null;
     latestSettingsRestore: SettingsRestoredEvent | null;
     home: string;
   } {
