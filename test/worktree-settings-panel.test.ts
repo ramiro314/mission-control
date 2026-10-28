@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
+import { parseStaleLeaseDays, WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
 import { capacityGeometry } from "../src/web/lib/worktree-capacity.ts";
 import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
 import type { WorktreesState } from "../src/web/useWorktrees.ts";
@@ -145,6 +145,15 @@ test("Policy edits the stale-lease threshold, and only a stale live lease carrie
   });
   assert.match(stale, /value="3"/);
   assert.match(stale, /<span class="wt-chip wt-chip-attention">stale<\/span>/);
+});
+
+test("only a whole number of days from 1 to 90 is a threshold the input will save", () => {
+  assert.equal(parseStaleLeaseDays("1"), 1);
+  assert.equal(parseStaleLeaseDays("90"), 90);
+  // An emptied field, as when a person clears 7 to type 15, is never sent as 0.
+  for (const text of ["", " ", "0", "91", "2.5", "-3", "abc"]) {
+    assert.equal(parseStaleLeaseDays(text), null, JSON.stringify(text));
+  }
 });
 
 test("the pane keeps the house style: no numbered eyebrows and no selection accent", () => {

@@ -76,14 +76,29 @@ test("a live lease quiet past staleLeaseDays shows a stale chip and a Storage-on
   await expect(card).toContainText("leased");
   await expect(staleChip).toHaveCount(0);
 
+  // The threshold saves on blur or Enter, not per keystroke: an uncommitted value reaches nothing,
+  // and an emptied field snaps back to the saved value instead of being sent as 0.
+  const savedDays = async () => ((await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees/config`)).json()) as {
+    config: { staleLeaseDays: number };
+  }).config.staleLeaseDays;
+  await threshold.fill("1");
+  expect(await savedDays()).toBe(7);
+  await expect(staleChip).toHaveCount(0);
+  await threshold.fill("");
+  await threshold.blur();
+  await expect(threshold).toHaveValue("7");
+  expect(await savedDays()).toBe(7);
+
   // Five quiet days against a threshold of three: flagged.
   await threshold.fill("3");
+  await threshold.press("Enter");
   await expect(staleChip).toBeVisible();
   await shoot(dashboard, "01-stale-chip");
 
   // The threshold is stored, so a fresh load reads it back and still flags the slot.
   await dashboard.reload();
   await expect(threshold).toHaveValue("3");
+  expect(await savedDays()).toBe(3);
   if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
   await expect(staleChip).toBeVisible();
 
@@ -113,6 +128,7 @@ test("a live lease quiet past staleLeaseDays shows a stale chip and a Storage-on
 
   // Raising the threshold above the lease's age clears the chip and the problem.
   await threshold.fill("10");
+  await threshold.blur();
   await expect(staleChip).toHaveCount(0);
   await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
   await expect(dashboard.getByText("No storage problems.")).toBeVisible();

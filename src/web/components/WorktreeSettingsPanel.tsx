@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { WorktreeClaim, WorktreesConfigPatch } from "@shared/protocol.ts";
+import { WORKTREES_CONFIG_LIMITS, type WorktreeClaim, type WorktreesConfigPatch } from "@shared/protocol.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
 import type {
   NativeWorktreeSlotView,
@@ -48,6 +48,55 @@ function bytes(value: number | null): string {
 
 function shortSha(value: string | null): string {
   return value?.slice(0, 9) ?? "unknown";
+}
+
+/** A typed threshold the daemon accepts, or null for an empty, fractional or out-of-range one. */
+export function parseStaleLeaseDays(text: string): number | null {
+  const value = Number(text);
+  return text.trim() !== "" && Number.isInteger(value) &&
+    value >= WORKTREES_CONFIG_LIMITS.minStaleLeaseDays &&
+    value <= WORKTREES_CONFIG_LIMITS.maxStaleLeaseDays
+    ? value
+    : null;
+}
+
+/**
+ * The stale-lease threshold, saved on blur or Enter rather than on every keystroke: typing 15
+ * over 7 must not first save 1, which would flag every lease a day old and republish Storage.
+ * A value the daemon would refuse snaps back to the saved one instead of being sent.
+ */
+function StaleLeaseDaysInput({
+  saved,
+  onSave,
+}: {
+  saved: number | null;
+  onSave: (days: number) => void;
+}): React.JSX.Element {
+  const [draft, setDraft] = useState(saved === null ? "" : String(saved));
+  useEffect(() => {
+    setDraft(saved === null ? "" : String(saved));
+  }, [saved]);
+  const commit = () => {
+    const days = parseStaleLeaseDays(draft);
+    if (days === null) setDraft(saved === null ? "" : String(saved));
+    else if (days !== saved) onSave(days);
+  };
+  return (
+    <input
+      className="wt-number"
+      aria-label="Stale lease threshold in days"
+      type="number"
+      min={WORKTREES_CONFIG_LIMITS.minStaleLeaseDays}
+      max={WORKTREES_CONFIG_LIMITS.maxStaleLeaseDays}
+      disabled={saved === null}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") commit();
+      }}
+    />
+  );
 }
 
 function StateChip({ label, tone = "neutral" }: { label: string; tone?: string }): React.JSX.Element {
@@ -1364,15 +1413,9 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
             <span className="kb-row-desc">A slot whose owner is still live but whose checkout has had no Git-visible change for this many days shows a <strong>stale</strong> chip and is listed in Settings &gt; Storage. It is never reclaimed automatically.</span>
           </div>
           <div className="kb-row-controls">
-            <input
-              className="wt-number"
-              aria-label="Stale lease threshold in days"
-              type="number"
-              min={1}
-              max={90}
-              disabled={!config}
-              value={config?.staleLeaseDays ?? 7}
-              onChange={(event) => void state.updateConfig({ staleLeaseDays: Number(event.target.value) })}
+            <StaleLeaseDaysInput
+              saved={config?.staleLeaseDays ?? null}
+              onSave={(staleLeaseDays) => void state.updateConfig({ staleLeaseDays })}
             />
           </div>
         </div>
