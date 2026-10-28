@@ -153,6 +153,11 @@ export interface NativeWorktreeSlotView {
   path: string;
   owner: WorktreeOwnerView | null;
   leaseAgeMs: number | null;
+  /**
+   * When a live lease's checkout last changed in a way Git can see, set only once that is at
+   * least `staleLeaseDays` ago. The card then shows a `stale` chip. Nothing is reclaimed on it.
+   */
+  staleSince: number | null;
   head: string | null;
   defaultRelation: WorktreeDefaultRelation;
   dirty: boolean | null;

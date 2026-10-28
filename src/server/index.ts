@@ -122,6 +122,7 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { StorageHealthService, stuckReturnSource } from "./storage-health.ts";
+import { LeaseActivityObserver } from "./worktrees/lease-activity.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import { holdIdleConnections } from "./http-keep-alive.ts";
 import {
@@ -213,11 +214,24 @@ const reconcileManagedResumeResources = () => {
 reconcileManagedResumeResources();
 setInterval(reconcileManagedResumeResources, 30_000).unref();
 const registry = new Registry();
+// Every live lease's Git-visible activity clock, behind the `stale-lease` problem and the slot
+// card's `stale` chip. It only flags. Probed hourly and whenever the pool changes, from `start()`
+// below, once storage health exists to recompute after each pass.
+const leaseActivity = new LeaseActivityObserver(
+  { slots: () => worktrees.store.slots() },
+  (staleChanged) => {
+    storageHealth.recompute();
+    if (staleChanged) registry.emitWorktreesChanged();
+  },
+);
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
 const worktrees = new WorktreeManager(undefined, {
   ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference),
-  publishChanged: () => registry.emitWorktreesChanged(),
+  publishChanged: () => {
+    registry.emitWorktreesChanged();
+    void leaseActivity.request();
+  },
 });
 const legacyWorktrees = new LegacyTreehouseService();
 try {
@@ -377,6 +391,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   checks: checkLeases,
   checkRecovery: checkRuntime.groupRecovery,
   notifyChanged: () => registry.emitWorktreesChanged(),
+  staleLeases: () => leaseActivity.staleSinceBySlot(),
 });
 // No Warm survives a restart, so only the Warm logs a slot row still names are kept. Native
 // reconciliation above has already returned every slot a crashed Warm held.
@@ -441,15 +456,18 @@ let stopDatabaseBackups = async () => {};
 const storageHealth = new StorageHealthService({
   backups: databaseBackups,
   publish: (health) => registry.setStorageHealth(health),
-  sources: [stuckReturnSource({
-    taskRefusals: listTaskWorktreeReturnRefusals,
-    task: (id) => registry.getTask(id),
-    checkRefusals: () => checkLeases.refusedReturns(),
-    slotForLease: (leaseId) => {
-      const found = worktrees.lookupLease({ leaseId });
-      return found.state === "active" ? found.lease.slotId : null;
-    },
-  })],
+  sources: [
+    () => leaseActivity.problems(),
+    stuckReturnSource({
+      taskRefusals: listTaskWorktreeReturnRefusals,
+      task: (id) => registry.getTask(id),
+      checkRefusals: () => checkLeases.refusedReturns(),
+      slotForLease: (leaseId) => {
+        const found = worktrees.lookupLease({ leaseId });
+        return found.state === "active" ? found.lease.slotId : null;
+      },
+    }),
+  ],
 });
 databaseBackups.onChange(() => storageHealth.recompute());
 tasks.onWorktreeReturnOutcome(() => storageHealth.recompute());
@@ -611,6 +629,7 @@ worktrees.startMaintenance(
   () => checkLeases.reclaimLeaked(checkRuntime.groupRecovery),
   () => storageHealth.recompute(),
 );
+leaseActivity.start();
 const stopSkillsReloader = startSkillsReloader(registry);
 // Pulls work INTO the backlog from systems that already hold it. In the daemon because
 // ingest writes to the DB and the daemon is the only writer; needs none of the reload
@@ -1020,6 +1039,7 @@ async function shutdown(): Promise<void> {
   // reading checkouts the allocator is about to reconcile, and one still running past that
   // would report "unreadable" about trees that were healthy when it started.
   await retentionObserver.stop();
+  await leaseActivity.stop();
   // Owed closures are durable, so stopping the sweep loses nothing: the next daemon picks up
   // any recurring mission run whose agent it has not yet observed leave.
   await tasks.stop();

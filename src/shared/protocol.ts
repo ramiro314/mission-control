@@ -3002,7 +3002,20 @@ export const WORKTREES_CONFIG_LIMITS = {
   maxClaimTimeoutMinutes: 240,
   maxClaimSeedPaths: 64,
   maxClaimSeedExcludes: 64,
+  minStaleLeaseDays: 1,
+  maxStaleLeaseDays: 90,
+  defaultStaleLeaseDays: 7,
 } as const;
+
+/**
+ * Days a live lease may go without a Git-visible change before Storage lists it as stale. It
+ * only flags: nothing is ever reclaimed on it.
+ */
+const StaleLeaseDaysSchema = z
+  .number()
+  .int()
+  .min(WORKTREES_CONFIG_LIMITS.minStaleLeaseDays)
+  .max(WORKTREES_CONFIG_LIMITS.maxStaleLeaseDays);
 
 const WorktreeSetupArgvSchema = z
   .array(z.string().min(1).max(WORKTREES_CONFIG_LIMITS.maxSetupArgBytes))
@@ -3166,6 +3179,7 @@ export const WorktreesConfigSchema = z
       .min(WORKTREES_CONFIG_LIMITS.minSlots)
       .max(WORKTREES_CONFIG_LIMITS.maxSlots)
       .default(16),
+    staleLeaseDays: StaleLeaseDaysSchema.default(WORKTREES_CONFIG_LIMITS.defaultStaleLeaseDays),
     repositories: z.record(WorktreeRepositoryKeySchema, WorktreeRepositoryConfigSchema).default({}),
   })
   .strict()
@@ -3207,6 +3221,7 @@ export const WorktreesConfigPatchSchema = z
       .min(WORKTREES_CONFIG_LIMITS.minSlots)
       .max(WORKTREES_CONFIG_LIMITS.maxSlots)
       .optional(),
+    staleLeaseDays: StaleLeaseDaysSchema.optional(),
     repositories: z
       .record(WorktreeRepositoryKeySchema, WorktreeRepositoryConfigPatchSchema.nullable())
       .optional(),

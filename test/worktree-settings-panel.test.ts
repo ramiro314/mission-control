@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
+import { parseStaleLeaseDays, WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
 import { capacityGeometry } from "../src/web/lib/worktree-capacity.ts";
 import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
 import type { WorktreesState } from "../src/web/useWorktrees.ts";
@@ -38,6 +38,7 @@ const overCapacityPool: WorktreeRepositoryView = {
     path: "/state/worktrees/pool-1/1/mission-control",
     owner: { kind: "task", key: "task-1:0", label: "Ship Worktrees" },
     leaseAgeMs: 500,
+    staleSince: null,
     head: "b".repeat(40),
     defaultRelation: "unmerged",
     dirty: true,
@@ -69,7 +70,7 @@ const roomToGrowPool: WorktreeRepositoryView = {
 };
 
 const inventory: WorktreeInventory = {
-  config: { enabled: true, maxSlots: 16, repositories: { "/repo/mission-control/.git": { maxSlots: 16, setupArgv: ["npm", "install"] } } },
+  config: { enabled: true, maxSlots: 16, staleLeaseDays: 7, repositories: { "/repo/mission-control/.git": { maxSlots: 16, setupArgv: ["npm", "install"] } } },
   observedAt: 1,
   revision: "a".repeat(64),
   repositories: [overCapacityPool, roomToGrowPool],
@@ -127,6 +128,32 @@ test("the panel renders policy, native lifecycle, exact path actions, and legacy
   assert.match(html, /Use global defaults/);
   assert.match(html, /Treehouse status cannot provide stable lease identity/);
   assert.doesNotMatch(html, /Force/);
+});
+
+test("Policy edits the stale-lease threshold, and only a stale live lease carries the stale chip", () => {
+  const quiet = render();
+  assert.match(quiet, /aria-label="Stale lease threshold in days"[^>]*min="1"[^>]*max="90"[^>]*value="7"/);
+  assert.doesNotMatch(quiet, /wt-chip-attention">stale</);
+
+  const [slot] = overCapacityPool.slots;
+  const stale = render({
+    inventory: {
+      ...inventory,
+      config: { ...inventory.config, staleLeaseDays: 3 },
+      repositories: [{ ...overCapacityPool, slots: [{ ...slot!, staleSince: Date.UTC(2026, 0, 2) }] }],
+    },
+  });
+  assert.match(stale, /value="3"/);
+  assert.match(stale, /<span class="wt-chip wt-chip-attention">stale<\/span>/);
+});
+
+test("only a whole number of days from 1 to 90 is a threshold the input will save", () => {
+  assert.equal(parseStaleLeaseDays("1"), 1);
+  assert.equal(parseStaleLeaseDays("90"), 90);
+  // An emptied field, as when a person clears 7 to type 15, is never sent as 0.
+  for (const text of ["", " ", "0", "91", "2.5", "-3", "abc"]) {
+    assert.equal(parseStaleLeaseDays(text), null, JSON.stringify(text));
+  }
 });
 
 test("the pane keeps the house style: no numbered eyebrows and no selection accent", () => {
