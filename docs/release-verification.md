@@ -401,3 +401,17 @@ verification covers both dark and light OS preferences without introducing anoth
 [^producer-20261026]: `phase4-oct26-producer-command-output.txt`, artifact
     `txt_955a514cc0334ceb8f871b629cf8cf11`: latest-five distribution workflow query, exit 0,
     five completed runs with `conclusion: skipped`.
+
+## Phase 5 owned-runtime handoff to R2
+
+The [owned-runtime inventory and combined NC-1 through NC-6 checklist](owned-runtimes.md)
+are the Phase 5 inputs to R2. In the implementation checks recorded on **2026-10-28 UTC**,
+local Electron executed shipped integration helpers with host runtimes absent and with
+invocation traps; focused config tests and browser fixtures passed for repair and Setup.
+The [dated execution record](owned-runtimes.md#observed-implementation-checks-2026-10-28-utc)
+identifies the workflow runs, immutable submissions, exact supporting artifacts and fixture
+limits. These are observations of those executions, not guarantees for later commits. They do
+not qualify a signed install, stable/alpha update or recovery.
+R2 still requires the retained R1 baseline and later newly produced renamed signed targets that
+include Phase 5. Missing signed inputs remain outstanding release qualification; producer and
+protection policy are unchanged.
