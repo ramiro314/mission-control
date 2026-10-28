@@ -58,8 +58,19 @@ async function until(predicate: () => boolean, message: string): Promise<void> {
   assert.fail(message);
 }
 
+type Tree = { repoRoot: string; worktree: string; branch: string };
+type StartupDeps = NonNullable<ConstructorParameters<typeof TaskManager>[5]>;
+
+const unoccupied: NonNullable<StartupDeps["occupancy"]> = async (paths) =>
+  new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }]));
+
 /** A task whose agent died with the daemon, as a restart finds it, and the manager that settles it. */
-function restartWith(id: string, tree: { repoRoot: string; worktree: string; branch: string }): {
+function restartWith(id: string, tree: Tree, options: {
+  /** A second repository's tree, attached to the same task. */
+  attached?: Tree;
+  occupancy?: StartupDeps["occupancy"];
+  returnBlocker?: StartupDeps["returnBlocker"];
+} = {}): {
   registry: InstanceType<typeof Registry>;
   manager: Manager;
   changes: () => number;
@@ -75,6 +86,19 @@ function restartWith(id: string, tree: { repoRoot: string; worktree: string; bra
     branch: tree.branch,
     provider: "git",
     sessionId: `proc:${id}`,
+    extraRepos: options.attached
+      ? [{
+          repoRoot: options.attached.repoRoot,
+          worktreePath: options.attached.worktree,
+          branch: options.attached.branch,
+          provider: "git",
+          worktreeLeaseId: null,
+          baseSha: null,
+          prUrl: null,
+          prState: null,
+          mergedAt: null,
+        }]
+      : [],
   }));
   const manager = new TaskManager(
     registry,
@@ -83,7 +107,8 @@ function restartWith(id: string, tree: { repoRoot: string; worktree: string; bra
     undefined,
     undefined,
     {
-      occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])),
+      occupancy: options.occupancy ?? unoccupied,
+      ...(options.returnBlocker ? { returnBlocker: options.returnBlocker } : {}),
     },
   );
   let changes = 0;
@@ -178,6 +203,76 @@ for (const { name, reason, dirty } of KEPT) {
     assert.deepEqual(mine(99_000).map((each) => each.id), [`dirty-settled-tree:${id}:42000`]);
   });
 }
+
+/** Settle `id`, then wait for every queued startup job, its clean check included, to finish. */
+async function settled(registry: InstanceType<typeof Registry>, manager: Manager, id: string): Promise<void> {
+  await until(() => registry.getTask(id)?.status === "failed", "the task was never settled");
+  await manager.settleWorktreeReturns();
+}
+
+const OCCUPIED: Array<{ name: string; occupancy: NonNullable<StartupDeps["occupancy"]> }> = [
+  {
+    name: "a process occupies",
+    occupancy: async (paths) => new Map(paths.map((path) => [path, {
+      status: "known" as const,
+      occupants: [{ pid: 4242, ppid: 1, startRaw: "leaked", startMs: 1, command: "node vite", cwd: path, knownOwner: null }],
+    }])),
+  },
+  {
+    name: "cannot be inspected for processes",
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "unknown" as const, reason: "lsof timed out" }])),
+  },
+];
+
+for (const { name, occupancy } of OCCUPIED) {
+  test(`a clean settled tree that ${name} is neither reclaimed nor listed`, async () => {
+    const tree = settledWorktree(`occupied-${name.split(" ")[0]}`);
+    write(tree.worktree, "node_modules/left-pad/index.js");
+    const id = `settled-occupied-${name.split(" ")[0]}`;
+    const { registry, manager } = restartWith(id, tree, { occupancy });
+
+    await settled(registry, manager, id);
+    assert.equal(registry.getTask(id)?.worktreePath, tree.worktree, "an occupied tree is kept");
+    assert.equal(existsSync(tree.worktree), true);
+    assert.equal(registry.getTask(id)?.error, "the agent's session did not survive a restart");
+    // Clean, so not a dirty settled tree: the process is the orphan report's to name.
+    assert.equal(listed(manager, id), false);
+  });
+}
+
+test("a settled task is reclaimed only when every tree it holds is clean", async () => {
+  const clean = settledWorktree("multi-clean");
+  write(clean.worktree, "dist/bundle.js");
+  const dirty = settledWorktree("multi-dirty");
+  write(dirty.worktree, ".env", "TOKEN=1\n");
+  const id = "settled-multi";
+  const { registry, manager } = restartWith(id, clean, { attached: dirty });
+
+  await until(() => listed(manager, id), "the task with one dirty tree was never listed");
+  const task = registry.getTask(id)!;
+  assert.equal(task.worktreePath, clean.worktree, "the clean primary is kept with its dirty sibling");
+  assert.equal(task.extraRepos[0]?.worktreePath, dirty.worktree);
+  assert.equal(existsSync(clean.worktree), true);
+  assert.equal(existsSync(dirty.worktree), true);
+  const [problem] = health(manager, {}, 7_000).problems
+    .filter((each) => each.id.startsWith(`dirty-settled-tree:${id}:`));
+  assert.match(problem!.message, new RegExp(`work left in ${dirty.worktree} \\(checkout has uncommitted, untracked or ignored work\\)`));
+});
+
+test("a settled tree Git cannot read keeps its window and is listed", async () => {
+  const tree = settledWorktree("unreadable");
+  const id = "settled-unreadable";
+  const { registry, manager } = restartWith(id, tree, {
+    returnBlocker: async () => "working tree could not be read",
+  });
+
+  await until(() => listed(manager, id), "the unreadable tree was never listed");
+  assert.equal(registry.getTask(id)?.worktreePath, tree.worktree);
+  assert.equal(existsSync(tree.worktree), true);
+  const [problem] = health(manager, {}, 8_000).problems
+    .filter((each) => each.id.startsWith(`dirty-settled-tree:${id}:`));
+  assert.match(problem!.message, /\(working tree could not be read\)/);
+});
 
 test("a kept tree reclaimed by hand takes its problem and first-seen entry with it", async () => {
   const tree = settledWorktree("reclaimed-by-hand");

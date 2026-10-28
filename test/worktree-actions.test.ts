@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDb } from "../src/server/db.ts";
 import { Registry } from "../src/server/registry.ts";
@@ -481,6 +481,19 @@ test("a task Return states the discard of ignored work its slot's own dirty read
     `Discards the uncommitted, untracked or ignored work in ${lease.lease.path}.`,
   ), preview.consequences.join(" | "));
   await assert.rejects(delegated.execute(preview.token, []), /missing acknowledgement: dirty/);
+
+  // A commit nobody pushed is named on its own line, with no dirty acknowledgement for it.
+  unlinkSync(join(lease.lease.path, ".env"));
+  writeFileSync(join(lease.lease.path, "local.txt"), "never pushed\n");
+  gitIn(lease.lease.path, "add", "local.txt");
+  gitIn(lease.lease.path, "-c", "user.name=t", "-c", "user.email=t@test", "commit", "-qm", "local only");
+  const unpushed = await delegated.preview({ action: "return", slotId: lease.lease.slotId });
+  assert.equal(unpushed.allowed, true, unpushed.blockers.join("; "));
+  assert.deepEqual(unpushed.requiredAcknowledgements, ["unlanded"]);
+  assert.ok(unpushed.consequences.includes(
+    `Discards the commits in ${lease.lease.path} that were never pushed.`,
+  ), unpushed.consequences.join(" | "));
+  assert.equal(unpushed.consequences.some((line) => line.startsWith("Discards the uncommitted")), false);
   await manager.release(lease.lease, { ownerAuthorized: true });
 });
 
