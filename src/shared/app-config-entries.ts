@@ -42,7 +42,7 @@ import {
   DatabaseBackupStatusSchema,
   type DatabaseBackupsConfig,
 } from "./database-backups.ts";
-import { StorageFirstSeenSchema } from "./storage-health.ts";
+import { StorageFirstSeenSchema, WorktreeLeaseActivitySchema } from "./storage-health.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -148,6 +148,7 @@ const terminalsFields = {
 const worktreesFields = {
   enabled: "setting",
   maxSlots: "setting",
+  staleLeaseDays: "setting",
   repositories: "setting",
 } satisfies Record<keyof WorktreesConfig, AppConfigValueClass>;
 
@@ -381,6 +382,14 @@ export const APP_CONFIG_ENTRIES = {
    */
   storageFirstSeen: wholeEntry(
     "storage.firstSeen", StorageFirstSeenSchema, "operational", null,
+  ),
+  /**
+   * When each live worktree lease last changed in a way Git can see, which is what makes one
+   * stale. `operational` with no backup domain for `backups.status`'s reason: it describes this
+   * machine's trees, and restored elsewhere it would date leases that never existed there.
+   */
+  worktreeLeaseActivity: wholeEntry(
+    "worktrees.leaseActivity", WorktreeLeaseActivitySchema, "operational", null,
   ),
   /**
    * General telemetry collection and export.

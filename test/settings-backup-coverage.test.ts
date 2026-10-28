@@ -132,6 +132,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "ui",
       "workflows",
       "worktrees",
+      // Each live worktree lease's Git-visible activity clock. `operational`, never restored,
+      // for `backups.status`'s reason.
+      "worktrees.leaseActivity",
     ],
   );
 
@@ -179,6 +182,8 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.equal(APP_CONFIG_ENTRIES.foremanLease.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.backupsStatus.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.backupsStatus.backupDomain, null);
+  assert.equal(APP_CONFIG_ENTRIES.worktreeLeaseActivity.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.worktreeLeaseActivity.backupDomain, null);
   assert.equal(APP_CONFIG_ENTRIES.backlogPlan.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costTelemetryEnabledAt.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costOtelLastSeen.classification.valueClass, "operational");

@@ -619,7 +619,9 @@ this order:
   slots** for every repository that has not set an override - so changing the default visibly
   reflows those bars, and leaves an overridden pool's bar where its own maximum puts it. Lowering
   a maximum below the pool's current count marks the difference **over the maximum** and offers a
-  right-size preview; saving policy never deletes a slot.
+  right-size preview; saving policy never deletes a slot. **Stale lease after (days)** (default 7,
+  1 to 90) is the one default that is not about acquisition; see
+  [Stale live leases](#stale-live-leases).
 - **Treehouse** classifies historical Treehouse resources as exact, unverifiable, foreign, or
   unreadable, and shows the four classification counts only when at least one is non-zero. Only an
   exact durable owner with a clean, process-free checkout offers Return.
@@ -767,6 +769,29 @@ unverifiable leases with Treehouse itself after verifying their current owner. R
 Treehouse pool and installation only after **Settings > Worktrees** reports no durable legacy rows
 and every foreign lease has been reviewed. `MISSION_POOL_REAP_MS` is retired and ignored; if it remains set, startup names
 `MISSION_WORKTREE_SWEEP_MS` as the native maintenance replacement.
+
+### Stale live leases
+
+A slot whose owner is still live (a running task, a check in flight, or a manual lease nobody has
+returned) but whose checkout has had no Git-visible change for **Stale lease after (days)** under
+**Settings > Worktrees > Defaults** is flagged as stale. It is **never reclaimed**: nothing returns,
+resets or removes it on this signal, because a live owner may simply be waiting on a person.
+
+- "Git-visible change" is the same probe the task retention clock below uses: HEAD, the whole
+  index, tracked changes and untracked files that are not ignored. A warm `node_modules` or a new
+  build output does not count as activity, and neither does a title edit or pull request polling.
+- The daemon probes every live lease hourly and as soon as the pool changes, and keeps each
+  lease's clock in the operational `worktrees.leaseActivity` record, so a restart keeps it. A
+  lease's clock starts at its first successful probe and is never backdated to when the lease
+  began. A probe that cannot read the checkout, or an owner that cannot be read, moves nothing.
+  A new lease on the same slot starts a new clock.
+- A stale slot shows a **stale** chip on its slot card and one `stale-lease` problem in
+  **Settings > Storage**, whose link opens the slot card. It is listed in Storage only and never
+  raises the dashboard's storage banner.
+- The threshold is read whenever the aggregate is recomputed, including on save, so raising it
+  above a lease's quiet time clears the chip and the problem at once, and lowering it flags one
+  at once. A `warm` owner (a Warm or seed running inside the daemon) is not a live lease and is
+  never flagged.
 
 ### Task worktree retention
 

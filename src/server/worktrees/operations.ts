@@ -131,6 +131,8 @@ export interface WorktreeOperationsDeps {
   warmLogsDirectory: string;
   /** The most often a running Warm's output may bump the worktrees revision. */
   warmTailIntervalMs: number;
+  /** For each slot holding a stale live lease, when that lease last changed. */
+  staleLeases: () => ReadonlyMap<string, number>;
 }
 
 interface Observation {
@@ -441,6 +443,7 @@ export class WorktreeOperationsService {
       claimVariablePresence,
       warmLogsDirectory: WORKTREE_WARM_LOGS_DIR,
       warmTailIntervalMs: WARM_TAIL_INTERVAL_MS,
+      staleLeases: () => new Map(),
       ...deps,
     };
   }
@@ -517,6 +520,12 @@ export class WorktreeOperationsService {
       }
     }
     const running = new Map(this.manager.claims.list().map((claim) => [claim.slotId, claim]));
+    let staleLeases: ReadonlyMap<string, number> = new Map();
+    try {
+      staleLeases = this.deps.staleLeases();
+    } catch {
+      // A chip is context. An unreadable clock shows none rather than failing the inventory.
+    }
     const repositories: WorktreeRepositoryView[] = [];
     for (const pool of shown) {
       const slots = pool.slots
@@ -552,6 +561,7 @@ export class WorktreeOperationsService {
             path: entry.slot.path,
             owner,
             leaseAgeMs: entry.slot.leasedAt === null ? null : Math.max(0, this.deps.now() - entry.slot.leasedAt),
+            staleSince: entry.ownerReferenced === true ? staleLeases.get(entry.slot.id) ?? null : null,
             head: entry.observedHead,
             defaultRelation: entry.mergedIntoDefault === null
               ? "unknown" as const

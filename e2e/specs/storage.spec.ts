@@ -2,6 +2,8 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
+import { databaseBackupStatusFrom } from "../../src/shared/database-backups.ts";
+import { storageProblem, type StorageHealth, type StorageProblem } from "../../src/shared/storage-health.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -12,8 +14,9 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * What only this layer proves: that the Backups band reads the daemon's real copies and config,
  * that Save reaches the route and its prune comes back to the page over `storage_health`, that
  * Back up now writes a manual copy the list then shows, and that a failed capture appears in the
- * Problems list and clears when a capture succeeds. No agent is launched, so no model tokens are
- * spent.
+ * Problems list and clears when a capture succeeds, and that the dashboard banner raised by a
+ * bannered problem dismisses per occurrence and keeps that dismissal across a reload, a daemon
+ * restart and a clock moved weeks ahead. No agent is launched, so no model tokens are spent.
  */
 
 const EVIDENCE = artifactsDir("storage");
@@ -181,4 +184,251 @@ test("with the stream down after its snapshot, Back up now still shows the copy 
   await expect(copies.getByRole("row").filter({ hasText: "Manual" })).toHaveCount(1);
   await expect(dashboard.getByRole("article", { name: "Manual backups" })).not.toContainText("Last success: Never");
   expect(streams).toBeGreaterThanOrEqual(1);
+});
+
+const DISMISSALS_KEY = "mission-control.storage-banner.dismissed";
+
+function storageBanner(page: Page) {
+  return page.getByRole("status", { name: "Storage needs attention" });
+}
+
+/** This viewer's dismissal record, as the banner persists it. */
+async function dismissals(page: Page): Promise<Record<string, { lastSeenAt: number }>> {
+  return page.evaluate((key) => JSON.parse(window.localStorage.getItem(key) ?? "{}"), DISMISSALS_KEY);
+}
+
+/**
+ * The newest `lastSeenAt` among the dismissals. It moves only when the banner has applied an
+ * aggregate that lists a dismissed problem, which is how a step knows the page has seen one.
+ */
+async function newestSeen(page: Page): Promise<number> {
+  return Math.max(0, ...Object.values(await dismissals(page)).map((entry) => entry.lastSeenAt));
+}
+
+/** A backup root the daemon refuses to write into: a symlink in place of the directory. */
+function breakBackupRoot(daemon: DaemonHandle, elsewhere: string): void {
+  rmSync(backupRoot(daemon), { recursive: true, force: true });
+  symlinkSync(elsewhere, backupRoot(daemon));
+}
+
+function repairBackupRoot(daemon: DaemonHandle): void {
+  rmSync(backupRoot(daemon), { force: true });
+  mkdirSync(backupRoot(daemon), { mode: 0o700 });
+}
+
+test("a failed backup raises the banner, a dismissal holds across a restart, and a recurrence brings it back", async ({
+  dashboard,
+  daemon,
+}) => {
+  const banner = storageBanner(dashboard);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  await expect(dashboard.getByText("No storage problems.")).toBeVisible();
+  await expect(banner).toHaveCount(0);
+
+  const elsewhere = mkdtempSync(join(tmpdir(), "mission-storage-elsewhere-"));
+  try {
+    const backUpNow = dashboard.getByRole("button", { name: "Back up now" });
+    breakBackupRoot(daemon, elsewhere);
+    await backUpNow.click();
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("Manual database backup failed");
+
+    // The banner sits over every view, and its link lands on Settings > Storage.
+    await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+    await expect(banner).toBeVisible();
+    await shoot(dashboard, "04-banner");
+    await banner.getByRole("link", { name: "Open Storage" }).click();
+    await expect(dashboard.getByRole("tab", { name: "Storage" })).toHaveAttribute("aria-selected", "true");
+
+    await banner.getByRole("button", { name: "Dismiss storage warning" }).click();
+    await expect(banner).toHaveCount(0);
+    const dismissedIds = Object.keys(await dismissals(dashboard));
+    expect(dismissedIds).toHaveLength(1);
+    expect(dismissedIds[0]).toMatch(/^backup-failed:manual:\d+$/);
+
+    // The same occurrence failing again publishes a new aggregate, which the banner applies
+    // and still hides.
+    let seen = await newestSeen(dashboard);
+    await backUpNow.click();
+    await expect.poll(() => newestSeen(dashboard)).toBeGreaterThan(seen);
+    await expect(banner).toHaveCount(0);
+
+    // A daemon restart keeps the occurrence id, and a reload keeps the dismissal. The root is
+    // repaired first so the restarted scheduler does not fail a capture of its own.
+    repairBackupRoot(daemon);
+    await daemon.crash();
+    await daemon.restart();
+    seen = await newestSeen(dashboard);
+    await dashboard.reload();
+    await expect.poll(() => newestSeen(dashboard)).toBeGreaterThan(seen);
+    await expect(dashboard.getByRole("list", { name: "Storage problems" }))
+      .toContainText("Manual database backup failed");
+    await expect(banner).toHaveCount(0);
+    expect(Object.keys(await dismissals(dashboard))).toEqual(dismissedIds);
+    await shoot(dashboard, "05-dismissed-after-restart");
+
+    // Succeed, then fail again: a new occurrence, so the banner returns.
+    await backUpNow.click();
+    await expect(dashboard.getByText("No storage problems.")).toBeVisible();
+    breakBackupRoot(daemon, elsewhere);
+    await backUpNow.click();
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("Manual database backup failed");
+  } finally {
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test("a dismissal in one tab hides the banner in another, and that tab's next aggregate keeps it", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  await expect(dashboard.getByText("No storage problems.")).toBeVisible();
+  const other = await dashboard.context().newPage();
+  const elsewhere = mkdtempSync(join(tmpdir(), "mission-storage-elsewhere-"));
+  try {
+    await other.goto(`${daemon.baseURL}/#/fleet`);
+    breakBackupRoot(daemon, elsewhere);
+    const backUpNow = dashboard.getByRole("button", { name: "Back up now" });
+    await backUpNow.click();
+    await expect(storageBanner(dashboard)).toBeVisible();
+    await expect(storageBanner(other)).toBeVisible();
+
+    await storageBanner(dashboard).getByRole("button", { name: "Dismiss storage warning" }).click();
+    await expect(storageBanner(dashboard)).toHaveCount(0);
+    await expect(storageBanner(other)).toHaveCount(0);
+    const dismissedIds = Object.keys(await dismissals(dashboard));
+    expect(dismissedIds).toHaveLength(1);
+
+    // The same failure again reaches both tabs. The other tab applies it to the stored record,
+    // never to a copy read before the dismissal, so the dismissal survives a reload.
+    const seen = await newestSeen(other);
+    await backUpNow.click();
+    await expect.poll(() => newestSeen(other)).toBeGreaterThan(seen);
+    expect(Object.keys(await dismissals(other))).toEqual(dismissedIds);
+    await dashboard.reload();
+    await expect(dashboard.getByRole("list", { name: "Storage problems" }))
+      .toContainText("Manual database backup failed");
+    await expect(storageBanner(dashboard)).toHaveCount(0);
+    await expect(storageBanner(other)).toHaveCount(0);
+  } finally {
+    await other.close();
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
+
+/**
+ * A stream that delivers one snapshot per connection, carrying whatever storage aggregate the
+ * spec set last, and holds each reconnect until the next one is set. `retry` brings the browser
+ * straight back after each frame. A connection a reload abandons is not counted as delivered,
+ * so a frame is never lost to it.
+ */
+async function storageFixtureStream(page: Page, daemon: DaemonHandle, first: StorageHealth) {
+  const snapshot = await realSnapshot(daemon);
+  const view = await (await page.request.get(`${daemon.baseURL}/api/storage`)).json() as { config: unknown };
+  let current = first;
+  let version = 1;
+  let delivered = 0;
+  let wakers: Array<() => void> = [];
+  await page.route("**/api/storage", (route) => route.fulfill({ json: { health: current, config: view.config } }));
+  await page.route("**/events", async (route) => {
+    while (version <= delivered) await new Promise<void>((wake) => wakers.push(wake));
+    const sending = version;
+    delivered = sending;
+    try {
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `retry: 20\ndata: ${JSON.stringify({ ...snapshot, storageHealth: current })}\n\n`,
+      });
+    } catch {
+      if (delivered === sending) delivered = sending - 1;
+    }
+  });
+  return (next: StorageHealth): void => {
+    current = next;
+    version += 1;
+    const waiting = wakers;
+    wakers = [];
+    for (const wake of waiting) wake();
+  };
+}
+
+test("a dismissal survives an omitted pass and weeks of presence, ends after an hour gone, and a new problem returns the banner", async ({
+  dashboard,
+  daemon,
+}) => {
+  const quarantined = storageProblem(
+    "quarantined-slot", "fixture-slot", 1_000, "Slot fixture-slot is quarantined", { target: "slot", slotId: "fixture-slot" },
+  );
+  const orphan = storageProblem(
+    "orphan-process", "/fixture/tree", "4242:1000", "A process outlived /fixture/tree", { target: "unowned-tree", path: "/fixture/tree" },
+  );
+  // Each pass carries a non-bannered marker the Problems list shows, so the spec knows the
+  // page has applied that pass before it asserts the banner is absent.
+  const pass = (step: number, ...problems: StorageProblem[]): StorageHealth => ({
+    backups: { status: databaseBackupStatusFrom(undefined), copies: [], totalBytes: 0 },
+    problems: [
+      ...problems,
+      storageProblem("stale-lease", `marker-slot-${step}`, "lease", `Fixture pass ${step}.`, { target: "slot", slotId: `marker-slot-${step}` }),
+    ],
+  });
+  const problems = dashboard.getByRole("list", { name: "Storage problems" });
+  const banner = storageBanner(dashboard);
+  const t0 = Date.now();
+
+  await dashboard.clock.setFixedTime(t0);
+  // Problems listed in Storage only - a stale lease and a dirty settled tree - raise nothing.
+  const push = await storageFixtureStream(dashboard, daemon, pass(0, storageProblem(
+    "dirty-settled-tree", "fixture-task", 1_000, "Task fixture-task kept a dirty tree", { target: "unowned-tree", path: "/fixture/task" },
+  )));
+  let step = 0;
+  const at = async (time: number, ...current: StorageProblem[]): Promise<void> => {
+    step += 1;
+    await dashboard.clock.setFixedTime(time);
+    push(pass(step, ...current));
+    await expect(problems).toContainText(`Fixture pass ${step}.`);
+  };
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  await dashboard.reload();
+  await expect(problems).toContainText("Fixture pass 0.");
+  await expect(problems).toContainText("Task fixture-task kept a dirty tree");
+  await expect(banner).toHaveCount(0);
+
+  await at(t0, quarantined);
+  await expect(banner).toContainText("Slot fixture-slot is quarantined");
+  await banner.getByRole("button", { name: "Dismiss storage warning" }).click();
+  await expect(banner).toHaveCount(0);
+
+  // One pass omits it, the next reports it again inside the hour: still hidden.
+  await at(t0 + 30 * MINUTE);
+  await at(t0 + 59 * MINUTE, quarantined);
+  await expect(banner).toHaveCount(0);
+
+  // Present for more than 30 days, by the page's clock: still hidden, its entry still fresh.
+  await at(t0 + 15 * DAY, quarantined);
+  await at(t0 + 31 * DAY, quarantined);
+  await expect(banner).toHaveCount(0);
+  expect((await dismissals(dashboard))[quarantined.id]).toEqual({ lastSeenAt: t0 + 31 * DAY });
+
+  // A new problem beside the dismissed one brings the banner back, naming only the new one.
+  await at(t0 + 31 * DAY + MINUTE, quarantined, orphan);
+  await expect(banner).toContainText("A process outlived /fixture/tree");
+  await expect(banner).not.toContainText("Slot fixture-slot is quarantined");
+  await shoot(dashboard, "06-new-problem");
+  await banner.getByRole("button", { name: "Dismiss storage warning" }).click();
+  await expect(banner).toHaveCount(0);
+
+  // Absent for more than an hour, its entry goes, so the same id would raise the banner again.
+  await at(t0 + 31 * DAY + 2 * MINUTE, orphan);
+  expect(await dismissals(dashboard)).toHaveProperty([quarantined.id]);
+  await at(t0 + 31 * DAY + 63 * MINUTE, orphan);
+  expect(await dismissals(dashboard)).not.toHaveProperty([quarantined.id]);
+  await expect(banner).toHaveCount(0);
+  await at(t0 + 31 * DAY + 64 * MINUTE, quarantined, orphan);
+  await expect(banner).toContainText("Slot fixture-slot is quarantined");
 });
