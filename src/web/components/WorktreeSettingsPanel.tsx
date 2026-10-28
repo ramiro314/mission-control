@@ -106,6 +106,7 @@ function StateChip({ label, tone = "neutral" }: { label: string; tone?: string }
 
 const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
   return: "Return",
+  recover: "Recover",
   prune: "Prune",
   reconcile: "Reconcile",
   destroy: "Destroy",
@@ -670,6 +671,13 @@ function SlotCard({
           <Tooltip label="Preview preparing this idle slot ahead of time: fetch, reset to origin's default branch, and seed or run the pool's claim">
             <button className="btn btn-ghost" type="button" onClick={(event) => onAction({ action: "warm", target: { kind: "slot", slotId: slot.id } }, event.currentTarget)}>
               Warm
+            </button>
+          </Tooltip>
+        )}
+        {!pending && slot.actions.includes("recover") && (
+          <Tooltip label="Preview recovering this quarantined slot: remove a stale index.lock when no Git process uses it, then reset it to the remote default">
+            <button className="btn btn-secondary" type="button" onClick={(event) => onAction({ action: "recover", slotId: slot.id }, event.currentTarget)}>
+              Recover
             </button>
           </Tooltip>
         )}

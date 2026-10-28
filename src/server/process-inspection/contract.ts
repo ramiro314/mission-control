@@ -36,6 +36,11 @@ export interface ProcessInspector {
   readStartTimeSync(pid: number): string | null;
   /** The pid listening on a local TCP port, or null when nothing is or it cannot be read. */
   findListeningPid(port: number): Promise<number | null>;
+  /**
+   * Every pid holding one file open. An empty list is a positive answer that nothing does;
+   * null means the read could not tell, which a destructive caller must treat as held.
+   */
+  findFileHolders(path: string): Promise<{ pids: number[] | null; result: RunResult }>;
 }
 
 export interface ProcessRow {

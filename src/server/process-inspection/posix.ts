@@ -232,6 +232,24 @@ export function createPosixProcessInspector(runner: CommandRunner = defaultComma
       const pid = Number(result.stdout.split("\n")[0]?.trim());
       return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
     },
+
+    /**
+     * `lsof -t` prints bare pids, one per line. It exits 1 with no output when nothing holds
+     * the file, which is the one non-zero exit that is an answer; `-w` keeps its warnings
+     * about unrelated unreadable mounts off stderr, so any stderr left is a real failure.
+     */
+    async findFileHolders(path) {
+      const result = await runner.run("lsof", ["-w", "-t", "--", path], { timeoutMs: 10_000 });
+      const lines = result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+      const pids = lines.map(Number);
+      const parsed = pids.every((pid) => Number.isSafeInteger(pid) && pid > 0);
+      if (result.outcomeUnknown || result.overflowed || !parsed || result.stderr.trim()) {
+        return { pids: null, result };
+      }
+      if (result.code === 0 && pids.length > 0) return { pids, result };
+      if (result.code === 1 && pids.length === 0) return { pids: [], result };
+      return { pids: null, result };
+    },
   };
 }
 
