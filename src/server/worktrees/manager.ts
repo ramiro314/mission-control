@@ -664,6 +664,8 @@ export class WorktreeManager {
   private maintenance: Promise<void> | null = null;
   private reclaimDomainLeases: () => Promise<void> = async () => {};
   private afterMaintenance: () => void = () => {};
+  private sweepOrphans: () => Promise<unknown> = async () => {};
+  private startupSweep: Promise<void> | null = null;
   /** Grants protected until their task/check row durably records the random lease ID. */
   private readonly pendingDomainLeases = new Set<string>();
   /** Dependency claims running right now. Maintenance skips their slots; shutdown stops them. */
@@ -3256,19 +3258,25 @@ export class WorktreeManager {
 
   /**
    * `afterPass` runs once each pass has finished, whatever it found, so a reader of what the
-   * pass changed (storage health) recomputes on the same cadence.
+   * pass changed (storage health) recomputes on the same cadence. `sweepOrphans` runs once
+   * straight away, since startup reconciliation has already run by the time maintenance
+   * starts, and then after domain lease reclamation on every pass, so a check row that pass settled no
+   * longer references its tree.
    */
   startMaintenance(
     reclaimDomainLeases: () => Promise<void> = async () => {},
     afterPass: () => void = () => {},
+    sweepOrphans?: () => Promise<unknown>,
   ): void {
     this.reclaimDomainLeases = reclaimDomainLeases;
     this.afterMaintenance = afterPass;
+    if (sweepOrphans) this.sweepOrphans = sweepOrphans;
     this.stopped = false;
     this.claims.resume();
     this.manualRequests.resume();
     const interval = worktreeSweepIntervalMs();
     if (interval === null || this.timer) return;
+    if (sweepOrphans) this.startupSweep ??= this.runOrphanSweep().then(() => this.runAfterMaintenance());
     const schedule = () => {
       if (this.stopped) return;
       this.timer = unref(setTimeout(() => {
@@ -3306,6 +3314,19 @@ export class WorktreeManager {
     } catch (error) {
       console.error("[worktrees] domain lease reclamation failed:", error);
     }
+    await this.runOrphanSweep();
+    this.runAfterMaintenance();
+  }
+
+  private async runOrphanSweep(): Promise<void> {
+    try {
+      await this.sweepOrphans();
+    } catch (error) {
+      console.error("[worktrees] orphan tree sweep failed:", error);
+    }
+  }
+
+  private runAfterMaintenance(): void {
     try {
       this.afterMaintenance();
     } catch (error) {
@@ -3319,6 +3340,7 @@ export class WorktreeManager {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    await this.startupSweep;
     await this.maintenance;
   }
 }

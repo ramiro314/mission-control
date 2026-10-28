@@ -111,6 +111,7 @@ import type {
 } from "./pipelines/types.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
 import { claimWarningsBlock, type WorktreeClaimWarning } from "./worktrees/claim.ts";
+import { inFlightTrees } from "./worktrees/in-flight.ts";
 import { taskOwner } from "./worktrees/owners.ts";
 import { taskClaimWarning, taskProvisioningView } from "./task-claims.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
@@ -544,7 +545,8 @@ export class Dispatcher {
       backlogRecoveryEligible = false;
       // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
       // The collection lands in the SAME patch so every durable native owner becomes visible
-      // atomically before provisional allocator state settles.
+      // atomically before provisional allocator state settles. Either the patch names every Git
+      // fallback tree or its unwind removes them, so the orphan sweep's in-flight pin goes after.
       try {
         this.patch(taskId, {
           worktreePath: wt.path,
@@ -594,6 +596,8 @@ export class Dispatcher {
           }
         }
         throw recordError;
+      } finally {
+        releaseFallbackTrees(taskId, task.extraRepos.length);
       }
       if (wt.leaseId) this.worktrees.settleDomainLease(wt.leaseId);
       for (const entry of extras) {
@@ -2166,6 +2170,7 @@ export class Dispatcher {
         });
         if (wt.leaseId) this.worktrees.settleDomainLease(wt.leaseId);
       }
+      releaseFallbackTrees(taskId, task.extraRepos.length);
       throw err;
     }
     const claimWarnings = taken.flatMap(({ repoRoot, wt }) =>
@@ -2541,12 +2546,19 @@ export async function provisionWorktree(
   // mixing the two can hold a branch only for its Git fallback repos. The manifest reads the
   // provisioned branches rather than assuming a shared name.
   const branch = `harness/${slug}-${shortId}`;
+  // No row names this tree until the dispatch records it, so the orphan sweep is told it is
+  // being created. The dispatch releases the pin once its row names the tree or its unwind
+  // removed it; a provision that fails here releases it itself.
+  inFlightTrees.add(path);
   const add = await run(
     "git",
     ["-C", repoRoot, "worktree", "add", path, "-b", branch, exactBase],
     { timeoutMs: 60000 },
   );
-  if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr.trim() || "unknown"}`);
+  if (add.code !== 0) {
+    inFlightTrees.delete(path);
+    throw new Error(`git worktree add failed: ${add.stderr.trim() || "unknown"}`);
+  }
   const real = realpathSync(path);
   if (baseSha) {
     try {
@@ -2561,6 +2573,7 @@ export async function provisionWorktree(
       const cleanup = await teardownWorktree({
         repoRoot, worktreePath: real, branch, provider: "git", homeName: null,
       }).then(() => null, (e: unknown) => (e instanceof Error ? e.message : String(e)));
+      inFlightTrees.delete(path);
       throw new Error(cleanup ? `${cause} - and its worktree could not be removed: ${cleanup}` : cause);
     }
   }
@@ -2580,6 +2593,11 @@ export async function provisionWorktree(
  */
 export function worktreeSlotPath(taskId: string, slot: number): string {
   return join(WORKTREES_DIR, slot === 0 ? taskId : `${taskId}-${slot}`);
+}
+
+/** Release the orphan sweep's in-flight pin on every Git fallback tree a task's dispatch may hold. */
+function releaseFallbackTrees(taskId: string, extraRepoCount: number): void {
+  for (let slot = 0; slot <= extraRepoCount; slot += 1) inFlightTrees.delete(worktreeSlotPath(taskId, slot));
 }
 
 /**
