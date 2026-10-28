@@ -36,11 +36,11 @@ export interface FinishedTree {
  * Every tree whose owner has finished: a task's pending return, a check lease stuck in
  * `returning`, and a quarantined slot. One path can be all three; the scan merges them.
  *
- * A pool slot that holds a lease belongs to that lease's holder, so it is a finished tree only
- * for the owner whose lease it is. A completed task can keep owing a return after its slot was
- * reset and leased to a live task (the return is then retained as "task ownership changed"),
- * and a quarantine can keep a live lease. Inspecting either would offer the live owner's
- * processes for Kill.
+ * A pool slot is a finished tree for an owner only while it holds that owner's own lease, or no
+ * lease at all and is quarantined. A completed task can keep owing a return after its slot was
+ * reset and leased to a live task (the return is then retained as "task ownership changed"), a
+ * quarantine can keep a live lease, and an available slot with no lease can be running a Warm
+ * or a dependency claim. Inspecting any of those would offer a live owner's processes for Kill.
  */
 export function finishedTrees(input: {
   slots: readonly WorktreeSlotRow[];
@@ -50,7 +50,8 @@ export function finishedTrees(input: {
   const slotAt = new Map(input.slots.map((slot) => [slot.path, slot]));
   const finishedFor = (path: string, leaseId: string | null): boolean => {
     const slot = slotAt.get(path);
-    return !slot || slot.activeLeaseId === null || slot.activeLeaseId === leaseId;
+    if (!slot) return true;
+    return slot.activeLeaseId === null ? slot.state === "quarantined" : slot.activeLeaseId === leaseId;
   };
   return [
     ...input.taskReturns.flatMap(({ taskId, trees }) => trees

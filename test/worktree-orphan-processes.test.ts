@@ -90,38 +90,44 @@ test("finished trees are pending task returns, returning check leases and quaran
     slots: [
       slot("slot-1", "/pool/1/repo", "leased", "lease-task-1"),
       slot("slot-2", "/pool/2/repo", "quarantined"),
-      slot("slot-4", "/pool/4/repo", "available"),
+      slot("slot-5", "/pool/5/repo", "quarantined"),
     ],
     taskReturns: [{ taskId: "task-1", trees: [
       { path: "/pool/1/repo", leaseId: "lease-task-1" },
       { path: "/state/worktrees/overflow", leaseId: null },
-      // Returned by another path while the obligation stayed, and now free: still ownerless.
-      { path: "/pool/4/repo", leaseId: "lease-task-1-b" },
+      // Quarantined after its lease was withdrawn while the obligation stayed: still ownerless.
+      { path: "/pool/5/repo", leaseId: "lease-task-1-b" },
     ] }],
     returningChecks: [{ attemptId: "attempt-1", path: "/state/check-worktrees/check", leaseId: null }],
   });
   assert.deepEqual(trees, [
     { path: "/pool/1/repo", slotId: "slot-1", owner: { kind: "task", taskId: "task-1" } },
     { path: "/state/worktrees/overflow", slotId: null, owner: { kind: "task", taskId: "task-1" } },
-    { path: "/pool/4/repo", slotId: "slot-4", owner: { kind: "task", taskId: "task-1" } },
+    { path: "/pool/5/repo", slotId: "slot-5", owner: { kind: "task", taskId: "task-1" } },
     { path: "/state/check-worktrees/check", slotId: null, owner: { kind: "check", attemptId: "attempt-1" } },
     { path: "/pool/2/repo", slotId: "slot-2", owner: { kind: "slot", slotId: "slot-2" } },
+    { path: "/pool/5/repo", slotId: "slot-5", owner: { kind: "slot", slotId: "slot-5" } },
   ]);
 });
 
-test("a slot leased to someone else is never a finished tree, so a live owner's processes are not offered for Kill", () => {
+test("a slot leased to someone else, or back in the pool with no lease, is never a finished tree, so a live owner's processes are not offered for Kill", () => {
   const slot = (id: string, path: string, state: string, activeLeaseId: string | null) =>
     ({ id, path, state, activeLeaseId }) as WorktreeSlotRow;
   // Task T completed owing slot 1, which was then reset and leased to live task U. Check C's
   // returning lease names slot 2, now leased to a manual holder. Slot 3 was quarantined while
-  // its live lease stayed in the row.
+  // its live lease stayed in the row. Task V's return names slot 4, now back in the pool with
+  // no lease, where a Warm or a dependency claim may be running.
   const trees = finishedTrees({
     slots: [
       slot("slot-1", "/pool/1/repo", "leased", "lease-task-u"),
       slot("slot-2", "/pool/2/repo", "leased", "lease-manual"),
       slot("slot-3", "/pool/3/repo", "quarantined", "lease-live"),
+      slot("slot-4", "/pool/4/repo", "available", null),
     ],
-    taskReturns: [{ taskId: "task-t", trees: [{ path: "/pool/1/repo", leaseId: "lease-task-t" }] }],
+    taskReturns: [
+      { taskId: "task-t", trees: [{ path: "/pool/1/repo", leaseId: "lease-task-t" }] },
+      { taskId: "task-v", trees: [{ path: "/pool/4/repo", leaseId: "lease-task-v" }] },
+    ],
     returningChecks: [{ attemptId: "attempt-c", path: "/pool/2/repo", leaseId: "lease-check-c" }],
   });
   assert.deepEqual(trees, []);

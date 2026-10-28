@@ -1303,10 +1303,13 @@ export class CheckLeaseManager {
     return this.store.listRefused();
   }
 
-  /** Leases whose return was authorized and has not completed yet. */
+  /**
+   * Leases whose return was authorized and has not completed yet. One this process still owns
+   * or is working on is not finished, exactly as `retryReturning` treats it.
+   */
   returningLeases(): Array<{ attemptId: string; path: string; leaseId: string | null }> {
     return this.store.listLive()
-      .filter((row) => row.cleanupState === "returning")
+      .filter((row) => row.cleanupState === "returning" && !this.owned.has(row.attemptId) && !this.busy.has(row.attemptId))
       .map((row) => ({ attemptId: row.attemptId, path: row.leasePath, leaseId: row.leaseId }));
   }
 

@@ -6393,9 +6393,15 @@ export class TaskManager {
     }
   }
 
-  /** Every completed task still owed its worktree return, with the checkouts and leases it holds. */
+  /**
+   * Every completed task still owed its worktree return, with the checkouts and leases it holds.
+   * A task whose session closure is still taking its agent down is not finished yet, exactly as
+   * `retryWorktreeReturn` treats it, so its processes are never listed as orphans.
+   */
   pendingWorktreeReturns(): Array<{ taskId: string; trees: Array<{ path: string; leaseId: string | null }> }> {
-    return this.registry.listTasks().filter(taskOwesWorktreeReturn).map((task) => ({
+    return this.registry.listTasks()
+      .filter((task) => taskOwesWorktreeReturn(task) && !getTaskSessionClosure(task.id))
+      .map((task) => ({
       taskId: task.id,
       trees: taskRepoRefs(task).flatMap((ref) =>
         ref.worktreePath ? [{ path: ref.worktreePath, leaseId: ref.worktreeLeaseId }] : []),
