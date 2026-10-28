@@ -8064,13 +8064,21 @@ export function clearTaskWorktreeReturnRefusal(taskId: string): void {
     SET first_refused_at = NULL, last_refusal = NULL WHERE task_id = ?`).run(taskId);
 }
 
-/** Every task whose owed return is currently being refused, oldest refusal first. */
+/**
+ * Every task whose owed return is currently being refused, oldest refusal first.
+ *
+ * Only rows that still owe a return, by `taskOwesWorktreeReturn`'s own match on the task's
+ * status and attempt timestamps: a row that outlived its obligation must never read as a
+ * `stuck-return` that no return will ever clear.
+ */
 export function listTaskWorktreeReturnRefusals(): Array<{
   taskId: string; firstRefusedAt: number; refusal: WorktreeReturnRefusal;
 }> {
-  const rows = openDb().prepare(`SELECT task_id, first_refused_at, last_refusal
-    FROM task_worktree_returns WHERE first_refused_at IS NOT NULL
-    ORDER BY first_refused_at ASC, task_id ASC`).all() as Array<{
+  const rows = openDb().prepare(`SELECT r.task_id, r.first_refused_at, r.last_refusal
+    FROM task_worktree_returns r JOIN tasks t ON t.id = r.task_id
+    WHERE r.first_refused_at IS NOT NULL AND t.status = 'done'
+      AND t.completed_at = r.completed_at AND t.dispatched_at IS r.dispatched_at
+    ORDER BY r.first_refused_at ASC, r.task_id ASC`).all() as Array<{
       task_id: string; first_refused_at: number; last_refusal: string | null;
     }>;
   return rows.map((row) => ({

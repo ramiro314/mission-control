@@ -445,6 +445,33 @@ test("a task or check return refused for an hour becomes stuck-return, keeps its
   openDb().prepare("DELETE FROM tasks WHERE id = ?").run("stuck-task");
 });
 
+test("a task refusal whose return is no longer owed is never listed as stuck", async () => {
+  const { completeTaskWithSessionClosure, listTaskWorktreeReturnRefusals, recordTaskWorktreeReturnRefusal } =
+    await import("../src/server/db.ts");
+  const { mkTask } = await import("./helpers/session-fixture.ts");
+  const refused = { reason: "a process still uses a checkout", processes: [] };
+  completeTaskWithSessionClosure(mkTask({
+    id: "stale-task", status: "done", completedAt: 500, dispatchedAt: 400,
+    worktreePath: "/pool/3", provider: "mission", worktreeLeaseId: "lease-stale",
+  }), null);
+  recordTaskWorktreeReturnRefusal("stale-task", refused, 1_000);
+  assert.deepEqual(listTaskWorktreeReturnRefusals().map((row) => row.taskId), ["stale-task"]);
+
+  // Written behind upsertTask's back, so the row survives: the listing itself must refuse it.
+  for (const stale of [
+    "UPDATE tasks SET status = 'backlog' WHERE id = 'stale-task'",
+    "UPDATE tasks SET status = 'done', completed_at = 600 WHERE id = 'stale-task'",
+    "UPDATE tasks SET completed_at = 500, dispatched_at = 450 WHERE id = 'stale-task'",
+  ]) {
+    openDb().exec(stale);
+    assert.deepEqual(listTaskWorktreeReturnRefusals(), [], stale);
+  }
+  openDb().exec("UPDATE tasks SET dispatched_at = 400 WHERE id = 'stale-task'");
+  assert.deepEqual(listTaskWorktreeReturnRefusals().map((row) => row.taskId), ["stale-task"], "owed again");
+  openDb().prepare("DELETE FROM tasks WHERE id = ?").run("stale-task");
+  assert.deepEqual(listTaskWorktreeReturnRefusals(), [], "a deleted task takes its row with it");
+});
+
 test("a stuck return whose tree has no native slot links to the worktrees page", () => {
   const problems = stuckReturnProblems([{
     owner: "task", ownerId: "t", label: 'Task "T"', firstRefusedAt: 0,
