@@ -61,6 +61,7 @@ import {
   type WarmSlotResult,
 } from "./manager.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
+import { indexLockBlocker } from "./index-lock.ts";
 import {
   inspectWorktreeOccupancy,
   type WorktreeOccupancy,
@@ -537,7 +538,7 @@ export class WorktreeOperationsService {
             : { state: "unknown" as const, count: null, reason: compact(entry.occupancy.reason) };
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;
-          const actions: Array<"return" | "destroy" | "warm"> = [];
+          const actions: Array<"return" | "destroy" | "warm" | "recover"> = [];
           // A `warm` lease belongs to the seed copying from it, which returns it the moment the
           // copy ends. Nothing an operator could do to it here would be safer than that.
           if (entry.slot.state === "leased") {
@@ -545,6 +546,11 @@ export class WorktreeOperationsService {
           }
           else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
             actions.push("destroy");
+          }
+          // Recover is for a quarantine nobody is still working in: its owner, if it had one,
+          // is positively gone. The preview and the manager each re-read that.
+          if (entry.slot.state === "quarantined" && exact && entry.ownerReferenced === false) {
+            actions.push("recover");
           }
           // Warm prepares an idle slot ahead of time: one acquisition's own rule calls idle, in a
           // pool whose claim it would run. The preview applies the same rule.
@@ -1048,6 +1054,9 @@ export class WorktreeOperationsService {
     if (request.action === "warm") {
       return this.buildWarmPreview(request, observed, affected, risks, blockers, consequences);
     }
+    if (request.action === "recover") {
+      return this.buildRecoverPreview(request, observed, affected, risks, blockers, consequences);
+    }
 
     const poolId = request.action === "prune" || request.action === "reconcile"
       ? request.poolId
@@ -1192,6 +1201,82 @@ export class WorktreeOperationsService {
       }
     }
     consequences.push("Cancel stops the running step's process group and returns the slot to the pool.");
+    return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+  }
+
+  /**
+   * Recover one quarantined slot. The preview names the `index.lock` it would remove, any Git
+   * process using the worktree (which blocks it), and the work the reset would discard, which
+   * is the one acknowledgeable risk. Everything it read is bound into the token, so a lock
+   * that appears or a file written after the preview makes Execute refuse as stale.
+   */
+  private async buildRecoverPreview(
+    request: Extract<WorktreeActionRequest, { action: "recover" }>,
+    observed: Observation,
+    affected: WorktreeActionAffected[],
+    risks: WorktreeActionRisk[],
+    blockers: string[],
+    consequences: string[],
+  ): Promise<Omit<WorktreeActionPreview, "token" | "expiresAt">> {
+    const target = this.nativeTargets(observed).find(({ slot }) => slot.slot.id === request.slotId);
+    if (!target) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
+    const { pool, slot } = target;
+    const ordinal = slot.slot.ordinal;
+    const lock = await this.manager.slotIndexLock(slot.slot, pool.pool.gitCommonDirectory, slot.occupancy);
+    const work = slot.slot.state === "quarantined" && slot.nativePath ? await this.manager.slotWork(slot.slot.path) : null;
+    affected.push({
+      provider: "mission",
+      id: slot.slot.id,
+      path: slot.slot.path,
+      owner: null,
+      version: slot.slot.version,
+      safetyRevision: digest({
+        state: slot.slot.state,
+        version: slot.slot.version,
+        head: slot.observedHead,
+        occupancy: slot.occupancy,
+        ownerReferenced: slot.ownerReferenced,
+        lock: { ...lock, ageMs: null },
+        work,
+      }),
+      diskBytes: null,
+    });
+    if (slot.slot.state !== "quarantined") blockers.push(`Slot ${ordinal} is ${slot.slot.state}, not quarantined.`);
+    if (slot.ownerReferenced !== false) {
+      blockers.push(slot.ownerReferenced === null
+        ? `Slot ${ordinal}'s owner could not be read, so it may still be in use.`
+        : `A live owner still references slot ${ordinal}; return it through that owner instead.`);
+    }
+    if (!pool.identityValid || !pool.markerValid || !slot.nativePath ||
+      slot.registered !== true || slot.repositoryMatches !== true) {
+      blockers.push("Exact native pool, marker, Git registration, and repository ownership are not all proven.");
+    }
+    if (observed.pending.has(slot.slot.path)) {
+      blockers.push(`Slot ${ordinal} already has an operation queued; wait for it to finish.`);
+    }
+    for (const process of lock.gitProcesses ?? []) {
+      consequences.push(`Git process ${process.pid} is using the worktree: ${process.command}`);
+    }
+    const lockBlocker = indexLockBlocker(lock, false);
+    if (lockBlocker) blockers.push(`index.lock cannot be removed: ${lockBlocker}.`);
+    if (slot.occupancy.status === "unknown") {
+      risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
+      blockers.push(slot.occupancy.reason);
+    } else if (slot.occupancy.occupants.length > 0) {
+      risks.push(risk("occupied", `${slot.occupancy.occupants.length} process(es) occupy the slot`, false));
+      blockers.push("Known processes must exit before Recover can reset the slot.");
+    }
+    risks.push(risk("quarantined", "The slot is quarantined", false));
+    if (work) {
+      risks.push(risk("dirty", "Uncommitted, untracked, unpushed or ignored work will be discarded", true));
+      consequences.push(`Discards the slot's work: ${work}. Regenerable ignored directories such as node_modules/ are kept.`);
+    }
+    if (lock.exists && lock.path) {
+      consequences.push(`Removes the stale lock ${lock.path}.`);
+    } else if (lock.path) {
+      consequences.push(`No index.lock is present at ${lock.path}.`);
+    }
+    consequences.push("Resets the slot to the fetched remote default and returns it to the pool as available.");
     return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
   }
 
@@ -1700,6 +1785,21 @@ export class WorktreeOperationsService {
       }
       return;
     }
+    if (request.action === "recover") {
+      const target = preview.affected[0]!;
+      const result = await this.manager.recoverSlot({
+        slotId: target.id,
+        expectedVersion: target.version ?? undefined,
+        allowDirty: acknowledgements.has("dirty"),
+        automatic: false,
+      });
+      if (result.outcome === "recovered") return;
+      throw new WorktreeOperationError(
+        result.outcome === "outcomeUnknown" ? 503 : 409,
+        result.reason,
+        result.outcome === "outcomeUnknown" ? "unavailable" : "changed",
+      );
+    }
     if (request.action === "prune") {
       for (const target of preview.affected) {
         const result = await this.manager.removeSlot({
@@ -1824,6 +1924,7 @@ export class WorktreeOperationsService {
   private successMessage(action: WorktreeActionRequest["action"]): string {
     switch (action) {
       case "return": return "Worktree returned to warm capacity.";
+      case "recover": return "Quarantined worktree recovered to warm capacity.";
       case "prune": return "Safe candidate set pruned.";
       case "reconcile": return "Pool re-observed; uncertainty remains quarantined.";
       case "destroy": return "Fixed worktree target destroyed.";

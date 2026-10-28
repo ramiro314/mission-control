@@ -1,3 +1,5 @@
+import { run } from "../util/exec.ts";
+
 /**
  * The worktree Git commands this daemon has running right now.
  *
@@ -31,3 +33,7 @@ export async function trackOwnWorktreeProcess<T>(
     if (pid !== null) running.delete(pid);
   }
 }
+
+/** `run`, recorded while it runs, for worktree Git commands issued outside `NativeWorktreeGit`. */
+export const trackedRun: typeof run = (bin, args, opts = {}) =>
+  trackOwnWorktreeProcess((onSpawn) => run(bin, args, { ...opts, onSpawn }));

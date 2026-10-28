@@ -686,6 +686,30 @@ The operations have deliberately narrow meanings:
   Destroy may discard dirty or unlanded work only after those risks are acknowledged. It has no target
   meaning every pool and cannot override unknown identity, ownership, registration, or process
   state.
+- **Recover** brings back a quarantined slot that no live owner references. It is offered on
+  every such slot's card, and Settings > Storage lists each quarantined slot as a problem whose
+  **Open slot** link jumps to that card. Its preview names the slot's `index.lock` (under the Git
+  directory its `.git` file names), any Git process whose working directory is in the slot, and,
+  when the slot holds uncommitted, untracked, unpushed or ignored work outside the regenerable
+  directories (`node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/`, `.next/`),
+  that the reset discards it, which must be acknowledged. Execute removes `index.lock` only when no
+  Git process uses the worktree and `lsof` shows nothing holding the lock, then runs the same
+  owner-authorized reset Return ends in, and the slot becomes available. A slot with a live or
+  unknown owner, any process inside it, or a lock it cannot prove free is refused. Recover is the
+  way out of the stale-lock quarantine: a Git command that dies holding `index.lock` makes the
+  next reset fail with Git's "Unable to create '...index.lock': File exists", and the slot is
+  quarantined with that text as its last error.
+
+  Each maintenance pass also retries every quarantine whose last error is that text, with no
+  operator. It recovers the slot when the lock is gone, or when the lock is more than 10 minutes
+  old and the same no-Git-process and no-holder check passes, and only when the slot is clean
+  with regenerable ignored files discounted. A slot holding any other work stays quarantined, with
+  that work intact, until someone runs Recover and reads its preview.
+
+  A quarantined slot raises the bannered storage problem `quarantined-slot:<slot id>:<entered>`,
+  where the entry time is the slot's own `quarantined_at` column, so the id survives a daemon
+  restart. A slot quarantined before that column existed is stamped once by the first start that
+  finds it.
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
   adapter. There is no force action for unverifiable or foreign resources.
 - **Warm** prepares idle slots ahead of time: it holds each under a `warm` lease, fetches, resets

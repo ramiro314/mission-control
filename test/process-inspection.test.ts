@@ -138,6 +138,23 @@ test("the listening pid is the first pid lsof prints, and nothing listening is n
   assert.equal(await inspector.findListeningPid(81), null);
 });
 
+test("a file's holders are lsof's pids, nothing open is a positive empty answer, and a failed read is null", async () => {
+  const { runner, calls } = recordingRunner({
+    "lsof -w -t -- /held/index.lock": stubRun({ stdout: "4242\n4243\n", stderr: "", code: 0 }),
+    "lsof -w -t -- /free/index.lock": stubRun({ stdout: "", stderr: "", code: 1 }),
+    "lsof -w -t -- /refused/index.lock": stubRun({ stdout: "", stderr: "lsof: status error on /refused: Permission denied", code: 1 }),
+    "lsof -w -t -- /garbled/index.lock": stubRun({ stdout: "p4242\n", stderr: "", code: 0 }),
+    "lsof -w -t -- /timeout/index.lock": { ...stubRun({ stdout: "", stderr: "", code: null }), outcomeUnknown: true },
+  });
+  const inspector = createPosixProcessInspector(runner);
+  assert.deepEqual((await inspector.findFileHolders("/held/index.lock")).pids, [4242, 4243]);
+  assert.deepEqual((await inspector.findFileHolders("/free/index.lock")).pids, []);
+  assert.equal((await inspector.findFileHolders("/refused/index.lock")).pids, null);
+  assert.equal((await inspector.findFileHolders("/garbled/index.lock")).pids, null);
+  assert.equal((await inspector.findFileHolders("/timeout/index.lock")).pids, null);
+  assert.deepEqual(calls[0], { sync: false, bin: "lsof", args: ["-w", "-t", "--", "/held/index.lock"], opts: { timeoutMs: 10_000 } });
+});
+
 test("no platform is registered on main, so every platform, win32 included, gets the POSIX inspector", () => {
   for (const platform of ["darwin", "linux", "win32"] as const) {
     assert.equal(processInspectorFor(platform), posixProcessInspector, platform);
