@@ -111,7 +111,7 @@ function ProblemLink({
       );
     case "slot":
       return (
-        <Tooltip label="Open this slot's card in the worktree pools">
+        <Tooltip label="Open this slot's card in Worktrees, where its Recover, Return and Destroy actions are">
           <button type="button" className="btn btn-ghost" onClick={() => onNavigate("worktrees", worktreeSlotAnchor(link.slotId))}>
             Open slot
           </button>

@@ -1,4 +1,6 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { Page } from "@playwright/test";
 import type { StorageView } from "../../src/shared/storage-health.ts";
 import type { WorktreeInventory } from "../../src/shared/worktrees.ts";
@@ -6,6 +8,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
  * Worktree reclaim, as the operator meets it: what Storage lists about a tree, and where its fix
@@ -16,10 +19,18 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * are all real; the one seeded fact is the clock's age, moved back five days in the daemon's own
  * record after its first real probe, because nothing here can wait out a day. No agent is
  * launched, so no model tokens are spent.
+ *
+ * Recover: a slot quarantined by a stale `index.lock` reaches Storage as a problem whose link
+ * lands on that slot's card, and the card's Recover runs through the preview the daemon builds
+ * (naming the lock and the work it discards) to a real reset on disk, after which the slot
+ * reads available and the problem is gone.
  */
 
 const EVIDENCE = artifactsDir("worktree-reclaim");
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A Recover is a fetch and a reset of a real checkout; this is about the disk, not the dialog. */
+const EXECUTES_MS = 30_000;
 
 async function shoot(page: Page, name: string): Promise<void> {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
@@ -141,4 +152,104 @@ test("a live lease quiet past staleLeaseDays shows a stale chip and a Storage-on
   expect(slot.owner?.kind).toBe("manual");
   expect(existsSync(lease.path)).toBe(true);
   expect(leaseClock(daemon)[lease.leaseId]?.changedAt).toBe(quietSince);
+});
+
+/** The slot's own `index.lock`, under the directory its `.git` file names. */
+function indexLockOf(slotPath: string): string {
+  const gitDirectory = readFileSync(join(slotPath, ".git"), "utf8").match(/^gitdir: (.+)$/m)![1]!.trim();
+  return join(resolve(slotPath, gitDirectory), "index.lock");
+}
+
+test("a Storage problem link opens the quarantined slot, whose Recover previews and resets it", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  // A slot that served a manual lease and went back to the pool, as every slot does.
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "recover fixture" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+
+  // Then the audited incident: a Git command died holding `index.lock`, and the next reset
+  // was refused with Git's own text. The lock is planted for real; the refusal is recorded
+  // exactly as the manager records it, at a fixed entry time the problem id is built from.
+  const lock = indexLockOf(lease.path);
+  writeFileSync(lock, "");
+  const scratch = join(lease.path, "scratch-notes.md");
+  writeFileSync(scratch, "left behind by the crashed run\n");
+  const quarantinedAt = Date.now() - 60 * 60_000;
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+              quarantine_reason = 'return reset failed',
+              last_error = ?
+        WHERE path = ? AND state = 'available'`,
+    ).run(
+      quarantinedAt,
+      `git checkout --detach failed: fatal: Unable to create '${lock}': File exists.`,
+      lease.path,
+    );
+    expect(Number(changed.changes)).toBe(1);
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  // The dashboard banner raised by this problem, read from the `storage_health` stream.
+  const banner = dashboard.getByRole("status", { name: "Storage needs attention" })
+    .filter({ hasText: "is quarantined: a stale index.lock blocked its reset" });
+  await expect(banner).toBeVisible();
+  const problems = dashboard.getByRole("list", { name: "Storage problems" });
+  const problem = problems.getByRole("listitem").filter({ hasText: "Quarantined slot" });
+  await expect(problem).toContainText("is quarantined: a stale index.lock blocked its reset");
+  await shoot(dashboard, "01-storage-quarantined-slot");
+  await problem.getByRole("button", { name: "Open slot" }).click();
+
+  await expect(dashboard.getByRole("tab", { name: "Worktrees" })).toHaveAttribute("aria-selected", "true");
+  const slot = dashboard.locator(".wt-slot", { hasText: lease.path });
+  await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(slot).toBeInViewport();
+  await shoot(dashboard, "02-slot-card-recover");
+  await slot.getByRole("button", { name: "Recover", exact: true }).click();
+
+  const preview = dashboard.getByRole("dialog", { name: "recover worktree preview" });
+  await expect(preview.getByRole("heading", { name: "Recover worktree" })).toBeVisible();
+  await expect(preview.getByText(`Removes the stale lock ${lock}.`)).toBeVisible();
+  await expect(preview.getByText(/^Discards the slot's work: checkout has uncommitted, untracked or ignored work\./)).toBeVisible();
+  await expectContentClearsBorder(preview);
+  const execute = preview.getByRole("button", { name: "Execute" });
+  await expect(execute).toBeDisabled();
+  await shoot(dashboard, "03-recover-preview");
+
+  // Cancel changes nothing: the lock and the work stay where they were.
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(preview).toHaveCount(0);
+  expect(existsSync(lock)).toBe(true);
+  expect(existsSync(scratch)).toBe(true);
+
+  await slot.getByRole("button", { name: "Recover", exact: true }).click();
+  await preview.getByLabel(/I understand: Uncommitted, untracked, unpushed or ignored work will be discarded/).check();
+  await expect(execute).toBeEnabled();
+  await execute.click();
+  await expect(preview).toHaveCount(0);
+
+  await expect.poll(() => existsSync(lock), { timeout: EXECUTES_MS }).toBe(false);
+  await expect(slot.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(slot.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  expect(existsSync(scratch)).toBe(false);
+  expect(execFileSync("git", ["-C", lease.path, "status", "--porcelain"]).toString()).toBe("");
+  // Still on Worktrees, before Storage reads the aggregate itself: the recovery's own
+  // `storage_health` event is what clears the banner.
+  await expect(banner).toHaveCount(0);
+  await shoot(dashboard, "04-slot-recovered");
+
+  await dashboard.getByRole("tab", { name: "Storage" }).click();
+  await expect(dashboard.getByText("No storage problems.")).toBeVisible();
+  await expect(banner).toHaveCount(0);
+  await shoot(dashboard, "05-storage-cleared");
 });

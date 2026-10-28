@@ -534,6 +534,7 @@ function leasedSlot(overrides: Partial<WorktreeSlotRow> = {}): WorktreeSlotRow {
     lastUsedAt: null,
     quarantineReason: null,
     lastError: null,
+    quarantinedAt: null,
     depsState: null,
     depsFingerprint: null,
     depsFingerprintSha: null,

@@ -123,6 +123,7 @@ import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { StorageHealthService, stuckReturnSource } from "./storage-health.ts";
 import { LeaseActivityObserver } from "./worktrees/lease-activity.ts";
+import { quarantinedSlotProblems } from "./worktrees/storage-problems.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import { holdIdleConnections } from "./http-keep-alive.ts";
 import {
@@ -226,10 +227,19 @@ const leaseActivity = new LeaseActivityObserver(
 );
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
+// A slot entering or leaving quarantine changes the storage aggregate. The aggregate is built
+// further down, after this manager's startup reconciliation has already published. Both the
+// manager and the operations service publish through this one function: an executed preview
+// coalesces its changes into the service's own notice, which never reaches the manager's.
+let recomputeStorageHealth = () => {};
+const publishWorktreesChanged = () => {
+  registry.emitWorktreesChanged();
+  recomputeStorageHealth();
+};
 const worktrees = new WorktreeManager(undefined, {
   ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference),
   publishChanged: () => {
-    registry.emitWorktreesChanged();
+    publishWorktreesChanged();
     void leaseActivity.request();
   },
 });
@@ -390,7 +400,8 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   },
   checks: checkLeases,
   checkRecovery: checkRuntime.groupRecovery,
-  notifyChanged: () => registry.emitWorktreesChanged(),
+  // Not the lease-activity probe: this notice also carries a running Warm's output tail.
+  notifyChanged: publishWorktreesChanged,
   staleLeases: () => leaseActivity.staleSinceBySlot(),
 });
 // No Warm survives a restart, so only the Warm logs a slot row still names are kept. Native
@@ -449,7 +460,8 @@ let stopSettingsBackups = () => {};
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune
-// (the backup loop's startup prune seeds it) and after every worktree maintenance pass.
+// (the backup loop's startup prune seeds it), after every worktree maintenance pass, and
+// whenever the worktree pool publishes a change, so a quarantine raises its problem at once.
 // A task or check return refused for over an hour is a `stuck-return` problem. Its first
 // appearance comes with the maintenance pass that follows the hour; a task return outcome
 // recomputes at once, so a success clears its problem without waiting for one.
@@ -467,10 +479,12 @@ const storageHealth = new StorageHealthService({
         return found.state === "active" ? found.lease.slotId : null;
       },
     }),
+    () => ({ problems: quarantinedSlotProblems(worktrees.store.slots()) }),
   ],
 });
 databaseBackups.onChange(() => storageHealth.recompute());
 tasks.onWorktreeReturnOutcome(() => storageHealth.recompute());
+recomputeStorageHealth = () => storageHealth.recompute();
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
