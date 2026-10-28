@@ -32,6 +32,7 @@ import { run } from "../util/exec.ts";
 import { unref } from "../util/timers.ts";
 import { TailRing } from "../workflows/check-spawn.ts";
 import { worktreeRepositoryIdentity } from "../util/git.ts";
+import { UNCOMMITTED_WORK, UNPUBLISHED_COMMITS, worktreeReturnBlocker } from "../git/worktree-return-safety.ts";
 import type {
   CheckGroupRecovery,
   CheckLeaseManager,
@@ -133,6 +134,8 @@ export interface WorktreeOperationsDeps {
   warmTailIntervalMs: number;
   /** For each slot holding a stale live lease, when that lease last changed. */
   staleLeases: () => ReadonlyMap<string, number>;
+  /** The reclaim cleanliness read, which also sees ignored work a slot's own dirty reading does not. */
+  returnBlocker: typeof worktreeReturnBlocker;
 }
 
 interface Observation {
@@ -444,6 +447,7 @@ export class WorktreeOperationsService {
       warmLogsDirectory: WORKTREE_WARM_LOGS_DIR,
       warmTailIntervalMs: WARM_TAIL_INTERVAL_MS,
       staleLeases: () => new Map(),
+      returnBlocker: worktreeReturnBlocker,
       ...deps,
     };
   }
@@ -900,6 +904,29 @@ export class WorktreeOperationsService {
     return native;
   }
 
+  /**
+   * Name the work reclaiming a task's trees throws away, before anyone confirms it. A slot's
+   * own dirty reading never sees ignored files, so a tree a restart kept for its `.env` or its
+   * workflow evidence would otherwise be discarded with no warning at all. Regenerable
+   * directories such as `node_modules/` are discounted, as the settled-task reclaim discounts
+   * them, and an unreadable tree states nothing here: the other checks already speak for it.
+   */
+  private async stateTaskDiscards(
+    task: WorktreeTaskView,
+    risks: WorktreeActionRisk[],
+    consequences: string[],
+  ): Promise<void> {
+    for (const resource of task.resources) {
+      const reason = await this.deps.returnBlocker(resource.path, { regenerableIgnored: true }).catch(() => null);
+      if (reason === UNCOMMITTED_WORK) {
+        risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
+        consequences.push(`Discards the uncommitted, untracked or ignored work in ${resource.path}.`);
+      } else if (reason === UNPUBLISHED_COMMITS) {
+        consequences.push(`Discards the commits in ${resource.path} that were never pushed.`);
+      }
+    }
+  }
+
   private async appendNativeTarget(
     target: NativeTarget,
     action: "return" | "destroy",
@@ -1018,6 +1045,7 @@ export class WorktreeOperationsService {
             blockers.push("The selected legacy lease no longer matches the task's durable resource.");
           }
           const native = await this.expandTaskResources(task, observed, affected, risks, blockers, consequences);
+          await this.stateTaskDiscards(task, risks, consequences);
           for (const target of native) {
             await this.appendNativeTarget(target, "return", observed, affected, risks, blockers, consequences);
           }
@@ -1219,6 +1247,7 @@ export class WorktreeOperationsService {
         continue;
       }
       const expanded = await this.expandTaskResources(task, observed, affected, risks, blockers, consequences);
+      await this.stateTaskDiscards(task, risks, consequences);
       for (const target of expanded) targets.set(target.slot.slot.id, target);
       for (const target of initialTargets.filter((candidate) =>
         candidate.slot.slot.activeOwnerKey?.startsWith(`${taskId}:`))) {

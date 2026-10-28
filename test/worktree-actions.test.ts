@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDb } from "../src/server/db.ts";
 import { Registry } from "../src/server/registry.ts";
@@ -424,6 +424,64 @@ test("task previews bind attached disposable Git risks outside native inventory"
     "a disposable secondary's Git change invalidates the task-wide token",
   );
   assert.equal(reclaimed, false);
+});
+
+test("a task Return states the discard of ignored work its slot's own dirty reading cannot see", async () => {
+  // The settled-task case (D20): a restart kept this tree for its `.env` alone. Git status
+  // without `--ignored` calls it clean, so the preview used to discard it with no word at all.
+  const { origin, clone: repo } = mkOriginAndClone("mission-worktree-task-ignored-");
+  writeFileSync(join(origin, ".gitignore"), "node_modules/\n.env\n");
+  gitIn(origin, "add", ".gitignore");
+  gitIn(origin, "commit", "-qm", "ignore");
+  gitIn(repo, "fetch", "-q", "origin");
+  const lease = await manager.acquire({
+    repositoryPath: repo,
+    baseSha: gitIn(repo, "rev-parse", "origin/main"),
+    owner: { kind: "task", key: "task-ignored:0" },
+  });
+  assert.equal(lease.outcome, "acquired");
+  if (lease.outcome !== "acquired") return;
+  const delegated = new WorktreeOperationsService(manager, {
+    legacy: new LegacyTreehouseService(db),
+    tasks: {
+      get: (id) => id === "task-ignored"
+        ? {
+            id,
+            title: "Settled task",
+            resources: [{
+              position: 0,
+              repoRoot: repo,
+              path: lease.lease.path,
+              provider: "mission",
+              leaseId: lease.lease.leaseId,
+              branch: null,
+            }],
+          }
+        : null,
+      reclaim: async () => ({ ok: true }),
+    },
+    checks,
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async () => 0,
+  });
+
+  // Regenerable directories are discounted, as the settled-task reclaim discounts them.
+  mkdirSync(join(lease.lease.path, "node_modules", "pkg"), { recursive: true });
+  writeFileSync(join(lease.lease.path, "node_modules", "pkg", "index.js"), "x\n");
+  const regenerable = await delegated.preview({ action: "return", slotId: lease.lease.slotId });
+  assert.deepEqual(regenerable.requiredAcknowledgements, []);
+  assert.equal(regenerable.consequences.some((line) => line.startsWith("Discards")), false);
+
+  writeFileSync(join(lease.lease.path, ".env"), "TOKEN=1\n");
+  const preview = await delegated.preview({ action: "return", slotId: lease.lease.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  assert.deepEqual(preview.requiredAcknowledgements, ["dirty"]);
+  assert.ok(preview.consequences.includes(
+    `Discards the uncommitted, untracked or ignored work in ${lease.lease.path}.`,
+  ), preview.consequences.join(" | "));
+  await assert.rejects(delegated.execute(preview.token, []), /missing acknowledgement: dirty/);
+  await manager.release(lease.lease, { ownerAuthorized: true });
 });
 
 test("legacy task Return reaches the exact conditional adapter through TaskManager", async () => {

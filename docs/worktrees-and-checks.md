@@ -816,8 +816,27 @@ protects the whole set, and the task is reclaimed as one operation.
 **How the clock is kept.** The daemon observes each eligible task's checkouts on a fixed
 internal cadence, well inside the window, and persists the result - the fingerprint, when it
 last changed, and the resulting deadline - so a restart resumes the boundary that was actually
-granted rather than starting over. A restart preserves failed or cancelled tasks' worktrees for the same 30-day rule. Final
-completed tasks resume explicitly recorded closure and return obligations after session discovery.
+granted rather than starting over. Final completed tasks resume explicitly recorded closure and
+return obligations after session discovery.
+
+**A restart reclaims a settled task's clean trees at once.** When a restart settles a task whose
+agent did not survive it, or finds a failed or cancelled task still holding trees, it checks every
+tree the task holds. This amends the earlier settle-and-retain rule for clean trees only:
+
+- **Clean** means nothing uncommitted, untracked or unpushed, and no ignored file except under
+  the regenerable directories `node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`,
+  `.turbo/` and `.next/`, at any depth. A clean task whose trees no process occupies is
+  reclaimed through the same path as **Clean up**, keeping its status and outcome.
+- **Anything else keeps the 30-day window.** Any other ignored file is work here: workflow
+  evidence under `.evidence/` or `e2e/.artifacts/`, or a local `.env`. So is a tree Git cannot
+  read. The task is listed as a `dirty-settled-tree` problem in **Settings > Storage**, named
+  `dirty-settled-tree:<task id>:<first seen at>` from the storage first-seen record, so a restart
+  keeps its id. It is listed in Storage only and never raises the banner.
+- **Discard and reclaim is the slot card's Return.** The problem links to the task's pool slot,
+  and its Return preview states the discard before anything runs: "Discards the uncommitted,
+  untracked or ignored work in ..." and, for commits never pushed, "Discards the commits in ...".
+  Confirming reclaims every tree the task holds and the problem disappears. A task with no pool
+  slot (a disposable Git worktree or a Treehouse lease) points at its task card's **Clean up**.
 
 **The clock starts when the tree is first observed, not when the task ended.** No timestamp in
 the database can prove when a checkout was last touched, so every tree that existed before this

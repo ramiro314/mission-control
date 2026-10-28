@@ -139,6 +139,8 @@ import {
 } from "./task-resource-generation.ts";
 import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
 import { worktreeReturnBlocker } from "./git/worktree-return-safety.ts";
+import { storageProblem, type StorageProblemLink } from "@shared/storage-health.ts";
+import type { StorageProblemObservation } from "./storage-health.ts";
 import { inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
 import { gitInfo } from "./util/git.ts";
 import {
@@ -1014,6 +1016,13 @@ export class TaskManager {
   /** Told after every automatic worktree return outcome, so storage health can recompute. */
   private readonly worktreeReturnListeners = new Set<() => void>();
   private readonly killedSessionReturns = new Map<string, { taskId: string; ownership: string }>();
+  /**
+   * Tasks a restart settled with work still in a tree, and why: the tree and the refusal that
+   * kept it. Rebuilt by every startup reconciliation, which visits each one again, so it needs
+   * no table. See `dirtySettledTreeProblems`.
+   */
+  private readonly dirtySettledTrees = new Map<string, { path: string; reason: string }>();
+  private settledTreesChanged: () => void = () => {};
   /** One in-process launcher per durable retry reservation. SQLite owns cross-request CAS. */
   private readonly pipelineRecoveries = new Set<string>();
   /** One completion in flight per task, so two signals cannot both publish one archive. */
@@ -1173,6 +1182,14 @@ export class TaskManager {
         this.autoCompleted.delete(e.id);
         this.nextCompletedReturn.delete(e.id);
         this.completedReturnRefusals.delete(e.id);
+      }
+      // A kept tree reclaimed by Return, Clean up or retention, or a task removed, takes its
+      // problem with it. The source decides what is gone; this only asks it again promptly.
+      if (
+        (e.type === "task_upsert" && this.dirtySettledTrees.has(e.task.id) && !taskHasWorktrees(e.task)) ||
+        (e.type === "task_remove" && this.dirtySettledTrees.has(e.id))
+      ) {
+        this.settledTreesChanged();
       }
       if (
         e.type === "task_upsert" &&
@@ -1513,6 +1530,45 @@ export class TaskManager {
    */
   registerWritebackEnqueuer(enqueuer: WritebackEnqueuer): void {
     this.writeback = enqueuer;
+  }
+
+  /** Install what storage health runs when the set of kept settled trees changes. */
+  registerSettledTreesListener(listener: () => void): void {
+    this.settledTreesChanged = listener;
+  }
+
+  /**
+   * The storage-health source: one Storage-only `dirty-settled-tree` problem per task a
+   * restart settled with work in a tree. It links to the task's pool slot, whose Return
+   * preview states the discard, or to the Worktrees page when it holds no slot.
+   */
+  dirtySettledTreeProblems(): StorageProblemObservation {
+    const observation: Required<StorageProblemObservation> = { problems: [], firstSeen: [], goneSubjects: [] };
+    for (const [id, kept] of this.dirtySettledTrees) {
+      const subject = `dirty-settled-tree:${id}`;
+      const task = this.registry.getTask(id);
+      if (!task || isActiveTask(task.status) || !taskHasWorktrees(task)) {
+        this.dirtySettledTrees.delete(id);
+        observation.goneSubjects.push(subject);
+        continue;
+      }
+      const slot = taskRepoRefs(task).flatMap((ref) =>
+        ref.provider === "mission" && ref.worktreeLeaseId
+          ? [this.worktrees.store.slotByLeaseId(ref.worktreeLeaseId)]
+          : []).find((row) => row !== null) ?? null;
+      const link: StorageProblemLink = slot ? { target: "slot", slotId: slot.id } : { target: "worktrees" };
+      observation.firstSeen.push({
+        subject,
+        problem: (firstSeenAt) => storageProblem(
+          "dirty-settled-tree",
+          id,
+          firstSeenAt,
+          `${task.title} settled with work left in ${kept.path} (${kept.reason}); its worktrees are kept for the 30-day retention window`,
+          link,
+        ),
+      });
+    }
+    return observation;
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
@@ -6744,17 +6800,59 @@ export class TaskManager {
     // bargain than the race it closes. The re-read and the ownership comparison that open
     // the section below happen INSIDE the reservation, so an operator who won the race is
     // observed rather than raced with.
-    await this.withCleanupReservation(t.id, undefined, () => this.reconcileAfterProbe(t));
+    const retained = await this.withCleanupReservation(t.id, false, () => this.reconcileAfterProbe(t));
+    // Outside the reservation, because `reclaim` takes it itself.
+    if (retained) await this.reclaimSettledTreesIfClean(t.id);
   }
 
-  /** The destructive tail of `reconcileOnStartup`, run under the cleanup reservation. */
-  private async reconcileAfterProbe(t: Task): Promise<void> {
+  /**
+   * D20 of the disk-reclaim plan, amending settle-and-retain for clean trees only: a settled
+   * task whose every tree is clean is reclaimed now, through the operator's own `reclaim`.
+   * "Clean" discounts regenerable ignored directories such as `node_modules/`, while any other
+   * ignored file - evidence, `.env` - is work. A tree with work, or one that cannot be read,
+   * keeps the 30-day window and is listed; one a process occupies is left to the orphan report.
+   */
+  private async reclaimSettledTreesIfClean(id: string): Promise<void> {
+    const task = this.registry.getTask(id);
+    if (!task || isActiveTask(task.status) || !taskHasWorktrees(task)) return;
+    const generation = taskResourceGeneration(task);
+    const paths = taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []);
+    const probe = this.startupDeps.returnBlocker ?? worktreeReturnBlocker;
+    let kept: { path: string; reason: string } | null = null;
+    for (const path of paths) {
+      const reason = await probe(path, { regenerableIgnored: true });
+      if (reason) {
+        kept = { path, reason };
+        break;
+      }
+    }
+    const current = this.registry.getTask(id);
+    if (!current || taskResourceGeneration(current) !== generation) return;
+    if (kept) {
+      this.dirtySettledTrees.set(id, kept);
+      this.settledTreesChanged();
+      return;
+    }
+    const occupancy = await (this.startupDeps.occupancy ?? inspectWorktreeOccupancy)(paths);
+    if (paths.some((path) => {
+      const state = occupancy.get(path);
+      return !state || state.status === "unknown" || state.occupants.length > 0;
+    })) return;
+    const result = await this.reclaim(id);
+    if (!result.ok) console.warn(`[tasks] could not reclaim settled task ${id}'s clean worktrees: ${result.error}`);
+  }
+
+  /**
+   * The destructive tail of `reconcileOnStartup`, run under the cleanup reservation. True when
+   * it settled the task with its worktrees retained.
+   */
+  private async reconcileAfterProbe(t: Task): Promise<boolean> {
     // A completion authority may have moved the row while the terminal probe awaited. The
     // pipeline projection is one such authority during boot restore. Re-read before cleanup
     // so its `done` result is preserved instead of being overwritten from the startup
     // snapshot as a failed task.
     const currentAfterProbe = this.registry.getTask(t.id);
-    if (!currentAfterProbe) return;
+    if (!currentAfterProbe) return false;
     if (
       currentAfterProbe.dispatchedAt !== t.dispatchedAt ||
       currentAfterProbe.worktreePath !== t.worktreePath ||
@@ -6765,11 +6863,11 @@ export class TaskManager {
     ) {
       // Reschedule or re-dispatch replaced the launch while this probe was in flight. Its
       // resources belong to a different attempt and this startup job has no claim on them.
-      return;
+      return false;
     }
     t = currentAfterProbe;
     // Startup must preserve the same durable publication obligation as live eviction.
-    if (localPlanRecoveryPending(this.registry, t)) return;
+    if (localPlanRecoveryPending(this.registry, t)) return false;
     const settledStatus = t.status === "done" || t.status === "cancelled" ? t.status : "failed";
     const settledError =
       t.status === "done" || t.status === "cancelled"
@@ -6787,6 +6885,8 @@ export class TaskManager {
       // binding cleared - and every worktree, provider and lease fact it holds is preserved
       // for the same 30-day clock a task that ended while the daemon was up gets. The operator
       // keeps the ordinary Clean up affordance throughout, and retention reclaims it later.
+      // The one exception is a task whose every tree turns out clean, which `reconcileOnStartup`
+      // reclaims as soon as this settlement commits: there is nothing in it to protect.
       //
       // Nothing is archived here either. A scout's report stays in its tree and is published by
       // the shared reclaim core immediately before the teardown that would actually destroy it,
@@ -6820,7 +6920,7 @@ export class TaskManager {
       // transaction. Nothing was written at all - not half a task update, not a stranded
       // ledger row - and the next pass or the next event reconciles whatever it became.
       if (result.committed) this.registry.publishPersistedTask(settled, result.displaced);
-      return;
+      return result.committed;
     }
 
     // No checkout at all, only a dead terminal home. There is nothing here for a Git-visible
@@ -6836,7 +6936,7 @@ export class TaskManager {
         sessionId: null,
         updatedAt: Date.now(),
       });
-      return;
+      return false;
     }
     try {
       const teardown = this.startupDeps.teardown ?? ((target, legacy, priority) =>
@@ -6857,7 +6957,7 @@ export class TaskManager {
         sessionId: null,
         updatedAt: now,
       });
-      return;
+      return false;
     }
     this.registry.upsertTask({
       ...t,
@@ -6870,5 +6970,6 @@ export class TaskManager {
       sessionId: null,
       updatedAt: Date.now(),
     });
+    return false;
   }
 }

@@ -4,6 +4,10 @@ import { run } from "../util/exec.ts";
 /** Ignored directories an install or build recreates, discounted at any depth by `regenerableIgnored`. */
 export const REGENERABLE_IGNORED_PATHS = ["node_modules/", "dist/", "build/", "coverage/", ".cache/", ".turbo/", ".next/"] as const;
 
+/** The two refusals that name work a discard would lose, as opposed to a read that failed. */
+export const UNCOMMITTED_WORK = "checkout has uncommitted, untracked or ignored work";
+export const UNPUBLISHED_COMMITS = "checkout has unpublished commits";
+
 /**
  * An ignored `-z` status entry is a regenerable directory itself, which is how `--ignored=matching`
  * reports one. A file merely under a tracked `build/` (`!! build/.env`) is not, nor is a non-ignored entry.
@@ -41,13 +45,13 @@ export async function worktreeReturnBlocker(
     if (status.code !== 0 || status.outcomeUnknown || status.overflowed) return "working tree could not be read";
     const entries = status.stdout.split("\0").filter((entry) => entry.trim());
     if (entries.some((entry) => !(options.regenerableIgnored && regenerable(entry)))) {
-      return "checkout has uncommitted, untracked or ignored work";
+      return UNCOMMITTED_WORK;
     }
     const commits = await git(["rev-list", "--count", "HEAD", "--not", "--remotes=origin"]);
     if (commits.code !== 0 || commits.outcomeUnknown || commits.overflowed || !/^\d+$/.test(commits.stdout.trim())) {
       return "commits could not be compared against origin";
     }
-    return commits.stdout.trim() === "0" ? null : "checkout has unpublished commits";
+    return commits.stdout.trim() === "0" ? null : UNPUBLISHED_COMMITS;
   } catch {
     return "checkout safety could not be verified";
   }

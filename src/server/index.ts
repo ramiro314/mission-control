@@ -449,7 +449,8 @@ let stopSettingsBackups = () => {};
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune
-// (the backup loop's startup prune seeds it) and after every worktree maintenance pass.
+// (the backup loop's startup prune seeds it), after every worktree maintenance pass, and when
+// the settled task trees a restart kept change.
 // A task or check return refused for over an hour is a `stuck-return` problem. Its first
 // appearance comes with the maintenance pass that follows the hour; a task return outcome
 // recomputes at once, so a success clears its problem without waiting for one.
@@ -467,10 +468,12 @@ const storageHealth = new StorageHealthService({
         return found.state === "active" ? found.lease.slotId : null;
       },
     }),
+    () => tasks.dirtySettledTreeProblems(),
   ],
 });
 databaseBackups.onChange(() => storageHealth.recompute());
 tasks.onWorktreeReturnOutcome(() => storageHealth.recompute());
+tasks.registerSettledTreesListener(() => storageHealth.recompute());
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
