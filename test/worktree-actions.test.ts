@@ -494,6 +494,17 @@ test("a task Return states the discard of ignored work its slot's own dirty read
     `Discards the commits in ${lease.lease.path} that were never pushed.`,
   ), unpushed.consequences.join(" | "));
   assert.equal(unpushed.consequences.some((line) => line.startsWith("Discards the uncommitted")), false);
+
+  // Both at once: the dirty tree still names the commits it would throw away.
+  writeFileSync(join(lease.lease.path, ".env"), "TOKEN=1\n");
+  const both = await delegated.preview({ action: "return", slotId: lease.lease.slotId });
+  assert.deepEqual(new Set(both.requiredAcknowledgements), new Set(["dirty", "unlanded"]));
+  for (const line of [
+    `Discards the uncommitted, untracked or ignored work in ${lease.lease.path}.`,
+    `Discards the commits in ${lease.lease.path} that were never pushed.`,
+  ]) {
+    assert.ok(both.consequences.includes(line), `${line} missing from: ${both.consequences.join(" | ")}`);
+  }
   await manager.release(lease.lease, { ownerAuthorized: true });
 });
 

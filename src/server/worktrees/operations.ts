@@ -32,7 +32,7 @@ import { run } from "../util/exec.ts";
 import { unref } from "../util/timers.ts";
 import { TailRing } from "../workflows/check-spawn.ts";
 import { worktreeRepositoryIdentity } from "../util/git.ts";
-import { UNCOMMITTED_WORK, UNPUBLISHED_COMMITS, worktreeReturnBlocker } from "../git/worktree-return-safety.ts";
+import { UNCOMMITTED_WORK, UNPUBLISHED_COMMITS, worktreeDiscardedWork } from "../git/worktree-return-safety.ts";
 import type {
   CheckGroupRecovery,
   CheckLeaseManager,
@@ -135,8 +135,8 @@ export interface WorktreeOperationsDeps {
   warmTailIntervalMs: number;
   /** For each slot holding a stale live lease, when that lease last changed. */
   staleLeases: () => ReadonlyMap<string, number>;
-  /** The reclaim cleanliness read, which also sees ignored work a slot's own dirty reading does not. */
-  returnBlocker: typeof worktreeReturnBlocker;
+  /** Every kind of work a discard loses, including ignored work a slot's own dirty reading does not see. */
+  discardedWork: typeof worktreeDiscardedWork;
 }
 
 interface Observation {
@@ -448,7 +448,7 @@ export class WorktreeOperationsService {
       warmLogsDirectory: WORKTREE_WARM_LOGS_DIR,
       warmTailIntervalMs: WARM_TAIL_INTERVAL_MS,
       staleLeases: () => new Map(),
-      returnBlocker: worktreeReturnBlocker,
+      discardedWork: worktreeDiscardedWork,
       ...deps,
     };
   }
@@ -923,11 +923,12 @@ export class WorktreeOperationsService {
     consequences: string[],
   ): Promise<void> {
     for (const resource of task.resources) {
-      const reason = await this.deps.returnBlocker(resource.path, { regenerableIgnored: true }).catch(() => null);
-      if (reason === UNCOMMITTED_WORK) {
+      const work: string[] = await this.deps.discardedWork(resource.path, { regenerableIgnored: true }).catch(() => []);
+      if (work.includes(UNCOMMITTED_WORK)) {
         risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
         consequences.push(`Discards the uncommitted, untracked or ignored work in ${resource.path}.`);
-      } else if (reason === UNPUBLISHED_COMMITS) {
+      }
+      if (work.includes(UNPUBLISHED_COMMITS)) {
         consequences.push(`Discards the commits in ${resource.path} that were never pushed.`);
       }
     }
