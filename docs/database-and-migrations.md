@@ -31,7 +31,8 @@ backup, retention, validation, failure-handling, and offline-restore procedure.
 
 Backup status appears in **Settings > Storage**: the interval and counts, Back up now, the last
 success and last failure of each kind, the kept copies with their total size, and a Problems list
-that names a failing capture until a capture succeeds.
+that names a failing capture until a capture succeeds, and a worktree return refused for over an
+hour (see [task worktree retention](worktrees-and-checks.md#task-worktree-retention)).
 
 ## Recovering the product database
 

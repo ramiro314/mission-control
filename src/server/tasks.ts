@@ -10,6 +10,7 @@ import { saveSourceSync } from "./task-sources/sync-store.ts";
 import { blockerDependencies } from "./task-sources/relations.ts";
 import { inTransaction } from "./db.ts";
 import { isActiveTask } from "@shared/task-status.ts";
+import type { WorktreeReturnRefusal } from "@shared/storage-health.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
 import { observeTaskCreated } from "./telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
@@ -102,12 +103,14 @@ import {
 } from "./actions.ts";
 import {
   clearTaskSessionClosure,
+  clearTaskWorktreeReturnRefusal,
   completeTaskWithSessionClosure,
   getTask as getDurableTask,
   getTaskSessionClosure,
   listTaskSessionClosures,
   openDb,
   recordTaskSessionClosureAttempt,
+  recordTaskWorktreeReturnRefusal,
   settleTaskWithRetentionAdoption,
   taskSessionClosureForSession,
   taskOwesWorktreeReturn,
@@ -1008,6 +1011,8 @@ export class TaskManager {
   private readonly nextCompletedReturn = new Map<string, number>();
   /** Consecutive refused completion returns per task; see `completedReturnRetryDelay`. */
   private readonly completedReturnRefusals = new Map<string, number>();
+  /** Told after every automatic worktree return outcome, so storage health can recompute. */
+  private readonly worktreeReturnListeners = new Set<() => void>();
   private readonly killedSessionReturns = new Map<string, { taskId: string; ownership: string }>();
   /** One in-process launcher per durable retry reservation. SQLite owns cross-request CAS. */
   private readonly pipelineRecoveries = new Set<string>();
@@ -6316,6 +6321,22 @@ export class TaskManager {
     }
   }
 
+  /** Listen for automatic worktree return outcomes. Returns the unsubscribe. */
+  onWorktreeReturnOutcome(listener: () => void): () => void {
+    this.worktreeReturnListeners.add(listener);
+    return () => this.worktreeReturnListeners.delete(listener);
+  }
+
+  private notifyWorktreeReturnOutcome(): void {
+    for (const listener of this.worktreeReturnListeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.warn("[tasks] worktree return listener failed:", error);
+      }
+    }
+  }
+
   private resumeCompletedWorktreeReturns(): void {
     if (this.closuresStopped) return;
     for (const task of this.registry.listTasks()) {
@@ -6346,10 +6367,12 @@ export class TaskManager {
         console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_started", ...context })}`);
         let outcome: "returned" | "retained" | "failed" = "failed";
         let detail: string | undefined;
+        let processes: WorktreeReturnRefusal["processes"] = [];
         try {
           const result = await this.returnFinishedWorktrees(task.id, ownership, reason, stoppedSessionId);
           outcome = result.ok ? "returned" : "retained";
           detail = result.error;
+          processes = result.processes ?? [];
         } catch (error) {
           detail = readFailureClass(error);
           throw error;
@@ -6357,9 +6380,15 @@ export class TaskManager {
           if (outcome === "returned") {
             this.nextCompletedReturn.delete(task.id);
             this.completedReturnRefusals.delete(task.id);
+            clearTaskWorktreeReturnRefusal(task.id);
           } else if (reason === "complete") {
             this.completedReturnRefusals.set(task.id, refusals + 1);
+            // Durable, so a return refused across restarts still becomes `stuck-return`.
+            recordTaskWorktreeReturnRefusal(task.id, {
+              reason: detail ?? "the return failed", processes,
+            }, Date.now());
           }
+          this.notifyWorktreeReturnOutcome();
           console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_completed", ...context, outcome, detail })}`);
         }
       },
@@ -6368,7 +6397,7 @@ export class TaskManager {
 
   private async returnFinishedWorktrees(
     id: string, ownership: string, reason: "complete" | "kill", stoppedSessionId?: string,
-  ): Promise<Ok> {
+  ): Promise<Ok & { processes?: WorktreeReturnRefusal["processes"] }> {
     const current = () => this.registry.getTask(id) ?? getDurableTask(id);
     const owned = (): Task | null => {
       const task = current();
@@ -6380,6 +6409,7 @@ export class TaskManager {
     if (!before || !taskHasWorktrees(before)) return { ok: false, error: "task ownership changed" };
     const paths = taskRepoRefs(before).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []);
     const guard = async (): Promise<string | null> => {
+      blocking = [];
       const task = owned();
       if (!task) return "task ownership changed";
       if (stoppedSessionId && this.supervisor?.handleFor(stoppedSessionId)) {
@@ -6396,12 +6426,17 @@ export class TaskManager {
       for (const path of paths) {
         const state = occupancy.get(path);
         if (!state || state.status === "unknown") return "checkout occupancy is unknown";
-        if (state.occupants.length) return "a process still uses a checkout";
+        if (state.occupants.length) {
+          blocking = state.occupants.map(({ pid, command }) => ({ pid, command }));
+          return "a process still uses a checkout";
+        }
       }
       return owned() ? null : "task ownership changed";
     };
+    // The processes behind the latest occupancy refusal, reported with it.
+    let blocking: WorktreeReturnRefusal["processes"] = [];
     let blocked = await guard();
-    if (blocked) return { ok: false, error: blocked };
+    if (blocked) return { ok: false, error: blocked, processes: blocking };
     const probe = this.startupDeps.returnBlocker ?? worktreeReturnBlocker;
     if (reason === "kill") {
       // All repos must pass before the first return. Fresh refs cannot vouch for a branch
@@ -6413,7 +6448,7 @@ export class TaskManager {
     }
     // Read-only eligibility must not stand in front of a confirmed manual Clean up. In
     // particular a dirty Kill should not reserve resources it will never be allowed to return.
-    return this.withCleanupReservation<Ok>(
+    const result = await this.withCleanupReservation<Ok>(
       id,
       { ok: false, error: "another cleanup owns the task" },
       async () => {
@@ -6452,6 +6487,7 @@ export class TaskManager {
         return { ok: true };
       },
     );
+    return result.ok ? result : { ...result, processes: blocking };
   }
 
   /**

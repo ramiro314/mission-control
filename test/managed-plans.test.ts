@@ -694,6 +694,6 @@ test("a fork database stamped 5 for testing settings still gains upstream's mana
     assert.deepEqual({ ...upgraded.prepare("SELECT settings_json, revision FROM testing_settings").get() },
       { settings_json: '{"tests":{"patterns":["test/**"]}}', revision: 3 }, "the fork's testing settings survive");
     assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, CURRENT_DATABASE_SCHEMA_VERSION);
-    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 8);
+    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 9);
   } finally { upgraded.close(); }
 });

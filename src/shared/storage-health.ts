@@ -41,6 +41,8 @@ export const StorageProblemLinkSchema = z.discriminatedUnion("target", [
   z.object({ target: z.literal("backups") }),
   z.object({ target: z.literal("slot"), slotId: z.string().min(1) }),
   z.object({ target: z.literal("unowned-tree"), path: z.string().min(1) }),
+  /** A tree with no slot card of its own, such as one a non-native provider holds. */
+  z.object({ target: z.literal("worktrees") }),
 ]);
 
 export type StorageProblemLink = z.output<typeof StorageProblemLinkSchema>;
@@ -107,6 +109,69 @@ export function backupFailedProblems(status: DatabaseBackupStatus): StorageProbl
 }
 
 const epochMs = z.number().int().nonnegative();
+
+/** How long a worktree return is refused before it is reported as `stuck-return` (D17). */
+export const STUCK_RETURN_AFTER_MS = 60 * 60 * 1_000;
+
+/**
+ * The latest refusal of a task's or a check's worktree return, as its `last_refusal` column
+ * stores it: why the return was refused, and the processes found blocking it, if any.
+ */
+export const WorktreeReturnRefusalSchema = z.object({
+  reason: z.string(),
+  processes: z.array(z.object({ pid: z.number().int(), command: z.string() })),
+});
+
+export type WorktreeReturnRefusal = z.output<typeof WorktreeReturnRefusalSchema>;
+
+/** A stored `last_refusal`, or the raw text as the reason when it is not one this build reads. */
+export function parseWorktreeReturnRefusal(stored: string): WorktreeReturnRefusal {
+  try {
+    const parsed = WorktreeReturnRefusalSchema.safeParse(JSON.parse(stored));
+    if (parsed.success) return parsed.data;
+  } catch {
+    // Not JSON at all; fall through to the raw text.
+  }
+  return { reason: stored, processes: [] };
+}
+
+/** One owner whose worktree return is being refused, read from its refusal columns. */
+export interface RefusedWorktreeReturn {
+  owner: "task" | "check";
+  ownerId: string;
+  /** How the message names the owner, such as `Task "Fix login"`. */
+  label: string;
+  firstRefusedAt: number;
+  refusal: WorktreeReturnRefusal;
+  /** The native slot holding the tree, or null when no slot card shows it. */
+  slotId: string | null;
+}
+
+export function worktreeReturnRefusalText(refusal: WorktreeReturnRefusal): string {
+  if (refusal.processes.length === 0) return refusal.reason;
+  const blocking = refusal.processes.map((process) => `${process.pid} (${process.command})`).join(", ");
+  return `${refusal.reason}; blocked by ${refusal.processes.length === 1 ? "process" : "processes"} ${blocking}`;
+}
+
+/**
+ * `stuck-return:<task|check>:<owner id>:<first_refused_at>`, for every return refused for at
+ * least `STUCK_RETURN_AFTER_MS`. The message carries the latest refusal, so the slot card that
+ * shows it says why the tree is still held.
+ */
+export function stuckReturnProblems(
+  refused: readonly RefusedWorktreeReturn[],
+  now: number,
+): StorageProblem[] {
+  return refused
+    .filter((each) => now - each.firstRefusedAt >= STUCK_RETURN_AFTER_MS)
+    .map((each) => storageProblem(
+      "stuck-return",
+      `${each.owner}:${each.ownerId}`,
+      each.firstRefusedAt,
+      `${each.label} worktree return refused for over an hour: ${worktreeReturnRefusalText(each.refusal)}`,
+      each.slotId ? { target: "slot", slotId: each.slotId } : { target: "worktrees" },
+    ));
+}
 
 export const STORAGE_BACKUP_COPY_KINDS = ["scheduled", "preMigration", "manual"] as const;
 

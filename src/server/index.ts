@@ -13,7 +13,7 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT } from "./config.ts";
-import { closeDb, databaseMigratedOnOpen, openDb } from "./db.ts";
+import { closeDb, databaseMigratedOnOpen, listTaskWorktreeReturnRefusals, openDb } from "./db.ts";
 import {
   acquireStateOwnership,
   STATE_CONTENTION_EXIT_STATUS,
@@ -121,7 +121,7 @@ import { SettingsBackupService } from "./settings-backups/service.ts";
 import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
-import { StorageHealthService } from "./storage-health.ts";
+import { StorageHealthService, stuckReturnSource } from "./storage-health.ts";
 import { LeaseActivityObserver } from "./worktrees/lease-activity.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import { holdIdleConnections } from "./http-keep-alive.ts";
@@ -450,12 +450,27 @@ const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune
 // (the backup loop's startup prune seeds it) and after every worktree maintenance pass.
+// A task or check return refused for over an hour is a `stuck-return` problem. Its first
+// appearance comes with the maintenance pass that follows the hour; a task return outcome
+// recomputes at once, so a success clears its problem without waiting for one.
 const storageHealth = new StorageHealthService({
   backups: databaseBackups,
   publish: (health) => registry.setStorageHealth(health),
-  sources: [() => leaseActivity.problems()],
+  sources: [
+    () => leaseActivity.problems(),
+    stuckReturnSource({
+      taskRefusals: listTaskWorktreeReturnRefusals,
+      task: (id) => registry.getTask(id),
+      checkRefusals: () => checkLeases.refusedReturns(),
+      slotForLease: (leaseId) => {
+        const found = worktrees.lookupLease({ leaseId });
+        return found.state === "active" ? found.lease.slotId : null;
+      },
+    }),
+  ],
 });
 databaseBackups.onChange(() => storageHealth.recompute());
+tasks.onWorktreeReturnOutcome(() => storageHealth.recompute());
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N

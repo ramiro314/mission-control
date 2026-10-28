@@ -122,7 +122,7 @@ test("a live lease quiet past staleLeaseDays shows a stale chip and a Storage-on
   await shoot(dashboard, "02-storage-problem");
 
   // Its link lands on the slot card that carries the chip.
-  await problems.getByRole("button", { name: "Open worktrees" }).click();
+  await problems.getByRole("button", { name: "Open slot" }).click();
   if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
   await expect(staleChip).toBeVisible();
 

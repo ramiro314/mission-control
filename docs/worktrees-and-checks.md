@@ -783,6 +783,16 @@ completed before this policy keep their existing retained checkouts and 30-day a
 upgrade never infers return permission from an old done status or session-closure record.
 Another live session or process always blocks automatic return.
 
+A return that keeps being refused is recorded rather than silent. A completed task's owed
+return and a check's lease return each record when their return was first refused and the
+latest refusal: its reason, plus the processes found occupying the tree when occupancy was the
+cause. A successful return clears both. Once the refusals have lasted an hour, **Settings >
+Storage** lists a bannered `stuck-return` problem whose id,
+`stuck-return:<task|check>:<owner id>:<first refused at>`, comes from that record and so
+survives a daemon restart. Its **Open slot** link opens the slot card in **Settings >
+Worktrees**, which shows a `return stuck` chip and the latest refusal until the return
+succeeds. A tree without a native slot links to the Worktrees page instead.
+
 The policy is fixed and destructive at the boundary. Staged changes, unstaged changes,
 untracked files, local commits, and commits that were never pushed are all deleted when the
 window expires. None of them exempts a tree, and push, upstream, pull request, and merge status
