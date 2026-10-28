@@ -4,7 +4,13 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REGENERABLE_IGNORED_PATHS, worktreeReturnBlocker } from "../src/server/git/worktree-return-safety.ts";
+import {
+  REGENERABLE_IGNORED_PATHS,
+  UNCOMMITTED_WORK,
+  UNPUBLISHED_COMMITS,
+  worktreeDiscardedWork,
+  worktreeReturnBlocker,
+} from "../src/server/git/worktree-return-safety.ts";
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "mission-return-git-"));
@@ -138,4 +144,17 @@ test("offline origin, missing checkout, nested path and malformed evidence fail 
   assert.match((await worktreeReturnBlocker(path, { execute: async (_cmd, args) => ({
     code: 0, stderr: "", outcomeUnknown: false, overflowed: false, stdout: args.includes("rev-parse") ? path : args.includes("rev-list") ? "not a count" : "",
   }) }))!, /compared/);
+});
+
+test("the discard list names uncommitted work and unpushed commits together, where the blocker stops at one", async (t) => {
+  const { path, git } = fixture(t);
+  assert.deepEqual(await worktreeDiscardedWork(path), []);
+  writeFileSync(join(path, "tracked"), "local only\n");
+  git("commit", "-qam", "local only");
+  assert.deepEqual(await worktreeDiscardedWork(path), [UNPUBLISHED_COMMITS]);
+  writeFileSync(join(path, "notes"), "untracked\n");
+  assert.equal(await worktreeReturnBlocker(path), UNCOMMITTED_WORK, "the blocker reports only the first");
+  assert.deepEqual(await worktreeDiscardedWork(path), [UNCOMMITTED_WORK, UNPUBLISHED_COMMITS]);
+  // An unreadable tree states nothing: the discard list is never a refusal.
+  assert.deepEqual(await worktreeDiscardedWork(join(path, "missing")), []);
 });

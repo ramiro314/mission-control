@@ -20,6 +20,10 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
  * record after its first real probe, because nothing here can wait out a day. No agent is
  * launched, so no model tokens are spent.
  *
+ * Dirty settled trees: a restart that settles a task reclaims a clean tree at once, and keeps a
+ * tree holding work for its 30-day window, listed in Storage only. The task, its native slot,
+ * the uncommitted file, the Kill and the restart are all real, through the fake agents.
+ *
  * Recover: a slot quarantined by a stale `index.lock` reaches Storage as a problem whose link
  * lands on that slot's card, and the card's Recover runs through the preview the daemon builds
  * (naming the lock and the work it discards) to a real reset on disk, after which the slot
@@ -152,6 +156,119 @@ test("a live lease quiet past staleLeaseDays shows a stale chip and a Storage-on
   expect(slot.owner?.kind).toBe("manual");
   expect(existsSync(lease.path)).toBe(true);
   expect(leaseClock(daemon)[lease.leaseId]?.changedAt).toBe(quietSince);
+});
+
+interface TaskSnapshot {
+  id: string;
+  title: string;
+  intent: string;
+  status: string;
+  worktreePath: string | null;
+  worktreeLeaseId: string | null;
+}
+
+async function taskFor(daemon: DaemonHandle, intent: string): Promise<TaskSnapshot | undefined> {
+  const response = await fetch(`${daemon.baseURL}/api/tasks`);
+  if (!response.ok) return undefined;
+  return ((await response.json()) as TaskSnapshot[]).find((task) => task.intent === intent);
+}
+
+async function storageProblems(daemon: DaemonHandle): Promise<StorageView["health"]["problems"]> {
+  const response = await fetch(`${daemon.baseURL}/api/storage`);
+  return response.ok ? ((await response.json()) as StorageView).health.problems : [];
+}
+
+test("a settled task kept for its uncommitted work is listed, and its Return states the discard before reclaiming it", async ({
+  dashboard,
+  daemon,
+}) => {
+  // A dispatch, a Kill, a restart and a real native return: seconds of git and process work.
+  test.setTimeout(180_000);
+  const intent = "Leave uncommitted work behind for a restart to settle";
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill(intent);
+  await dialog.getByLabel("Kind").selectOption("ship");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => taskFor(daemon, intent), { timeout: 60_000 }).toMatchObject({
+    status: "running",
+    worktreeLeaseId: expect.any(String),
+  });
+  const task = (await taskFor(daemon, intent))!;
+  const worktree = task.worktreePath!;
+  writeFileSync(join(worktree, "settled-notes.md"), "Work a restart must not discard.\n");
+
+  // The agent goes away, then the daemon restarts and settles what is left.
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row", { hasText: task.title })
+    .click();
+  await dashboard.locator(".console-detail").getByRole("button", { name: /kill$/i }).click();
+  const kill = dashboard.getByRole("dialog", { name: "Kill session" });
+  await kill.getByRole("button", { name: "Kill" }).click();
+  await expect(kill).toBeHidden();
+  await expect.poll(() => taskFor(daemon, intent), { timeout: 60_000 }).toMatchObject({ status: "failed" });
+  await daemon.crash();
+  await daemon.restart();
+
+  const problemFor = async () => (await storageProblems(daemon)).find((problem) => problem.kind === "dirty-settled-tree");
+  await expect.poll(problemFor, { timeout: 60_000 }).toMatchObject({
+    id: expect.stringMatching(new RegExp(`^dirty-settled-tree:${task.id}:\\d+$`)) as unknown as string,
+    bannered: false,
+    link: { target: "slot" },
+  });
+  expect((await taskFor(daemon, intent))?.worktreePath, "the restart kept the tree").toBe(worktree);
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const ordinal = inventory.repositories.flatMap((pool) => pool.slots).find((slot) => slot.path === worktree)!.ordinal;
+
+  // Storage lists it, and only there.
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  const problems = dashboard.getByRole("list", { name: "Storage problems" });
+  const row = problems.getByRole("listitem").filter({ hasText: "Dirty settled tree" });
+  await expect(row).toContainText(`settled with work left in ${worktree}`);
+  await expect(row).toContainText("kept for the 30-day retention window");
+  await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toHaveCount(0);
+  await shoot(dashboard, "04-dirty-settled-tree");
+
+  // Its link lands on the slot card, whose Return preview says what it discards.
+  await row.getByRole("button", { name: "Open slot" }).click();
+  const disclosure = dashboard.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const card = dashboard.getByRole("article", { name: `Slot ${ordinal}` });
+  await expect(card).toBeVisible();
+  const discard = `Discards the uncommitted, untracked or ignored work in ${worktree}.`;
+  await card.getByRole("button", { name: "Return", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  await expect(preview.getByText(discard)).toBeVisible();
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "05-return-states-discard");
+
+  // Cancel keeps the tree.
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(preview).toHaveCount(0);
+  expect(existsSync(join(worktree, "settled-notes.md"))).toBe(true);
+  expect((await taskFor(daemon, intent))?.worktreePath).toBe(worktree);
+  expect(await problemFor()).toBeDefined();
+
+  // Confirm reclaims it through the task, and the problem goes with it.
+  await card.getByRole("button", { name: "Return", exact: true }).click();
+  await expect(preview.getByText(discard)).toBeVisible();
+  await preview.getByRole("checkbox", { name: /Dirty or untracked work will be discarded/ }).check();
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect.poll(() => taskFor(daemon, intent), { timeout: 60_000 }).toMatchObject({
+    status: "failed",
+    worktreePath: null,
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  await expect(dashboard.getByText("No storage problems.")).toBeVisible({ timeout: 30_000 });
+  expect(await problemFor()).toBeUndefined();
+  expect(existsSync(join(worktree, "settled-notes.md")), "the discarded file is gone").toBe(false);
+  await shoot(dashboard, "06-reclaimed");
 });
 
 /** The slot's own `index.lock`, under the directory its `.git` file names. */
