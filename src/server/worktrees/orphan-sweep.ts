@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { lstat, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -41,6 +42,11 @@ export interface UnownedTreeDescription extends KeptOrphanTree {
   files: string[];
   /** More paths are deleted than `files` names. */
   moreFiles: boolean;
+  /**
+   * A digest of every entry under the tree, with its size and modification time. A preview is
+   * bound to it, so any write after the preview, even one `files` does not show, refuses Execute.
+   */
+  signature: string;
 }
 
 /** What Worktrees > Unowned trees needs from the sweep: the preview and the removal it guards. */
@@ -154,6 +160,23 @@ async function isHusk(path: string, leftoverGitFile: boolean): Promise<boolean> 
   return true;
 }
 
+/** Every entry under `path`, in a stable order, with its kind, size and modification time. */
+async function treeSignature(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  const pending = [path];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    const entries = (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const child = join(directory, entry.name);
+      const stat = await lstat(child);
+      if (entry.isDirectory()) pending.push(child);
+      hash.update(`${relative(path, child)}\0${entry.isDirectory() ? "d" : entry.isFile() ? "f" : "o"}\0${stat.size}\0${stat.mtimeMs}\n`);
+    }
+  }
+  return hash.digest("hex");
+}
+
 /** Up to `DESCRIBED_FILES` regular files and links under a folder that is not a worktree. */
 async function listedFiles(path: string): Promise<{ files: string[]; moreFiles: boolean }> {
   const files: string[] = [];
@@ -207,6 +230,14 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     };
   }
 
+  /**
+   * A pass that starts after this call, never one already in flight. A Kill's retry needs this:
+   * a pass that began before the kill may have seen the process and would skip the tree again.
+   */
+  sweepFresh(): Promise<OrphanSweepResult> {
+    return this.exclusive(() => this.pass());
+  }
+
   sweep(): Promise<OrphanSweepResult> {
     this.running ??= this.exclusive(() => this.pass()).finally(() => {
       this.running = null;
@@ -232,7 +263,7 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     const worktree = (await gitMarker(tree.path)).kind === "worktree";
     const work = worktree ? await worktreeDiscardedWork(tree.path, { execute: this.deps.execute }) : [];
     const { files, moreFiles } = worktree ? await this.statusFiles(tree.path) : await listedFiles(tree.path);
-    return { ...tree, worktree, work, files, moreFiles };
+    return { ...tree, worktree, work, files, moreFiles, signature: await treeSignature(tree.path) };
   }
 
   discard(path: string): Promise<string | null> {

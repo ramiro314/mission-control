@@ -338,3 +338,85 @@ test("the preview names at most ten deleted paths and says when there are more",
   assert.ok(!exactlyTen.includes("and more"), exactlyTen);
   assert.equal(names(exactlyTen).length, 10);
 });
+
+test("Execute refuses any write after the preview, including ones the preview's file list cannot show", async () => {
+  // Each edit leaves the listed work and the first ten listed paths exactly as they were.
+  const edits: Array<{ name: string; before: (path: string) => void; after: (path: string) => void; kept: string }> = [
+    {
+      name: "an already-modified tracked file edited again",
+      before: (path) => writeFileSync(join(path, "README.md"), "edited\n"),
+      after: (path) => writeFileSync(join(path, "README.md"), "edited a second time\n"),
+      kept: "README.md",
+    },
+    {
+      name: "a new file once ten paths are already listed",
+      before: (path) => {
+        for (let index = 0; index < 10; index += 1) writeFileSync(join(path, `a-${index}.md`), "x\n");
+      },
+      after: (path) => writeFileSync(join(path, "z-late.md"), "written after the preview\n"),
+      kept: "z-late.md",
+    },
+    {
+      name: "more output in an ignored file",
+      before: (path) => writeFileSync(join(path, "debug.log"), "first\n"),
+      after: (path) => writeFileSync(join(path, "debug.log"), "first\nsecond\n"),
+      kept: "debug.log",
+    },
+  ];
+  for (const edit of edits) {
+    const path = dirtyWorktree();
+    edit.before(path);
+    await sweep.sweep();
+    const shown = await preview(path);
+    assert.equal(shown.body.allowed, true, `${edit.name}: ${shown.body.blockers.join("; ")}`);
+    edit.after(path);
+    const shownAgain = await preview(path);
+    assert.deepEqual(shownAgain.body.consequences, shown.body.consequences, `${edit.name}: the visible preview is unchanged`);
+
+    const done = await execute(shown.body.token, ["dirty"]);
+    assert.equal(done.failed?.changed, true, edit.name);
+    assert.ok(existsSync(join(path, edit.kept)), edit.name);
+  }
+});
+
+test("a fresh sweep never joins a pass that started before it, so a Kill's retry sees the process gone", async () => {
+  const directory = join(root, "fresh-state", "worktrees");
+  const path = join(directory, "held");
+  mkdirSync(path, { recursive: true });
+  writeFileSync(join(path, "scratch.md"), "still open in a shell\n");
+  let alive = true;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let reads = 0;
+  let firstRead = () => {};
+  const reading = new Promise<void>((resolve) => { firstRead = resolve; });
+  const gated = new OrphanTreeSweep({
+    directories: [directory],
+    stateHome: join(root, "fresh-state"),
+    referencedPaths: () => [],
+    slotPaths: () => [],
+    sourceRepositories: () => [],
+    inFlight: new InFlightTrees(),
+    occupancy: async (paths) => {
+      // The first pass reads occupancy while the process lives, then stalls past the kill.
+      const occupants = alive
+        ? [{ pid: 4242, ppid: 1, startRaw: "Tue Oct 27 09:00:00 2026", startMs: 0, command: "node", cwd: path, knownOwner: null }]
+        : [];
+      if (reads++ === 0) {
+        firstRead();
+        await gate;
+      }
+      return new Map(paths.map((each) => [each, { status: "known", occupants }]));
+    },
+    now: () => Date.now() + 2 * ORPHAN_TREE_GRACE_MS,
+  });
+
+  const running = gated.sweep();
+  await reading;
+  alive = false;
+  assert.equal(gated.sweep(), running, "a plain sweep joins the pass in flight");
+  const fresh = gated.sweepFresh();
+  release();
+  assert.ok((await running).skipped.some((each) => each.path === path && each.reason === "occupied"));
+  assert.deepEqual((await fresh).kept.map((tree) => tree.path), [path], "the fresh pass sees the folder free and keeps it");
+});

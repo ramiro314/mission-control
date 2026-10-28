@@ -484,7 +484,8 @@ const orphanProcesses = new OrphanProcessMonitor({
   retryReturn: (owner) => {
     if (owner.kind === "task") return tasks.retryWorktreeReturn(owner.taskId);
     if (owner.kind === "check") return checkLeases.retryReturning(owner.attemptId);
-    if (owner.kind === "unowned") return orphanTrees.sweep().then((): void => recomputeStorageHealth());
+    // A fresh pass: one already running may have read occupancy before the kill.
+    if (owner.kind === "unowned") return orphanTrees.sweepFresh().then((): void => recomputeStorageHealth());
   },
   changed: () => storageHealth.recompute(),
 });

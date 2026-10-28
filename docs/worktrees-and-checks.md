@@ -980,8 +980,9 @@ Each Storage problem's **Open tree** link lands on that tree's row.
 - A process in the tree is listed with **Kill**, through the same confirmation and guarded route
   as a slot card's. A folder the sweep skipped because a process occupies it is inspected by the
   orphan process scan too, so a process holding a folder nobody owns is reported, not just
-  skipped. After a kill the sweep runs again: a clean folder is removed, and one holding work is
-  kept and offered for discard.
+  skipped. After a kill a fresh sweep runs, one that starts after the kill rather than a pass
+  already in flight that may have seen the process: a clean folder is removed, and one holding
+  work is kept and offered for discard.
 - A kept folder offers **Discard and remove**. Its preview, the `removeUnowned` worktree action,
   names the path and the work it discards: the reason it was kept, any unpublished commits, and up
   to ten of the paths it deletes (changed, untracked and ignored ones for a worktree, files for
@@ -989,7 +990,10 @@ Each Storage problem's **Open tree** link lands on that tree's row.
   folder in place.
 - Only a folder the sweep keeps right now can be previewed. Any other path, a pool slot, a live
   task's tree or `$HOME`, is answered 404 before anything on disk is inspected.
-- On Execute, Mission Control rebuilds the preview and refuses one that changed. The sweep then
+- On Execute, Mission Control rebuilds the preview and refuses one that changed. A preview is
+  bound to the size and modification time of every entry under the folder, not just the paths it
+  names, so any write after it, such as another edit to a file already listed as changed, refuses
+  the run. The sweep then
   checks again under its own pass lock that it still keeps the folder, with the same inode, that
   no row names it, that nothing is creating it, and that no process is in it. A worktree is
   removed with `git worktree remove --force`, and its `harness/*` branch is deleted only when a
