@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Page } from "@playwright/test";
 import type { StorageView } from "../../src/shared/storage-health.ts";
@@ -33,6 +33,11 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
  * Orphan processes: a process still inside a tree whose owner has finished is listed in Storage,
  * its link lands on the slot card, and Kill there goes through its confirmation to the guarded
  * route and comes back as the process gone and the row cleared over `storage_health`.
+ *
+ * Unowned trees: a folder under `worktrees/` that no task, check or slot names has no slot card,
+ * so its fixes live in Worktrees > Unowned trees. A process holding one is reported and killed
+ * from its row; the sweep then keeps the folder for its work, and Discard and remove previews the
+ * path and the work before it deletes the folder for real.
  */
 
 const EVIDENCE = artifactsDir("worktree-reclaim");
@@ -472,5 +477,107 @@ test("Kill, from a Storage problem link, stops an orphan process in a quarantine
     await shoot(dashboard, "04-orphan-killed");
   } finally {
     orphan?.kill("SIGKILL");
+  }
+});
+
+test("an unowned tree: Kill its process from its row, then Discard and remove it through the preview", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Two sweeps, a kill, a restart and a real `git worktree remove`.
+  test.setTimeout(180_000);
+  // An overflow tree a crash left behind: a real worktree of the seeded repository, holding work
+  // no row names, and older than the sweep's 30-minute creation grace.
+  const tree = join(daemon.home, "worktrees", "left-behind");
+  mkdirSync(join(daemon.home, "worktrees"), { recursive: true });
+  execFileSync("git", ["-C", daemon.repo, "worktree", "add", "-q", "-b", "harness/left-behind", tree]);
+  const draft = join(tree, "draft.md");
+  writeFileSync(draft, "Work nobody owns any more.\n");
+  const hoursAgo = new Date(Date.now() - 2 * 60 * 60_000);
+  utimesSync(tree, hoursAgo, hoursAgo);
+  utimesSync(join(tree, ".git"), hoursAgo, hoursAgo);
+  let holder: ChildProcess | null = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: tree, stdio: "ignore",
+  });
+  await once(holder, "spawn");
+  const pid = holder.pid!;
+  holder.once("exit", () => { holder = null; });
+
+  try {
+    // The startup sweep finds the folder occupied and leaves it; the scan after it reports the
+    // process. The fixture switches maintenance off, which skips the startup sweep too, so this
+    // daemon comes back with an hour's interval: the startup pass runs, and no other does here.
+    await daemon.crash();
+    await daemon.restart({ MISSION_WORKTREE_SWEEP_MS: String(60 * 60_000) });
+    await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+    const problems = dashboard.getByRole("list", { name: "Storage problems" });
+    const orphanProblem = problems.getByRole("listitem").filter({ hasText: `Process ${pid}` });
+    await expect(orphanProblem.getByText("Orphan process", { exact: true })).toBeVisible({ timeout: 60_000 });
+    await expect(orphanProblem).toContainText(`${tree}, which no task or check owns`);
+    await shoot(dashboard, "07-unowned-orphan-problem");
+
+    // Its link lands on the tree's row, with the process and its Kill, and nothing to discard yet.
+    await orphanProblem.getByRole("button", { name: "Open tree" }).click();
+    await expect(dashboard.getByRole("tab", { name: "Worktrees" })).toHaveAttribute("aria-selected", "true");
+    const row = dashboard.getByRole("article", { name: `Unowned tree ${tree}` });
+    await expect(row).toBeInViewport();
+    const orphans = row.getByRole("region", { name: `Orphan processes in ${tree}` });
+    await expect(orphans).toContainText(`PID ${pid}`);
+    await expect(row.getByRole("button", { name: "Discard and remove" })).toHaveCount(0);
+    await shoot(dashboard, "08-unowned-row-orphan");
+
+    await orphans.getByRole("button", { name: `Kill process ${pid}` }).click();
+    const confirm = dashboard.getByRole("dialog", { name: "Kill orphan process" });
+    await expect(confirm).toContainText(tree);
+    await confirm.getByRole("button", { name: "Kill process" }).click();
+    await expect(confirm).toHaveCount(0);
+    await expect.poll(() => alive(pid)).toBe(false);
+
+    // The kill sweeps the folder again: free of its process, it is kept for its work.
+    const discard = row.getByRole("button", { name: "Discard and remove" });
+    await expect(discard).toBeVisible({ timeout: 30_000 });
+    await expect(orphans).toHaveCount(0);
+    await expect(row).toContainText(`Unowned tree ${tree} was kept: checkout has uncommitted, untracked or ignored work`);
+
+    // Storage lists it too, raising the banner, and its link lands on the same row.
+    await dashboard.getByRole("tab", { name: "Storage" }).click();
+    const keptProblem = problems.getByRole("listitem").filter({ hasText: "Dirty unowned tree" });
+    await expect(keptProblem).toContainText(tree);
+    await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toBeVisible();
+    await shoot(dashboard, "09-dirty-unowned-tree-problem");
+    await keptProblem.getByRole("button", { name: "Open tree" }).click();
+    await expect(row).toBeInViewport();
+    await shoot(dashboard, "10-unowned-row-kept");
+
+    // The preview names the path and the work it discards.
+    await discard.click();
+    const preview = dashboard.getByRole("dialog", { name: "removeUnowned worktree preview" });
+    await expect(preview.getByRole("heading", { name: "Discard and remove unowned tree" })).toBeVisible();
+    await expect(preview.getByText(`Discards the work in ${tree}: checkout has uncommitted, untracked or ignored work.`)).toBeVisible();
+    await expect(preview.getByText("Files it deletes include: draft.md (untracked).")).toBeVisible();
+    await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+    await expectContentClearsBorder(preview);
+    await shoot(dashboard, "11-discard-preview");
+
+    // Cancel keeps the row and the folder.
+    await preview.getByRole("button", { name: "Cancel" }).click();
+    await expect(preview).toHaveCount(0);
+    await expect(row).toBeVisible();
+    expect(existsSync(draft)).toBe(true);
+
+    // Confirm removes the folder, and the row and the problem leave with the next storage_health event.
+    await discard.click();
+    await preview.getByLabel(/I understand: Uncommitted, untracked, unpushed or ignored work will be discarded/).check();
+    await preview.getByRole("button", { name: "Execute" }).click();
+    await expect(preview).toHaveCount(0);
+    await expect.poll(() => existsSync(tree), { timeout: EXECUTES_MS }).toBe(false);
+    await expect(row).toHaveCount(0);
+    await expect(dashboard.getByText("No unowned trees.", { exact: false })).toBeVisible();
+    await shoot(dashboard, "12-unowned-tree-removed");
+    await dashboard.getByRole("tab", { name: "Storage" }).click();
+    await expect(dashboard.getByText("No storage problems.")).toBeVisible();
+    await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toHaveCount(0);
+  } finally {
+    holder?.kill("SIGKILL");
   }
 });

@@ -22,7 +22,9 @@ const POLL_MS = 100;
 export type FinishedTreeOwner =
   | { kind: "task"; taskId: string }
   | { kind: "check"; attemptId: string }
-  | { kind: "slot"; slotId: string };
+  | { kind: "slot"; slotId: string }
+  /** An unreferenced folder the orphan tree sweep left in place. Its "return" is the next sweep. */
+  | { kind: "unowned" };
 
 /** A tree whose owner has finished or is gone, so any process still inside it is an orphan. */
 export interface FinishedTree {
@@ -34,7 +36,9 @@ export interface FinishedTree {
 
 /**
  * Every tree whose owner has finished: a task's pending return, a check lease stuck in
- * `returning`, and a quarantined slot. One path can be all three; the scan merges them.
+ * `returning`, a quarantined slot, and an unreferenced folder under `worktrees/` or
+ * `check-worktrees/` that the orphan tree sweep left in place. One path can be several of
+ * these; the scan merges them.
  *
  * A pool slot is a finished tree for an owner only while it holds that owner's own lease, or no
  * lease at all and is quarantined. A completed task can keep owing a return after its slot was
@@ -46,6 +50,8 @@ export function finishedTrees(input: {
   slots: readonly WorktreeSlotRow[];
   taskReturns: ReadonlyArray<{ taskId: string; trees: ReadonlyArray<{ path: string; leaseId: string | null }> }>;
   returningChecks: ReadonlyArray<{ attemptId: string; path: string; leaseId: string | null }>;
+  /** Unreferenced folders, which no slot, task or check owns. */
+  unownedTrees?: readonly string[];
 }): FinishedTree[] {
   const slotAt = new Map(input.slots.map((slot) => [slot.path, slot]));
   const finishedFor = (path: string, leaseId: string | null): boolean => {
@@ -66,6 +72,9 @@ export function finishedTrees(input: {
       })),
     ...input.slots.filter((slot) => slot.state === "quarantined" && slot.activeLeaseId === null).map((slot) => ({
       path: slot.path, slotId: slot.id, owner: { kind: "slot", slotId: slot.id } as const,
+    })),
+    ...(input.unownedTrees ?? []).filter((path) => !slotAt.has(path)).map((path) => ({
+      path, slotId: null, owner: { kind: "unowned" } as const,
     })),
   ];
 }
@@ -161,7 +170,9 @@ export class OrphanProcessMonitor {
         "orphan-process",
         `${entry.tree}:${occupant.pid}`,
         occupant.startMs,
-        `Process ${occupant.pid} (${occupant.command}) is still running in ${entry.tree}, whose owner has finished`,
+        entry.owners.every((owner) => owner.kind === "unowned")
+          ? `Process ${occupant.pid} (${occupant.command}) is still running in ${entry.tree}, which no task or check owns`
+          : `Process ${occupant.pid} (${occupant.command}) is still running in ${entry.tree}, whose owner has finished`,
         entry.slotId ? { target: "slot", slotId: entry.slotId } : { target: "unowned-tree", path: entry.tree },
       ),
       process: {

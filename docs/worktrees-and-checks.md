@@ -723,7 +723,8 @@ The operations have deliberately narrow meanings:
 #### Orphan processes
 
 A tree whose owner has finished is one a completed task still owes a return, a check lease left in
-`returning`, or a quarantined slot. After each maintenance pass (`MISSION_WORKTREE_SWEEP_MS`,
+`returning`, a quarantined slot, or an unreferenced folder the [orphan tree sweep](#orphan-tree-sweep)
+left in place because it is kept or occupied. After each maintenance pass (`MISSION_WORKTREE_SWEEP_MS`,
 5 minutes by default), and whenever Settings > Storage is opened, Mission Control runs the same
 occupancy inspection the return guard uses (`ps` plus one batched `lsof`) over every such tree.
 Only pool slots and children of `worktrees/` and `check-worktrees/` are inspected. A pool slot
@@ -752,8 +753,9 @@ unless all of these hold:
 It then sends `SIGTERM`, and `SIGKILL` 5 seconds later if the same process (same start time) is
 still running. It retries the tree's pending task or check return at once, skipping that
 return's backoff, and scans again, so the problem clears with the next `storage_health` event.
-A refusal answers 409 with its reason. A tree that is not a pool slot has no slot card, so its
-orphan processes are listed in Storage only, and the route is the way to kill one.
+For an unreferenced folder the retry is another orphan tree sweep. A refusal answers 409 with its
+reason. A tree that is not a pool slot has no slot card, so its Storage link, Open tree, lands on
+its row under [Unowned trees](#unowned-trees), which lists the same processes with the same Kill.
 
 Unlike the inventory, the storage report carries each orphan process's command line, bounded to
 512 bytes, because the confirmation must show what will be signalled.
@@ -966,6 +968,40 @@ and removes only the `prunable` registrations whose path is under the state home
 exists. It never runs an unscoped `git worktree prune`, so the operator's own worktrees
 elsewhere are untouched. A missing path that a task, check lease or native slot row still names
 keeps its registration, because that owner's own cleanup or reconciliation decides it.
+
+#### Unowned trees
+
+Trees under `worktrees/` and `check-worktrees/` have no slot card, so **Settings > Worktrees >
+Unowned trees** carries their actions. It lists every tree a Storage problem links to as an
+unowned tree, from the live `storage_health` aggregate: each folder the sweep kept as
+`dirty-orphan-folder`, with the reason it was kept, and each tree holding an `orphan-process`.
+Each Storage problem's **Open tree** link lands on that tree's row.
+
+- A process in the tree is listed with **Kill**, through the same confirmation and guarded route
+  as a slot card's. A folder the sweep skipped because a process occupies it is inspected by the
+  orphan process scan too, so a process holding a folder nobody owns is reported, not just
+  skipped. After a kill a fresh sweep runs, one that starts after the kill rather than a pass
+  already in flight that may have seen the process: a clean folder is removed, and one holding
+  work is kept and offered for discard.
+- A kept folder offers **Discard and remove**. Its preview, the `removeUnowned` worktree action,
+  names the path and the work it discards: the reason it was kept, any unpublished commits, and up
+  to ten of the paths it deletes (changed, untracked and ignored ones for a worktree, files for
+  any other folder). Execute needs the discard acknowledgement. Cancel leaves the row and the
+  folder in place.
+- Only a folder the sweep keeps right now can be previewed. Any other path, a pool slot, a live
+  task's tree or `$HOME`, is answered 404 before anything on disk is inspected.
+- On Execute, Mission Control rebuilds the preview and refuses one that changed. A preview is
+  bound to the size and modification time of every entry under the folder, not just the paths it
+  names, so any write after it, such as another edit to a file already listed as changed, refuses
+  the run. The walk stops at regenerable directories (`node_modules/`, `dist/` and the rest of
+  that list), which count by their own entry only, since they are deleted either way. An entry
+  that vanishes or cannot be read during the walk makes the tree read as changed. The sweep then
+  checks again under its own pass lock that it still keeps the folder, with the same inode, that
+  no row names it, that nothing is creating it, and that no process is in it. A worktree is
+  removed with `git worktree remove --force`, and its `harness/*` branch is deleted only when a
+  remote branch contains it, so unpushed commits on that branch survive. Any other folder is
+  deleted with every file in it. The row and the Storage problem leave with the next
+  `storage_health` event.
 
 ### Check leases
 

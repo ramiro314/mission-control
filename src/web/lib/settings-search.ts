@@ -394,6 +394,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupNotApplicable("operational-action"),
   },
   {
+    id: "unowned-worktree-trees",
+    label: "Unowned trees",
+    description: "Kill a process holding an unowned tree, or preview discarding a kept one's work and removing it.",
+    category: "worktrees",
+    anchor: "worktrees/unowned-trees",
+    keywords: ["orphan", "overflow", "check", "folder", "dirty", "discard", "remove", "kill", "sweep"],
+    kind: "jump",
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
     id: "legacy-worktree-drain",
     label: "Legacy Treehouse drain",
     description: "Inspect exact and unverifiable historical Treehouse resources.",

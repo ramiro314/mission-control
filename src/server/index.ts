@@ -369,6 +369,10 @@ try {
 } catch (err) {
   console.error("[mission-control] could not reconcile check leases:", err);
 }
+// Unreferenced folders under the overflow and check-fallback directories. Husks and clean trees
+// are removed on each maintenance pass; a dirty one is kept and listed as `dirty-orphan-folder`,
+// and Worktrees > Unowned trees discards it through the preview below.
+const orphanTrees = new OrphanTreeSweep();
 const worktreeOperations = new WorktreeOperationsService(worktrees, {
   legacy: legacyWorktrees,
   tasks: {
@@ -405,6 +409,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   // Not the lease-activity probe: this notice also carries a running Warm's output tail.
   notifyChanged: publishWorktreesChanged,
   staleLeases: () => leaseActivity.staleSinceBySlot(),
+  unownedTrees: orphanTrees,
 });
 // No Warm survives a restart, so only the Warm logs a slot row still names are kept. Native
 // reconciliation above has already returned every slot a crashed Warm held.
@@ -466,26 +471,27 @@ let stopDatabaseBackups = async () => {};
 // whenever the worktree pool publishes a change, so a quarantine raises its problem at once,
 // and when the settled task trees a restart kept change.
 // Processes still inside a tree whose owner has finished (a pending task return, a check
-// lease stuck in `returning`, a quarantined slot). Scanned after each maintenance pass and
-// reported as `orphan-process` problems; Kill retries the blocked return at once.
+// lease stuck in `returning`, a quarantined slot, an unreferenced folder the sweep left).
+// Scanned after each maintenance pass, which sweeps first, and reported as `orphan-process`
+// problems; Kill retries the blocked return at once, and sweeps again for an unowned tree.
 const orphanProcesses = new OrphanProcessMonitor({
   trees: () => finishedTrees({
     slots: worktrees.store.slots(),
     taskReturns: tasks.pendingWorktreeReturns(),
     returningChecks: checkLeases.returningLeases(),
+    unownedTrees: orphanTrees.unreferenced(),
   }),
   retryReturn: (owner) => {
     if (owner.kind === "task") return tasks.retryWorktreeReturn(owner.taskId);
     if (owner.kind === "check") return checkLeases.retryReturning(owner.attemptId);
+    // A fresh pass: one already running may have read occupancy before the kill.
+    if (owner.kind === "unowned") return orphanTrees.sweepFresh().then((): void => recomputeStorageHealth());
   },
   changed: () => storageHealth.recompute(),
 });
 // A task or check return refused for over an hour is a `stuck-return` problem. Its first
 // appearance comes with the maintenance pass that follows the hour; a task return outcome
 // recomputes at once, so a success clears its problem without waiting for one.
-// Unreferenced folders under the overflow and check-fallback directories. Husks and clean trees
-// are removed on each maintenance pass; a dirty one is kept and listed as `dirty-orphan-folder`.
-const orphanTrees = new OrphanTreeSweep();
 const storageHealth = new StorageHealthService({
   backups: databaseBackups,
   publish: (health) => registry.setStorageHealth(health),

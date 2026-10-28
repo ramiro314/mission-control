@@ -15,7 +15,7 @@ import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { formatBytes } from "../lib/format.ts";
 import { type StorageActions, type StorageState, useStorage } from "../useStorage.ts";
 import { Tooltip } from "./Tooltip.tsx";
-import { worktreeSlotAnchor } from "./WorktreeSettingsPanel.tsx";
+import { worktreeSlotAnchor, worktreeUnownedTreeAnchor } from "./WorktreeSettingsPanel.tsx";
 
 function when(at: number | null): string {
   if (at === null) return "Never";
@@ -118,6 +118,13 @@ function ProblemLink({
         </Tooltip>
       );
     case "unowned-tree":
+      return (
+        <Tooltip label="Open this tree's row in Worktrees > Unowned trees, where its Kill and Discard and remove actions are">
+          <button type="button" className="btn btn-ghost" onClick={() => onNavigate("worktrees", worktreeUnownedTreeAnchor(link.path))}>
+            Open tree
+          </button>
+        </Tooltip>
+      );
     case "worktrees":
       return (
         <Tooltip label="Open the worktree pools, where this tree's actions are">

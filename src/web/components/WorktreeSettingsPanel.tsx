@@ -112,6 +112,7 @@ const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
   destroy: "Destroy",
   legacyReturn: "Legacy return",
   warm: "Warm",
+  removeUnowned: "Discard and remove",
 };
 
 /**
@@ -540,6 +541,113 @@ export function worktreeSlotAnchor(slotId: string): string {
   return `worktrees/slot/${slotId}`;
 }
 
+/** The settings anchor of one Unowned trees row, which a Storage problem links to. */
+export function worktreeUnownedTreeAnchor(path: string): string {
+  return `worktrees/unowned/${path}`;
+}
+
+/** Processes still running in a tree after its owner finished, each with a guarded Kill. */
+function OrphanList({
+  label,
+  orphans,
+  killHint,
+  onKill,
+}: {
+  label: string;
+  orphans: readonly OrphanProcess[];
+  killHint: string;
+  onKill: (orphan: OrphanProcess, trigger: HTMLButtonElement) => void;
+}): React.JSX.Element | null {
+  if (orphans.length === 0) return null;
+  return (
+    <section className="wt-orphans" aria-label={label}>
+      <h5>Orphan processes</h5>
+      <ul>
+        {orphans.map((orphan) => (
+          <li key={`${orphan.pid}:${orphan.startedAt}`} className="wt-orphan">
+            <div>
+              <code>{orphan.command}</code>
+              <span>PID {orphan.pid} · parent {orphan.ppid} · started {startedLabel(orphan.startedAt)}</span>
+            </div>
+            <Tooltip label={killHint}>
+              <button className="btn btn-danger" type="button" aria-label={`Kill process ${orphan.pid}`} onClick={(event) => onKill(orphan, event.currentTarget)}>
+                Kill
+              </button>
+            </Tooltip>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** A tree outside the pools, under `worktrees/` or `check-worktrees/`, as Storage reports it. */
+export interface UnownedTreeEntry {
+  path: string;
+  /** The `dirty-orphan-folder` problem when the sweep kept this tree for its work. */
+  kept: StorageProblem | null;
+  orphans: OrphanProcess[];
+}
+
+/** Every tree a Storage problem links to as an unowned tree, in the order Storage lists them. */
+export function unownedTreeEntries(health: StorageHealth | null): UnownedTreeEntry[] {
+  const byPath = new Map<string, UnownedTreeEntry>();
+  for (const problem of health?.problems ?? []) {
+    if (problem.link.target !== "unowned-tree") continue;
+    const path = problem.link.path;
+    const entry = byPath.get(path) ?? { path, kept: null, orphans: [] };
+    if (problem.kind === "dirty-orphan-folder") entry.kept = problem;
+    if (problem.kind === "orphan-process" && problem.process) entry.orphans.push(problem.process);
+    byPath.set(path, entry);
+  }
+  return [...byPath.values()];
+}
+
+function UnownedTreeRow({
+  entry,
+  pending,
+  onAction,
+  onKill,
+}: {
+  entry: UnownedTreeEntry;
+  pending: boolean;
+  onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
+  onKill: (orphan: OrphanProcess, trigger: HTMLButtonElement) => void;
+}): React.JSX.Element {
+  const copy = useCopyFeedback({ resetOn: entry.path });
+  return (
+    <article className="wt-unowned" aria-label={`Unowned tree ${entry.path}`} data-anchor={worktreeUnownedTreeAnchor(entry.path)}>
+      <div className="wt-unowned-head">
+        <code>{entry.path}</code>
+        {entry.kept && <StateChip label="kept" tone="attention" />}
+        {pending && <StateChip label="queued" />}
+      </div>
+      {entry.kept && <p className="wt-diagnostic">{entry.kept.message}</p>}
+      <OrphanList
+        label={`Orphan processes in ${entry.path}`}
+        orphans={entry.orphans}
+        killHint="Confirm stopping this process, which keeps the unowned tree from being swept"
+        onKill={onKill}
+      />
+      <div className="wt-slot-actions">
+        <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : "Copy exact tree path"}>
+          <button className="btn btn-ghost" type="button" onClick={() => void copy.copy(entry.path)}>
+            {copy.copied ? "Copied" : "Copy path"}
+          </button>
+        </Tooltip>
+        {entry.kept && !pending && (
+          <Tooltip label="Preview discarding this tree's work and removing the folder">
+            <button className="btn btn-danger" type="button" onClick={(event) => onAction({ action: "removeUnowned", path: entry.path }, event.currentTarget)}>
+              Discard and remove
+            </button>
+          </Tooltip>
+        )}
+      </div>
+      {copy.error && <p className="settings-error">{copy.error}</p>}
+    </article>
+  );
+}
+
 function SlotCard({
   slot,
   pending,
@@ -652,26 +760,12 @@ function SlotCard({
       {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
         <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>
       )}
-      {orphans.length > 0 && (
-        <section className="wt-orphans" aria-label={`Orphan processes in slot ${slot.ordinal}`}>
-          <h5>Orphan processes</h5>
-          <ul>
-            {orphans.map((orphan) => (
-              <li key={`${orphan.pid}:${orphan.startedAt}`} className="wt-orphan">
-                <div>
-                  <code>{orphan.command}</code>
-                  <span>PID {orphan.pid} · parent {orphan.ppid} · started {startedLabel(orphan.startedAt)}</span>
-                </div>
-                <Tooltip label="Confirm stopping this process, which outlived the slot's owner and blocks its return">
-                  <button className="btn btn-danger" type="button" aria-label={`Kill process ${orphan.pid}`} onClick={(event) => onKill(orphan, event.currentTarget)}>
-                    Kill
-                  </button>
-                </Tooltip>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <OrphanList
+        label={`Orphan processes in slot ${slot.ordinal}`}
+        orphans={orphans}
+        killHint="Confirm stopping this process, which outlived the slot's owner and blocks its return"
+        onKill={onKill}
+      />
       <div className="wt-slot-actions">
         <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : "Copy exact worktree path"}>
           <button className="btn btn-ghost" type="button" onClick={() => void copy.copy(slot.path)}>
@@ -1254,6 +1348,7 @@ function PoolSkeleton(): React.JSX.Element {
 function dialogTitle(request: WorktreeActionRequest): string {
   if (request.action === "legacyReturn") return "Return legacy worktree";
   if (request.action === "warm") return request.target.kind === "pool" ? "Warm idle slots" : "Warm worktree";
+  if (request.action === "removeUnowned") return "Discard and remove unowned tree";
   if (request.action === "destroy" && request.target.kind === "slots") {
     const count = request.target.slotIds.length;
     return `Destroy ${count} selected ${count === 1 ? "worktree" : "worktrees"}`;
@@ -1406,6 +1501,14 @@ export function WorktreeSettingsPanel({
     }
     return pending;
   }, [operations]);
+  const unowned = useMemo(() => unownedTreeEntries(storageHealth), [storageHealth]);
+  const pendingPaths = useMemo(() => new Set(operations
+    .filter(worktreeOperationPending)
+    .flatMap((operation) => operation.targets.map((target) => target.path))), [operations]);
+  const startKill = (orphan: OrphanProcess, trigger: HTMLButtonElement): void => {
+    setKillError(null);
+    setKilling({ orphan, trigger });
+  };
   const stuckBySlot = useMemo(() => {
     const stuck = new Map<string, StorageProblem>();
     for (const problem of storageHealth?.problems ?? []) {
@@ -1532,7 +1635,25 @@ export function WorktreeSettingsPanel({
             <p><strong>No pools yet.</strong> Mission Control creates one the first time something needs a checkout in a repository.</p>
           </div>
         )}
-        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} stuckBySlot={stuckBySlot} selected={selected} onSelect={select} onAction={request} orphansBySlot={orphansBySlot} onKill={(orphan, trigger) => { setKillError(null); setKilling({ orphan, trigger }); }} />)}</div>
+        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} stuckBySlot={stuckBySlot} selected={selected} onSelect={select} onAction={request} orphansBySlot={orphansBySlot} onKill={startKill} />)}</div>
+      </section>
+
+      <section className="wt-group" data-anchor="worktrees/unowned-trees">
+        <div className="settings-section-head wt-group-head">
+          <div>
+            <h4>Unowned trees</h4>
+            <p className="wt-group-note">Folders under the overflow and check directories that no pool slot shows: ones the sweep kept because they hold work, and ones a process still holds.</p>
+          </div>
+        </div>
+        {unowned.length === 0 ? (
+          <p className="settings-hint">No unowned trees. The sweep removes clean ones on its own.</p>
+        ) : (
+          <div className="wt-unowned-list">
+            {unowned.map((entry) => (
+              <UnownedTreeRow key={entry.path} entry={entry} pending={pendingPaths.has(entry.path)} onAction={request} onKill={startKill} />
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="wt-group" data-anchor="worktrees/policy">

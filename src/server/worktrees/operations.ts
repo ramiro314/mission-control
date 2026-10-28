@@ -63,6 +63,7 @@ import {
 } from "./manager.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
+import type { UnownedTreeDiscards } from "./orphan-sweep.ts";
 import {
   inspectWorktreeOccupancy,
   type WorktreeOccupancy,
@@ -137,6 +138,8 @@ export interface WorktreeOperationsDeps {
   staleLeases: () => ReadonlyMap<string, number>;
   /** Every kind of work a discard loses, including ignored work a slot's own dirty reading does not see. */
   discardedWork: typeof worktreeDiscardedWork;
+  /** The kept unowned trees behind Worktrees > Unowned trees, and their guarded removal. */
+  unownedTrees: UnownedTreeDiscards;
 }
 
 interface Observation {
@@ -449,6 +452,10 @@ export class WorktreeOperationsService {
       warmTailIntervalMs: WARM_TAIL_INTERVAL_MS,
       staleLeases: () => new Map(),
       discardedWork: worktreeDiscardedWork,
+      unownedTrees: {
+        describe: async () => null,
+        discard: async () => "unowned trees are unavailable",
+      },
       ...deps,
     };
   }
@@ -1086,6 +1093,9 @@ export class WorktreeOperationsService {
     if (request.action === "recover") {
       return this.buildRecoverPreview(request, observed, affected, risks, blockers, consequences);
     }
+    if (request.action === "removeUnowned") {
+      return this.buildRemoveUnownedPreview(request, observed, affected, risks, blockers, consequences);
+    }
 
     const poolId = request.action === "prune" || request.action === "reconcile"
       ? request.poolId
@@ -1306,6 +1316,53 @@ export class WorktreeOperationsService {
       consequences.push(`No index.lock is present at ${lock.path}.`);
     }
     consequences.push("Resets the slot to the fetched remote default and returns it to the pool as available.");
+    return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+  }
+
+  /**
+   * Discard and remove one unowned tree. Only a tree the orphan sweep keeps right now is a
+   * target, so a request naming any other path - a slot, a live task's tree, `$HOME` - finds
+   * nothing and is refused before anything on disk is inspected. The sweep checks the tree
+   * again, under its own pass lock, before it removes anything.
+   */
+  private async buildRemoveUnownedPreview(
+    request: Extract<WorktreeActionRequest, { action: "removeUnowned" }>,
+    observed: Observation,
+    affected: WorktreeActionAffected[],
+    risks: WorktreeActionRisk[],
+    blockers: string[],
+    consequences: string[],
+  ): Promise<Omit<WorktreeActionPreview, "token" | "expiresAt">> {
+    const tree = await this.deps.unownedTrees.describe(request.path);
+    if (!tree) throw new WorktreeOperationError(404, "that path is not an unowned tree Mission Control kept", "not-found");
+    const occupancy = (await this.deps.occupancy([tree.path])).get(tree.path)
+      ?? { status: "unknown" as const, reason: "Process occupancy could not be inspected." };
+    affected.push({
+      provider: "git",
+      id: digest({ path: tree.path }).slice(0, 24),
+      path: tree.path,
+      owner: null,
+      version: null,
+      safetyRevision: digest({ tree, occupancy }),
+      diskBytes: null,
+    });
+    if (observed.pending.has(tree.path)) blockers.push("This tree already has an operation queued; wait for it to finish.");
+    if (occupancy.status === "unknown") {
+      risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
+      blockers.push(occupancy.reason);
+    } else if (occupancy.occupants.length > 0) {
+      risks.push(risk("occupied", `${occupancy.occupants.length} process(es) occupy the tree`, false));
+      blockers.push("Known processes must exit before the tree can be removed; Kill them from its row first.");
+    }
+    risks.push(risk("dirty", "Uncommitted, untracked, unpushed or ignored work will be discarded", true));
+    const work = [tree.reason, ...tree.work.filter((each) => each !== tree.reason)];
+    consequences.push(`Discards the work in ${tree.path}: ${work.join("; ")}.`);
+    if (tree.files.length > 0) {
+      consequences.push(`Files it deletes include: ${tree.files.join(", ")}${tree.moreFiles ? ", and more" : ""}.`);
+    }
+    consequences.push(tree.worktree
+      ? "Removes the worktree with git worktree remove --force. Its harness/* branch is deleted only when a remote branch contains it, so unpushed commits stay on their branch."
+      : "The folder is not a Git worktree, so it is deleted with every file in it.");
     return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
   }
 
@@ -1830,6 +1887,11 @@ export class WorktreeOperationsService {
         result.outcome === "outcomeUnknown" ? "unavailable" : "changed",
       );
     }
+    if (request.action === "removeUnowned") {
+      const refused = await this.deps.unownedTrees.discard(preview.affected[0]!.path);
+      if (refused) throw new WorktreeOperationError(409, `Unowned tree was not removed: ${refused}`, "changed");
+      return;
+    }
     if (request.action === "prune") {
       for (const target of preview.affected) {
         const result = await this.manager.removeSlot({
@@ -1955,6 +2017,7 @@ export class WorktreeOperationsService {
     switch (action) {
       case "return": return "Worktree returned to warm capacity.";
       case "recover": return "Quarantined worktree recovered to warm capacity.";
+      case "removeUnowned": return "Unowned tree discarded and removed.";
       case "prune": return "Safe candidate set pruned.";
       case "reconcile": return "Pool re-observed; uncertainty remains quarantined.";
       case "destroy": return "Fixed worktree target destroyed.";

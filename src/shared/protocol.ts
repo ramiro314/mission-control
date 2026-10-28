@@ -3280,6 +3280,7 @@ export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
     .strict(),
   z.object({ action: z.literal("reconcile"), poolId: WorktreeStableIdSchema }).strict(),
   z.object({ action: z.literal("recover"), slotId: WorktreeStableIdSchema }).strict(),
+  z.object({ action: z.literal("removeUnowned"), path: z.string().min(1).max(4096) }).strict(),
   z
     .object({
       action: z.literal("destroy"),
