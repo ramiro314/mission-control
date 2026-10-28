@@ -14,7 +14,7 @@ import { buildApp } from "../src/server/routes.ts";
 import { InFlightTrees } from "../src/server/worktrees/in-flight.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import { WorktreeManager } from "../src/server/worktrees/manager.ts";
-import { inspectWorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { inspectWorktreeOccupancy, type WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { finishedTrees, OrphanProcessMonitor } from "../src/server/worktrees/orphan-processes.ts";
 import { ORPHAN_TREE_GRACE_MS, OrphanTreeSweep } from "../src/server/worktrees/orphan-sweep.ts";
@@ -43,11 +43,17 @@ execFileSync("git", ["clone", "-q", origin, repo], { stdio: "ignore" });
 git(repo, "config", "user.email", "test@example.com");
 git(repo, "config", "user.name", "test");
 writeFileSync(join(repo, "README.md"), "fixture\n");
+writeFileSync(join(repo, ".gitignore"), "*.log\n");
 git(repo, "add", ".");
 git(repo, "commit", "-q", "-m", "init");
 git(repo, "push", "-q", "origin", "main");
 
 let referenced: string[] = [];
+/** Set to make every occupancy read, the sweep's and the preview's, answer unknown. */
+let occupancyUnknown = false;
+const occupancy = async (paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> => occupancyUnknown
+  ? new Map(paths.map((path) => [path, { status: "unknown", reason: "lsof timed out" }]))
+  : inspectWorktreeOccupancy(paths);
 const sweep = new OrphanTreeSweep({
   directories: [worktreesDir, checksDir],
   stateHome: join(root, "state"),
@@ -55,7 +61,7 @@ const sweep = new OrphanTreeSweep({
   slotPaths: () => [],
   sourceRepositories: () => [repo],
   inFlight: new InFlightTrees(),
-  occupancy: inspectWorktreeOccupancy,
+  occupancy,
   // An hour ahead, so every folder here is past the creation grace.
   now: () => Date.now() + 2 * ORPHAN_TREE_GRACE_MS,
 });
@@ -73,6 +79,7 @@ const operations = new WorktreeOperationsService(manager, {
   checkRecovery: async () => "unknown",
   notifyChanged: () => {},
   diskBytes: async () => 0,
+  occupancy,
   unownedTrees: sweep,
 });
 const app = buildApp({
@@ -245,4 +252,89 @@ test("a process holding an unreferenced folder keeps it from any discard, is rep
   // Free of its process, the folder still holds a file, so the sweep now keeps it for a discard.
   assert.ok(sweep.problems().firstSeen?.some((each) => each.subject.includes(path)));
   assert.equal((await preview(path)).body.allowed, true);
+});
+
+test("a kept tree a process has since entered cannot be discarded: the preview is blocked and the sweep refuses", async () => {
+  const path = dirtyWorktree();
+  await sweep.sweep();
+  assert.equal((await preview(path)).body.allowed, true, "kept and free, it could be discarded");
+
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: path, stdio: "ignore" });
+  children.add(child);
+  child.once("exit", () => children.delete(child));
+  await once(child, "spawn");
+  try {
+    const blocked = await preview(path);
+    assert.equal(blocked.status, 200);
+    assert.equal(blocked.body.allowed, false);
+    assert.ok(blocked.body.blockers.includes("Known processes must exit before the tree can be removed; Kill them from its row first."), blocked.body.blockers.join("; "));
+    // The sweep's own check, which a confirmed preview reaches, refuses on its own too.
+    assert.equal(await sweep.discard(path), "1 process(es) still use it");
+    assert.ok(existsSync(join(path, "notes.md")));
+  } finally {
+    child.kill("SIGKILL");
+    await once(child, "exit");
+  }
+});
+
+test("a kept tree whose processes cannot be read is never discarded", async () => {
+  const path = dirtyWorktree();
+  await sweep.sweep();
+  occupancyUnknown = true;
+  try {
+    const blocked = await preview(path);
+    assert.equal(blocked.body.allowed, false);
+    assert.ok(blocked.body.blockers.includes("lsof timed out"), blocked.body.blockers.join("; "));
+    assert.equal(await sweep.discard(path), "its processes could not be inspected: lsof timed out");
+  } finally {
+    occupancyUnknown = false;
+  }
+  assert.ok(existsSync(join(path, "notes.md")));
+});
+
+test("the preview labels changed, untracked and ignored paths", async () => {
+  const path = dirtyWorktree();
+  writeFileSync(join(path, "README.md"), "edited\n");
+  writeFileSync(join(path, "debug.log"), "ignored output\n");
+  await sweep.sweep();
+
+  const shown = await preview(path);
+  const files = shown.body.consequences.find((line) => line.startsWith("Files it deletes include: "));
+  assert.equal(files, "Files it deletes include: README.md (changed), notes.md (untracked), debug.log (ignored).");
+});
+
+/** The `Files it deletes include:` line of a fresh preview of `path`. */
+async function filesLine(path: string): Promise<string> {
+  const line = (await preview(path)).body.consequences.find((each) => each.startsWith("Files it deletes include: "));
+  assert.ok(line);
+  return line;
+}
+
+function names(line: string): string[] {
+  return line.slice("Files it deletes include: ".length).replace(/(, and more)?\.$/, "").split(", ");
+}
+
+test("the preview names at most ten deleted paths and says when there are more", async () => {
+  const worktree = join(worktreesDir, `many-${trees++}`);
+  git(repo, "worktree", "add", "-q", "-b", `harness/many-${trees}`, worktree);
+  for (let index = 0; index <= 10; index += 1) writeFileSync(join(worktree, `file-${String(index).padStart(2, "0")}.md`), "x\n");
+  const eleven = join(checksDir, "eleven-files");
+  const ten = join(checksDir, "ten-files");
+  for (const [folder, count] of [[eleven, 11], [ten, 10]] as const) {
+    mkdirSync(join(folder, "nested"), { recursive: true });
+    for (let index = 0; index < count; index += 1) writeFileSync(join(folder, index % 2 ? "nested" : "", `file-${index}.txt`), "x\n");
+  }
+  await sweep.sweep();
+
+  const fromStatus = await filesLine(worktree);
+  assert.ok(fromStatus.endsWith(", and more."), fromStatus);
+  assert.deepEqual(names(fromStatus), Array.from({ length: 10 }, (_, index) => `file-${String(index).padStart(2, "0")}.md (untracked)`));
+
+  const fromWalk = await filesLine(eleven);
+  assert.ok(fromWalk.endsWith(", and more."), fromWalk);
+  assert.equal(names(fromWalk).length, 10);
+
+  const exactlyTen = await filesLine(ten);
+  assert.ok(!exactlyTen.includes("and more"), exactlyTen);
+  assert.equal(names(exactlyTen).length, 10);
 });
