@@ -836,7 +836,8 @@ tree the task holds. This amends the earlier settle-and-retain rule for clean tr
   and its Return preview states the discard before anything runs: "Discards the uncommitted,
   untracked or ignored work in ..." and, for commits never pushed, "Discards the commits in ...".
   Confirming reclaims every tree the task holds and the problem disappears. A task with no pool
-  slot (a disposable Git worktree or a Treehouse lease) points at its task card's **Clean up**.
+  slot (a disposable Git worktree or a Treehouse lease) has no slot card, so its problem links to
+  the **Settings > Worktrees** page instead, and **Clean up** on the task still reclaims its trees.
 
 **The clock starts when the tree is first observed, not when the task ended.** No timestamp in
 the database can prove when a checkout was last touched, so every tree that existed before this
