@@ -993,7 +993,9 @@ Each Storage problem's **Open tree** link lands on that tree's row.
 - On Execute, Mission Control rebuilds the preview and refuses one that changed. A preview is
   bound to the size and modification time of every entry under the folder, not just the paths it
   names, so any write after it, such as another edit to a file already listed as changed, refuses
-  the run. The sweep then
+  the run. The walk stops at regenerable directories (`node_modules/`, `dist/` and the rest of
+  that list), which count by their own entry only, since they are deleted either way. An entry
+  that vanishes or cannot be read during the walk makes the tree read as changed. The sweep then
   checks again under its own pass lock that it still keeps the folder, with the same inode, that
   no row names it, that nothing is creating it, and that no process is in it. A worktree is
   removed with `git worktree remove --force`, and its `harness/*` branch is deleted only when a

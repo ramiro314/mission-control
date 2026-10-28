@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -419,4 +419,40 @@ test("a fresh sweep never joins a pass that started before it, so a Kill's retry
   release();
   assert.ok((await running).skipped.some((each) => each.path === path && each.reason === "occupied"));
   assert.deepEqual((await fresh).kept.map((tree) => tree.path), [path], "the fresh pass sees the folder free and keeps it");
+});
+
+test("the signature stops at regenerable directories, which a discard deletes either way", async () => {
+  const path = dirtyWorktree();
+  const dependency = join(path, "node_modules", "pkg", "index.js");
+  mkdirSync(join(path, "node_modules", "pkg"), { recursive: true });
+  writeFileSync(dependency, "module.exports = 1;\n");
+  await sweep.sweep();
+  const shown = await preview(path);
+  // A write deep inside node_modules/ is not walked, so it does not stale the preview.
+  writeFileSync(dependency, "module.exports = 2; // rebuilt\n");
+  const done = await execute(shown.body.token, ["dirty"]);
+  assert.equal(done.failed, null, done.failed?.error ?? "");
+  assert.equal(existsSync(path), false);
+});
+
+test("an entry the walk cannot read is part of the signature, not a failed preview", async () => {
+  const path = join(checksDir, "unreadable-inside");
+  const locked = join(path, "locked");
+  mkdirSync(locked, { recursive: true });
+  writeFileSync(join(path, "notes.md"), "kept\n");
+  writeFileSync(join(locked, "secret.md"), "x\n");
+  await sweep.sweep();
+  const readable = await preview(path);
+  assert.equal(readable.status, 200);
+  chmodSync(locked, 0o000);
+  try {
+    const shown = await preview(path);
+    assert.equal(shown.status, 200, shown.body.error ?? "");
+    assert.equal(shown.body.allowed, true, shown.body.blockers.join("; "));
+    // The tree now reads differently, so the earlier preview is stale.
+    assert.equal((await execute(readable.body.token, ["dirty"])).failed?.changed, true);
+  } finally {
+    chmodSync(locked, 0o755);
+  }
+  assert.ok(existsSync(join(locked, "secret.md")));
 });

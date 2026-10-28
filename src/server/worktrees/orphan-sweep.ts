@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { lstat, readdir, readFile, realpath, rm } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { storageProblem } from "@shared/storage-health.ts";
 import { CHECK_WORKTREES_DIR, STATE_DIR, WORKTREES_DIR } from "../config.ts";
 import { openDb } from "../db.ts";
-import { worktreeDiscardedWork, worktreeReturnBlocker } from "../git/worktree-return-safety.ts";
+import {
+  REGENERABLE_IGNORED_PATHS,
+  worktreeDiscardedWork,
+  worktreeReturnBlocker,
+} from "../git/worktree-return-safety.ts";
 import type { StorageProblemObservation } from "../storage-health.ts";
 import { run } from "../util/exec.ts";
 import { inFlightTrees, type InFlightTrees } from "./in-flight.ts";
@@ -160,18 +164,41 @@ async function isHusk(path: string, leftoverGitFile: boolean): Promise<boolean> 
   return true;
 }
 
-/** Every entry under `path`, in a stable order, with its kind, size and modification time. */
+/** Directories a discard deletes without anyone losing work, so the signature stops at them. */
+const REGENERABLE_DIRECTORIES = new Set(REGENERABLE_IGNORED_PATHS.map((each) => each.replace(/\/$/, "")));
+/** How many entries of one directory are stat'ed at once. */
+const SIGNATURE_STAT_BATCH = 64;
+
+/**
+ * Every entry under `path`, in a stable order, with its kind, size and modification time. A
+ * regenerable directory such as `node_modules/` contributes its own stat only: a warmed tree can
+ * hold hundreds of thousands of entries there, and they are deleted either way. An entry that
+ * vanishes mid-walk is recorded as gone rather than thrown, so the tree reads as changed.
+ */
 async function treeSignature(path: string): Promise<string> {
   const hash = createHash("sha256");
   const pending = [path];
   while (pending.length > 0) {
     const directory = pending.pop()!;
-    const entries = (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      const child = join(directory, entry.name);
-      const stat = await lstat(child);
-      if (entry.isDirectory()) pending.push(child);
-      hash.update(`${relative(path, child)}\0${entry.isDirectory() ? "d" : entry.isFile() ? "f" : "o"}\0${stat.size}\0${stat.mtimeMs}\n`);
+    const names = await readdir(directory).catch(() => null);
+    if (names === null) {
+      hash.update(`${relative(path, directory)}\0gone\n`);
+      continue;
+    }
+    names.sort();
+    for (let start = 0; start < names.length; start += SIGNATURE_STAT_BATCH) {
+      const batch = names.slice(start, start + SIGNATURE_STAT_BATCH).map((name) => join(directory, name));
+      const stats = await Promise.all(batch.map((child) => lstat(child).catch(() => null)));
+      batch.forEach((child, index) => {
+        const stat = stats[index];
+        const name = relative(path, child);
+        if (!stat) {
+          hash.update(`${name}\0gone\n`);
+          return;
+        }
+        if (stat.isDirectory() && !REGENERABLE_DIRECTORIES.has(basename(child))) pending.push(child);
+        hash.update(`${name}\0${stat.isDirectory() ? "d" : stat.isFile() ? "f" : "o"}\0${stat.size}\0${stat.mtimeMs}\n`);
+      });
     }
   }
   return hash.digest("hex");
@@ -183,7 +210,8 @@ async function listedFiles(path: string): Promise<{ files: string[]; moreFiles: 
   const pending = [path];
   while (pending.length > 0) {
     const directory = pending.pop()!;
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
+    // Gone or unreadable since the sweep kept it: the signature records that, so skip it here.
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
       const child = join(directory, entry.name);
       if (entry.isDirectory()) {
         pending.push(child);
