@@ -15,6 +15,7 @@ import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { formatBytes } from "../lib/format.ts";
 import { type StorageActions, type StorageState, useStorage } from "../useStorage.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { worktreeSlotAnchor } from "./WorktreeSettingsPanel.tsx";
 
 function when(at: number | null): string {
   if (at === null) return "Never";
@@ -109,7 +110,15 @@ function ProblemLink({
         </Tooltip>
       );
     case "slot":
+      return (
+        <Tooltip label="Open this slot's card in the worktree pools">
+          <button type="button" className="btn btn-ghost" onClick={() => onNavigate("worktrees", worktreeSlotAnchor(link.slotId))}>
+            Open slot
+          </button>
+        </Tooltip>
+      );
     case "unowned-tree":
+    case "worktrees":
       return (
         <Tooltip label="Open the worktree pools, where this tree's actions are">
           <button type="button" className="btn btn-ghost" onClick={() => onNavigate("worktrees", "worktrees/native-pools")}>

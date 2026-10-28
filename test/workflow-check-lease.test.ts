@@ -136,7 +136,7 @@ function fakePool(slots: number, dir: string) {
 let seq = 0;
 /** A manager over a fresh fake pool, with the git work stubbed unless a test wants it. */
 function mkManager(
-  opts: { slots?: number; pin?: (r: string, p: string, s: string) => Promise<void> } = {},
+  opts: { slots?: number; pin?: (r: string, p: string, s: string) => Promise<void>; now?: () => number } = {},
 ) {
   const dir = mkdtempSync(join(home, `pool-${seq++}-`));
   const pool = fakePool(opts.slots ?? 3, dir);
@@ -146,6 +146,7 @@ function mkManager(
     // so it is stubbed unless the case is specifically about a pin failing.
     verifyBase: async (_repoRoot, sha) => sha,
     acquisitionProvider: modeledProvider(pool.cli, pin),
+    ...(opts.now ? { now: opts.now } : {}),
   });
   return { ...pool, manager, repoRoot: dir };
 }
@@ -590,6 +591,83 @@ test("a failed return keeps the row in returning, keeps the pin, and permits no 
   m.fail.return = false;
   assert.deepEqual(await m.manager.releaseForAttempt("att-retry"), { outcome: "returned" });
   assert.deepEqual(m.manager.pinnedPaths(), []);
+});
+
+test("a refused return records its first refusal and latest reason, and a successful return clears both", async () => {
+  let clock = 1_000_000;
+  const m = mkManager({ now: () => clock });
+  await acquire(m, "att-refused", { nodeId: "unit" });
+  const refusalColumns = () => ({
+    ...db.prepare(`SELECT first_refused_at, last_refusal FROM workflow_check_leases WHERE attempt_id = ?`)
+      .get("att-refused"),
+  });
+  m.fail.return = true;
+  assert.equal((await m.manager.releaseForAttempt("att-refused")).outcome, "retry");
+  assert.deepEqual(m.manager.refusedReturns(), [{
+    attemptId: "att-refused",
+    nodeId: "unit",
+    leaseId: null,
+    firstRefusedAt: 1_000_000,
+    refusal: { reason: "tree is busy", processes: [] },
+  }]);
+
+  // A later refusal, for another reason, keeps the time the refusals began.
+  clock += 60_000;
+  m.fail.return = false;
+  m.fail.status = true;
+  assert.equal((await m.manager.releaseForAttempt("att-refused")).outcome, "retry");
+  const [later] = m.manager.refusedReturns();
+  assert.equal(later?.firstRefusedAt, 1_000_000);
+  assert.notEqual(later?.refusal.reason, "tree is busy");
+
+  m.fail.status = false;
+  assert.deepEqual(await m.manager.releaseForAttempt("att-refused"), { outcome: "returned" });
+  assert.deepEqual(m.manager.refusedReturns(), []);
+  assert.deepEqual(refusalColumns(), { first_refused_at: null, last_refusal: null });
+});
+
+test("a refused native release stores the processes occupying the slot in the check's refusal", async () => {
+  // The real MissionCheckTreeProvider over a stub allocator, so the processes travel the
+  // whole way: the allocator's refused release, handBack, failedReturn, and last_refusal.
+  type Release = Awaited<ReturnType<import("../src/server/worktrees/manager.ts").WorktreeManager["release"]>>;
+  let next: Release = {
+    outcome: "refused",
+    reason: "one or more processes still occupy the worktree",
+    processes: [{ pid: 4242, command: "node vite" }],
+  };
+  const lease = {
+    slotId: "slot-1", poolId: "pool-1", path: "/pool/slot-1", provider: "mission" as const,
+    leaseId: "lease-native", owner: { kind: "check" as const, key: "att-native" },
+    baseSha: SHA, slotVersion: 1,
+  };
+  const allocator = {
+    lookupLease: () => ({ state: "active" as const, lease }),
+    release: async () => next,
+    settleDomainLease: () => {},
+  } as unknown as import("../src/server/worktrees/manager.ts").WorktreeManager;
+  const manager = new CheckLeaseManager(db, { verifyBase: async (_r, sha) => sha, manager: allocator });
+  store.insertHeld({
+    attemptId: "att-native", submissionId: "sub-native", nodeId: "unit", repoRoot: "/repo",
+    leasePath: "/pool/slot-1", holderToken: "lease-native", provider: "mission", leaseId: "lease-native", now: 1,
+  });
+
+  assert.equal((await manager.releaseForAttempt("att-native")).outcome, "retry");
+  assert.deepEqual(manager.refusedReturns()[0]?.refusal, {
+    reason: "refused: one or more processes still occupy the worktree",
+    processes: [{ pid: 4242, command: "node vite" }],
+  });
+
+  // A failure that is not a refusal names no process, and replaces the earlier list.
+  next = { outcome: "outcomeUnknown", reason: "fetch timed out" };
+  assert.equal((await manager.releaseForAttempt("att-native")).outcome, "retry");
+  assert.deepEqual(manager.refusedReturns()[0]?.refusal, {
+    reason: "outcomeUnknown: fetch timed out",
+    processes: [],
+  });
+
+  next = { outcome: "released" };
+  assert.deepEqual(await manager.releaseForAttempt("att-native"), { outcome: "returned" });
+  assert.deepEqual(manager.refusedReturns(), []);
 });
 
 test("a release that cannot read the pool does not become an authorised return", async () => {

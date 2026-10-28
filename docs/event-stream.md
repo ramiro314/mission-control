@@ -89,8 +89,8 @@ digest, preflight, transaction, rollback, or reconciliation logic at the HTTP bo
 
 `storage_health` carries the whole storage aggregate from `src/shared/storage-health.ts`: backup
 status per kind, the kept copies with their sizes, the total size, and the current problems. The
-daemon's `StorageHealthService` recomputes it after every database backup capture and prune and
-after every worktree maintenance pass, and emits the event only when the result changed. The
+daemon's `StorageHealthService` recomputes it after every database backup capture and prune,
+after every worktree maintenance pass, and after every automatic task worktree return, and emits the event only when the result changed. The
 reconnect snapshot carries the same value as `storageHealth`, or null before the service has
 computed it once, and `GET /api/storage` returns it with the backup config. Settings > Storage
 shows whichever of the two arrived last, so its re-read after a write is not hidden by an older

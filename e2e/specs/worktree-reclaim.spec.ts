@@ -129,7 +129,7 @@ test("a live lease quiet past staleLeaseDays shows a stale chip and a Storage-on
   await shoot(dashboard, "02-storage-problem");
 
   // Its link lands on the slot card that carries the chip.
-  await problems.getByRole("button", { name: "Open worktrees" }).click();
+  await problems.getByRole("button", { name: "Open slot" }).click();
   if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
   await expect(staleChip).toBeVisible();
 
@@ -202,13 +202,14 @@ test("Kill, from a Storage problem link, stops an orphan process in a quarantine
     await expect(problem.getByText("Orphan process", { exact: true })).toBeVisible();
     await expect(problem).toContainText(lease.path);
     await shoot(dashboard, "01-orphan-process-problem");
-    await problem.getByRole("button", { name: "Open worktrees" }).click();
+    await problem.getByRole("button", { name: "Open slot" }).click();
 
+    // The link lands on this slot's card, scrolled into view, with its orphan row.
     const slot = dashboard.locator(".wt-slot", { hasText: lease.path });
+    await expect(slot).toBeInViewport();
     const orphans = slot.getByRole("region", { name: /Orphan processes in slot/ });
     await expect(orphans).toContainText(`PID ${pid}`);
     await expect(orphans).toContainText("setInterval");
-    await slot.scrollIntoViewIfNeeded();
     await shoot(dashboard, "02-slot-card-orphan-row");
 
     // Cancel signals nothing.

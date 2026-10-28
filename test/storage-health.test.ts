@@ -10,6 +10,7 @@ import type { ServerEvent } from "../src/shared/types.ts";
 import {
   backupFailedProblems,
   storageProblem,
+  stuckReturnProblems,
   type StorageHealth,
   type StorageView,
 } from "../src/shared/storage-health.ts";
@@ -367,6 +368,147 @@ test("GET /api/storage answers 503 without a storage service", async () => {
   });
 });
 
+test("a task or check return refused for an hour becomes stuck-return, keeps its id across a restart, and clears on success", async () => {
+  const {
+    closeDb,
+    completeTaskWithSessionClosure,
+    clearTaskWorktreeReturnRefusal,
+    listTaskWorktreeReturnRefusals,
+    recordTaskWorktreeReturnRefusal,
+    getTask,
+  } = await import("../src/server/db.ts");
+  const { CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts");
+  const { stuckReturnSource } = await import("../src/server/storage-health.ts");
+  const { mkTask } = await import("./helpers/session-fixture.ts");
+
+  let clock = Date.UTC(2026, 9, 27, 12);
+  const firstRefusedAt = clock;
+  completeTaskWithSessionClosure(mkTask({
+    id: "stuck-task", title: "Fix login", status: "done", completedAt: clock - 1,
+    worktreePath: "/pool/7", provider: "mission", worktreeLeaseId: "lease-task",
+  }), null);
+  const checks = () => new CheckLeaseStore(openDb());
+  checks().insertHeld({
+    attemptId: "stuck-check", submissionId: "sub", nodeId: "unit tests", repoRoot: "/repo",
+    leasePath: "/pool/2", holderToken: "token", provider: "mission", leaseId: "lease-check", now: clock,
+  });
+  const occupied = {
+    reason: "one or more processes still occupy the worktree",
+    processes: [{ pid: 4242, command: "node vite" }],
+  };
+  recordTaskWorktreeReturnRefusal("stuck-task", occupied, clock);
+  checks().recordRefusal("stuck-check", occupied, clock);
+
+  const generation = () => new StorageHealthService({
+    backups: { status: () => databaseBackupStatusFrom(undefined), keptCopies: () => [] },
+    publish: () => {},
+    sources: [stuckReturnSource({
+      taskRefusals: listTaskWorktreeReturnRefusals,
+      task: (id) => getTask(id),
+      checkRefusals: () => checks().listRefused(),
+      slotForLease: (leaseId) => ({ "lease-task": "slot-7", "lease-check": "slot-2" })[leaseId] ?? null,
+    })],
+    now: () => clock,
+  });
+  const ids = [
+    `stuck-return:check:stuck-check:${firstRefusedAt}`,
+    `stuck-return:task:stuck-task:${firstRefusedAt}`,
+  ];
+
+  clock += HOUR - 1;
+  assert.deepEqual(problemIds(generation().recompute()), [], "refused for under an hour is not stuck yet");
+
+  // A later refusal an hour on keeps the first time, so the id is unchanged.
+  clock += 1;
+  recordTaskWorktreeReturnRefusal("stuck-task", { reason: "checkout occupancy is unknown", processes: [] }, clock);
+  checks().recordRefusal("stuck-check", occupied, clock);
+  const stuck = generation().recompute().problems;
+  assert.deepEqual(stuck.map((problem) => problem.id), ids);
+  assert.deepEqual(stuck.map((problem) => ({ bannered: problem.bannered, link: problem.link, message: problem.message })), [
+    {
+      bannered: true,
+      link: { target: "slot", slotId: "slot-2" },
+      message: 'Check "unit tests" worktree return refused for over an hour: one or more processes still occupy the worktree; blocked by process 4242 (node vite)',
+    },
+    {
+      bannered: true,
+      link: { target: "slot", slotId: "slot-7" },
+      message: 'Task "Fix login" worktree return refused for over an hour: checkout occupancy is unknown',
+    },
+  ]);
+
+  // A daemon restart reads the same columns, so the ids do not move.
+  closeDb();
+  clock += 5 * 60 * 1_000;
+  assert.deepEqual(problemIds(generation().recompute()), ids);
+
+  // A successful return clears both columns, and with them the problem.
+  clearTaskWorktreeReturnRefusal("stuck-task");
+  checks().clearRefusal("stuck-check");
+  assert.deepEqual(problemIds(generation().recompute()), []);
+  assert.deepEqual(listTaskWorktreeReturnRefusals(), []);
+  openDb().prepare("DELETE FROM workflow_check_leases").run();
+  openDb().prepare("DELETE FROM tasks WHERE id = ?").run("stuck-task");
+});
+
+test("a task refusal whose return is no longer owed is never listed as stuck", async () => {
+  const { completeTaskWithSessionClosure, listTaskWorktreeReturnRefusals, recordTaskWorktreeReturnRefusal } =
+    await import("../src/server/db.ts");
+  const { mkTask } = await import("./helpers/session-fixture.ts");
+  const refused = { reason: "a process still uses a checkout", processes: [] };
+  completeTaskWithSessionClosure(mkTask({
+    id: "stale-task", status: "done", completedAt: 500, dispatchedAt: 400,
+    worktreePath: "/pool/3", provider: "mission", worktreeLeaseId: "lease-stale",
+  }), null);
+  recordTaskWorktreeReturnRefusal("stale-task", refused, 1_000);
+  assert.deepEqual(listTaskWorktreeReturnRefusals().map((row) => row.taskId), ["stale-task"]);
+
+  // Written behind upsertTask's back, so the row survives: the listing itself must refuse it.
+  for (const stale of [
+    "UPDATE tasks SET status = 'backlog' WHERE id = 'stale-task'",
+    "UPDATE tasks SET status = 'done', completed_at = 600 WHERE id = 'stale-task'",
+    "UPDATE tasks SET completed_at = 500, dispatched_at = 450 WHERE id = 'stale-task'",
+  ]) {
+    openDb().exec(stale);
+    assert.deepEqual(listTaskWorktreeReturnRefusals(), [], stale);
+  }
+  openDb().exec("UPDATE tasks SET dispatched_at = 400 WHERE id = 'stale-task'");
+  assert.deepEqual(listTaskWorktreeReturnRefusals().map((row) => row.taskId), ["stale-task"], "owed again");
+  openDb().prepare("DELETE FROM tasks WHERE id = ?").run("stale-task");
+  assert.deepEqual(listTaskWorktreeReturnRefusals(), [], "a deleted task takes its row with it");
+});
+
+test("a stuck return whose tree has no native slot links to the worktrees page", () => {
+  const problems = stuckReturnProblems([{
+    owner: "task", ownerId: "t", label: 'Task "T"', firstRefusedAt: 0,
+    refusal: { reason: "provider return failed", processes: [] }, slotId: null,
+  }], HOUR);
+  assert.deepEqual(problems.map((problem) => problem.link), [{ target: "worktrees" }]);
+});
+
+test("an existing database without the refusal columns upgrades and keeps its rows", async () => {
+  const { closeDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
+  const { CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts");
+  new CheckLeaseStore(openDb()).insertHeld({
+    attemptId: "pre-upgrade", submissionId: "sub", nodeId: "node", repoRoot: "/repo",
+    leasePath: "/pool/9", holderToken: "token", provider: "mission", leaseId: "lease-9", now: 1,
+  });
+  // The schema of the build before this one: neither table has the refusal columns yet.
+  for (const table of ["workflow_check_leases", "task_worktree_returns"]) {
+    openDb().exec(`ALTER TABLE ${table} DROP COLUMN first_refused_at; ALTER TABLE ${table} DROP COLUMN last_refusal;`);
+  }
+  openDb().exec(`PRAGMA user_version = ${CURRENT_DATABASE_SCHEMA_VERSION - 1}`);
+  closeDb();
+
+  const store = new CheckLeaseStore(openDb());
+  for (const table of ["workflow_check_leases", "task_worktree_returns"]) {
+    const columns = (openDb().prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name);
+    assert.ok(columns.includes("first_refused_at") && columns.includes("last_refusal"), `${table} gains both columns`);
+  }
+  assert.equal(store.get("pre-upgrade")?.cleanupState, "held", "the existing row survives");
+  assert.deepEqual(store.listRefused(), [], "an upgraded row has recorded no refusal");
+  openDb().prepare("DELETE FROM workflow_check_leases").run();
+});
 // Stale live leases (AC11). The fixture stands in for the slot rows, the owner's domain row and
 // the Git-visible probe; the clock itself is the real `worktrees.leaseActivity` record.
 

@@ -935,6 +935,30 @@ test("a reused slot that becomes unknown or occupied before reset is quarantined
   }
 });
 
+test("a release refused because the slot is occupied names the processes occupying it", async () => {
+  const { clone, sha } = repository("mission-native-release-occupied-");
+  let occupied = false;
+  const m = manager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+    occupancy: async (paths) => occupied
+      ? new Map(paths.map((path) => [path, {
+        status: "known" as const,
+        occupants: [{ pid: 4242, ppid: 1, startRaw: "now", startMs: 1, command: "node vite", cwd: path, knownOwner: null }],
+      }]))
+      : emptyOccupancy(paths),
+  });
+  const held = lease(await acquire(m, clone, sha, "task-release-occupied"));
+  occupied = true;
+  assert.deepEqual(await m.release(held, { ownerAuthorized: true }), {
+    outcome: "refused",
+    reason: "one or more processes still occupy the worktree",
+    processes: [{ pid: 4242, command: "node vite" }],
+  });
+  occupied = false;
+  assert.equal((await m.release(held, { ownerAuthorized: true })).outcome, "released");
+  db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;");
+});
+
 test("unknown Git add, lease commit, and return reset outcomes quarantine instead of falling back", async () => {
   class AddUnknownGit extends NativeWorktreeGit {
     override async add() {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { WORKTREES_CONFIG_LIMITS, type WorktreeClaim, type WorktreesConfigPatch } from "@shared/protocol.ts";
+import type { OrphanProcess, StorageHealth, StorageProblem } from "@shared/storage-health.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
 import type {
   NativeWorktreeSlotView,
@@ -15,7 +16,6 @@ import type {
   WorktreeWarmTargetOutcome,
 } from "@shared/worktrees.ts";
 import { worktreeOperationPending, worktreeRetryRequest } from "@shared/worktrees.ts";
-import type { OrphanProcess, StorageHealth } from "@shared/storage-health.ts";
 import type { WorktreesConfigUpdate, WorktreesState } from "../useWorktrees.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { api, openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
@@ -534,9 +534,15 @@ function SlotDependencies({
   );
 }
 
+/** The settings anchor of one slot card, which a Storage problem links to. */
+export function worktreeSlotAnchor(slotId: string): string {
+  return `worktrees/slot/${slotId}`;
+}
+
 function SlotCard({
   slot,
   pending,
+  stuckReturn,
   selected,
   selectionFull,
   onSelect,
@@ -547,6 +553,8 @@ function SlotCard({
   slot: NativeWorktreeSlotView;
   /** A queued or running cleanup already covers this slot; no second one may be started. */
   pending: WorktreeOperationView | null;
+  /** The `stuck-return` storage problem of the owner holding this slot, if its return is stuck. */
+  stuckReturn: StorageProblem | null;
   selected: boolean;
   /** The bulk selection holds its maximum; an unticked slot cannot join it. */
   selectionFull: boolean;
@@ -582,7 +590,7 @@ function SlotCard({
   }
 
   return (
-    <article className={`wt-slot wt-slot-${tone}`} aria-label={`Slot ${slot.ordinal}`}>
+    <article className={`wt-slot wt-slot-${tone}`} aria-label={`Slot ${slot.ordinal}`} data-anchor={worktreeSlotAnchor(slot.id)}>
       <div className="wt-slot-head">
         {slot.actions.includes("destroy") && (
           <Tooltip label={pending
@@ -613,6 +621,7 @@ function SlotCard({
         )}
         {slot.defaultRelation === "unmerged" && <StateChip label="unlanded" tone="attention" />}
         {slot.processes.state === "unknown" && <StateChip label="processes unknown" tone="danger" />}
+        {stuckReturn && <StateChip label="return stuck" tone="danger" />}
       </div>
       <Tooltip label={slot.path}>
         <code className="wt-path">{slot.path}</code>
@@ -638,6 +647,7 @@ function SlotCard({
         </p>
       )}
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
+      {stuckReturn && <p className="wt-diagnostic wt-stuck-return">{stuckReturn.message}</p>}
       {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
         <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>
       )}
@@ -1043,6 +1053,7 @@ function PoolRow({
   overridden,
   updateConfig,
   pendingBySlot,
+  stuckBySlot,
   selected,
   onSelect,
   onAction,
@@ -1053,18 +1064,24 @@ function PoolRow({
   overridden: boolean;
   updateConfig: WorktreesState["updateConfig"];
   pendingBySlot: ReadonlyMap<string, WorktreeOperationView>;
+  stuckBySlot: ReadonlyMap<string, StorageProblem>;
   selected: ReadonlySet<string>;
   onSelect: (slotIds: string[], selected: boolean) => void;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
   orphansBySlot: ReadonlyMap<string, readonly OrphanProcess[]>;
   onKill: (orphan: OrphanProcess, trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
-  // Opened when it needs attention, which includes a slot with an orphan process: a Storage
-  // problem link lands here, and its Kill must be in view.
-  const [open, setOpen] = useState(repo.status !== "ready" || repo.slots.some((slot) => orphansBySlot.has(slot.id)));
+  // A slot whose return is stuck, or that holds an orphan process, opens its pool and is always
+  // rendered, so the Storage problem that links to its card finds it, with its Kill in view.
+  const flagged = (slotId: string) => stuckBySlot.has(slotId) || orphansBySlot.has(slotId);
+  const hasFlagged = repo.slots.some((slot) => flagged(slot.id));
+  const [open, setOpen] = useState(repo.status !== "ready" || hasFlagged);
   const [setup, setSetup] = useState(repo.policy.setupArgv ?? []);
   const [slotLimit, setSlotLimit] = useState(12);
   useEffect(() => setSetup(repo.policy.setupArgv ?? []), [repo.policy.setupArgv]);
+  useEffect(() => {
+    if (hasFlagged) setOpen(true);
+  }, [hasFlagged]);
   const tone = repo.status === "ready" ? "ready" : repo.status === "attention" ? "attention" : "danger";
   const geometry = capacityGeometry(repo.counts, repo.policy.maxSlots);
   const selectable = repo.slots.filter((slot) => slot.actions.includes("destroy") && !pendingBySlot.has(slot.id));
@@ -1185,11 +1202,12 @@ function PoolRow({
           </div>
           <div className="wt-slot-scroll" role="region" aria-label={`${repo.name} native slot details`} tabIndex={0}>
             <div className="wt-slots">
-              {repo.slots.slice(0, slotLimit).map((slot) => (
+              {repo.slots.filter((slot, index) => index < slotLimit || flagged(slot.id)).map((slot) => (
                 <SlotCard
                   key={slot.id}
                   slot={slot}
                   pending={pendingBySlot.get(slot.id) ?? null}
+                  stuckReturn={stuckBySlot.get(slot.id) ?? null}
                   selected={selected.has(slot.id)}
                   selectionFull={selected.size >= BULK_SELECTION_LIMIT}
                   onSelect={(slotId, next) => onSelect([slotId], next)}
@@ -1314,7 +1332,7 @@ export function WorktreeSettingsPanel({
   storageHealth = null,
 }: {
   state: WorktreesState;
-  /** `MissionState.storageHealth`, whose `orphan-process` problems the slot cards list. */
+  /** The live storage aggregate, whose `stuck-return` and `orphan-process` problems the slot cards show. */
   storageHealth?: StorageHealth | null;
 }): React.JSX.Element {
   const { inventory, loading, error, preview, previewError, previewChanged, busy, operations } = state;
@@ -1380,6 +1398,13 @@ export function WorktreeSettingsPanel({
     }
     return pending;
   }, [operations]);
+  const stuckBySlot = useMemo(() => {
+    const stuck = new Map<string, StorageProblem>();
+    for (const problem of storageHealth?.problems ?? []) {
+      if (problem.kind === "stuck-return" && problem.link.target === "slot") stuck.set(problem.link.slotId, problem);
+    }
+    return stuck;
+  }, [storageHealth]);
   // The selection is exactly what the operator ticked, and it is never narrowed behind their
   // back. A slot that vanished or picked up a cleanup of its own stays in it and is counted
   // here, so the bulk preview still names it and the server blocks the changed set; only
@@ -1499,7 +1524,7 @@ export function WorktreeSettingsPanel({
             <p><strong>No pools yet.</strong> Mission Control creates one the first time something needs a checkout in a repository.</p>
           </div>
         )}
-        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} selected={selected} onSelect={select} onAction={request} orphansBySlot={orphansBySlot} onKill={(orphan, trigger) => { setKillError(null); setKilling({ orphan, trigger }); }} />)}</div>
+        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} stuckBySlot={stuckBySlot} selected={selected} onSelect={select} onAction={request} orphansBySlot={orphansBySlot} onKill={(orphan, trigger) => { setKillError(null); setKilling({ orphan, trigger }); }} />)}</div>
       </section>
 
       <section className="wt-group" data-anchor="worktrees/policy">
