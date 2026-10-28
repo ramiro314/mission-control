@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { WorktreeProvider } from "@shared/types.ts";
 import { parseWorktreeReturnRefusal, type WorktreeReturnRefusal } from "@shared/storage-health.ts";
 import { CHECK_WORKTREES_DIR } from "../config.ts";
+import { inFlightTrees } from "../worktrees/in-flight.ts";
 import { openDb } from "../db.ts";
 import { verifyPinnedBase } from "../dispatcher.ts";
 import { verifyHeadIs } from "../git/ensemble-snapshot.ts";
@@ -538,12 +539,17 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
       );
     }
 
+    // No row names this tree until the manager inserts it, so the orphan sweep is told it is
+    // being created. The manager releases the pin once the row is written or the tree handed
+    // back; a failure inside this method releases it here.
+    inFlightTrees.add(path);
     const added = await run(
       "git",
       ["-C", input.repoRoot, "worktree", "add", "--detach", path, input.baseSha],
       { timeoutMs: GIT_WORKTREE_ADD_TIMEOUT_MS },
     );
     if (added.code !== 0) {
+      inFlightTrees.delete(path);
       throw new Error(`git worktree add failed: ${added.stderr.trim() || `exit ${added.code}`}`);
     }
 
@@ -561,6 +567,7 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
       // manager sees an acquisition, so a failed canonicalisation cannot leak an untracked
       // worktree.
       const removed = await this.remove(input.repoRoot, path);
+      inFlightTrees.delete(path);
       const cause = err instanceof Error ? err.message : String(err);
       throw new Error(
         removed.code === 0
@@ -995,6 +1002,7 @@ export class CheckLeaseManager {
             now: this.now(),
           });
           inserted = true;
+          inFlightTrees.delete(path);
           if (taken.leaseId) this.missionManager.settleDomainLease(taken.leaseId);
           // AFTER the row, always. Bringing the tree to the commit is the expensive step and
           // the one that can be interrupted, so the record of what we are holding has to
@@ -1040,6 +1048,7 @@ export class CheckLeaseManager {
             holderToken: taken.holderToken,
             leaseId: taken.leaseId,
           });
+          inFlightTrees.delete(path);
           if (returned.code === 0) {
             if (inserted) this.store.delete(attemptId);
             this.justAcquired.delete(path);

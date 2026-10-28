@@ -76,3 +76,23 @@ test("a throwing afterPass hook is logged and never stops later passes", async (
     console.error = originalError;
   }
 });
+
+test("the orphan sweep runs once at start, then on every pass between reclamation and afterPass", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  const manager = new WorktreeManager(openDb(), { occupancy: emptyOccupancy });
+  managers.push(manager);
+  const order: string[] = [];
+  manager.startMaintenance(
+    async () => { order.push("reclaim"); },
+    () => { order.push("afterPass"); },
+    async () => { order.push("sweep"); },
+  );
+  const settle = async () => {
+    for (let turn = 0; turn < 3; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+  await settle();
+  assert.deepEqual(order, ["sweep", "afterPass"], "startup sweeps before any timer fires");
+  mock.timers.tick(SWEEP_MS);
+  await settle();
+  assert.deepEqual(order, ["sweep", "afterPass", "reclaim", "sweep", "afterPass"]);
+});

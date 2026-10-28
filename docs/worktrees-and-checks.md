@@ -866,6 +866,46 @@ This policy applies only to worktrees Mission Control provisioned for a task. Ma
 development worktrees, [check leases](#check-leases), and Git worktrees Mission Control does not
 own are never touched by it.
 
+### Orphan tree sweep
+
+The task fallback keeps its trees in `worktrees/` and the check fallback in `check-worktrees/`,
+both under the state home. A folder there that no live owner references, such as one left by a
+crash, a restart, or a removal that half-failed, is swept. The sweep runs once when worktree
+maintenance starts, after startup reconciliation, and again on every maintenance pass
+(`MISSION_WORKTREE_SWEEP_MS`, which also turns it off).
+
+- A folder is **referenced** when any task or attached-repository row names it as its worktree,
+  whatever the task's status, or a check lease in `held` or `returning` names it. A referenced
+  folder is never touched, so task retention still decides when a terminal task's tree goes.
+- Every other folder is taken through its real path and must sit directly inside its directory.
+  A symlink is never followed, and nothing it points at is touched.
+- A folder being created is skipped. Both fallbacks register their target path before
+  `git worktree add` and release it once their row names the tree or their unwind removed it.
+  As a backstop, a folder is also skipped while it, or its `.git` file, was modified in the last
+  30 minutes. That covers a creation the registry cannot see, and after a crash it is what holds
+  off a half-created tree until its grace ends.
+- A folder some process is working in, or whose occupancy cannot be read, is skipped.
+- A **husk**, a folder holding nothing but empty directories and a `.git` file whose Git
+  directory is gone, is removed.
+- A **clean** worktree is removed with `git worktree remove --force`. Clean means nothing
+  uncommitted, untracked or unpushed, and no ignored file outside the regenerable directories
+  (`node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/` and `.next/`). Its
+  `harness/*` branch is deleted only when a remote branch contains it.
+- Anything else is kept: a dirty or unpushed worktree, one whose safety cannot be read, and a
+  folder that is not a worktree but still holds files, such as a tree whose `.git` file was
+  lost. **Settings > Storage** lists each one as a bannered `dirty-orphan-folder` problem, with
+  the reason it was kept. Its id, `dirty-orphan-folder:<path>:<first seen at>`, takes its time
+  from the operational first-seen record, keyed by the folder's path and inode, so a restart or
+  a pass that skips the folder keeps the same id, and a folder removed and created again gets a
+  new one. The sweep never deletes a file it cannot prove is Git's own.
+
+The sweep also runs a **scoped prune**. For each source repository Mission Control knows (pool
+repositories and the repositories of tasks and checks), it reads `git worktree list --porcelain`
+and removes only the `prunable` registrations whose path is under the state home and no longer
+exists. It never runs an unscoped `git worktree prune`, so the operator's own worktrees
+elsewhere are untouched. A missing path that a task, check lease or native slot row still names
+keeps its registration, because that owner's own cleanup or reconciliation decides it.
+
 ### Check leases
 
 A [Workflow check](workflows.md#workflows-and-personas) runs a build in an isolated worktree of its
