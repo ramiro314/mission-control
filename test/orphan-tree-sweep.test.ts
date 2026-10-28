@@ -12,6 +12,7 @@ const { mkTask } = await import("./helpers/session-fixture.ts");
 const { CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts");
 const { InFlightTrees } = await import("../src/server/worktrees/in-flight.ts");
 const { OrphanTreeSweep, ORPHAN_TREE_GRACE_MS, referencedTreePaths } = await import("../src/server/worktrees/orphan-sweep.ts");
+const { run, stubRun } = await import("../src/server/util/exec.ts");
 type Deps = ConstructorParameters<typeof OrphanTreeSweep>[0];
 type Occupancy = import("../src/server/worktrees/occupancy.ts").WorktreeOccupancy;
 
@@ -125,6 +126,26 @@ test("a tree with unpublished commits is kept, with its branch", async () => {
   assert.match(result.kept[0]!.reason, /unpublished commits/);
   assert.ok(existsSync(path));
   assert.ok(branches(f).includes("harness/unpushed"));
+});
+
+test("a clean tree whose removal fails is kept and listed with why", async () => {
+  const f = fixture();
+  const clean = addWorktree(f, join(f.worktrees, "stuck"), "harness/stuck");
+  const sweep = sweeper(f, {
+    execute: async (bin, args, options) =>
+      args.includes("remove") && args.includes(clean)
+        ? stubRun({ stdout: "", stderr: "fatal: simulated failure", code: 128 })
+        : run(bin, args, options),
+  });
+  const result = await sweep.sweep();
+  assert.deepEqual(result.removed, []);
+  assert.deepEqual(result.kept.map((tree) => [tree.path, tree.reason]), [
+    [clean, "it could not be removed: fatal: simulated failure"],
+  ]);
+  assert.ok(existsSync(join(clean, "README.md")), "the tree is still there");
+  assert.ok(branches(f).includes("harness/stuck"), "and so is its branch");
+  const [problem] = sweep.problems().firstSeen ?? [];
+  assert.equal(problem?.problem(5).id, `dirty-orphan-folder:${clean}:5`);
 });
 
 test("skips an occupied tree, never touches a referenced one, and never follows a symlink out", async () => {
@@ -262,15 +283,21 @@ test("referenced paths are every task and task repository path and every live ch
     extraRepos: [{ repoRoot: "/other", worktreePath: "/state/worktrees/t1-1", branch: null, provider: "git", worktreeLeaseId: null, baseSha: null, prUrl: null, prState: null, mergedAt: null }],
   }));
   const leases = new CheckLeaseStore(db);
-  for (const [attemptId, path] of [["held", "/state/check-worktrees/held"], ["returned", "/state/check-worktrees/returned"]]) {
+  for (const [attemptId, path] of [
+    ["held", "/state/check-worktrees/held"],
+    ["returning", "/state/check-worktrees/returning"],
+    ["returned", "/state/check-worktrees/returned"],
+  ]) {
     leases.insertHeld({
       attemptId: attemptId!, submissionId: "s", nodeId: attemptId!, repoRoot: "/repo",
       leasePath: path!, holderToken: "h", provider: "git", now,
     });
   }
+  leases.setState("returning", "returning", now);
   leases.setState("returned", "returned", now);
   assert.deepEqual(referencedTreePaths(db).sort(), [
     "/state/check-worktrees/held",
+    "/state/check-worktrees/returning",
     "/state/worktrees/t1",
     "/state/worktrees/t1-1",
   ]);
