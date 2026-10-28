@@ -123,6 +123,7 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { StorageHealthService, stuckReturnSource } from "./storage-health.ts";
+import { finishedTrees, OrphanProcessMonitor } from "./worktrees/orphan-processes.ts";
 import { LeaseActivityObserver } from "./worktrees/lease-activity.ts";
 import { quarantinedSlotProblems } from "./worktrees/storage-problems.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
@@ -464,6 +465,21 @@ let stopDatabaseBackups = async () => {};
 // (the backup loop's startup prune seeds it), after every worktree maintenance pass,
 // whenever the worktree pool publishes a change, so a quarantine raises its problem at once,
 // and when the settled task trees a restart kept change.
+// Processes still inside a tree whose owner has finished (a pending task return, a check
+// lease stuck in `returning`, a quarantined slot). Scanned after each maintenance pass and
+// reported as `orphan-process` problems; Kill retries the blocked return at once.
+const orphanProcesses = new OrphanProcessMonitor({
+  trees: () => finishedTrees({
+    slots: worktrees.store.slots(),
+    taskReturns: tasks.pendingWorktreeReturns(),
+    returningChecks: checkLeases.returningLeases(),
+  }),
+  retryReturn: (owner) => {
+    if (owner.kind === "task") return tasks.retryWorktreeReturn(owner.taskId);
+    if (owner.kind === "check") return checkLeases.retryReturning(owner.attemptId);
+  },
+  changed: () => storageHealth.recompute(),
+});
 // A task or check return refused for over an hour is a `stuck-return` problem. Its first
 // appearance comes with the maintenance pass that follows the hour; a task return outcome
 // recomputes at once, so a success clears its problem without waiting for one.
@@ -487,6 +503,7 @@ const storageHealth = new StorageHealthService({
     }),
     () => tasks.dirtySettledTreeProblems(),
     () => ({ problems: quarantinedSlotProblems(worktrees.store.slots()) }),
+    () => ({ problems: orphanProcesses.problems() }),
   ],
 });
 databaseBackups.onChange(() => storageHealth.recompute());
@@ -649,7 +666,8 @@ const stopHeadlessPruner = startHeadlessPruner();
 // native pool exists because persisted legacy check rows remain domain-owned resources.
 worktrees.startMaintenance(
   () => checkLeases.reclaimLeaked(checkRuntime.groupRecovery),
-  () => storageHealth.recompute(),
+  // The scan's change listener recomputes storage health, so the pass ends with one recompute.
+  () => orphanProcesses.scan(),
   () => orphanTrees.sweep(),
 );
 leaseActivity.start();
@@ -815,6 +833,7 @@ const app = buildApp({
   settingsBackups,
   databaseBackups,
   storageHealth,
+  orphanProcesses,
   prConflicts,
 });
 

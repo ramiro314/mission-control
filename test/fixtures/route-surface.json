@@ -307,6 +307,7 @@
   "POST /api/worktrees/manual/return": "503 {\"error\":\"native worktree manager unavailable\"}",
   "POST /api/worktrees/operations/:id/cancel": "503 {\"error\":\"worktree operations unavailable\"}",
   "POST /api/worktrees/operations/:id/dismiss": "503 {\"error\":\"worktree operations unavailable\"}",
+  "POST /api/worktrees/processes/kill": "503 {\"error\":\"orphan process monitor unavailable\"}",
   "POST /hooks/:event": "401 {\"error\":\"unauthorized\"}",
   "POST /ingest/conductor": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/backlog": "401 {\"error\":\"unauthorized\"}",

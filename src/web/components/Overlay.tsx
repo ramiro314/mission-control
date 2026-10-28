@@ -59,6 +59,7 @@ export const OVERLAY_IDS = {
   scoutDelete: "scout-delete",
   ensembleDelete: "ensemble-delete",
   worktreeAction: "worktree-action",
+  worktreeKill: "worktree-kill",
   tour: "tour",
   tourPicker: "tour-picker",
   productIssue: "product-issue",

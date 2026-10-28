@@ -6393,6 +6393,32 @@ export class TaskManager {
     }
   }
 
+  /**
+   * Every completed task still owed its worktree return, with the checkouts and leases it holds.
+   * A task whose session closure is still taking its agent down is not finished yet, exactly as
+   * `retryWorktreeReturn` treats it, so its processes are never listed as orphans.
+   */
+  pendingWorktreeReturns(): Array<{ taskId: string; trees: Array<{ path: string; leaseId: string | null }> }> {
+    return this.registry.listTasks()
+      .filter((task) => taskOwesWorktreeReturn(task) && !getTaskSessionClosure(task.id))
+      .map((task) => ({
+      taskId: task.id,
+      trees: taskRepoRefs(task).flatMap((ref) =>
+        ref.worktreePath ? [{ path: ref.worktreePath, leaseId: ref.worktreeLeaseId }] : []),
+    }));
+  }
+
+  /**
+   * Try a completed task's pending return now, skipping its refusal backoff. Called after an
+   * orphan process blocking it was killed, so the return need not wait up to 15 minutes.
+   */
+  retryWorktreeReturn(taskId: string): boolean {
+    const task = this.registry.getTask(taskId);
+    if (!task || !taskOwesWorktreeReturn(task) || getTaskSessionClosure(task.id)) return false;
+    this.nextCompletedReturn.delete(task.id);
+    return this.enqueueFinishedWorktreeReturn(task, "complete");
+  }
+
   private resumeCompletedWorktreeReturns(): void {
     if (this.closuresStopped) return;
     for (const task of this.registry.listTasks()) {

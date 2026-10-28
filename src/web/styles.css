@@ -1127,6 +1127,56 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 
 .wt-diagnostic { color: var(--wt-attention); }
 
+/* Processes that outlived the slot's owner, each with its guarded Kill. */
+.wt-orphans {
+  border-top: 1px solid var(--border);
+  margin: 10px 0 0;
+  padding-top: 8px;
+}
+
+.wt-orphans h5 {
+  color: var(--wt-attention);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .08em;
+  margin: 0 0 6px;
+  text-transform: uppercase;
+}
+
+.wt-orphans ul {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wt-orphan {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.wt-orphan > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wt-orphan code {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.wt-orphan span {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.wt-kill-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.wt-kill-text { color: var(--muted); display: block; font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+
 /* A slot's dependency claim state. The chip and the sentence both say it. */
 .wt-deps {
   border-top: 1px solid var(--border);

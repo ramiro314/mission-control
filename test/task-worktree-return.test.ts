@@ -406,6 +406,48 @@ test("a refused completion return records its first refusal and latest reason, a
   assert.equal(outcomes.length, 3, "every outcome is announced");
 });
 
+test("a return refused by an occupant is listed as pending, and retryWorktreeReturn skips its backoff", async (t) => {
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  t.mock.method(console, "info", () => {});
+  const w = world({ sessionId: null });
+  w.sessions.clear();
+  w.state.occupancy = { status: "known", occupants: [{} as never] };
+  await w.manager.complete(w.task.id, "finished");
+  await w.manager.settleWorktreeReturns();
+  assert.deepEqual(w.state.released, [], "the orphan process blocks the return");
+  assert.deepEqual(w.manager.pendingWorktreeReturns(), [{ taskId: w.task.id, trees: [{ path: "/pool/one", leaseId: "lease-one" }] }]);
+
+  // The clock has not moved, so the ordinary sweep is still inside the refusal backoff.
+  w.state.occupancy = { status: "known", occupants: [] };
+  await w.manager.sweepMissionSessionClosures();
+  await w.manager.settleWorktreeReturns();
+  assert.deepEqual(w.state.released, []);
+
+  assert.equal(w.manager.retryWorktreeReturn(w.task.id), true);
+  await w.manager.settleWorktreeReturns();
+  assert.deepEqual(w.state.released, ["/pool/one"]);
+  assert.deepEqual(w.manager.pendingWorktreeReturns(), []);
+  assert.equal(w.manager.retryWorktreeReturn(w.task.id), false, "nothing is owed any more");
+});
+
+test("a completed task whose session closure is still open is not listed as a pending return", async () => {
+  const w = world();
+  await w.manager.complete(w.task.id, "shipped");
+  assert.ok(getTaskSessionClosure(w.task.id), "the agent is still being taken down");
+  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), true);
+  assert.deepEqual(w.manager.pendingWorktreeReturns(), [], "its processes are not orphans yet");
+  assert.equal(w.manager.retryWorktreeReturn(w.task.id), false, "listing and retry agree");
+
+  // Once the closure settles, an occupied checkout keeps the return owed and the task is listed.
+  w.state.occupancy = { status: "known", occupants: [{} as never] };
+  await w.remove();
+  await w.manager.sweepMissionSessionClosures();
+  await w.manager.settleWorktreeReturns();
+  assert.equal(getTaskSessionClosure(w.task.id), null);
+  assert.deepEqual(w.manager.pendingWorktreeReturns(), [{ taskId: w.task.id, trees: [{ path: "/pool/one", leaseId: "lease-one" }] }]);
+});
+
 test("reopening an attempt clears its completion-return obligation", async () => {
   const w = world({ sessionId: null }, false);
   w.sessions.clear();

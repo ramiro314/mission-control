@@ -48,6 +48,33 @@ export const StorageProblemLinkSchema = z.discriminatedUnion("target", [
 export type StorageProblemLink = z.output<typeof StorageProblemLinkSchema>;
 
 /**
+ * The process an `orphan-process` problem names, exactly as the occupancy inspection saw it.
+ * `startedAt` and `command` are what a Kill request must repeat, so a PID that was reused by
+ * another program since the listing is never signalled.
+ */
+export const OrphanProcessSchema = z.object({
+  /** The tree's real path, the same one a Kill request's `path` must resolve to. */
+  tree: z.string().min(1),
+  pid: z.number().int().positive(),
+  ppid: z.number().int().nonnegative(),
+  command: z.string(),
+  /** Epoch milliseconds of the process's start, as `ps` reports it. */
+  startedAt: z.number().int().nonnegative(),
+});
+
+export type OrphanProcess = z.output<typeof OrphanProcessSchema>;
+
+/** `POST /api/worktrees/processes/kill`: one reported process, named the way it was reported. */
+export const OrphanProcessKillRequestSchema = z.object({
+  path: z.string().min(1),
+  pid: z.number().int().positive(),
+  startedAt: z.number().int().nonnegative(),
+  command: z.string().min(1),
+}).strict();
+
+export type OrphanProcessKillRequest = z.output<typeof OrphanProcessKillRequestSchema>;
+
+/**
  * One occurrence of a problem. The id joins the subject with the moment this occurrence
  * began, and every part of it comes from durable state, so a daemon restart never changes
  * it and a problem that clears and later recurs gets a new one.
@@ -58,6 +85,8 @@ export const StorageProblemSchema = z.object({
   bannered: z.boolean(),
   message: z.string(),
   link: StorageProblemLinkSchema,
+  /** Set on `orphan-process` problems only. */
+  process: OrphanProcessSchema.optional(),
 });
 
 export type StorageProblem = z.output<typeof StorageProblemSchema>;

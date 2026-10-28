@@ -827,6 +827,48 @@ test("reconciliation retries a returning row without re-asking about its group",
   assert.equal(store.get("att-resume")?.cleanupState, "returned");
 });
 
+test("a returning lease is listed, and retryReturning completes it at once, skipping its backoff", async () => {
+  const m = mkManager();
+  const path = await acquire(m, "att-orphan");
+  m.fail.return = true;
+  await m.manager.releaseForAttempt("att-orphan");
+  assert.equal(store.get("att-orphan")?.cleanupState, "returning");
+  assert.ok(m.manager.returningLeases().some((lease) =>
+    lease.attemptId === "att-orphan" && lease.path === path && lease.leaseId === store.get("att-orphan")?.leaseId));
+
+  // The failure put the row in backoff, so a reclamation pass would skip it. A kill of the
+  // process that blocked it retries straight away instead.
+  m.fail.return = false;
+  await m.manager.reclaimLeaked();
+  assert.equal(store.get("att-orphan")?.cleanupState, "returning", "backoff holds the ordinary pass");
+  assert.deepEqual(await m.manager.retryReturning("att-orphan"), { outcome: "returned" });
+  assert.equal(store.get("att-orphan")?.cleanupState, "returned");
+  assert.equal(m.manager.returningLeases().some((lease) => lease.attemptId === "att-orphan"), false);
+  assert.equal(await m.manager.retryReturning("att-orphan"), null, "only a returning lease is retried");
+});
+
+test("a returning lease this process still owns or is working on is not listed as finished", async () => {
+  const m = mkManager();
+  await acquire(m, "att-active");
+  m.fail.return = true;
+  await m.manager.releaseForAttempt("att-active");
+  assert.equal(store.get("att-active")?.cleanupState, "returning");
+  const listed = () => m.manager.returningLeases().some((lease) => lease.attemptId === "att-active");
+  assert.equal(listed(), true);
+
+  const internals = m.manager as unknown as { owned: Set<string>; busy: Set<string> };
+  internals.owned.add("att-active");
+  assert.equal(listed(), false, "an owned attempt is still active");
+  assert.equal(await m.manager.retryReturning("att-active"), null, "listing and retry agree");
+  internals.owned.delete("att-active");
+  internals.busy.add("att-active");
+  assert.equal(listed(), false, "an attempt with an operation in flight is still active");
+  internals.busy.delete("att-active");
+  assert.equal(listed(), true);
+  m.fail.return = false;
+  assert.deepEqual(await m.manager.retryReturning("att-active"), { outcome: "returned" });
+});
+
 // ---- reclamation -----------------------------------------------------------
 
 test("reclamation collects a leaked lease and leaves a live attempt's alone", async () => {

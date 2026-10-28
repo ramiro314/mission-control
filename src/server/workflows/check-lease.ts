@@ -1304,6 +1304,27 @@ export class CheckLeaseManager {
   }
 
   /**
+   * Leases whose return was authorized and has not completed yet. One this process still owns
+   * or is working on is not finished, exactly as `retryReturning` treats it.
+   */
+  returningLeases(): Array<{ attemptId: string; path: string; leaseId: string | null }> {
+    return this.store.listLive()
+      .filter((row) => row.cleanupState === "returning" && !this.owned.has(row.attemptId) && !this.busy.has(row.attemptId))
+      .map((row) => ({ attemptId: row.attemptId, path: row.leasePath, leaseId: row.leaseId }));
+  }
+
+  /**
+   * Retry one `returning` lease now, skipping its backoff. Called after an orphan process
+   * blocking its return was killed. A lease this process is working on is left alone.
+   */
+  async retryReturning(attemptId: string): Promise<CheckLeaseRelease | null> {
+    const row = this.store.get(attemptId);
+    if (row?.cleanupState !== "returning" || this.owned.has(attemptId) || this.busy.has(attemptId)) return null;
+    this.backoff.delete(attemptId);
+    return await this.releaseForAttempt(attemptId);
+  }
+
+  /**
    * Non-mutating operator preview through the check domain's own process-group authority.
    * A check this process still owns, an in-flight transition, and an unproven group all
    * remain blockers. The infrastructure panel never tries to infer those states itself.
