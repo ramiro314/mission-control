@@ -109,6 +109,7 @@ import {
 } from "./worktrees/legacy-treehouse.ts";
 import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
+import { OrphanTreeSweep } from "./worktrees/orphan-sweep.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { sessionScope } from "./platform/session-scope.ts";
 import { FileCommentManager } from "./file-comments.ts";
@@ -461,8 +462,9 @@ let stopSettingsBackups = () => {};
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune
-// (the backup loop's startup prune seeds it), after every worktree maintenance pass, and
-// whenever the worktree pool publishes a change, so a quarantine raises its problem at once.
+// (the backup loop's startup prune seeds it), after every worktree maintenance pass,
+// whenever the worktree pool publishes a change, so a quarantine raises its problem at once,
+// and when the settled task trees a restart kept change.
 // Processes still inside a tree whose owner has finished (a pending task return, a check
 // lease stuck in `returning`, a quarantined slot). Scanned after each maintenance pass and
 // reported as `orphan-process` problems; Kill retries the blocked return at once.
@@ -481,11 +483,15 @@ const orphanProcesses = new OrphanProcessMonitor({
 // A task or check return refused for over an hour is a `stuck-return` problem. Its first
 // appearance comes with the maintenance pass that follows the hour; a task return outcome
 // recomputes at once, so a success clears its problem without waiting for one.
+// Unreferenced folders under the overflow and check-fallback directories. Husks and clean trees
+// are removed on each maintenance pass; a dirty one is kept and listed as `dirty-orphan-folder`.
+const orphanTrees = new OrphanTreeSweep();
 const storageHealth = new StorageHealthService({
   backups: databaseBackups,
   publish: (health) => registry.setStorageHealth(health),
   sources: [
     () => leaseActivity.problems(),
+    () => orphanTrees.problems(),
     stuckReturnSource({
       taskRefusals: listTaskWorktreeReturnRefusals,
       task: (id) => registry.getTask(id),
@@ -495,12 +501,14 @@ const storageHealth = new StorageHealthService({
         return found.state === "active" ? found.lease.slotId : null;
       },
     }),
+    () => tasks.dirtySettledTreeProblems(),
     () => ({ problems: quarantinedSlotProblems(worktrees.store.slots()) }),
     () => ({ problems: orphanProcesses.problems() }),
   ],
 });
 databaseBackups.onChange(() => storageHealth.recompute());
 tasks.onWorktreeReturnOutcome(() => storageHealth.recompute());
+tasks.registerSettledTreesListener(() => storageHealth.recompute());
 recomputeStorageHealth = () => storageHealth.recompute();
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
@@ -660,6 +668,7 @@ worktrees.startMaintenance(
   () => checkLeases.reclaimLeaked(checkRuntime.groupRecovery),
   // The scan's change listener recomputes storage health, so the pass ends with one recompute.
   () => orphanProcesses.scan(),
+  () => orphanTrees.sweep(),
 );
 leaseActivity.start();
 const stopSkillsReloader = startSkillsReloader(registry);

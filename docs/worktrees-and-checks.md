@@ -878,8 +878,28 @@ protects the whole set, and the task is reclaimed as one operation.
 **How the clock is kept.** The daemon observes each eligible task's checkouts on a fixed
 internal cadence, well inside the window, and persists the result - the fingerprint, when it
 last changed, and the resulting deadline - so a restart resumes the boundary that was actually
-granted rather than starting over. A restart preserves failed or cancelled tasks' worktrees for the same 30-day rule. Final
-completed tasks resume explicitly recorded closure and return obligations after session discovery.
+granted rather than starting over. Final completed tasks resume explicitly recorded closure and
+return obligations after session discovery.
+
+**A restart reclaims a settled task's clean trees at once.** When a restart settles a task whose
+agent did not survive it, or finds a failed or cancelled task still holding trees, it checks every
+tree the task holds. This amends the earlier settle-and-retain rule for clean trees only:
+
+- **Clean** means nothing uncommitted, untracked or unpushed, and no ignored file except under
+  the regenerable directories `node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`,
+  `.turbo/` and `.next/`, at any depth. A clean task whose trees no process occupies is
+  reclaimed through the same path as **Clean up**, keeping its status and outcome.
+- **Anything else keeps the 30-day window.** Any other ignored file is work here: workflow
+  evidence under `.evidence/` or `e2e/.artifacts/`, or a local `.env`. So is a tree Git cannot
+  read. The task is listed as a `dirty-settled-tree` problem in **Settings > Storage**, named
+  `dirty-settled-tree:<task id>:<first seen at>` from the storage first-seen record, so a restart
+  keeps its id. It is listed in Storage only and never raises the banner.
+- **Discard and reclaim is the slot card's Return.** The problem links to the task's pool slot,
+  and its Return preview states the discard before anything runs: "Discards the uncommitted,
+  untracked or ignored work in ..." and, for commits never pushed, "Discards the commits in ...".
+  Confirming reclaims every tree the task holds and the problem disappears. A task with no pool
+  slot (a disposable Git worktree or a Treehouse lease) has no slot card, so its problem links to
+  the **Settings > Worktrees** page instead, and **Clean up** on the task still reclaims its trees.
 
 **The clock starts when the tree is first observed, not when the task ended.** No timestamp in
 the database can prove when a checkout was last touched, so every tree that existed before this
@@ -903,6 +923,46 @@ stand in front of a dispatch that needs a slot now.
 This policy applies only to worktrees Mission Control provisioned for a task. Manual
 development worktrees, [check leases](#check-leases), and Git worktrees Mission Control does not
 own are never touched by it.
+
+### Orphan tree sweep
+
+The task fallback keeps its trees in `worktrees/` and the check fallback in `check-worktrees/`,
+both under the state home. A folder there that no live owner references, such as one left by a
+crash, a restart, or a removal that half-failed, is swept. The sweep runs once when worktree
+maintenance starts, after startup reconciliation, and again on every maintenance pass
+(`MISSION_WORKTREE_SWEEP_MS`, which also turns it off).
+
+- A folder is **referenced** when any task or attached-repository row names it as its worktree,
+  whatever the task's status, or a check lease in `held` or `returning` names it. A referenced
+  folder is never touched, so task retention still decides when a terminal task's tree goes.
+- Every other folder is taken through its real path and must sit directly inside its directory.
+  A symlink is never followed, and nothing it points at is touched.
+- A folder being created is skipped. Both fallbacks register their target path before
+  `git worktree add` and release it once their row names the tree or their unwind removed it.
+  As a backstop, a folder is also skipped while it, or its `.git` file, was modified in the last
+  30 minutes. That covers a creation the registry cannot see, and after a crash it is what holds
+  off a half-created tree until its grace ends.
+- A folder some process is working in, or whose occupancy cannot be read, is skipped.
+- A **husk**, a folder holding nothing but empty directories and a `.git` file whose Git
+  directory is gone, is removed.
+- A **clean** worktree is removed with `git worktree remove --force`. Clean means nothing
+  uncommitted, untracked or unpushed, and no ignored file outside the regenerable directories
+  (`node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/` and `.next/`). Its
+  `harness/*` branch is deleted only when a remote branch contains it.
+- Anything else is kept: a dirty or unpushed worktree, one whose safety cannot be read, and a
+  folder that is not a worktree but still holds files, such as a tree whose `.git` file was
+  lost. **Settings > Storage** lists each one as a bannered `dirty-orphan-folder` problem, with
+  the reason it was kept. Its id, `dirty-orphan-folder:<path>:<first seen at>`, takes its time
+  from the operational first-seen record, keyed by the folder's path and inode, so a restart or
+  a pass that skips the folder keeps the same id, and a folder removed and created again gets a
+  new one. The sweep never deletes a file it cannot prove is Git's own.
+
+The sweep also runs a **scoped prune**. For each source repository Mission Control knows (pool
+repositories and the repositories of tasks and checks), it reads `git worktree list --porcelain`
+and removes only the `prunable` registrations whose path is under the state home and no longer
+exists. It never runs an unscoped `git worktree prune`, so the operator's own worktrees
+elsewhere are untouched. A missing path that a task, check lease or native slot row still names
+keeps its registration, because that owner's own cleanup or reconciliation decides it.
 
 ### Check leases
 
