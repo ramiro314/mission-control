@@ -200,6 +200,10 @@ test("a Storage problem link opens the quarantined slot, whose Recover previews 
   });
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  // The dashboard banner raised by this problem, read from the `storage_health` stream.
+  const banner = dashboard.getByRole("status", { name: "Storage needs attention" })
+    .filter({ hasText: "is quarantined: a stale index.lock blocked its reset" });
+  await expect(banner).toBeVisible();
   const problems = dashboard.getByRole("list", { name: "Storage problems" });
   const problem = problems.getByRole("listitem").filter({ hasText: "Quarantined slot" });
   await expect(problem).toContainText("is quarantined: a stale index.lock blocked its reset");
@@ -239,8 +243,13 @@ test("a Storage problem link opens the quarantined slot, whose Recover previews 
   await expect(slot.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
   expect(existsSync(scratch)).toBe(false);
   expect(execFileSync("git", ["-C", lease.path, "status", "--porcelain"]).toString()).toBe("");
+  // Still on Worktrees, before Storage reads the aggregate itself: the recovery's own
+  // `storage_health` event is what clears the banner.
+  await expect(banner).toHaveCount(0);
   await shoot(dashboard, "04-slot-recovered");
 
   await dashboard.getByRole("tab", { name: "Storage" }).click();
   await expect(dashboard.getByText("No storage problems.")).toBeVisible();
+  await expect(banner).toHaveCount(0);
+  await shoot(dashboard, "05-storage-cleared");
 });

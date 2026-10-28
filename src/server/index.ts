@@ -228,14 +228,19 @@ const leaseActivity = new LeaseActivityObserver(
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
 // A slot entering or leaving quarantine changes the storage aggregate. The aggregate is built
-// further down, after this manager's startup reconciliation has already published.
+// further down, after this manager's startup reconciliation has already published. Both the
+// manager and the operations service publish through this one function: an executed preview
+// coalesces its changes into the service's own notice, which never reaches the manager's.
 let recomputeStorageHealth = () => {};
+const publishWorktreesChanged = () => {
+  registry.emitWorktreesChanged();
+  recomputeStorageHealth();
+};
 const worktrees = new WorktreeManager(undefined, {
   ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference),
   publishChanged: () => {
-    registry.emitWorktreesChanged();
+    publishWorktreesChanged();
     void leaseActivity.request();
-    recomputeStorageHealth();
   },
 });
 const legacyWorktrees = new LegacyTreehouseService();
@@ -395,7 +400,8 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   },
   checks: checkLeases,
   checkRecovery: checkRuntime.groupRecovery,
-  notifyChanged: () => registry.emitWorktreesChanged(),
+  // Not the lease-activity probe: this notice also carries a running Warm's output tail.
+  notifyChanged: publishWorktreesChanged,
   staleLeases: () => leaseActivity.staleSinceBySlot(),
 });
 // No Warm survives a restart, so only the Warm logs a slot row still names are kept. Native
