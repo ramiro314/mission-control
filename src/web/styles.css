@@ -1288,6 +1288,39 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 .wt-legacy-row p { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
 .wt-legacy-blocked { border-left: 3px solid var(--wt-attention); }
 
+/* Worktrees > Unowned trees: folders outside the pools that Storage reports. */
+.wt-unowned-list {
+  display: grid;
+  gap: 9px;
+}
+
+.wt-unowned {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--wt-attention);
+  border-radius: 10px;
+  min-width: 0;
+  padding: 11px 13px;
+}
+
+.wt-unowned-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 6px;
+}
+
+.wt-unowned-head code {
+  font-family: var(--mono);
+  font-size: 11px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.wt-unowned .wt-diagnostic { margin: 0 0 10px; }
+.wt-unowned .wt-orphans { margin-bottom: 10px; }
+
 /* ---- The preview dialog. Unchanged in behaviour; corrected in radius and palette. ---- */
 .wt-eyebrow {
   color: var(--dim);

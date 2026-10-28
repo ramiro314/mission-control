@@ -262,6 +262,12 @@ export interface WorktreeInventory {
 export type WorktreeActionRequest =
   | { action: "return"; slotId: string }
   | { action: "recover"; slotId: string }
+  /**
+   * Discard and remove a folder under `worktrees/` or `check-worktrees/` that no task or
+   * check names and that the orphan tree sweep kept because it holds work. `path` must be the
+   * real path of a tree the sweep currently keeps.
+   */
+  | { action: "removeUnowned"; path: string }
   | { action: "prune"; poolId: string; mode: "safe" | "rightSize" }
   | { action: "reconcile"; poolId: string }
   | {

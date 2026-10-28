@@ -408,7 +408,8 @@ export function SettingsPage({
       fade = window.setTimeout(() => el.classList.remove("settings-flash"), FLASH_MS);
     };
     const findAnchor = (): HTMLElement | null =>
-      document.querySelector<HTMLElement>(`[data-anchor="${anchor}"]`);
+      // Escaped: an anchor can carry a path, such as an Unowned trees row's.
+      document.querySelector<HTMLElement>(`[data-anchor="${CSS.escape(anchor)}"]`);
 
     const present = findAnchor();
     if (present) {
