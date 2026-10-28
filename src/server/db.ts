@@ -904,6 +904,9 @@ function createSchemaObjects(d: DatabaseSync): void {
       last_used_at              INTEGER,
       quarantine_reason         TEXT,
       last_error                TEXT,
+      -- When the slot last entered quarantine. Part of its storage problem id, so it is
+      -- durable: a daemon restart never makes a dismissed quarantine look new.
+      quarantined_at            INTEGER,
       -- Dependency claim state. NULL is "never claimed". The vocabulary is append-only
       -- (WORKTREE_DEPS_STATES). A claim writes its intent and clears the fingerprint in one
       -- write before any step runs, so a crash never leaves a fingerprint to trust.
@@ -3206,6 +3209,14 @@ function migrate(d: DatabaseSync): void {
   // The most recent Warm's log. Null on every existing slot, which is exact: no Warm ran before
   // this column existed.
   addColumn(d, "worktree_slots", "deps_log_path", "TEXT");
+  // When a slot entered quarantine, the occurrence half of its `quarantined-slot` problem id.
+  // A slot quarantined before this column existed has no entry time on record, so it is
+  // stamped once with the first start that finds it; the guard keeps every later start from
+  // moving that stamp.
+  addColumn(d, "worktree_slots", "quarantined_at", "INTEGER");
+  d.prepare(
+    "UPDATE worktree_slots SET quarantined_at = ? WHERE state = 'quarantined' AND quarantined_at IS NULL",
+  ).run(Date.now());
 
   // HTML preview comments originally persisted only a line-wide quote. When compact HTML
   // puts several elements on one line, that cannot distinguish a paragraph from its inline

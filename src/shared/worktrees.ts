@@ -165,7 +165,11 @@ export interface NativeWorktreeSlotView {
   diskBytes: number | null;
   quarantineReason: string | null;
   diagnostic: string | null;
-  actions: Array<"return" | "destroy" | "warm">;
+  /**
+   * `recover` is offered on a quarantined slot no live owner references: it removes a stale
+   * `index.lock` when no Git process uses the slot, then resets it to available.
+   */
+  actions: Array<"return" | "destroy" | "warm" | "recover">;
   /** Null when the pool has no dependency claim configured. */
   dependencies: WorktreeSlotDependenciesView | null;
   /**
@@ -257,6 +261,7 @@ export interface WorktreeInventory {
 
 export type WorktreeActionRequest =
   | { action: "return"; slotId: string }
+  | { action: "recover"; slotId: string }
   | { action: "prune"; poolId: string; mode: "safe" | "rightSize" }
   | { action: "reconcile"; poolId: string }
   | {

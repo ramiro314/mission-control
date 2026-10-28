@@ -74,6 +74,8 @@ export interface WorktreeSlotRow {
   lastUsedAt: number | null;
   quarantineReason: string | null;
   lastError: string | null;
+  /** When the slot last entered quarantine. Kept across a re-quarantine of a quarantined slot. */
+  quarantinedAt: number | null;
   /** Read as string for the same fail-closed reason as `state`. Null is never claimed. */
   depsState: string | null;
   depsFingerprint: string | null;
@@ -129,6 +131,9 @@ function slotRow(row: Record<string, unknown>): WorktreeSlotRow {
     lastUsedAt: row.last_used_at === null ? null : Number(row.last_used_at),
     quarantineReason: row.quarantine_reason === null ? null : String(row.quarantine_reason),
     lastError: row.last_error === null ? null : String(row.last_error),
+    quarantinedAt: row.quarantined_at === null || row.quarantined_at === undefined
+      ? null
+      : Number(row.quarantined_at),
     depsState: nullableString(row.deps_state),
     depsFingerprint: nullableString(row.deps_fingerprint),
     depsFingerprintSha: nullableString(row.deps_fingerprint_sha),
@@ -430,14 +435,18 @@ export class WorktreeStore {
   ): WorktreeSlotRow | null {
     const where = expectedVersion === undefined ? "id = ?" : "id = ? AND version = ?";
     const args = expectedVersion === undefined
-      ? [reason, error, now, slotId]
-      : [reason, error, now, slotId, expectedVersion];
+      ? [now, reason, error, now, slotId]
+      : [now, reason, error, now, slotId, expectedVersion];
     const withdraw = withdrawGrant
       ? "active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL,"
       : "";
     const changed = this.db
       .prepare(
-        `UPDATE worktree_slots SET state = 'quarantined', version = version + 1, ${withdraw}
+        // A slot already quarantined keeps its entry time: the same occurrence continues.
+        `UPDATE worktree_slots SET
+           quarantined_at = CASE WHEN state = 'quarantined' AND quarantined_at IS NOT NULL
+             THEN quarantined_at ELSE ? END,
+           state = 'quarantined', version = version + 1, ${withdraw}
            quarantine_reason = ?, last_error = ?, updated_at = ? WHERE ${where}`,
       )
       .run(...args);
