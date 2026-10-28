@@ -26,9 +26,14 @@ afterEach(() => {
 
 /** Processes the fake occupancy reports in every slot; empty unless a test plants one. */
 let occupants: WorktreeOccupant[] = [];
+/** When set, the fake reports occupancy as unknown, for this reason, instead. */
+let occupancyUnknown: string | null = null;
 
 function occupancy(paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> {
-  return Promise.resolve(new Map(paths.map((path) => [path, { status: "known", occupants }])));
+  const observed: WorktreeOccupancy = occupancyUnknown === null
+    ? { status: "known", occupants }
+    : { status: "unknown", reason: occupancyUnknown };
+  return Promise.resolve(new Map(paths.map((path) => [path, observed])));
 }
 
 function manager(deps: Partial<WorktreeManagerDeps> = {}): WorktreeManager {
@@ -42,6 +47,7 @@ function manager(deps: Partial<WorktreeManagerDeps> = {}): WorktreeManager {
 
 afterEach(() => {
   occupants = [];
+  occupancyUnknown = null;
 });
 
 /** An origin whose `.gitignore` covers a regenerable cache and an operator-only file. */
@@ -84,16 +90,20 @@ async function lockQuarantined(m: WorktreeManager, clone: string, sha: string, k
   return { held, lock, slot };
 }
 
-function gitOccupant(path: string): WorktreeOccupant {
+function occupant(path: string, command: string): WorktreeOccupant {
   return {
     pid: 4242,
     ppid: 1,
     startRaw: "Mon Oct 26 09:00:00 2026",
     startMs: 0,
-    command: `git -C ${path} status`,
+    command,
     cwd: path,
     knownOwner: null,
   };
+}
+
+function gitOccupant(path: string): WorktreeOccupant {
+  return occupant(path, `git -C ${path} status`);
 }
 
 test("a lock-caused quarantine is recognized from Git's stable refusal text alone", () => {
@@ -160,6 +170,39 @@ test("Recover never removes index.lock while a Git process works in the slot or 
   );
   assert.equal(existsSync(lock), true);
   assert.equal(m.store.slot(slot.id)?.state, "quarantined");
+});
+
+test("Recover fails closed on unknown occupancy, any other process, and an unprovable Git directory", async () => {
+  const { clone, sha } = repository("mission-recover-fail-closed-");
+  const m = manager();
+  const { held, lock, slot } = await lockQuarantined(m, clone, sha, "task-recover-fail-closed");
+  const refusal = async (reason: string) => {
+    assert.deepEqual(
+      await m.recoverSlot({ slotId: slot.id, allowDirty: false, automatic: false }),
+      { outcome: "refused", reason },
+    );
+    assert.equal(existsSync(lock), true, `${reason}: the lock stays`);
+    assert.equal(m.store.slot(slot.id)?.state, "quarantined", `${reason}: the slot stays quarantined`);
+  };
+
+  // Unknown occupancy cannot prove that no Git process is still writing the index.
+  occupancyUnknown = "cwd listing failed: exit 1";
+  await refusal("process occupancy is unknown, so a Git process may still be using the worktree");
+  occupancyUnknown = null;
+
+  // A process that is not Git does not hold the lock, but the reset would pull the tree out
+  // from under it, so Recover still refuses while it is there.
+  occupants = [occupant(held.path, "node server.js")];
+  await refusal("one or more processes still occupy the worktree");
+  occupants = [];
+
+  // A `.git` file naming a directory outside `<common>/worktrees/` is not this slot's own
+  // Git directory, so no lock under it is one Recover may remove.
+  const dotGit = join(held.path, ".git");
+  const original = readFileSync(dotGit, "utf8");
+  writeFileSync(dotGit, `gitdir: ${join(clone, "..", "elsewhere")}\n`);
+  await refusal("the slot's Git directory could not be proven, so its index.lock cannot be located");
+  writeFileSync(dotGit, original);
 });
 
 test("the automatic pass recovers a clean slot once its lock is gone or older than 10 minutes", async () => {
@@ -286,4 +329,17 @@ test("a quarantined slot raises one bannered problem keyed by its durable entry 
   m.store.quarantine(slot.id, "slot Git state is unknown", null, slot.quarantinedAt! + 60_000);
   assert.equal(m.store.slot(slot.id)?.quarantinedAt, slot.quarantinedAt);
   assert.equal(quarantinedSlotProblems(m.store.slots())[0]?.id, problem!.id);
+
+  // Leaving quarantine ends that occurrence. Nothing clears the column on the way out, so a
+  // later quarantine is a new occurrence only because the slot was no longer quarantined, and
+  // a banner dismissed for the first one comes back for the second.
+  assert.equal((await m.recoverSlot({ slotId: slot.id, allowDirty: false, automatic: false })).outcome, "recovered");
+  assert.equal(m.store.slot(slot.id)?.state, "available");
+  assert.deepEqual(quarantinedSlotProblems(m.store.slots()), []);
+  const reentered = slot.quarantinedAt! + 120_000;
+  m.store.quarantine(slot.id, "slot Git state is unknown", null, reentered);
+  assert.equal(m.store.slot(slot.id)?.quarantinedAt, reentered);
+  const [again] = quarantinedSlotProblems(m.store.slots());
+  assert.equal(again?.id, `quarantined-slot:${slot.id}:${reentered}`);
+  assert.notEqual(again?.id, problem!.id);
 });
