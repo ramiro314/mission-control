@@ -1935,7 +1935,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, WorktreesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     try {
-      return c.json({ config: worktreeOperations.setConfig(parsed.data) });
+      const config = worktreeOperations.setConfig(parsed.data);
+      // `staleLeaseDays` decides which leases Storage lists as stale.
+      storageHealth?.recompute();
+      return c.json({ config });
     } catch (error) {
       const failure = worktreeFailure(error);
       return c.json(failure.body, failure.status);
