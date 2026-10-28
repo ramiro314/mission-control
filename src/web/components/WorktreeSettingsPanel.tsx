@@ -747,7 +747,7 @@ function KillDialog({
             <li>Any return this tree was waiting on is retried at once.</li>
           </ul>
         </section>
-        {error && <p className="settings-error">{error}</p>}
+        {error && <p className="settings-error" role="alert">{error}</p>}
       </div>
       <footer className="modal-foot">
         <Tooltip label="Close without signalling the process">
@@ -1339,6 +1339,10 @@ export function WorktreeSettingsPanel({
   async function confirmKill(): Promise<void> {
     if (!killing) return;
     const { orphan } = killing;
+    // With no answer from the daemon the kill may or may not have been sent, which a bare
+    // network error would read as a refusal.
+    const unanswered = (reason: string) =>
+      `The daemon did not answer (${reason}), so it is not known whether process ${orphan.pid} was signalled. It stays listed until a scan no longer finds it.`;
     setKillBusy(true);
     try {
       const result = await api.killOrphanProcess({
@@ -1348,9 +1352,13 @@ export function WorktreeSettingsPanel({
         setKilling(null);
         setKillError(null);
         void state.refresh();
+      } else if (result.status === undefined) {
+        setKillError(unanswered(result.error ?? "no response"));
       } else {
         setKillError(result.error ?? "The daemon refused the kill.");
       }
+    } catch (error) {
+      setKillError(unanswered(error instanceof Error ? error.message : String(error)));
     } finally {
       setKillBusy(false);
     }

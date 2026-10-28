@@ -215,6 +215,9 @@ export class OrphanProcessMonitor {
           console.warn(`[worktrees] retrying the return of ${reported.tree} after a kill failed: ${errorMessage(error)}`);
         });
     }
+    // A scan already in flight may have inspected before the signal and would write the dead
+    // process back, so wait it out and look again rather than join it.
+    await this.scanning;
     await this.scan();
     return { ok: true, signal: sent };
   }

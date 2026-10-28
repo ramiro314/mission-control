@@ -224,8 +224,18 @@ test("Kill, from a Storage problem link, stops an orphan process in a quarantine
     expect(alive(pid)).toBe(true);
     await expect(orphans).toContainText(`PID ${pid}`);
 
-    // Confirm kills it, and the row leaves with the next storage_health event.
+    // A request the daemon never answers leaves the dialog open and says the outcome is unknown,
+    // rather than a bare network error that reads like a refusal.
     await orphans.getByRole("button", { name: `Kill process ${pid}` }).click();
+    await dashboard.route("**/api/worktrees/processes/kill", (route) => route.abort());
+    await confirm.getByRole("button", { name: "Kill process" }).click();
+    await expect(confirm.getByRole("alert")).toContainText(`not known whether process ${pid} was signalled`);
+    await expect(confirm.getByRole("button", { name: "Kill process" })).toBeEnabled();
+    expect(alive(pid)).toBe(true);
+    await shoot(dashboard, "05-kill-unanswered");
+    await dashboard.unroute("**/api/worktrees/processes/kill");
+
+    // Confirm kills it, and the row leaves with the next storage_health event.
     const killed = dashboard.waitForResponse((response) => response.url().endsWith("/api/worktrees/processes/kill"));
     await confirm.getByRole("button", { name: "Kill process" }).click();
     expect((await killed).status()).toBe(200);

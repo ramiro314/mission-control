@@ -264,6 +264,45 @@ test("Kill refuses when a fresh inspection no longer finds the same process in t
   assert.equal(alive(child.pid!), true);
 });
 
+test("Kill rescans after itself, so a scan that inspected before the kill cannot put the process back", async () => {
+  const { root, tree } = fixture();
+  const child = await occupant(tree);
+  // The next scan's inspection completes (seeing the process alive) and then waits until a second
+  // after the SIGTERM, standing in for a maintenance pass whose `lsof` ran before the kill and is
+  // still in flight when Kill finishes signalling.
+  let holdNext = false;
+  let release: () => void = () => {};
+  const signalled = new Promise<void>((resolve) => { release = resolve; });
+  let held: () => void = () => {};
+  const holding = new Promise<void>((resolve) => { held = resolve; });
+  const { monitor } = harness([{ path: tree, slotId: null, owner: taskOwner }], root, {
+    occupancy: async (paths) => {
+      const observed = await inspectWorktreeOccupancy(paths);
+      if (holdNext) {
+        holdNext = false;
+        held();
+        await signalled;
+      }
+      return observed;
+    },
+    signal: (pid, signal) => {
+      process.kill(pid, signal);
+      setTimeout(release, 1_000);
+    },
+  });
+  const { process: listed } = await reportedProcess(monitor, child.pid!);
+
+  holdNext = true;
+  const stale = monitor.scan();
+  // Kill's own re-inspection must not be the call that is held.
+  await holding;
+  const result = await monitor.kill({ path: tree, pid: listed.pid, startedAt: listed.startedAt, command: listed.command });
+  await stale;
+  assert.deepEqual(result, { ok: true, signal: "SIGTERM" });
+  assert.equal(alive(child.pid!), false);
+  assert.deepEqual(monitor.problems(), [], "the dead process is not reported once Kill answers");
+});
+
 test("a scan that cannot inspect a tree keeps the last report for it", async () => {
   const { root, tree } = fixture();
   const child = await occupant(tree);
