@@ -273,6 +273,34 @@ test("a kept folder keeps its problem while skipped, and is reported gone once r
   assert.deepEqual(sweep.problems().goneSubjects, [], "reported gone once");
 });
 
+test("a kept folder the sweep later removes, or a row later references, is reported gone at once", async () => {
+  const f = fixture();
+  const fixed = addWorktree(f, join(f.worktrees, "fixed"), "harness/fixed");
+  writeFileSync(join(fixed, "work.txt"), "x");
+  const claimed = addWorktree(f, join(f.checks, "claimed"), "harness/claimed");
+  writeFileSync(join(claimed, "work.txt"), "x");
+  let referenced: string[] = [];
+  const sweep = sweeper(f, { referencedPaths: () => referenced });
+  await sweep.sweep();
+  const subjects = new Map(sweep.problems().firstSeen!.map((each) => [each.problem(0).link, each.subject]));
+  const subjectOf = (path: string) =>
+    [...subjects].find(([link]) => link.target === "unowned-tree" && link.path === path)?.[1];
+  assert.ok(subjectOf(fixed) && subjectOf(claimed));
+
+  // The operator commits and pushes the work, so the next pass removes the tree; and a row
+  // starts naming the other one.
+  git(fixed, "add", ".");
+  git(fixed, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "done");
+  git(fixed, "push", "-q", "origin", "harness/fixed");
+  referenced = [claimed];
+  const result = await sweep.sweep();
+  assert.deepEqual(result.removed, [fixed]);
+
+  const observed = sweep.problems();
+  assert.deepEqual(observed.firstSeen, []);
+  assert.deepEqual(observed.goneSubjects?.sort(), [subjectOf(claimed), subjectOf(fixed)].sort());
+});
+
 test("referenced paths are every task and task repository path and every live check lease", () => {
   const db = openDb();
   const now = Date.now();

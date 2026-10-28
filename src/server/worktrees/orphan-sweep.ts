@@ -235,13 +235,15 @@ export class OrphanTreeSweep {
     }
 
     // A kept tree skipped this pass (occupied, or touched within the grace) is still kept, so
-    // its problem and first-seen time carry over. One that is gone is reported gone.
+    // its problem and first-seen time carry over. One that left the kept set any other way -
+    // removed by this pass, referenced by a row, or no longer on disk with that inode - is
+    // reported gone, so its first-seen entry goes at once rather than outliving the problem.
     const kept = new Map(result.kept.map((tree) => [`${tree.path}:${tree.inode}`, tree]));
     const skipped = new Set(result.skipped.map((each) => each.path));
     for (const [subject, tree] of this.kept) {
       if (kept.has(subject)) continue;
       if (present.has(subject) && skipped.has(tree.path)) kept.set(subject, tree);
-      else if (!present.has(subject)) this.gone.push(subject);
+      else this.gone.push(subject);
     }
     this.kept = kept;
 
