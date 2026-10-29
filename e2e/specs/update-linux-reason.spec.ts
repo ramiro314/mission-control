@@ -11,7 +11,7 @@ test("on Linux, Application updates says the packaged app is macOS only and offe
   const unreachable = () => { throw new Error("the Linux updater reached past its refusal"); };
   const controller = new UpdateController({
     packaged: false, platform: "linux", arch: "x64", currentVersion: () => "1.2.3", currentCommit: () => null,
-    readAlpha: () => false, writeAlpha: () => {},
+    readAlpha: () => false, writeAlpha: () => {}, readSnoozes: () => ({}), writeSnoozes: () => {},
     installSnapshot: () => ({ receipt: null, problem: null }),
     latestRelease: async () => (queries += 1, unreachable()),
     latestMainCommit: async () => (queries += 1, unreachable()),

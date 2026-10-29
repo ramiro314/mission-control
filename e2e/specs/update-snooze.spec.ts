@@ -9,7 +9,7 @@ test("Later keeps the same update quiet across checks and restart for 48 hours",
   let now = Date.parse("2026-10-28T12:00:00Z");
   let version = "1.2.4";
   const port = createDefaultUpdaterPort({
-    packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40),
+    packaged: true, platform: "darwin", arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40),
     stateDirectory: daemon.home, helperSource: "", requestQuit: () => {},
     installSnapshot: () => ({ receipt: binaryReceipt(binaryOffer("a".repeat(40), "stable", "1.2.3"), {
       schema: 1, repo: "teamupstart/mission-control", appPath: join(daemon.home, "fixture.app"), sourceClone: daemon.home,

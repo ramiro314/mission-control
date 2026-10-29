@@ -16,7 +16,7 @@ for (const colorScheme of ["dark", "light"] as const) {
     const receipt = {schema: 1 as const, repo: "teamupstart/mission-control", sourceClone: "/missing", appPath: "/Applications/Mission Control.app", installedVersion: "1.2.3", releaseTag: "v1.2.3", installedAt: "2026-10-25T00:00:00Z"};
     const port: UpdaterPort = {
       readSnoozes: () => ({}), writeSnoozes: () => {},
-      packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40), readAlpha: () => true, writeAlpha: () => {}, installSnapshot: () => ({receipt, problem: null}),
+      packaged: true, platform: "darwin", arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40), readAlpha: () => true, writeAlpha: () => {}, installSnapshot: () => ({receipt, problem: null}),
       latestRelease: async () => null, latestMainCommit: async () => ({sha: "b".repeat(40), message: "Exact alpha", committedAt: "2026-10-25T00:00:00Z"}),
       binaryForCommit: async commit => ready ? binaryOffer(commit, "alpha") : null,
       stage: input => {request = input; attempts++; input.onStage("download", {received: 25, total: 100}); return new Promise(resolve => {settle = resolve;});},
@@ -96,7 +96,7 @@ for (const kind of ["source", "binary"] as const) {
     const releases = [next, older].map((offer, index) => ({id: index + 1, tag_name: offer.manifest.releaseTag,
       name: offer.manifest.version, body: "Rename-compatible signed update", published_at: "2026-10-25T00:00:00Z", draft: false, prerelease: false}));
     const port: UpdaterPort = {
-      packaged: true, arch: "arm64", currentVersion: () => "1.2.4", currentCommit: () => "a".repeat(40),
+      packaged: true, platform: "darwin", arch: "arm64", currentVersion: () => "1.2.4", currentCommit: () => "a".repeat(40),
       readSnoozes: () => ({}), writeSnoozes: () => {},
       readAlpha: () => false, writeAlpha: () => {}, installSnapshot: () => ({receipt, problem: null}),
       latestRelease: () => latestStableBinary(async args => {
@@ -190,7 +190,7 @@ for (const channel of ["stable", "alpha"] as const) {
       sourceClone: "/missing", installedVersion: "1.2.3", releaseTag: "v1.2.3", installedAt: "2026-10-25T00:00:00.000Z",
     });
     const port: UpdaterPort = {
-      packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40),
+      packaged: true, platform: "darwin", arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40),
       readSnoozes: () => ({}), writeSnoozes: () => {},
       readAlpha: () => channel === "alpha", writeAlpha: () => {}, installSnapshot: () => ({receipt, problem: null}),
       latestRelease: () => channel === "stable" ? latestStableBinary(run, "1.2.3") : Promise.resolve(null),

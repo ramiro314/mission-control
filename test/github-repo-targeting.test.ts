@@ -74,8 +74,6 @@ const NODE_ID_ARGV = new Set([
 const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
   "src/main/updater.ts": [
     { fn: "latestMainCommit", argv: "UPDATE_GH_ARGS.mainCommit()", how: "explicit", why: "`repos/${CANONICAL_REPO}/commits/main`, through `runGh`" },
-    { fn: "latestStableRelease", argv: "UPDATE_GH_ARGS.releaseList()", how: "explicit", why: "`--repo CANONICAL_REPO`, through `runGh`" },
-    { fn: "latestStableRelease", argv: "UPDATE_GH_ARGS.releaseView(release.tagName)", how: "explicit", why: "`--repo CANONICAL_REPO`, through `runGh`" },
   ],
   "src/server/inspector/github.ts": [
     { fn: "authenticatedLogin", argv: '["api", "user", "--jq", ".login"]', how: "none", why: "the token's own login" },
@@ -134,6 +132,14 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
   "scripts/unit-shard-timings.ts": [
     { fn: "main", argv: '["run", "download", runId, "--repo", repo, "--pattern", "unit-junit-node-*", "--dir", dir]', how: "resolver", why: "`scriptRepository()`" },
   ],
+  // The binary bootstrap and its template: the words of `download`'s failure message, which the
+  // shell reader takes for a command. The real call goes through `$mission_gh` (a mention below).
+  "scripts/install-bootstrap.sh": [
+    { fn: "<shell>", argv: "gh authentication and connectivity", how: "explicit", why: "not a call: prose in `fail`; `download` runs `api --hostname github.com` on a `repos/@REPO@/...` endpoint" },
+  ],
+  "scripts/install.sh": [
+    { fn: "<shell>", argv: "gh authentication and connectivity", how: "explicit", why: "not a call: prose in `fail`; `download` runs `api --hostname github.com` on a `repos/teamupstart/mission-control/...` endpoint" },
+  ],
   "scripts/ci-tree-reuse.sh": [
     { fn: "<shell>", argv: 'gh api "repos/$REPO/commits/$SHA/pulls"', how: "explicit", why: "`REPO` is the workflow's `github.repository`" },
     { fn: "<shell>", argv: 'gh api "repos/$REPO/actions/workflows/$WORKFLOW/runs?event=pull_request&head_sha=$head&per_page=100"', how: "explicit", why: "`REPO` is the workflow's `github.repository`" },
@@ -144,7 +150,16 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
 /** Each `gh` binary the scanner cannot follow to a call, and why it runs nothing unclassified. */
 const GH_MENTIONS: Readonly<Record<string, readonly GhMention[]>> = {
   "src/main/updater.ts": [
-    { fn: "runGh", line: "env: executable.env,", why: "the located gh's child environment, handed to the same `execFile` that runs it" },
+    { fn: "runGh", line: 'env: {...executable.env, GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_DEBUG: "", DEBUG: ""},', why: "the located gh's child environment, handed to the same `execFile` that runs it" },
+    { fn: "latestRelease", line: "latestRelease: () => latestStableBinary(runGh, options.currentVersion()),", why: "hands `runGh` to `update-binary-release.ts`, whose every call is `api` on `repos/${BINARY_REPO}/...`" },
+    { fn: "binaryForCommit", line: "binaryForCommit: (commit) => binaryForCommit(runGh, commit),", why: "hands `runGh` to `update-binary-release.ts`, whose every call is `api` on `repos/${BINARY_REPO}/...`" },
+    { fn: "stage", line: "stateDirectory: options.stateDirectory, gh: gh.path, env: gh.env, log});", why: "hands the located gh to `update-binary-download.ts`, which runs `api` on `repos/${BINARY_REPO}/releases/assets/<id>`" },
+  ],
+  "scripts/install-bootstrap.sh": [
+    { fn: "<shell>", line: "mission_gh=$(command -v gh) || fail 'GitHub CLI (gh) is required for authenticated downloads. Install its native binary or download the signed DMG from GitHub Releases.'", why: "locates gh; its one call, in `download`, is `api --hostname github.com` on a `repos/@REPO@/...` endpoint" },
+  ],
+  "scripts/install.sh": [
+    { fn: "<shell>", line: "mission_gh=$(command -v gh) || fail 'GitHub CLI (gh) is required for authenticated downloads. Install its native binary or download the signed DMG from GitHub Releases.'", why: "locates gh; its one call, in `download`, is `api --hostname github.com` on a `repos/teamupstart/mission-control/...` endpoint" },
   ],
   "src/server/config.ts": [
     { fn: "ghBin", line: 'return envVar("GH_BIN") || "gh";', why: "`ghBin()` itself; its calls are scanned" },

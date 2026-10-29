@@ -402,7 +402,7 @@ test("the ship handoff commits locally before completion and defers only publica
 
 test("plan completion requires offering phasing in both storage modes", () => {
   for (const storage of ["repository", "local"] as const) {
-    const contract = taskCompletionContract("plan", true, storage)!;
+    const contract = taskCompletionContract("plan", storage)!;
     const requirement = contract.complete.find((item) => /offered.*selectable.*phased-plan/.test(item));
     assert.ok(requirement, `${storage} completion must require the follow-up choice`);
     assert.match(requirement, /even when there are no other open choices/);

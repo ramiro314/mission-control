@@ -37,7 +37,7 @@ test("update snoozes survive a controller restart and alpha preference changes",
   const path = join(dir, "update-preferences.json");
   let now = Date.parse("2026-10-28T12:00:00Z");
   const port = createDefaultUpdaterPort({
-    packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => null,
+    packaged: true, platform: "darwin", arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => null,
     stateDirectory: dir, helperSource: "", requestQuit: () => {},
     installSnapshot: () => ({ receipt: { schema: 1, repo: "teamupstart/mission-control", sourceClone: dir,
       appPath: join(dir, "fixture.app"), installedVersion: "1.2.3", releaseTag: "v1.2.3", installedAt: "2026-10-28T00:00:00Z" }, problem: null }),
