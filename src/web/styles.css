@@ -1134,12 +1134,20 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   padding-top: 8px;
 }
 
+.wt-orphans-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin: 0 0 6px;
+}
+
 .wt-orphans h5 {
   color: var(--wt-attention);
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: .08em;
-  margin: 0 0 6px;
+  margin: 0;
   text-transform: uppercase;
 }
 
@@ -1176,6 +1184,9 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 
 .wt-kill-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .wt-kill-text { color: var(--muted); display: block; font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+.wt-action-body .wt-kill-list { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.wt-kill-list li { display: grid; gap: 2px; }
+.wt-kill-list span { color: var(--dim); font-size: 11px; }
 
 /* A slot's dependency claim state. The chip and the sentence both say it. */
 .wt-deps {
