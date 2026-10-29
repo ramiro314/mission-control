@@ -5,7 +5,7 @@ Status: approved, scheduled, and gated on planning publication
 ## Source of truth
 
 - Approved source plan: [`plan.md`](plan.md)
-- Supporting investigation: [`../../reports/inspector-pre-pr-assessment/report.html`](../../reports/inspector-pre-pr-assessment/report.html)
+- Supporting investigation: [`../../reports/inspector-pre-pr-assessment/report.html`](https://github.com/teamupstart/mission-control/blob/baf85ef86ca1a9c43775f5e582cd81491bb04994/docs/reports/inspector-pre-pr-assessment/report.html)
 - Detailed implementation phase: [`phase-1-code-quality-judge-dual-mode.md`](phase-1-code-quality-judge-dual-mode.md)
 
 The source plan's reviewed decisions are requirements:

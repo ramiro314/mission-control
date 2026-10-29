@@ -36,7 +36,9 @@ test("the development dashboard boots through its diagnostic entry", async ({ pa
   const dev = await startDevDashboard(daemon);
   try {
     await page.goto(`${dev.origin}/#/fleet`);
-    await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+    // Navigation finishes at the small bootstrap, before Vite's cold application transform
+    // has loaded: startup gets its own bounded budget, as in `tour-picker.spec.ts`.
+    await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible({ timeout: 90_000 });
   } finally {
     await page.goto("about:blank");
     dev.stop();

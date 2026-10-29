@@ -223,9 +223,11 @@ for (const storage of ["repository", "local"] as const) {
         await expect(form.getByRole("radio")).toHaveCount(2);
         const phase = form.getByRole("radio", { name: /Create phased implementation plan/ });
         const stop = form.getByRole("radio", { name: /Stop after this plan/ });
-        await expect(phase).not.toBeChecked();
+        // Fork (decision forms): the form opens on the agent's recommendation, so phasing is
+        // preselected and Submit is live. Nothing is chosen until the human submits.
+        await expect(phase).toBeChecked();
         await expect(stop).not.toBeChecked();
-        await expect(form.getByRole("button", { name: "Submit" })).toBeDisabled();
+        await expect(form.getByRole("button", { name: "Submit" })).toBeEnabled();
         expect(finished, "request_plan_decisions must wait for the human's selection").toBe(false);
         await expectContentClearsBorder(form);
         await (selectedId === "phased-plan" ? phase : stop).check();

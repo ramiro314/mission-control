@@ -190,7 +190,9 @@ test("a real command with no caller deadline is not killed at the old two-second
   const result = await realMacAppOps().run("/bin/sh", ["-c", "sleep 2.5; echo done"]);
   assert.deepEqual(result, {code: 0, stdout: "done\n"});
   // Still a bound: a caller's own budget is honored and a hung command is refused.
-  await assert.rejects(realMacAppOps().run("/bin/sh", ["-c", "sleep 5"], 200), /within the time limit/);
+  // `exec`, so the SIGKILL at the deadline lands on `sleep` itself: a shell that forks it (dash)
+  // would leave it running past the test.
+  await assert.rejects(realMacAppOps().run("/bin/sh", ["-c", "exec sleep 5"], 200), /within the time limit/);
 });
 
 test("lsregister gets the whole launch budget, not the former five-second cap", async () => {

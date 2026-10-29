@@ -100,6 +100,13 @@ test("on Linux the conversation pane opens a shell in the default terminal, neve
 }) => {
   test.skip(process.platform !== "linux", "the default terminal exists on Linux only");
 
+  // The dashboard ships the Board layout; this reaches the session through the Console's rail.
+  const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "console" }),
+  });
+  expect(pinned.ok).toBe(true);
   await page.goto(daemon.baseURL);
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });

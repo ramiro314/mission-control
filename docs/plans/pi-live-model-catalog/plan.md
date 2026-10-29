@@ -2,7 +2,7 @@
 
 Status: Approved for phased implementation and scheduling.
 
-Source report: [Pi model catalog sourcing investigation](../../reports/pi-model-catalog-source/report.html)
+Source report: [Pi model catalog sourcing investigation](https://github.com/teamupstart/mission-control/blob/baf85ef86ca1a9c43775f5e582cd81491bb04994/docs/reports/pi-model-catalog-source/report.html)
 
 ## Approved human decisions
 

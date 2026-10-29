@@ -3,7 +3,7 @@
 ## Source of truth
 
 - Approved goal: [`plan.md`](plan.md)
-- Supporting rejection analysis: [`../../reports/test-evidence-auditor-first-pass/report.html`](../../reports/test-evidence-auditor-first-pass/report.html)
+- Supporting rejection analysis: [`../../reports/test-evidence-auditor-first-pass/report.html`](https://github.com/teamupstart/mission-control/blob/baf85ef86ca1a9c43775f5e582cd81491bb04994/docs/reports/test-evidence-auditor-first-pass/report.html)
 - Repository: `teamupstart/mission-control`
 - Planning decision: the operator explicitly requested a phased implementation plan and scheduling on 2026-09-03, superseding the earlier choice to stop after the root plan.
 
