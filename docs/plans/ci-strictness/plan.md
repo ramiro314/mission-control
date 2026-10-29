@@ -131,9 +131,9 @@ All of these are settled. The review reads them; it does not reopen them.
 | required-none-marked | Required mode while no check is marked required | Watch all checks, and wait out the quiet period before any verdict, failures included. Then judge all checks and record the fallback. A quiet period of 0 decides at once. |
 | failure-vs-missing-expected | A counted check failed and every present counted check has settled, but an expected check has not appeared | Fail now. The repair packet lists the failures and names the expected checks that have not appeared. |
 | quiet-measurement | How "settled and unchanged for N minutes" is measured | By observation. The clock starts at the Inspector observation that first saw this settled set, and the node passes only on an observation at least N minutes later with the same set. The set is each counted check's name, state and conclusion; in Required mode, changes to non-required checks do not reset it. |
-| quiet-at-timeout | The quiet period is still running when the timeout hits | Finish the quiet period past the timeout, bounded by its length. The timeout blocks only while something counted is pending or missing. |
+| quiet-at-timeout | The quiet period is still running when the timeout hits | Finish the quiet period past the timeout, bounded by its length. The timeout blocks only while something counted is pending or missing. The bound is replaced by the PR review answer `quiet-past-timeout` ([S5](#supersessions-and-source-notes)). |
 | required-packet | Repair packet contents in Required mode | Only counted failures (required and expected) become requested changes. Non-required failures stay out of the packet and are shown in the run panel tagged "Not required". This narrows decision 7 in Required mode ([S1](#supersessions-and-source-notes)). |
-| new-ids | New append-only identifiers | Block code `ci_expected_missing` (recovery `retry`, which is "Wait for CI again"). Diagnostics `wait_for_ci_quiet_period` and `wait_for_ci_expected_checks`. |
+| new-ids | New append-only identifiers | Block code `ci_expected_missing` (recovery `retry`, which is "Wait for CI again"). Diagnostics `wait_for_ci_quiet_period` and `wait_for_ci_expected_checks`. The PR review adds `ci_checks_truncated` ([S6](#supersessions-and-source-notes)). |
 | inspector-query | Inspector PR query change | Always read `isRequired(pullRequestNumber:$number)` on `CheckRun` and `StatusContext`, plus `contexts.totalCount`. |
 | foreman-source | Where Foreman learns which checks are required | From the Inspector's stored snapshot, projected onto each follow-up PR. Foreman holds the CI nudge while the snapshot is for another head, and counts all failures when the Inspector never adopted the PR. |
 | foreman-ui-wording | Foreman field, picker and nudge wording | `ciStrictness: "all" \| "required"` (default `all`, sharing an enum with the node). A select labeled "Which failures count" under the CI checkbox, disabled when that checkbox is off. The nudge says "its required CI checks are failing" and points at `gh pr checks <url> --required`. |
@@ -153,6 +153,15 @@ All of these are settled. The review reads them; it does not reopen them.
 | foreman-copy | Foreman picker copy | Accepted as proposed (see [Foreman](#6-foreman)). |
 | pr-chip | Should the session's PR CI chip follow the Foreman picker? | No. The chip keeps showing GitHub's whole rollup; only Foreman's nudge decision follows the picker. |
 
+### Review of PR #624
+
+GitHub Inspector raised two findings on the plan's pull request; the human decided both.
+
+| Id | Question | Answer |
+| --- | --- | --- |
+| truncated-checks | What the node does when GitHub reports more than 100 checks on the head | Never pass on a partial list. A counted failure among the first 100 still fails the node, but a result that would otherwise pass blocks with the new append-only code `ci_checks_truncated`, in both modes. It ships in M3, which already depends on M2's `totalCount`; until then the node judges the first 100, as it does today. |
+| quiet-past-timeout | How a quiet period still running at the timeout finishes | Decide on the first new observation at or after `quietSince + quietMinutes`: an unchanged set passes, a changed one blocks `ci_timeout`. If no new observation arrives within 15 minutes of that point (`WAIT_FOR_CI_QUIET_GRACE_MS`), block `ci_timeout` anyway. |
+
 ### Derived rules
 
 These rules follow from the decisions above, and the plan writes them down so the review can
@@ -161,8 +170,11 @@ confirm them.
 - **D1.** The skip for expected checks applies in every mode. In Required mode with nothing
   marked, the fallback is decided at the moment of the skip.
 - **D2.** Past the timeout, only a quiet period that is already running with an unchanged set may
-  finish, and it must finish by `timeout + quietMinutes` of wall time. Any other state past the
-  timeout blocks: a new pending check, a changed set, or no fresh observation by that bound.
+  finish. It is decided on the first new observation at or after `quietSince + quietMinutes`: an
+  unchanged set passes and a changed one blocks. A new pending check past the timeout blocks at
+  once, and so does a quiet period that gets no new observation within
+  `WAIT_FOR_CI_QUIET_GRACE_MS` (15 minutes) of `quietSince + quietMinutes` (PR review,
+  `quiet-past-timeout`).
 - **D3.** At the timeout, the block reason is chosen in order. No check was ever observed:
   `ci_missing`. A counted check is pending, or the set kept changing: `ci_timeout`, whose detail
   names the pending counted checks. Otherwise expected checks are missing: `ci_expected_missing`,
@@ -201,6 +213,16 @@ confirm them.
   "Behavior contracts" line saying Wait for CI passes only with a "Flaky tests" check is replaced
   by the line in [fork:flake-aware-testing amendment](#forkflake-aware-testing-amendment), and the
   docs that repeat the old rule are rewritten (see [Docs](#12-docs)).
+- **S5. The PR review's `quiet-past-timeout` replaces round 1 `quiet-at-timeout`'s bound.** The
+  Inspector sweeps pull requests one at a time and a review can run up to 10 minutes
+  (`TIMEOUT_MS` in `src/server/inspector/worker.ts`), with the next sweep 90 seconds after the
+  last one ends. Observations of one pull request can therefore be minutes apart, and a
+  wall-clock bound of `timeout + quietMinutes` would block a green, stable run that settled near
+  the timeout. Round 1's rule that the timeout blocks only while something counted is pending or
+  missing still holds.
+- **S6. The PR review's `truncated-checks` extends round 1 `new-ids`** with the block code
+  `ci_checks_truncated`, and narrows decision 6 for a head with more than 100 checks: settled
+  counted checks are not enough to pass when GitHub reported checks the node never read.
 
 ## Design
 
@@ -249,8 +271,12 @@ flowchart LR
 - `CiObservationSchema` gains `totalCount: z.number().int().nullable().optional()`.
 - `ciCheckRunsFromRollup(contexts, parseReport, totalCount)` reads `isRequired` into `required`
   and returns `totalCount` as well. Flake-report parsing is unchanged.
-- `WAIT_FOR_CI_BLOCK_CODES` gets `ci_expected_missing` appended. `ci_flake_report_missing` stays,
-  with its comment changed to say that nothing produces it any more.
+- `WAIT_FOR_CI_BLOCK_CODES` gets `ci_expected_missing` and then `ci_checks_truncated` appended.
+  `ci_flake_report_missing` stays, with its comment changed to say that nothing produces it any
+  more.
+- `WAIT_FOR_CI_QUIET_GRACE_MS = 15 * 60_000`: how long a quiet period running past the timeout
+  may wait for its deciding observation (D2). It is a literal, because the shared module cannot
+  import the Inspector worker's constants, and it covers one 10-minute review plus a poll.
 - `WaitForCiStateSchema` gains these optional fields: `strictness`, `quietMinutes`,
   `expectedChecks` (resolved at activation), `quietSince: number | null` (the `observedAt` of the
   observation that started the clock), `requiredFallback: boolean` (set on a verdict reached
@@ -311,6 +337,7 @@ and from the panel. For one observation of the expected head:
 | Settled, all passing, nothing missing, expected list non-empty | **Pass now** (quiet period skipped). Fallback recorded if nothing is marked in Required mode. |
 | Settled, all passing, nothing missing, quiet period 0 | **Pass now.** |
 | Settled, all passing, nothing missing, otherwise | If `quietSince` is null or the set changed, set `quietSince = observation.observedAt`. **Pass** once `observation.observedAt - quietSince >= quietMinutes * 60_000`. |
+| Any of the three pass rows above, and `checksTotal > 100` | **Block** `ci_checks_truncated` instead of passing. A counted failure among the first 100 still fails through the rows above. |
 | Timeout reached | Apply D2 and D3. |
 
 The pass keeps carrying `observation.flakeReport` in every mode. The quiet clock advances only on
@@ -331,7 +358,9 @@ on its own, which is what makes the quiet period observed rather than assumed.
   through. A legacy attempt state has no settings, resolves to the legacy constant, and
   re-judges an old `ci_flake_report_missing` block as All, quiet 3, no expected checks.
   `quietSince` and `missingExpected` reset with the fresh timeout.
-- `recovery.ts`: `WORKFLOW_PHASE_RECOVERY.ci_expected_missing = "retry"`. Every
+- `recovery.ts`: `WORKFLOW_PHASE_RECOVERY.ci_expected_missing = "retry"` and
+  `WORKFLOW_PHASE_RECOVERY.ci_checks_truncated = "retry"`; disabling the node for the run is how
+  an operator passes a truncated head. Every
   `Record<WaitForCiBlockCode, …>` gains the entry; the compiler finds them.
 
 ### 4. Publish validation
@@ -460,6 +489,8 @@ head… Continue until the required checks pass or…". All mode keeps today's t
 - Fallback note: `No check on this head is marked required, so every check was judged.`
 - Truncation note, when `checksTotal > 100`:
   `GitHub reported 140 checks; only the first 100 were read.`
+- `ci_checks_truncated` sentence, with the count taken from the attempt state:
+  `GitHub reported 140 checks; only the first 100 were read, so this node cannot confirm CI passed. Disable the node for this run to pass it.`
 - On a fail with missing expected checks, under Failing checks:
   `Not reported when CI failed: "deploy".` The Failing checks list shows only counted failures.
 - `ci_expected_missing` sentence, with the names taken from the attempt state:
@@ -503,9 +534,9 @@ head… Continue until the required checks pass or…". All mode keeps today's t
 ### 12. Docs
 
 - `docs/workflows.md#wait-for-ci`: the node's four settings, a rewritten outcome table (both
-  modes, the quiet period, expected checks, the fallback, `ci_expected_missing`, the legacy
-  `ci_flake_report_missing`), how the quiet period is measured and how it interacts with the
-  timeout, and the flake report as enrichment. Rewrite the sentence that says "Flaky tests" never
+  modes, the quiet period, expected checks, the fallback, `ci_expected_missing`,
+  `ci_checks_truncated`, the legacy `ci_flake_report_missing`), how the quiet period is measured
+  and how it interacts with the timeout, and the flake report as enrichment. Rewrite the sentence that says "Flaky tests" never
   fails the node.
 - `docs/workflows.md` built-in section (the Affected tests paragraph): remove "bind it in a
   repository whose CI publishes 'Flaky tests' … Without that check, Wait for CI blocks the run";
@@ -540,9 +571,14 @@ The focused files run with
     names it.
   - Expected checks: all present and settled skips the quiet period; pending is never skipped;
     duplicate names match every check of that name.
-  - Timeout: a running quiet period finishes past the timeout up to its bound (D2); a change or
-    a new pending check past the timeout blocks `ci_timeout`; D3 ordering
-    (`ci_missing`, `ci_timeout` with names, `ci_expected_missing` with names).
+  - Timeout (D2): a quiet period running past the timeout passes on its first new observation
+    after `quietMinutes` when the set is unchanged, including when the clock starts within one
+    poll of the timeout and when a review delays that observation by several minutes; a changed
+    set or a new pending check blocks `ci_timeout`; no new observation within
+    `WAIT_FOR_CI_QUIET_GRACE_MS` blocks `ci_timeout`. D3 ordering (`ci_missing`, `ci_timeout`
+    with names, `ci_expected_missing` with names).
+  - Truncation: with `checksTotal > 100`, a result that would pass blocks `ci_checks_truncated`
+    in both modes, and a counted failure among the first 100 still fails.
   - Required mode: non-required failures are ignored; marking a check required resets the clock
     (D4); with nothing marked, the node waits out the quiet period before failing, then falls
     back with `requiredFallback`; D1.
@@ -562,7 +598,8 @@ The focused files run with
   `WAIT_FOR_CI_NEW_NODE_SETTINGS`.
 - `test/wait-for-ci-render.test.ts`: the settings line, row tags, rows for unreported expected
   checks, the fallback and truncation notes, the quiet headline, the new and rewritten block
-  sentences, and the absence of tags in All mode.
+  sentences (`ci_expected_missing`, `ci_checks_truncated`, `ci_flake_report_missing`), and the
+  absence of tags in All mode.
 - `test/workflow-graph.test.ts`: both new diagnostics fire on the node with their messages; a
   legacy node and a new default node produce neither.
 - `test/builtin-workflows.test.ts`: the Affected tests graphs are byte-identical to before, and
@@ -588,7 +625,7 @@ Where each derived rule is verified:
 | Rule | Test |
 | --- | --- |
 | D1 | `test/wait-for-ci.test.ts`, Required mode with nothing marked and the expected-check skip |
-| D2 | `test/wait-for-ci.test.ts`, timeout cases |
+| D2 | `test/wait-for-ci.test.ts`, timeout cases, including the clock starting within one poll of the timeout and a late observation |
 | D3 | `test/wait-for-ci.test.ts`, block ordering at the timeout |
 | D4 | `test/wait-for-ci.test.ts`, marking a check required resets the clock |
 | D5 | `test/foreman-review-followup.test.ts`, Inspector disabled after adoption, and the hold |
@@ -625,6 +662,8 @@ uses `data-testid`.
    with the `ci_expected_missing` sentence naming the check, and offers "Wait for CI again".
 8. **Legacy block**: a seeded `ci_flake_report_missing` block shows the rewritten sentence. "Wait
    for CI again" over a green snapshot passes it.
+9. **Truncated**: a green snapshot whose `totalCount` is 140 blocks the run with the
+   `ci_checks_truncated` sentence, and the panel shows the truncation note.
 
 `e2e/specs/foreman-pr-defaults.spec.ts`, extended: `Which failures count` defaults to `All checks`
 on a fresh install, is disabled while "Keep sessions on track with CI" is off, and persists
@@ -688,6 +727,8 @@ Wait for CI passed only when CI included a "Flaky tests" check, so on every repo
 - The node passes only once every counted check has settled and stayed unchanged for the quiet period, measured on Inspector observations; all expected checks present and settled skip it. A counted failure fails once every present counted check has settled, with no quiet period.
 - Required mode counts required plus expected checks. With nothing marked required, it waits out the quiet period before any verdict, then judges all checks and records the fallback.
 - An expected check that never appears blocks at the timeout as `ci_expected_missing`. Publish refuses a quiet period at or above the timeout, and duplicate or more than 20 expected checks.
+- A head with more than 100 checks never passes on the first 100: a counted failure among them fails, and otherwise the node blocks as `ci_checks_truncated`.
+- A quiet period running past the timeout is decided on its first new observation after its length, and blocks when none arrives within 15 minutes.
 - "Flaky tests" is an ordinary check; its flake report is shown when present.
 - Foreman's `ciStrictness` decides which failures count. Required reads the Inspector's stored snapshot, holds while it is behind the PR head, and counts all failures when the Inspector is off, never adopted the PR, or nothing is marked required. The PR action's CI wording follows it and is frozen per packet.
 - No new GitHub call: the Inspector's one PR query adds `isRequired` and `totalCount`.
@@ -702,7 +743,7 @@ Wait for CI passed only when CI included a "Flaky tests" check, so on every repo
 ### Upstream surfaces touched
 
 - Modules: `src/server/foreman/{review-followup,worker}.ts`, `src/server/inspector/github.ts`, `src/server/{registry,db,index}.ts`, `src/server/workflows/{engine,manager,store,recovery,feedback,agent-contract,builtin-workflows}.ts`, `src/shared/{protocol,types,workflow,workflow-graph,workflow-stages,app-config-entries}.ts`.
-- Protocol: `wait_for_ci` node fields `strictness`, `quietMinutes`, `expectedChecks`; Foreman config `ciStrictness`; `InspectorSummary.ci`; block code `ci_expected_missing`; diagnostics `wait_for_ci_quiet_period`, `wait_for_ci_expected_checks`.
+- Protocol: `wait_for_ci` node fields `strictness`, `quietMinutes`, `expectedChecks`; Foreman config `ciStrictness`; `InspectorSummary.ci`; block codes `ci_expected_missing` and `ci_checks_truncated`; diagnostics `wait_for_ci_quiet_period`, `wait_for_ci_expected_checks`.
 - UI: `ForemanBar.tsx` (Which failures count), `PipelineEditor.tsx`, `WorkflowProperties.tsx`, `run-model.ts`.
 - CI: comment-only edits in `.github/workflows/ci.yml`.
 
@@ -736,7 +777,7 @@ exists:
 M3 ships the final bullet:
 
 ```markdown
-- Wait for CI judges the head's checks under its node's strictness, quiet period and expected checks (fork:ci-strictness). It fails with a repair packet on a counted failing check, blocks without spending a repair round on timeout, missing checks or missing expected checks, and adds no GitHub polling of its own. "Flaky tests" is an ordinary check whose flake report is recorded when present.
+- Wait for CI judges the head's checks under its node's strictness, quiet period and expected checks (fork:ci-strictness). It fails with a repair packet on a counted failing check, blocks without spending a repair round on timeout, missing checks, missing expected checks or more than 100 checks, and adds no GitHub polling of its own. "Flaky tests" is an ordinary check whose flake report is recorded when present.
 ```
 
 ## Delivery boundaries
@@ -752,9 +793,9 @@ API caller can store is ignored. Data that no setting reads yet (M2) may land on
 
 | Unit | What it delivers (plan sections) | Depends on | Docs and fork records it ships |
 | --- | --- | --- | --- |
-| **M1. Drop the "Flaky tests" gate** | [§2](#2-the-decision) for the legacy settings only (All, quiet 3, no expected checks; no new node fields), the removed `FLAKY_TESTS_CHECK_NAME` exemption, `quietSince` and D7 in [§1](#1-shared-contract), [§3](#3-engine-manager-and-store), the quiet headline and rewritten `ci_flake_report_missing` sentence from [§9](#9-run-panel), [§10](#10-built-in-workflows), [§11](#11-compatibility-and-upgrade). Tests: the All-mode, quiet and timeout rows (D2, D3 without expected checks), D7, built-ins. E2E: cases 5 and 8. | none | `docs/workflows.md` Wait for CI behavior and the Affected-tests paragraph, `docs/flaky-tests.md`, the `ci.yml` comments, change-contracts (legacy constant, observed quiet period), and the interim #296 line below. |
+| **M1. Drop the "Flaky tests" gate** | [§2](#2-the-decision) for the legacy settings only (All, quiet 3, no expected checks; no new node fields), the removed `FLAKY_TESTS_CHECK_NAME` exemption, `quietSince`, `WAIT_FOR_CI_QUIET_GRACE_MS` and D7 in [§1](#1-shared-contract), [§3](#3-engine-manager-and-store), the quiet headline and rewritten `ci_flake_report_missing` sentence from [§9](#9-run-panel), [§10](#10-built-in-workflows), [§11](#11-compatibility-and-upgrade). Tests: the All-mode, quiet and timeout rows (D2, D3 without expected checks), D7, built-ins. E2E: cases 5 and 8. | none | `docs/workflows.md` Wait for CI behavior and the Affected-tests paragraph, `docs/flaky-tests.md`, the `ci.yml` comments, change-contracts (legacy constant, observed quiet period), and the interim #296 line below. |
 | **M2. Inspector reads required flags** | [§5](#5-inspector-query); `CiCheckRunSchema.required`, `CiObservationSchema.totalCount`, `ciCheckRunsFromRollup`; `CI_STRICTNESS` and `requiredChecksRollup` in `src/shared/ci-checks.ts`. Nothing reads the new data yet, so no behavior changes. Tests: parse and `PR_QUERY`. | none | `docs/inspector-and-shipping.md`: the query reads `isRequired` and `totalCount`. |
-| **M3. Node settings: strictness, quiet period and expected checks** | `strictness`, `quietMinutes` and `expectedChecks` together on both node arms and the stage model ([§1](#1-shared-contract), D6 as written), the expected-check and Required rows of [§2](#2-the-decision) (the Required counted set, the fallback and `requiredFallback`, D1, D4, the Required packet of S1), both diagnostics in [§4](#4-publish-validation), `ci_expected_missing` with its recovery and sentence, `checksTotal`, all of [§8](#8-workflow-editor), and the settings line, tags, unreported expected rows, fallback note, truncation note and "Not reported when CI failed" of [§9](#9-run-panel). Tests: the expected-check and Required rows, D3 with expected checks, D6, diagnostics, render. E2E: cases 1, 2, 3, 4, 6 and 7. | M1, M2 | `docs/workflows.md`: the three settings, the fallback and `ci_expected_missing`; change-contracts: the block-code list and `CI_STRICTNESS` is append-only; the final #296 line. |
+| **M3. Node settings: strictness, quiet period and expected checks** | `strictness`, `quietMinutes` and `expectedChecks` together on both node arms and the stage model ([§1](#1-shared-contract), D6 as written), the expected-check and Required rows of [§2](#2-the-decision) (the Required counted set, the fallback and `requiredFallback`, D1, D4, the Required packet of S1), both diagnostics in [§4](#4-publish-validation), `ci_expected_missing` and `ci_checks_truncated` with their recovery and sentences, `checksTotal` and the truncation row of [§2](#2-the-decision), all of [§8](#8-workflow-editor), and the settings line, tags, unreported expected rows, fallback note, truncation note and "Not reported when CI failed" of [§9](#9-run-panel). Tests: the expected-check, Required and truncation rows, D3 with expected checks, D6, diagnostics, render. E2E: cases 1, 2, 3, 4, 6, 7 and 9. | M1, M2 | `docs/workflows.md`: the three settings, the fallback, `ci_expected_missing` and `ci_checks_truncated`; change-contracts: the block-code list and `CI_STRICTNESS` is append-only; the final #296 line. |
 | **M4. Foreman's "Which failures count"** | `ciStrictness` in `ForemanConfigSchema` and `app-config-entries.ts`, all of [§6](#6-foreman) (projection, predicate, hold, nudge wording, worker pass-through, popover select and hint), and [§7](#7-pull-request-action-wording). Tests: the review-followup table, D5, the CI policy text, the config default. E2E: the `foreman-pr-defaults.spec.ts` extension. | M2 | `docs/work-queues.md`, the "Conditional CI instructions" paragraph of `docs/workflows.md`, and the Foreman sentence of `docs/inspector-and-shipping.md`. |
 
 ```mermaid
@@ -768,7 +809,8 @@ M1 and M2 have no prerequisites and can merge in either order. M1 alone unblocks
 upstart-web-frontend runs: once it merges, "Wait for CI again" re-judges them as All checks with
 a 3-minute quiet period. The three node fields land together in M3, so D6 and e2e case 2 hold
 as written and no graph on `main` ever carries a subset of them; a node written before M3 has none
-of the three and reads as the legacy settings. M4 does not depend on the node chain. Each unit's
+of the three and reads as the legacy settings. Until M3 merges, a node judges the first 100
+checks and passes on them, as it does today. M4 does not depend on the node chain. Each unit's
 docs describe only what that unit makes true on `main`, and the unit that merges last of M3 and
 M4 sets the tracking issue's Status to `active`.
 
