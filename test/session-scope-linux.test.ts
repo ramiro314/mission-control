@@ -46,6 +46,14 @@ const instance = scopeInstance(home);
 // A 512 MB ceiling on what any hog here can ask for, so it cannot press on the machine even if
 // the cap were not applied.
 const HOG = "head -c 536870912 /dev/zero | tail > /dev/null";
+/**
+ * The same 512 MB ceiling as `HOG`, from one process that does all the allocating, so once the
+ * kernel kills it nothing else in the scope keeps charging memory. With `HOG`'s `head | tail`,
+ * `head` went on filling the pipe after `tail` was killed; when the OOM reaper was slow to free
+ * `tail`, that second allocation made the kernel pick the shell itself, a SIGKILL that beat
+ * systemd's SIGTERM. A test that pins the SIGTERM path uses this one.
+ */
+const LONE_HOG = `'${process.execPath}' -e 'const a = []; for (let i = 0; i < 64; i++) a.push(Buffer.alloc(8 << 20, 1));'`;
 
 function scopeFor(over: Partial<SessionScopeDeps> = {}) {
   return createSessionScope({
@@ -125,7 +133,7 @@ test("a wrapped process runs in its own scope in the sessions slice at oom_score
 test("an OOM kill of a child stops that scope only, and outcome reads it before the unit is reset", { skip, timeout: 40_000 }, async () => {
   const scope = scopeFor();
   await scope.ready();
-  const wrapped = scope.wrap("/bin/sh", ["-c", `sleep 60 & echo $!; ${HOG}; wait`], process.env, "sdk:child-oom");
+  const wrapped = scope.wrap("/bin/sh", ["-c", `sleep 60 & echo $!; ${LONE_HOG}; wait`], process.env, "sdk:child-oom");
   const child = spawn(wrapped.bin, wrapped.args, { stdio: ["ignore", "pipe", "ignore"] });
   let out = "";
   child.stdout!.on("data", (chunk) => (out += chunk));
@@ -228,16 +236,11 @@ test("Pi bash commands: each in its own collected scope at 500, an OOM stops tha
   assert.match(cgroup!, new RegExp(`${escaped}/mission-control-${instance}-pi-commands-[0-9a-f]{8}-1\\.scope$`));
   assert.equal(adj, "500");
 
-  // One process does all the allocating, so once the kernel kills it nothing else in the scope
-  // keeps charging memory. With `HOG`'s `head | tail`, `head` went on filling the pipe after
-  // `tail` was killed. When the OOM reaper was slow to free `tail`, that second allocation
-  // made the kernel pick the shell itself, a SIGKILL (137) that beat systemd's SIGTERM.
+  // `LONE_HOG`, for the reason it gives: the kernel picking the shell itself is a SIGKILL (137).
   // 137 is an accepted production outcome, as is a lone hog bash runs in its own place (see
   // "Pi command scopes" in docs/harnesses-and-terminals.md). This pins the other path: the
   // kernel kills a child, and systemd's SIGTERM stops the shell with 143.
-  // The same 512 MB ceiling as `HOG`.
-  const hog = `'${process.execPath}' -e 'const a = []; for (let i = 0; i < 64; i++) a.push(Buffer.alloc(8 << 20, 1));'`;
-  const oom = await bash(`sleep 60 & ${hog}; wait`);
+  const oom = await bash(`sleep 60 & ${LONE_HOG}; wait`);
   assert.equal(oom.exit_code, 143, `the command was stopped by systemd's SIGTERM: ${JSON.stringify(oom)}`);
   // `--collect`: systemd unloads the failed scope itself, and the daemon never reads it back.
   await waitFor("the OOM-stopped command scope to be collected", async () => (await loadState(units[1]!)) === "not-found", 20_000);
