@@ -546,7 +546,10 @@ export function worktreeUnownedTreeAnchor(path: string): string {
   return `worktrees/unowned/${path}`;
 }
 
-/** Processes still running in a tree after its owner finished, each with a guarded Kill. */
+/**
+ * Processes still running in a tree after its owner finished, each with a guarded Kill, and
+ * a Kill all that confirms every listed process at once when there is more than one.
+ */
 function OrphanList({
   label,
   orphans,
@@ -556,12 +559,21 @@ function OrphanList({
   label: string;
   orphans: readonly OrphanProcess[];
   killHint: string;
-  onKill: (orphan: OrphanProcess, trigger: HTMLButtonElement) => void;
+  onKill: (orphans: readonly OrphanProcess[], trigger: HTMLButtonElement) => void;
 }): React.JSX.Element | null {
   if (orphans.length === 0) return null;
   return (
     <section className="wt-orphans" aria-label={label}>
-      <h5>Orphan processes</h5>
+      <div className="wt-orphans-head">
+        <h5>Orphan processes</h5>
+        {orphans.length > 1 && (
+          <Tooltip label={`Confirm stopping all ${orphans.length} processes listed here`}>
+            <button className="btn btn-danger" type="button" onClick={(event) => onKill(orphans, event.currentTarget)}>
+              Kill all
+            </button>
+          </Tooltip>
+        )}
+      </div>
       <ul>
         {orphans.map((orphan) => (
           <li key={`${orphan.pid}:${orphan.startedAt}`} className="wt-orphan">
@@ -570,7 +582,7 @@ function OrphanList({
               <span>PID {orphan.pid} · parent {orphan.ppid} · started {startedLabel(orphan.startedAt)}</span>
             </div>
             <Tooltip label={killHint}>
-              <button className="btn btn-danger" type="button" aria-label={`Kill process ${orphan.pid}`} onClick={(event) => onKill(orphan, event.currentTarget)}>
+              <button className="btn btn-danger" type="button" aria-label={`Kill process ${orphan.pid}`} onClick={(event) => onKill([orphan], event.currentTarget)}>
                 Kill
               </button>
             </Tooltip>
@@ -612,7 +624,7 @@ function UnownedTreeRow({
   entry: UnownedTreeEntry;
   pending: boolean;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
-  onKill: (orphan: OrphanProcess, trigger: HTMLButtonElement) => void;
+  onKill: (orphans: readonly OrphanProcess[], trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
   const copy = useCopyFeedback({ resetOn: entry.path });
   return (
@@ -671,7 +683,7 @@ function SlotCard({
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
   /** Processes still running in this slot after its owner finished, from the storage report. */
   orphans: readonly OrphanProcess[];
-  onKill: (orphan: OrphanProcess, trigger: HTMLButtonElement) => void;
+  onKill: (orphans: readonly OrphanProcess[], trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
   const copy = useCopyFeedback({ resetOn: slot.path });
   const terminals = useTerminalTargets();
@@ -824,49 +836,81 @@ function startedLabel(at: number): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(at));
 }
 
-/** The Kill confirmation: what will be signalled, and what happens after. */
+/**
+ * The Kill confirmation: what will be signalled, and what happens after. Kill all opens it with
+ * every process its list showed, and each one is still guarded on its own by the daemon.
+ */
 function KillDialog({
-  orphan,
+  orphans,
   busy,
-  error,
+  errors,
   onClose,
   onConfirm,
 }: {
-  orphan: OrphanProcess;
+  orphans: readonly OrphanProcess[];
   busy: boolean;
-  error: string | null;
+  errors: readonly string[];
   onClose: () => void;
   onConfirm: () => void;
 }): React.JSX.Element {
+  const [only] = orphans;
+  const single = orphans.length === 1 ? only : null;
+  const trees = [...new Set(orphans.map((orphan) => orphan.tree))];
   return (
-    <Overlay id={OVERLAY_IDS.worktreeKill} onClose={onClose} className="modal wt-action-modal" role="dialog" ariaLabel="Kill orphan process" closable={!busy}>
+    <Overlay id={OVERLAY_IDS.worktreeKill} onClose={onClose} className="modal wt-action-modal" role="dialog" ariaLabel={single ? "Kill orphan process" : "Kill orphan processes"} closable={!busy}>
       <header className="modal-head">
-        <div><span className="wt-eyebrow">Confirm first</span><h3>Kill process {orphan.pid}</h3></div>
+        <div><span className="wt-eyebrow">Confirm first</span><h3>{single ? `Kill process ${single.pid}` : `Kill ${orphans.length} processes`}</h3></div>
       </header>
       <div className="modal-body wt-action-body">
-        <dl className="wt-facts wt-kill-facts">
-          <div><dt>PID</dt><dd>{orphan.pid}</dd></div>
-          <div><dt>Parent PID</dt><dd>{orphan.ppid}</dd></div>
-          <div><dt>Started</dt><dd>{startedLabel(orphan.startedAt)}</dd></div>
-        </dl>
-        <section><h4>Command</h4><code className="wt-kill-text">{orphan.command}</code></section>
-        <section><h4>Tree</h4><code className="wt-kill-text">{orphan.tree}</code></section>
+        {single ? (
+          <>
+            <dl className="wt-facts wt-kill-facts">
+              <div><dt>PID</dt><dd>{single.pid}</dd></div>
+              <div><dt>Parent PID</dt><dd>{single.ppid}</dd></div>
+              <div><dt>Started</dt><dd>{startedLabel(single.startedAt)}</dd></div>
+            </dl>
+            <section><h4>Command</h4><code className="wt-kill-text">{single.command}</code></section>
+          </>
+        ) : (
+          <section>
+            <h4>Processes</h4>
+            <ul className="wt-kill-list" aria-label="Processes to kill">
+              {orphans.map((orphan) => (
+                <li key={`${orphan.pid}:${orphan.startedAt}`}>
+                  <code className="wt-kill-text">{orphan.command}</code>
+                  <span>PID {orphan.pid} · parent {orphan.ppid} · started {startedLabel(orphan.startedAt)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        <section><h4>Tree</h4>{trees.map((tree) => <code key={tree} className="wt-kill-text">{tree}</code>)}</section>
         <section>
           <h4>What happens</h4>
           <ul>
-            <li>Mission Control checks that this process is still in the tree with the same start time and command, and refuses otherwise.</li>
-            <li>It sends SIGTERM, then SIGKILL if the process is still running 5 seconds later.</li>
+            {single
+              ? <li>Mission Control checks that this process is still in the tree with the same start time and command, and refuses otherwise.</li>
+              : <li>Mission Control checks each process is still in the tree with the same start time and command, and refuses that one otherwise.</li>}
+            <li>It sends SIGTERM, then SIGKILL if {single ? "the process is" : "a process is"} still running 5 seconds later.</li>
             <li>Any return this tree was waiting on is retried at once.</li>
           </ul>
         </section>
-        {error && <p className="settings-error" role="alert">{error}</p>}
+        {errors.length > 0 && (
+          <div className="settings-error" role="alert">
+            {errors.map((error, index) => <p key={index}>{error}</p>)}
+          </div>
+        )}
       </div>
       <footer className="modal-foot">
-        <Tooltip label="Close without signalling the process">
+        <Tooltip label={single ? "Close without signalling the process" : "Close without signalling any process"}>
           <button className="btn btn-ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button>
         </Tooltip>
-        <Tooltip label="Send SIGTERM now, and SIGKILL after 5 seconds if it is still running">
-          <button className="btn btn-danger" type="button" onClick={onConfirm} disabled={busy}>{busy ? "Killing…" : "Kill process"}</button>
+        <Tooltip label={single
+          ? "Send SIGTERM now, and SIGKILL after 5 seconds if it is still running"
+          : "Send each process SIGTERM now, and SIGKILL after 5 seconds if it is still running"}>
+          <button className="btn btn-danger" type="button" onClick={onConfirm} disabled={busy}>
+            {busy ? "Killing…" : single ? "Kill process" : `Kill ${orphans.length} processes`}
+          </button>
         </Tooltip>
       </footer>
     </Overlay>
@@ -1171,7 +1215,7 @@ function PoolRow({
   onSelect: (slotIds: string[], selected: boolean) => void;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
   orphansBySlot: ReadonlyMap<string, readonly OrphanProcess[]>;
-  onKill: (orphan: OrphanProcess, trigger: HTMLButtonElement) => void;
+  onKill: (orphans: readonly OrphanProcess[], trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
   // A slot whose return is stuck, or that holds an orphan process, opens its pool and is always
   // rendered, so the Storage problem that links to its card finds it, with its Kill in view.
@@ -1447,39 +1491,51 @@ export function WorktreeSettingsPanel({
     }
     return bySlot;
   }, [storageHealth]);
-  const [killing, setKilling] = useState<{ orphan: OrphanProcess; trigger: HTMLButtonElement } | null>(null);
+  const [killing, setKilling] = useState<{ orphans: readonly OrphanProcess[]; trigger: HTMLButtonElement } | null>(null);
   const [killBusy, setKillBusy] = useState(false);
-  const [killError, setKillError] = useState<string | null>(null);
+  const [killErrors, setKillErrors] = useState<readonly string[]>([]);
 
   function closeKill(): void {
     killing?.trigger.focus();
     setKilling(null);
-    setKillError(null);
+    setKillErrors([]);
   }
 
-  async function confirmKill(): Promise<void> {
-    if (!killing) return;
-    const { orphan } = killing;
+  /** Kills one process, answering why it was not killed, or null when it was. */
+  async function killOne(orphan: OrphanProcess): Promise<string | null> {
     // With no answer from the daemon the kill may or may not have been sent, which a bare
     // network error would read as a refusal.
     const unanswered = (reason: string) =>
       `The daemon did not answer (${reason}), so it is not known whether process ${orphan.pid} was signalled. It stays listed until a scan no longer finds it.`;
-    setKillBusy(true);
     try {
       const result = await api.killOrphanProcess({
         path: orphan.tree, pid: orphan.pid, startedAt: orphan.startedAt, command: orphan.command,
       });
-      if (result.ok) {
-        setKilling(null);
-        setKillError(null);
-        void state.refresh();
-      } else if (result.status === undefined) {
-        setKillError(unanswered(result.error ?? "no response"));
-      } else {
-        setKillError(result.error ?? "The daemon refused the kill.");
-      }
+      if (result.ok) return null;
+      if (result.status === undefined) return unanswered(result.error ?? "no response");
+      return result.error ?? "The daemon refused the kill.";
     } catch (error) {
-      setKillError(unanswered(error instanceof Error ? error.message : String(error)));
+      return unanswered(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function confirmKill(): Promise<void> {
+    if (!killing) return;
+    setKillBusy(true);
+    try {
+      // Each request is guarded on its own, so they run together rather than one grace period
+      // after another.
+      const outcomes = await Promise.all(killing.orphans.map(async (orphan) => ({ orphan, error: await killOne(orphan) })));
+      const failed = outcomes.flatMap(({ orphan, error }) => error === null ? [] : [{ orphan, error }]);
+      if (failed.length < outcomes.length) void state.refresh();
+      if (failed.length === 0) {
+        setKilling(null);
+        setKillErrors([]);
+      } else {
+        // The dialog narrows to what is left, so a retry never re-signals a process already gone.
+        setKilling({ ...killing, orphans: failed.map((outcome) => outcome.orphan) });
+        setKillErrors(failed.map((outcome) => outcome.error));
+      }
     } finally {
       setKillBusy(false);
     }
@@ -1505,9 +1561,9 @@ export function WorktreeSettingsPanel({
   const pendingPaths = useMemo(() => new Set(operations
     .filter(worktreeOperationPending)
     .flatMap((operation) => operation.targets.map((target) => target.path))), [operations]);
-  const startKill = (orphan: OrphanProcess, trigger: HTMLButtonElement): void => {
-    setKillError(null);
-    setKilling({ orphan, trigger });
+  const startKill = (orphans: readonly OrphanProcess[], trigger: HTMLButtonElement): void => {
+    setKillErrors([]);
+    setKilling({ orphans, trigger });
   };
   const stuckBySlot = useMemo(() => {
     const stuck = new Map<string, StorageProblem>();
@@ -1738,7 +1794,7 @@ export function WorktreeSettingsPanel({
         </div>
       </section>
 
-      {killing && <KillDialog orphan={killing.orphan} busy={killBusy} error={killError} onClose={closeKill} onConfirm={() => void confirmKill()} />}
+      {killing && <KillDialog orphans={killing.orphans} busy={killBusy} errors={killErrors} onClose={closeKill} onConfirm={() => void confirmKill()} />}
       {preview && <ActionDialog preview={preview} error={previewError} changed={previewChanged} busy={busy} onClose={close} onExecute={execute} onRefresh={() => { if (lastRequest) void state.requestPreview(lastRequest); }} />}
       {!preview && busy && <p className="wt-preview-loading" role="status">Building a fresh safety preview…</p>}
       {!preview && previewError && <p className="settings-error">{previewError}</p>}

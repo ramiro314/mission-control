@@ -32,7 +32,9 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
  *
  * Orphan processes: a process still inside a tree whose owner has finished is listed in Storage,
  * its link lands on the slot card, and Kill there goes through its confirmation to the guarded
- * route and comes back as the process gone and the row cleared over `storage_health`.
+ * route and comes back as the process gone and the row cleared over `storage_health`. With more
+ * than one, Kill all confirms every listed process in one dialog and stops them all; any the
+ * daemon refuses stay in that dialog with its reason.
  *
  * Unowned trees: a folder under `worktrees/` that no task, check or slot names has no slot card,
  * so its fixes live in Worktrees > Unowned trees. A process holding one is reported and killed
@@ -441,6 +443,8 @@ test("Kill, from a Storage problem link, stops an orphan process in a quarantine
     const orphans = slot.getByRole("region", { name: /Orphan processes in slot/ });
     await expect(orphans).toContainText(`PID ${pid}`);
     await expect(orphans).toContainText("setInterval");
+    // Kill all is for more than one process; with one, its row's Kill is the only one offered.
+    await expect(orphans.getByRole("button", { name: "Kill all" })).toHaveCount(0);
     await shoot(dashboard, "02-slot-card-orphan-row");
 
     // Cancel signals nothing.
@@ -477,6 +481,133 @@ test("Kill, from a Storage problem link, stops an orphan process in a quarantine
     await shoot(dashboard, "04-orphan-killed");
   } finally {
     orphan?.kill("SIGKILL");
+  }
+});
+
+/**
+ * A quarantined slot with `count` real processes still running in it, opened on its card from
+ * the first one's Storage problem link, so the card lists every one of them.
+ */
+async function slotWithOrphans(dashboard: Page, daemon: DaemonHandle, count: number) {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "orphan processes" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1,
+              quarantine_reason = 'worktree reset failed',
+              last_error = 'processes still use the slot'
+        WHERE path = ? AND state = 'available'`,
+    ).run(lease.path);
+    expect(Number(changed.changes)).toBe(1);
+  });
+  const children: ChildProcess[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: lease.path, stdio: "ignore" });
+    await once(child, "spawn");
+    children.push(child);
+  }
+  const pids = children.map((child) => child.pid!);
+  const cleanup = () => {
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  };
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+    const problem = dashboard.getByRole("list", { name: "Storage problems" })
+      .getByRole("listitem").filter({ hasText: `Process ${pids[0]}` });
+    await expect(problem.getByText("Orphan process", { exact: true })).toBeVisible();
+    await problem.getByRole("button", { name: "Open slot" }).click();
+    const slot = dashboard.locator(".wt-slot", { hasText: lease.path });
+    const orphans = slot.getByRole("region", { name: /Orphan processes in slot/ });
+    for (const pid of pids) await expect(orphans).toContainText(`PID ${pid}`);
+    return { lease, children, pids, slot, orphans, cleanup };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+
+test("Kill all, on a slot card, confirms every orphan process together and stops them all", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const { lease, pids, slot, orphans, cleanup } = await slotWithOrphans(dashboard, daemon, 2);
+  try {
+    await shoot(dashboard, "06-slot-card-kill-all");
+
+    // Kill all opens one confirmation naming every process, and Cancel signals none of them.
+    await orphans.getByRole("button", { name: "Kill all" }).click();
+    const confirm = dashboard.getByRole("dialog", { name: "Kill orphan processes" });
+    await expect(confirm.getByRole("heading", { name: "Kill 2 processes" })).toBeVisible();
+    const listed = confirm.getByRole("list", { name: "Processes to kill" });
+    for (const pid of pids) await expect(listed).toContainText(`PID ${pid}`);
+    await expect(confirm).toContainText(lease.path);
+    await expectContentClearsBorder(confirm);
+    await shoot(dashboard, "06-kill-all-confirmation");
+    await confirm.getByRole("button", { name: "Cancel" }).click();
+    await expect(confirm).toHaveCount(0);
+    for (const pid of pids) expect(alive(pid)).toBe(true);
+
+    // Confirm sends one guarded kill per process, and the section leaves once all are gone.
+    await orphans.getByRole("button", { name: "Kill all" }).click();
+    await confirm.getByRole("button", { name: "Kill 2 processes" }).click();
+    await expect(confirm).toHaveCount(0, { timeout: 30_000 });
+    for (const pid of pids) await expect.poll(() => alive(pid)).toBe(false);
+    await expect(slot.getByRole("region", { name: /Orphan processes in slot/ })).toHaveCount(0);
+    await shoot(dashboard, "06-kill-all-done");
+  } finally {
+    cleanup();
+  }
+});
+
+test("Kill all keeps only the processes the daemon refused in its dialog, each with its reason", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const { children, pids, orphans, cleanup } = await slotWithOrphans(dashboard, daemon, 2);
+  const [gone, killed] = pids;
+  try {
+    await orphans.getByRole("button", { name: "Kill all" }).click();
+    const many = dashboard.getByRole("dialog", { name: "Kill orphan processes" });
+    await expect(many.getByRole("heading", { name: "Kill 2 processes" })).toBeVisible();
+
+    // The first process ends on its own while the dialog is open, so the daemon's fresh
+    // inspection no longer finds it and refuses that one kill, while the other goes through.
+    const exited = once(children[0], "exit");
+    children[0].kill("SIGKILL");
+    await exited;
+    const kills = new Map<number, number>();
+    dashboard.on("response", async (response) => {
+      if (!response.url().endsWith("/api/worktrees/processes/kill")) return;
+      const body = response.request().postDataJSON() as { pid: number };
+      kills.set(body.pid, response.status());
+    });
+    await many.getByRole("button", { name: "Kill 2 processes" }).click();
+
+    // The dialog stays open, narrowed to the refused process, with the daemon's reason for it.
+    const one = dashboard.getByRole("dialog", { name: "Kill orphan process" });
+    await expect(one.getByRole("heading", { name: `Kill process ${gone}` })).toBeVisible({ timeout: 30_000 });
+    await expect(one.getByRole("list", { name: "Processes to kill" })).toHaveCount(0);
+    await expect(one).not.toContainText(`${killed}`);
+    await expect(one.getByRole("alert")).toContainText(new RegExp(`process ${gone} is (no longer|not reported) in that tree`));
+    await expect(one.getByRole("button", { name: "Kill process" })).toBeEnabled();
+    await expect.poll(() => alive(killed)).toBe(false);
+    expect(Object.fromEntries(kills)).toEqual({ [gone]: 409, [killed]: 200 });
+    await shoot(dashboard, "06-kill-all-partial");
+
+    await one.getByRole("button", { name: "Cancel" }).click();
+    await expect(one).toHaveCount(0);
+  } finally {
+    cleanup();
   }
 });
 

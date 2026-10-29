@@ -717,7 +717,8 @@ The operations have deliberately narrow meanings:
   offered on an available slot's card and, as **Warm idle slots**, among a pool's maintenance
   actions. It never touches a leased or quarantined slot. See [Warm](#warm).
 - **Kill** stops one orphan process: a process still running inside a tree whose owner has
-  finished. It is offered on the process's row in the slot card, behind a confirmation. See
+  finished. It is offered on the process's row in the slot card, behind a confirmation. With
+  more than one listed, **Kill all** confirms every one of them in a single dialog. See
   [Orphan processes](#orphan-processes).
 
 #### Orphan processes
@@ -741,7 +742,10 @@ inspect a tree keeps the last report for it rather than dropping it.
 
 Such a process blocks the tree's return, because the return guard refuses an occupied tree.
 The Storage problem's Open slot link lands on the slot's card, which lists each orphan process
-with **Kill**. The confirmation names the process and what happens.
+with **Kill**. The confirmation names the process and what happens. When the card lists more
+than one, **Kill all** opens one confirmation naming every listed process and sends one guarded
+request per process, all at once. Any it could not kill stay in the dialog with their reasons, so
+a retry never signals a process that is already gone.
 `POST /api/worktrees/processes/kill` takes `{ path, pid, startedAt, command }` and signals nothing
 unless all of these hold:
 
