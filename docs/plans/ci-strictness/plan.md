@@ -94,7 +94,8 @@ All of these are settled. The review reads them; it does not reopen them.
 6. The node passes only once every counted check has settled. In All mode that means every
    observed check; in Required mode, every required check plus every expected one.
 7. A failure fails the node once every counted check has settled, with no quiet period, and the
-   repair packet lists every failure.
+   repair packet lists every failure. Round 1 `required-packet` narrows this for Required mode
+   (see [S1](#supersessions-and-source-notes)).
 8. Required mode ignores non-required checks for the decision but still shows them in the run
    panel. If nothing is marked required after the quiet period, the node judges all checks
    instead. That fallback is recorded on the attempt and shown in the run panel.
@@ -131,7 +132,7 @@ All of these are settled. The review reads them; it does not reopen them.
 | failure-vs-missing-expected | A counted check failed and every present counted check has settled, but an expected check has not appeared | Fail now. The repair packet lists the failures and names the expected checks that have not appeared. |
 | quiet-measurement | How "settled and unchanged for N minutes" is measured | By observation. The clock starts at the Inspector observation that first saw this settled set, and the node passes only on an observation at least N minutes later with the same set. The set is each counted check's name, state and conclusion; in Required mode, changes to non-required checks do not reset it. |
 | quiet-at-timeout | The quiet period is still running when the timeout hits | Finish the quiet period past the timeout, bounded by its length. The timeout blocks only while something counted is pending or missing. |
-| required-packet | Repair packet contents in Required mode | Only counted failures (required and expected) become requested changes. Non-required failures stay out of the packet and are shown in the run panel tagged "Not required". |
+| required-packet | Repair packet contents in Required mode | Only counted failures (required and expected) become requested changes. Non-required failures stay out of the packet and are shown in the run panel tagged "Not required". This narrows decision 7 in Required mode ([S1](#supersessions-and-source-notes)). |
 | new-ids | New append-only identifiers | Block code `ci_expected_missing` (recovery `retry`, which is "Wait for CI again"). Diagnostics `wait_for_ci_quiet_period` and `wait_for_ci_expected_checks`. |
 | inspector-query | Inspector PR query change | Always read `isRequired(pullRequestNumber:$number)` on `CheckRun` and `StatusContext`, plus `contexts.totalCount`. |
 | foreman-source | Where Foreman learns which checks are required | From the Inspector's stored snapshot, projected onto each follow-up PR. Foreman holds the CI nudge while the snapshot is for another head, and counts all failures when the Inspector never adopted the PR. |
@@ -177,6 +178,29 @@ confirm them.
   its graph bytes.
 - **D7.** `WaitForCiState.greenWithoutReportSince` stays in the schema and is always written as
   `null`, so a downgraded daemon can still read new attempt rows.
+
+### Supersessions and source notes
+
+- **S1. Round 1 `required-packet` narrows decision 7 in Required mode.** In Required mode the
+  round 1 answer is the authority: the repair packet lists every counted failure (required and
+  expected checks), and non-required failures stay out of the packet and appear in the run panel
+  tagged "Not required". In All mode every observed check is counted, so decision 7 holds as
+  written: the packet lists every failure.
+- **S2. Decision 4 relies on the full wording from the task request.** The goal text handed to
+  the plan review was truncated after "the quiet period". The plan relies on the full sentence
+  from the task request this session received: "When every expected check is present and
+  settled, the quiet period is skipped; checks still pending are never skipped." Decision 4
+  states it in full, and the human approved revision 1 with that wording.
+- **S3. The e2e requirement is met by extending two existing specs.** The goal asks for "a
+  Playwright spec in e2e/" for the editor and run-panel changes. The plan extends
+  `e2e/specs/workflow-wait-for-ci.spec.ts`, which already authors Wait for CI nodes and seeds
+  `inspector_prs.observed_ci_json` for its run views, and `e2e/specs/foreman-pr-defaults.spec.ts`,
+  which already covers the Foreman popover's Pull requests controls. No new spec file is added,
+  because a new one would duplicate those fixtures. Round 1 `test-coverage` chose this placement.
+- **S4. The plan supersedes fork:flake-aware-testing's Wait for CI contract.** #296's
+  "Behavior contracts" line saying Wait for CI passes only with a "Flaky tests" check is replaced
+  by the line in [fork:flake-aware-testing amendment](#forkflake-aware-testing-amendment), and the
+  docs that repeat the old rule are rewritten (see [Docs](#12-docs)).
 
 ## Design
 
@@ -529,6 +553,13 @@ The focused files run with
   - `ciCheckRunsFromRollup` reads `isRequired` and `totalCount`.
   - Schema: both node arms accept absent fields and do not add them; `WAIT_FOR_CI_LEGACY_SETTINGS`
     is pinned by value.
+  - D7: every state that `initialWaitForCiState` and `decideWaitForCi` produce carries
+    `greenWithoutReportSince: null`, and a state with all the new fields still parses under a
+    pinned copy of the pre-change `WaitForCiStateSchema` kept in the test as a fixture.
+- `test/workflow-stages.test.ts` (D6): a legacy `wait_for_ci` node with none of the three fields
+  round-trips through the stage model to a byte-identical graph with the fields still absent;
+  editing any one of the three writes all three; a node added through the stage inserter writes
+  `WAIT_FOR_CI_NEW_NODE_SETTINGS`.
 - `test/wait-for-ci-render.test.ts`: the settings line, row tags, rows for unreported expected
   checks, the fallback and truncation notes, the quiet headline, the new and rewritten block
   sentences, and the absence of tags in All mode.
@@ -552,9 +583,22 @@ The focused files run with
 - `test/docs-only-ci-scripts.test.ts`: rename the case ("a docs-only run's checks pass Wait for
   CI") and drop the "because flake report still publishes Flaky tests" rationale.
 
+Where each derived rule is verified:
+
+| Rule | Test |
+| --- | --- |
+| D1 | `test/wait-for-ci.test.ts`, Required mode with nothing marked and the expected-check skip |
+| D2 | `test/wait-for-ci.test.ts`, timeout cases |
+| D3 | `test/wait-for-ci.test.ts`, block ordering at the timeout |
+| D4 | `test/wait-for-ci.test.ts`, marking a check required resets the clock |
+| D5 | `test/foreman-review-followup.test.ts`, Inspector disabled after adoption, and the hold |
+| D6 | `test/workflow-stages.test.ts`, legacy round trip and the first edit; e2e case 2 reads the published fields back |
+| D7 | `test/wait-for-ci.test.ts`, null field and the pinned pre-change schema |
+
 ## End-to-end specs
 
-Both specs stand in for GitHub the way `workflow-wait-for-ci.spec.ts` already does: they write
+The plan extends two existing spec files rather than adding a new one (see
+[S3](#supersessions-and-source-notes)). Both stand in for GitHub the way `workflow-wait-for-ci.spec.ts` already does: they write
 `inspector_prs.observed_ci_json` directly, with chosen `observedAt` values, so the quiet period is
 exercised deterministically without waiting real minutes. No model tokens are spent, and nothing
 uses `data-testid`.
