@@ -258,11 +258,12 @@ test("the probe refuses OOMPolicy: it retries without it; refusing entirely leav
 
 test("the probe runtime: an Electron app binary runs with ELECTRON_RUN_AS_NODE=1, node adds nothing", async () => {
   const { resolveMissionMcpRuntime } = await import("../src/server/mission-mcp.ts");
-  for (const [execPath, expected] of [
-    ["/opt/Mission Control/mission-control", "1"],
-    ["/usr/bin/node", undefined],
+  // The runtime's kind is the serving process's own (`currentOwnedRuntime`), never its file name.
+  for (const [execPath, kind, expected] of [
+    ["/opt/Mission Control/mission-control", "electron", "1"],
+    ["/usr/bin/node", "node", undefined],
   ] as const) {
-    const { deps, calls } = fakes({ probeRuntime: () => resolveMissionMcpRuntime(execPath) });
+    const { deps, calls } = fakes({ probeRuntime: () => resolveMissionMcpRuntime(execPath, kind) });
     await createSessionScope(deps).ready();
     const probe = calls.find(isProbe)!;
     assert.deepEqual(probe.args.slice(probe.args.indexOf("--")), ["--", execPath, "-e", ""]);
