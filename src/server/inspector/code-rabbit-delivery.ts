@@ -2,10 +2,11 @@ import type { CodeRabbitFollowup, CodeRabbitSummary } from "@shared/code-rabbit.
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import { reportBucket } from "@shared/session.ts";
 import { taskRepoRefs } from "@shared/task-repos.ts";
-import { codeRabbitSummary, getInspectorPr, readCodeRabbit } from "../db.ts";
+import { codeRabbitSummary, getInspectorPr, loadInspectorComments, readCodeRabbit } from "../db.ts";
 import { getForemanConfig } from "../foreman/config.ts";
-import { activeWorkflowOwnsSession, buildPayload, decideReviewFollowup, followupPrs } from "../foreman/review-followup.ts";
+import { activeWorkflowOwnsSession, buildPayload, decideReviewFollowup, followupPrs, mergeabilityOf } from "../foreman/review-followup.ts";
 import { foremanMayActLive } from "../foreman/verdict.ts";
+import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import { noteKeyFor, type Registry } from "../registry.ts";
 import { codeRabbitEnabled } from "../shipping/config.ts";
 
@@ -43,14 +44,20 @@ export function codeRabbitCandidate(registry: Registry, sessionId: string, reque
     session, pr: currentPr, mark: null, now: Date.now(), bucket: reportBucket(session, sessions),
     mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot) && foremanMayActLive(cfg, checkout, row.repoRoot),
     workflowOwnsSession,
-    cfg: { trackReviewComments: false, trackCiFailures: false, codeRabbitAutoResolve: true,
+    cfg: { trackReviewComments: false, trackCiFailures: false, trackMergeConflicts: false, codeRabbitAutoResolve: true,
       settleMs: Number(process.env.FOREMAN_QUEUE_SETTLE_MS || 10_000) },
   });
   if (decision.kind === "skip") return { error: decision.why } as const;
+  // Fork: this payload replaces Foreman's, so it carries what Foreman's would have: the
+  // unresolved findings' text, not a count, and a conflict no one has escalated.
+  const findings = cfg.trackReviewFeedback
+    ? orderInspectorFindings(loadInspectorComments(row.key).filter((finding) => finding.status !== "resolved"))
+    : [];
   const payload = buildPayload({ ...currentPr, repoRoot: checkout }, {
-    findings: cfg.trackReviewFeedback && (pr.inspector?.postedOpen ?? 0) > 0,
+    findings: findings.length > 0,
     ciFailing: cfg.trackCiFailures && pr.checks === "failing", codeRabbit: true,
-  });
+    conflicting: cfg.trackMergeConflicts && mergeabilityOf(pr) === "conflicting" && !pr.conflictEscalated,
+  }, findings);
   return { owner, session, payload, summary, checkout } as const;
 }
 

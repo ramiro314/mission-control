@@ -2653,6 +2653,20 @@ export const InspectorInspectionSchema = z.object({
   title: z.string().nullable(),
   adoptedAt: z.number(),
   updatedAt: z.number(),
+  // Upstream's CodeRabbit projection (`CodeRabbitSummary` in `code-rabbit.ts`), restated here
+  // for the same reason as the rest of this schema.
+  codeRabbit: z.object({
+    status: z.enum(["unknown", "complete", "error"]),
+    observationId: z.string().nullable(),
+    headSha: z.string().nullable(),
+    observedAt: z.number().nullable(),
+    freshUntil: z.number().nullable(),
+    unresolved: z.number().nullable(),
+    error: z.string().nullable(),
+    threads: z.array(z.object({ id: z.string(), url: z.string(), path: z.string().nullable() })),
+    pending: z.number(),
+    delivery: z.string(),
+  }).optional(),
   openFindings: z.number().int(),
   postedOpenFindings: z.number().int(),
   resolvedFindings: z.number().int(),

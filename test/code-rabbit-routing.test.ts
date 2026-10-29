@@ -270,7 +270,7 @@ test("source remains independent of Inspector and CI switches on terminal and SD
   for (const runtime of ["sdk", "terminal"] as const) {
     const session = { ...f.session, runtime, terminals: runtime === "terminal" ? mkSession().terminals : [] };
     assert.equal(decideReviewFollowup({ session, pr: followupPrs(session)[0]!, mark: null, bucket: "idle", mayActLive: true,
-      workflowOwnsSession: false, cfg: { trackReviewComments: false, trackCiFailures: false, codeRabbitAutoResolve: true, settleMs: 0 }, now: Date.now(),
+      workflowOwnsSession: false, cfg: { trackReviewComments: false, trackCiFailures: false, trackMergeConflicts: false, codeRabbitAutoResolve: true, settleMs: 0 }, now: Date.now(),
     }).kind, "nudge");
   }
 });
