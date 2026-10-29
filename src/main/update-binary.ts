@@ -10,6 +10,7 @@ import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
 import type { UpdatePrepareStage, UpdateTransfer } from "../shared/update.ts";
 import type { BinaryOffer } from "./update-binary-release.ts";
 import { BinaryUpdateError } from "./update-binary-release.ts";
+import { processLifetime } from "../server/platform/process-lifetime.ts";
 
 export interface BinaryStageRequest {
   offer: BinaryOffer;
@@ -88,8 +89,8 @@ export async function stageBinaryUpdate(request: BinaryStageRequest, options: {
   const parent = {pid: process.pid, identity: processIdentity(process.pid)};
   atomicMigrationJson(join(directory, "owner.json"), {protocol: 1, path: directory,
     parent, worker: null});
-  const child = fork(options.worker, [], {execPath: process.execPath, execArgv: [], env, detached: true, stdio: ["ignore", "ignore", "pipe", "ipc"]});
-  const killGroup = () => { try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* Already settled. */ } };
+  const child = fork(options.worker, [], {...processLifetime.treeRootOptions, execPath: process.execPath, execArgv: [], env, stdio: ["ignore", "ignore", "pipe", "ipc"]});
+  const killGroup = () => processLifetime.killTree(child);
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   const cancel = () => {
     if (child.connected) child.send({kind: "cancel"}, () => {});

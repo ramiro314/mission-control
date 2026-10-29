@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { executableChildEnv } from "../server/executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "../server/executables/catalog.ts";
+import { processLifetime } from "../server/platform/process-lifetime.ts";
 import { binaryEnrollmentChoice, type BinaryEnrollment } from "../shared/binary-enrollment.ts";
 import { validateBinaryBuildMetadata } from "../shared/binary-distribution.mjs";
 import { binaryPublisherPolicy } from "../shared/binary-publisher-policy.mjs";
@@ -45,7 +46,7 @@ export async function startBinaryEnrollment(bundle: string, stateDirectory: stri
   const env = executableChildEnv({...process.env, MISSION_HOME: stateDirectory}, ["ELECTRON_RUN_AS_NODE"]);
   const executable = FIXED_OS_EXECUTABLES.bash;
   let child;
-  try { child = spawn(executable, args, {env, detached: status.action === "install", stdio: ["ignore", fd, fd]}); }
+  try { child = spawn(executable, args, {...(status.action === "install" ? processLifetime.treeRootOptions : {}), env, stdio: ["ignore", fd, fd]}); }
   finally { closeSync(fd); }
   await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
   if (status.action === "install") {
