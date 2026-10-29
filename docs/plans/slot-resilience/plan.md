@@ -1,6 +1,6 @@
 # Make worktree slots survive large monorepos
 
-**Status:** Shaped with the operator in two interview rounds (2026-10-28 and 2026-10-29). Revision 1 was approved on 2026-10-29. Revision 2 repairs three findings from the Plan Validation review: the reset rule now counts the ignored entries a reset really discards, phase 1 produces the blocking path its card shows, and a check tree's lease settles before its registration is pruned. Revision 3 repairs the review's second round: the overwrite check also counts a target path above an ignored entry, and it compares paths without regard to letter case. Approval is the Mission Control plan review of this exact revision.\
+**Status:** Shaped with the operator in two interview rounds (2026-10-28 and 2026-10-29). Revision 1 was approved on 2026-10-29. Revision 2 repairs three findings from the Plan Validation review: the reset rule now counts the ignored entries a reset really discards, phase 1 produces the blocking path its card shows, and a check tree's lease settles before its registration is pruned. Revision 3 repairs the review's second round: the overwrite check also counts a target path above an ignored entry, and it compares paths without regard to letter case. Revision 4 repairs two GitHub Inspector findings on the plan's pull request: a check tree whose folder is already gone still completes its lease, and the timeout reason names both attempts. Approval is the Mission Control plan review of this exact revision.\
 **Scope:** native worktree pools, check fallback trees, slot observation and recovery, the Worktrees slot card, the dev-mode daemon log\
 **Builds on:** `docs/plans/disk-reclaim/plan.md` (approved 2026-10-26, shipped as #602, #604, #608, #609, #611 and #615)\
 **Amends:** disk-reclaim D6, D10, D11 and D20, and four documented rules in `docs/worktrees-and-checks.md` (see [What this changes in earlier decisions](#what-this-changes-in-earlier-decisions))\
@@ -160,6 +160,9 @@ flowchart LR
 
    A PID that the cwd listing omitted is first re-read on its own (`readCwds([pid])`). Only a PID
    that is still unresolved, and still alive with the same start time, makes the listing unknown.
+
+   When both attempts fail, the recorded reason names both, each with its own timeout, for
+   example "git status timed out after 15 s, and after 30 s on retry".
 3. **Unknown never quarantines.** Every place that quarantines because a read failed now leaves
    the slot in its state. These are `reconcilePool` (including its pool-wide `failPool` for
    "Git worktree registrations are unknown" and an unreadable marker) and `screenIdleSlots`, which
@@ -337,6 +340,21 @@ stateDiagram-v2
    is retried, as today. A tree that Git still recognizes keeps today's path, and so does a
    native check slot, which is a pool slot and goes through Recover or Repair.
 
+   **A folder that is already gone** still completes its lease. This covers a run cut off
+   between step 1 and step 2, and a tree someone removed by hand. The `realpath` condition above
+   cannot hold for a missing folder, so this case does not go through it:
+   - The ordinary return usually settles it on the next pass. If Git no longer lists the
+     registration, the owner check reads `gone` and the lease settles as `returned`, as today.
+     If Git lists the registration as prunable, `git worktree remove --force` accepts a working
+     tree that is already gone, so `handBack` succeeds and the lease settles. That was checked
+     on Git 2.54: an absent tree is removed with exit 0, while a present tree whose `.git` is
+     gone fails with F10's "validation failed".
+   - If `handBack` still fails with the folder absent, the manager checks containment on the
+     recorded path's parent instead. The parent must resolve through `realpath` to
+     `check-worktrees/`, the leaf must be the recorded name, and nothing may exist at the path,
+     not even a symlink. The manager then goes straight to steps 2 and 3. Anything else stays
+     `returning`, with the reason recorded.
+
 ### Phase 3: owned and occupied slots
 
 1. **Owned quarantines (S5).**
@@ -501,7 +519,7 @@ label or placeholder. A new modal calls `expectContentClearsBorder`.
 
 | ID | Phase | Criterion | Test |
 | --- | --- | --- | --- |
-| AC1 | 1 | A child that `run()` kills at its timeout reports `timedOut`, and a worktree Git read killed that way reads "git status timed out after 15 s", never "exit 1". A child killed by an outside signal names the signal | `test/exec-outcome.test.ts`, `test/worktree-reconciliation.test.ts` |
+| AC1 | 1 | A child that `run()` kills at its timeout reports `timedOut`, and one Git read killed that way reads "git status timed out after 15 s", never "exit 1". When its 30 s retry is killed too, the reason reconcile records names both attempts: "git status timed out after 15 s, and after 30 s on retry". A child killed by an outside signal names the signal | `test/exec-outcome.test.ts`, `test/worktree-reconciliation.test.ts` |
 | AC2 | 1 | A listing that fails once and then succeeds changes nothing. One that fails twice leaves every slot in its state (leased stays leased, available stays available, quarantined stays quarantined), records "Last observation failed" on each, and is cleared by the next good pass | `test/worktree-reconciliation.test.ts` |
 | AC3 | 1 | A PID omitted by the cwd listing is re-read alone. When that resolves it, occupancy is known for every target | `test/worktree-occupancy.test.ts` |
 | AC4 | 1 | A Git read that fails twice leaves the slot in its state, and acquisition does not lease it that pass. A proven-dirty available slot is quarantined. A proven-occupied one stays available, is skipped, and lists its occupants | `test/worktree-selection.test.ts`, `test/worktree-reconciliation.test.ts` |
@@ -515,7 +533,7 @@ label or placeholder. A new modal calls `expectContentClearsBorder`.
 | AC12 | 2 | Automatic recovery clears an owner-gone, empty slot quarantined for occupancy unknown, Git unknown, or occupied or dirty. It leaves untouched a slot with reset-rule work, an occupant, a live or unknown owner, or a fresh read that fails, and it never clears a registration or identity quarantine. It refuses, leaving every file unchanged, a slot whose ignored `.env` the target un-ignores, one whose ignored `.idea/` holds a path the target tracks, one whose ignored file's parent directory the target replaces with a tracked file or symlink, and one whose ignored `.idea/` the target overlaps through a differently cased path such as `.Idea/x`. It also refuses when the default moves to such a target between its check and the reset | `test/worktree-recover.test.ts` |
 | AC13 | 2 | A failed-read quarantine whose owner is referenced returns to `leased` with HEAD, index and every file untouched, even when dirty and occupied. One whose owner cannot be read stays quarantined | `test/worktree-reconciliation.test.ts` |
 | AC14 | 2 | A settled task's pool slot holding only ignored files is reclaimed at once. Its disposable tree holding `.yarn/install-state.gz`, in a pool whose seed paths list it, is reclaimed. One holding `.env` is listed as `dirty-settled-tree`. The sweep applies the delete rule with the pool's seed paths | `test/task-worktree-retention-cleanup.test.ts`, `test/orphan-tree-sweep.test.ts` |
-| AC15 | 2 | A `returning` check lease whose tree lost `.git` is completed. The folder is deleted, then the lease settles `returned` and `stuck-return` clears, then the scoped prune removes the registration in the same pass. With the prune made to fail, the registration is removed by the next sweep. With the deletion made to fail, the lease stays `returning`. It is refused while its process group or any occupant is alive, for a path that resolves outside `check-worktrees/`, and through a symlink. A tree Git still recognizes keeps today's path | `test/workflow-check-lease.test.ts`, `test/orphan-tree-sweep.test.ts` |
+| AC15 | 2 | A `returning` check lease whose tree lost `.git` is completed. The folder is deleted, then the lease settles `returned` and `stuck-return` clears, then the scoped prune removes the registration in the same pass. With the prune made to fail, the registration is removed by the next sweep. With the deletion made to fail, the lease stays `returning`. With the run cut off after step 1, the next pass settles the lease through the ordinary `handBack` on the missing tree. With that `handBack` also made to fail, the parent-containment path settles it, and it refuses a missing path whose parent resolves outside `check-worktrees/`, or that is a symlink. It is refused while its process group or any occupant is alive, for a path that resolves outside `check-worktrees/`, and through a symlink. A tree Git still recognizes keeps today's path | `test/workflow-check-lease.test.ts`, `test/orphan-tree-sweep.test.ts` |
 | AC16 | 2 | After a maintenance pass, an ownerless quarantined fixture slot holding only `.yarn/install-state.gz` shows available, and one quarantined for unknown occupancy with a live owner shows leased | `e2e/specs/worktree-reclaim.spec.ts` |
 | AC17 | 3 | A quarantined slot whose owner is referenced names the owner and offers Return. Return opens the owner's ordinary preview and is refused while a process is inside | `test/worktree-actions.test.ts`, `e2e/specs/worktree-reclaim.spec.ts` |
 | AC18 | 3 | Removing the last session in a cancelled or failed task's slot reclaims that task's trees at once when they are clean by their rule. The startup pass does the same | `test/task-worktree-retention-cleanup.test.ts` |
