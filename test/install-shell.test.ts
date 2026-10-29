@@ -82,7 +82,9 @@ else {process.exit(99);}
   for (const tool of mocked.filter(t => t !== 'gh')) input = input.replaceAll(`/usr/bin/${tool}`, join(bin, tool)).replaceAll(`/usr/sbin/${tool}`, join(bin, tool));
   // Missing fixture tools must stay missing even on hosts with gh installed.
   // Production OS utilities use absolute paths; PATH contains only our probes.
-  return {log, run: (args: string[] = []) => spawnSync('/bin/bash', ['-s', '--', ...args], {input, env: {...process.env, PATH: bin, PROBE_LOG: log}, encoding: 'utf8', timeout: 30_000})};
+  // The fake tools answer through console.log, which colours a number under an inherited
+  // FORCE_COLOR, and the script would then read `stat`'s size as an escape sequence.
+  return {log, run: (args: string[] = []) => spawnSync('/bin/bash', ['-s', '--', ...args], {input, env: {...process.env, PATH: bin, PROBE_LOG: log, FORCE_COLOR: '0'}, encoding: 'utf8', timeout: 30_000})};
 }
 
 test('standalone bootstrap stays generated from the shipped publisher policy', () => {

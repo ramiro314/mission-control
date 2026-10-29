@@ -65,7 +65,8 @@ exit ${exitCode}
     assert.deepEqual(args, [bootstrap, '--ref', channel === 'stable' ? 'v1.2.3' : metadata.commit,
       ...(temporary ? [] : ['--enroll', ...(location === 'personal' || location === 'personal-alias'
         ? ['--scope', 'user'] : ['--apps-dir', dirname(bundle)])])]);
-    assert.equal(options.detached, temporary);
+    // Fork: the tree-root option comes from processLifetime, which only ever adds it.
+    assert.equal(options.detached === true, temporary);
     assert.equal(options.env?.MISSION_HOME, stateDirectory);
     assert.equal(options.env?.ELECTRON_RUN_AS_NODE, undefined);
     const child = spawn(command, args, options);
