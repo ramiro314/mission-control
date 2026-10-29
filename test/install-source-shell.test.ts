@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { parseArgs } from "../scripts/install-app.mjs";
 import { CANONICAL_REPO, validateReceipt } from "../src/shared/install-receipt-schema.mjs";
+import { MACOS_ONLY_MESSAGE } from "../src/shared/macos-only.mjs";
 import { inspectUpdateRuntime } from "../src/main/update-runtime.ts";
 
 const root = resolve(import.meta.dirname, "..");
@@ -25,7 +26,13 @@ function fixture(t: test.TestContext, fail = "") {
   for (const path of [bin, scratch, apps, home]) mkdirSync(path);
   const log = join(directory, "commands.jsonl");
   const preload = join(directory, "architecture.mjs");
-  writeFileSync(preload, 'Object.defineProperty(process, "arch", { value: "arm64" });\n');
+  // An Apple silicon Mac, so the installer runs its macOS path on any test host; a Linux host
+  // would otherwise stop at the macOS-only refusal before anything this file asserts.
+  writeFileSync(preload, [
+    'Object.defineProperty(process, "arch", { value: "arm64" });',
+    'Object.defineProperty(process, "platform", { value: "darwin" });',
+    "",
+  ].join("\n"));
   const program = `#!${process.execPath}
 import { appendFileSync, cpSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -137,7 +144,7 @@ process.exit(90);
     assert.equal(result.error, undefined);
     assert.equal(result.status, 1, result.stdout + result.stderr);
     if (prerequisite === "macOS") {
-      assert.match(result.stderr, /requires macOS on Apple Silicon/);
+      assert.equal(result.stderr.trim(), MACOS_ONLY_MESSAGE);
     } else {
       assert.ok(result.stderr.includes(`${prerequisite} is required.`), result.stderr);
       assert.match(result.stderr, /Install Node.js 24\+ and the Xcode command line tools/);

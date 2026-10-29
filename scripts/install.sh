@@ -90,6 +90,11 @@ main() {
     else fail 'Select a stable vX.Y.Z tag or full lowercase main SHA.'; fi
   fi
   channel=${channel:-stable}
+  if [[ $(/usr/bin/uname -s) != Darwin ]]; then
+    # The same words as MACOS_ONLY_MESSAGE in src/shared/macos-only.mjs; no checkout exists yet.
+    echo "The packaged app is macOS only; on Linux run from a checkout (see docs/setup.md)." >&2
+    return 1
+  fi
   [[ $(/usr/bin/uname -s) == Darwin && $(/usr/bin/uname -m) == arm64 ]] || fail 'The desktop app requires macOS on Apple Silicon.'
   [[ $(/usr/bin/sw_vers -productVersion) != 10.* && $(/usr/bin/sw_vers -productVersion) != 11.* ]] || fail 'macOS 12 or newer is required.'
   mission_gh=$(command -v gh) || fail 'GitHub CLI (gh) is required for authenticated downloads. Install its native binary or download the signed DMG from GitHub Releases.'

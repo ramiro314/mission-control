@@ -27,10 +27,13 @@ test("packaged-app commands refuse every platform but macOS with the one message
   );
 });
 
-test("the bootstrap installer carries the shared message word for word", () => {
-  // install.sh runs before any checkout exists, so it cannot import the module and holds a copy.
-  const shell = readFileSync(join(root, "scripts/install.sh"), "utf8");
-  assert.ok(shell.includes(`echo "${MACOS_ONLY_MESSAGE}" >&2`));
+test("both bootstrap installers carry the shared message word for word", () => {
+  // They run before any checkout exists, so they cannot import the module and hold a copy.
+  // install.sh is generated from install-bootstrap.sh, so the template carries it too.
+  for (const script of ["scripts/install.sh", "scripts/install-bootstrap.sh", "scripts/install-source.sh"]) {
+    const shell = readFileSync(join(root, script), "utf8");
+    assert.ok(shell.includes(`echo "${MACOS_ONLY_MESSAGE}" >&2`), script);
+  }
 });
 
 test("npm run package refuses before it builds anything", () => {

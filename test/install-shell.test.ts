@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { renderInstallBootstrap } from '../scripts/render-install-bootstrap.mjs';
+import { MACOS_ONLY_MESSAGE } from '../src/shared/macos-only.mjs';
 
 const root = process.cwd();
 const shell = renderInstallBootstrap();
@@ -61,7 +62,7 @@ if(tool==='gh') {
   else console.log(${JSON.stringify(JSON.stringify(release))});
 } else if(tool==='plutil') {
   try { let v=JSON.parse(readFileSync(args.at(-1),'utf8')); for(const part of args[1].split('.')) v=v[part]; if(v===undefined)process.exit(1); console.log(typeof v==='object'?JSON.stringify(v):v); } catch {process.exit(1);}
-} else if(tool==='uname') console.log(args[0]==='-s'?'Darwin':'arm64');
+} else if(tool==='uname') console.log(args[0]==='-s'?(fail==='platform'?'Linux':'Darwin'):'arm64');
 else if(tool==='sw_vers') console.log('12.7.6');
 else if(tool==='mktemp') console.log(mkdtempSync(${JSON.stringify(join(dir, 'private-'))}));
 else if(tool==='stat') console.log(statSync(args.at(-1)).size);
@@ -86,6 +87,13 @@ else {process.exit(99);}
 
 test('standalone bootstrap stays generated from the shipped publisher policy', () => {
   assert.equal(readFileSync(join(root, 'scripts/install.sh'), 'utf8'), shell);
+});
+test('bootstrap refuses off macOS with the shared macOS-only line before any download', t => {
+  // Fork (Linux support): the same words every packaged-app command prints off macOS.
+  const f = fixture(t, 'platform'); const result = f.run(['--apps-dir', '/somewhere']);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(result.stderr.trim(), MACOS_ONLY_MESSAGE);
+  assert.equal(readFileSync(f.log, 'utf8'), 'uname:["-s"]\n');
 });
 test('native bootstrap verifies twice, unmounts, and forwards quoted options without host build tools', t => {
   const f = fixture(t); const result = f.run(['--apps-dir', '/A folder/Applications', '--dry-run']);
