@@ -670,7 +670,7 @@ authorization refuses the writes, the PR's "Fork feature changes" section carrie
 under `### fork:ci-strictness`, and the refresh creates both after the merge. The shaping turn
 makes no GitHub writes. Every merge unit in [Delivery boundaries](#delivery-boundaries) carries
 both `fork:ci-strictness` and `fork:flake-aware-testing`, as round 1 `fork-tracking` decided.
-Only M1 and M4 replace #296's Wait for CI line, as the amendment below describes.
+Only M1 and M3 replace #296's Wait for CI line, as the amendment below describes.
 
 ### Tracking issue body
 
@@ -721,7 +721,7 @@ Only together with Wait for CI (fork:flake-aware-testing #48), which upstream do
 
 ### fork:flake-aware-testing amendment
 
-M1 and M4 each replace #296's **Behavior contracts** in full through their "Fork feature changes"
+M1 and M3 each replace #296's **Behavior contracts** in full through their "Fork feature changes"
 section. Each takes its base from
 `node scripts/fork-delta.mjs base flake-aware-testing "Behavior contracts"` at the time it opens.
 The list stays as it is, except for the Wait for CI bullet.
@@ -733,7 +733,7 @@ exists:
 - Wait for CI passes once every check on the head has passed and stayed settled for a 3-minute quiet period (fork:ci-strictness). It fails with a repair packet on a failing check, blocks without spending a repair round on timeout or missing checks, and adds no GitHub polling of its own. "Flaky tests" is an ordinary check whose flake report is recorded when present.
 ```
 
-M4 ships the final bullet:
+M3 ships the final bullet:
 
 ```markdown
 - Wait for CI judges the head's checks under its node's strictness, quiet period and expected checks (fork:ci-strictness). It fails with a repair packet on a counted failing check, blocks without spending a repair round on timeout, missing checks or missing expected checks, and adds no GitHub polling of its own. "Flaky tests" is an ordinary check whose flake report is recorded when present.
@@ -741,7 +741,7 @@ M4 ships the final bullet:
 
 ## Delivery boundaries
 
-The feature lands as five merge units, each one pull request into `main`. The ticket follow-up
+The feature lands as four merge units, each one pull request into `main`. The ticket follow-up
 may split a unit into smaller tickets, but those tickets merge together as that unit, keep every
 edge below, and never move a setting's UI ahead of the behavior behind it.
 
@@ -754,23 +754,23 @@ API caller can store is ignored. Data that no setting reads yet (M2) may land on
 | --- | --- | --- | --- |
 | **M1. Drop the "Flaky tests" gate** | [§2](#2-the-decision) for the legacy settings only (All, quiet 3, no expected checks; no new node fields), the removed `FLAKY_TESTS_CHECK_NAME` exemption, `quietSince` and D7 in [§1](#1-shared-contract), [§3](#3-engine-manager-and-store), the quiet headline and rewritten `ci_flake_report_missing` sentence from [§9](#9-run-panel), [§10](#10-built-in-workflows), [§11](#11-compatibility-and-upgrade). Tests: the All-mode, quiet and timeout rows (D2, D3 without expected checks), D7, built-ins. E2E: cases 5 and 8. | none | `docs/workflows.md` Wait for CI behavior and the Affected-tests paragraph, `docs/flaky-tests.md`, the `ci.yml` comments, change-contracts (legacy constant, observed quiet period), and the interim #296 line below. |
 | **M2. Inspector reads required flags** | [§5](#5-inspector-query); `CiCheckRunSchema.required`, `CiObservationSchema.totalCount`, `ciCheckRunsFromRollup`; `CI_STRICTNESS` and `requiredChecksRollup` in `src/shared/ci-checks.ts`. Nothing reads the new data yet, so no behavior changes. Tests: parse and `PR_QUERY`. | none | `docs/inspector-and-shipping.md`: the query reads `isRequired` and `totalCount`. |
-| **M3. Quiet period and expected checks as node settings** | `quietMinutes` and `expectedChecks` on both node arms and the stage model ([§1](#1-shared-contract), D6 for these two fields), the expected-check rows of [§2](#2-the-decision), both diagnostics in [§4](#4-publish-validation), `ci_expected_missing` with its recovery and sentence, the quiet and expected fields and row summary of [§8](#8-workflow-editor) (strictness reads "All checks", no radio yet), and the settings line, unreported expected rows and "Not reported when CI failed" of [§9](#9-run-panel). Tests: expected-check rows, D3 with expected checks, diagnostics, D6, render. E2E: case 1 without the Required switch, cases 2, 3 and 7. | M1 | `docs/workflows.md`: the quiet period and expected checks settings and `ci_expected_missing`; change-contracts block-code list. |
-| **M4. Required strictness on the node** | `strictness` on both node arms (D6 extended to it), the Required counted set, the fallback and `requiredFallback`, D1, D4, the Required packet (S1), `checksTotal`, the strictness radio of [§8](#8-workflow-editor), and the tags, fallback note and truncation note of [§9](#9-run-panel). Tests: Required rows, render tags. E2E: case 1's Required switch, cases 4 and 6. | M2, M3 | `docs/workflows.md`: strictness and the fallback; change-contracts: `CI_STRICTNESS` is append-only; the final #296 line. |
-| **M5. Foreman's "Which failures count"** | `ciStrictness` in `ForemanConfigSchema` and `app-config-entries.ts`, all of [§6](#6-foreman) (projection, predicate, hold, nudge wording, worker pass-through, popover select and hint), and [§7](#7-pull-request-action-wording). Tests: the review-followup table, D5, the CI policy text, the config default. E2E: the `foreman-pr-defaults.spec.ts` extension. | M2 | `docs/work-queues.md`, the "Conditional CI instructions" paragraph of `docs/workflows.md`, and the Foreman sentence of `docs/inspector-and-shipping.md`. |
+| **M3. Node settings: strictness, quiet period and expected checks** | `strictness`, `quietMinutes` and `expectedChecks` together on both node arms and the stage model ([§1](#1-shared-contract), D6 as written), the expected-check and Required rows of [§2](#2-the-decision) (the Required counted set, the fallback and `requiredFallback`, D1, D4, the Required packet of S1), both diagnostics in [§4](#4-publish-validation), `ci_expected_missing` with its recovery and sentence, `checksTotal`, all of [§8](#8-workflow-editor), and the settings line, tags, unreported expected rows, fallback note, truncation note and "Not reported when CI failed" of [§9](#9-run-panel). Tests: the expected-check and Required rows, D3 with expected checks, D6, diagnostics, render. E2E: cases 1, 2, 3, 4, 6 and 7. | M1, M2 | `docs/workflows.md`: the three settings, the fallback and `ci_expected_missing`; change-contracts: the block-code list and `CI_STRICTNESS` is append-only; the final #296 line. |
+| **M4. Foreman's "Which failures count"** | `ciStrictness` in `ForemanConfigSchema` and `app-config-entries.ts`, all of [§6](#6-foreman) (projection, predicate, hold, nudge wording, worker pass-through, popover select and hint), and [§7](#7-pull-request-action-wording). Tests: the review-followup table, D5, the CI policy text, the config default. E2E: the `foreman-pr-defaults.spec.ts` extension. | M2 | `docs/work-queues.md`, the "Conditional CI instructions" paragraph of `docs/workflows.md`, and the Foreman sentence of `docs/inspector-and-shipping.md`. |
 
 ```mermaid
 flowchart LR
-  M1["M1 Drop the Flaky tests gate"] --> M3["M3 Quiet period and expected checks"]
-  M3 --> M4["M4 Required strictness"]
-  M2["M2 Inspector reads required flags"] --> M4
-  M2 --> M5["M5 Foreman: which failures count"]
+  M1["M1 Drop the Flaky tests gate"] --> M3["M3 Strictness, quiet, expected checks"]
+  M2["M2 Inspector reads required flags"] --> M3
+  M2 --> M4["M4 Foreman: which failures count"]
 ```
 
 M1 and M2 have no prerequisites and can merge in either order. M1 alone unblocks the two
 upstart-web-frontend runs: once it merges, "Wait for CI again" re-judges them as All checks with
-a 3-minute quiet period. M5 does not depend on the node chain. Each unit's docs describe only
-what that unit makes true on `main`, and the unit that merges last of M4 and M5 sets the tracking
-issue's Status to `active`.
+a 3-minute quiet period. The three node fields land together in M3, so D6 and e2e case 2 hold
+as written and no graph on `main` ever carries a subset of them; a node written before M3 has none
+of the three and reads as the legacy settings. M4 does not depend on the node chain. Each unit's
+docs describe only what that unit makes true on `main`, and the unit that merges last of M3 and
+M4 sets the tracking issue's Status to `active`.
 
 ## Out of scope
 
