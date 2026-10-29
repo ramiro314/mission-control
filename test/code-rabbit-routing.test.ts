@@ -11,11 +11,11 @@ import { Registry } from "../src/server/registry.ts";
 import { buildApp, type RouteDeps } from "../src/server/routes.ts";
 import { adoptPr } from "../src/server/inspector/worker.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "../src/server/inspector/code-rabbit-delivery.ts";
-import { codeRabbitSummary, loadOtherSends, openDb, recordCodeRabbit, readCodeRabbit, updateInspectorPr } from "../src/server/db.ts";
+import { codeRabbitSummary, loadOtherSends, openDb, recordCodeRabbit, readCodeRabbit, updateInspectorPr, upsertInspectorComment } from "../src/server/db.ts";
 import { claimInjectionEcho, observeInjections, originOf } from "../src/server/injections.ts";
 import { setShippingConfig } from "../src/server/shipping/config.ts";
 import { setForemanConfig } from "../src/server/foreman/config.ts";
-import { decideReviewFollowup, followupPrs } from "../src/server/foreman/review-followup.ts";
+import { decideReviewFollowup, followupPrs, mergeabilityOf } from "../src/server/foreman/review-followup.ts";
 import type { CodeRabbitRecord } from "../src/server/inspector/code-rabbit-state.ts";
 
 let number = 50;
@@ -326,3 +326,69 @@ test("positive driver refusal can retry; attached PRs require that repository's 
   setForemanConfig({ repoAllowlist: ["/tmp/main", "/tmp/repo"] });
   assert.equal(codeRabbitCandidate(sibling.registry, sibling.session.id, sibling.request).error, undefined);
 });
+
+// Fork: the daemon-built CodeRabbit message replaces Foreman's, so it carries the fork's own
+// follow-through: the unresolved findings' text, and a conflict nobody escalated.
+test("the CodeRabbit message carries open Inspector findings and an unescalated conflict, naming the PR by URL", () => {
+  const f = fixture();
+  const url = f.session.prUrl!;
+  upsertInspectorComment({ id: `finding-${f.key}`, prKey: f.key, fingerprint: "fp-open", path: "src/a.ts", line: 3,
+    title: "Null deref in the parser", body: "The parser reads a field it never checked.", severity: "major",
+    round: 1, status: "open", replies: 0, answeredCommentId: null, createdAt: 1000, updatedAt: 1000 });
+  upsertInspectorComment({ id: `resolved-${f.key}`, prKey: f.key, fingerprint: "fp-resolved", path: "src/b.ts", line: 1,
+    title: "Already fixed finding", body: "Resolved since.", severity: "minor",
+    round: 1, status: "resolved", replies: 0, answeredCommentId: null, createdAt: 1000, updatedAt: 1000 });
+  Object.assign(f.session, { prMergeable: { state: "conflicting", headSha: "head" }, prHeadSha: "head",
+    prBaseRef: "main", prConflictEscalated: false });
+  setForemanConfig({ trackReviewFeedback: true, trackMergeConflicts: true });
+  const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
+  assert.equal(candidate.error, undefined);
+  const payload = candidate.payload!;
+  assert.match(payload, /CodeRabbit has 1 unresolved review threads/);
+  assert.match(payload, /GitHub Inspector has 1 unresolved finding on it/);
+  assert.match(payload, /Null deref in the parser/);
+  assert.doesNotMatch(payload, /Already fixed finding/);
+  assert.match(payload, /it has merge conflicts with `main`/);
+  assert.ok(payload.includes(`gh pr view ${url} --comments`), "the PR is named by URL");
+  assert.doesNotMatch(payload, /gh pr view --comments/);
+});
+
+test("the CodeRabbit message leaves out findings and a conflict when there are none to relay", () => {
+  for (const variant of ["switched off", "nothing open", "escalated"] as const) {
+    const f = fixture();
+    if (variant !== "nothing open") {
+      upsertInspectorComment({ id: `finding-${f.key}`, prKey: f.key, fingerprint: "fp-open", path: "src/a.ts", line: 3,
+        title: "Null deref in the parser", body: "Detail", severity: "major",
+        round: 1, status: "open", replies: 0, answeredCommentId: null, createdAt: 1000, updatedAt: 1000 });
+    }
+    Object.assign(f.session, { prMergeable: { state: variant === "nothing open" ? "mergeable" : "conflicting", headSha: "head" },
+      prHeadSha: "head", prBaseRef: "main", prConflictEscalated: variant === "escalated" });
+    setForemanConfig({ trackReviewFeedback: variant !== "switched off", trackMergeConflicts: variant !== "switched off" });
+    const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
+    assert.equal(candidate.error, undefined, variant);
+    const payload = candidate.payload!;
+    assert.match(payload, /CodeRabbit has 1 unresolved review threads/, variant);
+    assert.doesNotMatch(payload, /merge conflicts/, variant);
+    if (variant === "escalated") assert.match(payload, /Null deref in the parser/, variant);
+    else assert.doesNotMatch(payload, /GitHub Inspector has|Null deref in the parser/, variant);
+  }
+});
+
+test("an attached pull request whose snapshot has no mergeability fields reads as unknown, never throws", () => {
+  const f = fixture();
+  const task = mkTask({ repoRoot: "/tmp/main", worktreePath: "/tmp/main-tree", branch: "main-fix", extraRepos: [{
+    repoRoot: "/tmp/repo", worktreePath: "/tmp/pr", branch: "fix", provider: null, worktreeLeaseId: null, baseSha: null, prUrl: null, prState: null, mergedAt: null,
+  }] });
+  // An older snapshot: the feedback predates the fork's prMergeable, prBaseRef, prHeadSha and
+  // prConflictEscalated fields, so they are absent rather than null.
+  f.session.task = { id: task.id, repoPrs: [{ repoRoot: "/tmp/repo", primary: false, prUrl: f.session.prUrl,
+    prState: "open", mergedAt: null, feedback: { prNumber: f.session.prNumber!, prChecks: null, inspector: f.session.inspector } }] } as NonNullable<typeof f.session.task>;
+  f.session.repoRoot = "/tmp/main";
+  const pr = followupPrs(f.session).find((candidate) => candidate.repoRoot === "/tmp/repo")!;
+  assert.equal(pr.mergeable, null);
+  assert.equal(pr.headSha, null);
+  assert.equal(pr.baseRef, null);
+  assert.equal(pr.conflictEscalated, false);
+  assert.equal(mergeabilityOf(pr), null);
+});
+
