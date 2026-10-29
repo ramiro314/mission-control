@@ -48,7 +48,7 @@ init: ## First-run bootstrap: deps, build, and hooks (ARGS="--with-e2e" also che
 # lets the app keep itself current. `app` and `install-app` below stay the DEVELOPER path:
 # they install this worktree and write no receipt, so a work-in-progress build is never
 # mistaken for a managed install.
-install: ## [macOS] Install Mission Control.app from a clean, updater-owned clone (ARGS="--ref v1.2.3")
+install: ## [macOS] Install Agent Mission Control.app from a clean, updater-owned clone (ARGS="--ref v1.2.3")
 	node scripts/install-app.mjs $(ARGS)
 
 session: ## Ask the running daemon for a manual worktree lease (e.g. make session ARGS="-- claude")

@@ -1,5 +1,67 @@
 # Workflows and Personas
 
+## Workflow controls through MCP
+
+Mission Control's MCP exposes the same workflow runtime controls as the dashboard. A session
+can read and control its own workflow without delegation. Reading or controlling another
+session's workflows requires the operator to enable **Control other sessions** on the calling
+session, using the desktop dashboard. The grant is transient and revocable; the MCP cannot enable it.
+All three tools require a current signed Registry session credential alongside the machine token.
+Caller identity comes from that credential, never from a supplied session id or working directory.
+Bindings must match both the current session and its conversation identity. Reattachment checks
+both the source binding and destination; delivery actions also check the packet's original destination.
+An orphaned or historical binding that cannot establish current ownership requires delegation.
+
+`list_workflow_runs` accepts optional `status`, `workflowId`, `session`, `limit`
+(1 through 200), and `cursor` filters. Follow its `nextCursor` until it is null.
+`get_workflow_run({runId})` returns the dashboard's run detail, including the binding,
+submissions, deliveries, and current recovery options. Inspect that state before taking an action.
+
+`trigger_workflow_action` takes a `request` containing `action`, the appropriate target ID,
+and `parameters` using the dashboard's existing request body schema:
+
+```json
+{
+  "request": {
+    "action": "grant-rounds",
+    "runId": "the-run-id",
+    "parameters": { "requestId": "grant-intent-1", "rounds": 2 }
+  }
+}
+```
+
+| Actions | Target | Additional parameters |
+| --- | --- | --- |
+| `grant-rounds` | `runId` | `rounds` |
+| `cancel`, `prepare-pr`, `recheck-inspector` | `runId` | None |
+| `retry` | `runId` | Optional `nodeAttemptId` |
+| `resubmit` | `runId` | Optional `resubmitUnchanged` and `evidence` |
+| `restart-full` | `runId` | `confirmation` when required by the server |
+| `set-nodes-disabled` | `runId` | `nodeIds`, `disabled` |
+| `set-persona-directive` | `runId` | `nodeId`, `feedback` |
+| `remove-persona-directive` | `runId` | `nodeId` |
+| `recover-evidence`, `retry-evidence-readiness` | `runId`, `submissionId` | None |
+| `override-evidence-readiness` | `runId`, `submissionId` | `reason`, `acknowledgedRisk: true` |
+| `retry-delivery` | `deliveryId` | `expectedSessionId`, `expectedNoteKey` |
+| `resolve-delivery` | `deliveryId` | `resolution`: `mark_delivered` or `discard_and_new_round`; the latter also needs `expectedSessionId`, `expectedNoteKey`, and any required `confirmation` |
+| `submit` | `bindingId` | Optional `evidence`; also implements **Run again** |
+| `reattach` | `bindingId` | `sessionId` |
+| `start-review` | `sessionId` | Optional `evidence` |
+
+All parameter objects require a `requestId` except `reattach`. Keep the same request ID when
+retrying the same intent after a lost response; give a new intent a new ID. Full restarts use
+the exact confirmation `RESTART FULL WORKFLOW`; discarding an uncertain delivery uses
+`DISCARD AND SEND A NEW REPAIR ROUND` when the server requires confirmation. To deliberately
+review unchanged work, use `resubmit` with `resubmitUnchanged: true`.
+
+These tools pass through daemon-owned `/mcp/workflows/list`, `/read`, and `/act` authorization
+routes. Run-list ownership is filtered in SQL before pagination. Allowed reads and actions
+use the existing dashboard handlers with MCP/agent telemetry attribution for actions.
+They do not impersonate a human. Use them for operator-authorized workflow actions. The daemon
+retains ownership of state transitions, round limits, idempotency, evidence policy, confirmation
+checks, and delivery/session matching. Failed calls return the daemon's error without an automatic
+retry or fallback. Workflow definition and Persona authoring remain in the Library.
+
 The **Follow the review** guided tour is the fastest orientation to the run side of
 everything below: it walks one real No-Mistakes Review run stage by stage, from the Settings
 rail's **Help & tours** footer or the ⌘K palette; see [guided tours](ui.md#guided-tours).
@@ -372,6 +434,19 @@ an upgrade. Duplicating changes nothing about the built-in, which stays listed a
 bindable. To have new tasks use your copy, publish it and choose it for each task kind under
 **Settings → Workflows → Dispatch defaults** (see
 [Dispatch an agent](dispatch-and-backlog.md), under **After work**).
+
+The one exception is **Maximum repair rounds**. On any built-in, that field stays live in the
+settings rail of both the Pipeline and Graph views, with its own **Save rounds** button. Saving
+it changes the round budget for that built-in on this installation and leaves its graph,
+policies, trigger and delivery as they were. The new value is shown on the workflow and on
+every one of its versions. Every new binding starts from it, including the bindings Foreman
+creates for dispatched tasks. A binding or run that already exists keeps the budget it copied
+when it was created; use the binding dialog or **Grant rounds** on a blocked run to change
+those. **Reset to** returns to the value this build ships, and a later build's new default is
+then followed again. The value is stored in the daemon's database through
+`PUT /api/workflows/:id/round-limit`, which accepts only `{ "maxRepairRounds": 1-20 | null }`
+and refuses a workflow you own (edit and publish its draft instead). Settings backups do not
+carry it yet.
 
 Because it always exists, its name is reserved: creating or renaming a workflow to
 `No-Mistakes Review (High Rigor)` is refused the way any duplicate name is. The one exception is
@@ -1269,8 +1344,10 @@ The checkbox appears above the consent controls. **Allowed repositories**, inclu
 link, sits below the **Workflow Commands** toggle.
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
-or Live delivery, and a repair-round limit. Foreman complete plus Preview is the default for
-new workflows. The optional GitHub Inspector final gate and its missing-PR and findings policies are
+or Live delivery, and a repair-round limit. Foreman complete plus Live is the default for
+new workflows, matching the built-in workflows. Live still needs the **Live delivery** switch
+(on by default) and a Trust grant for the session's repository; a binding without both is
+refused with that reason, and choosing Preview on the binding is always available. The optional GitHub Inspector final gate and its missing-PR and findings policies are
 immutable parts of each published version, and so is the
 [repair-resumption policy](#repair-resumption) below.
 
@@ -1571,14 +1648,15 @@ Every carried claim is retained even when a limit refused some of the evidence i
 the link pointing at the absent item is dropped, because citing evidence that is not there
 invents a gap rather than finding one.
 
-Every frozen coverage claim of the previous submission is retained whole, with its own claim id,
+Each active coverage claim of the previous submission is retained whole, with its own claim id,
 proof class, repository scope, and link set, marked with the submission it came from. The one
 bound is the frozen-coverage limit: a submission's coverage is read through a schema capped at
 `maxClaims`, so a carry that ignored it would make that coverage unreadable rather than larger.
 It binds only when a parent already at the cap meets a child that declared claims of its own, and
 reaching it is recorded as `evidence_carry_truncated` alongside the evidence counts. A claim
 re-declared under the same id is the same claim, and the author's current wording wins; a
-different id for the same criterion is a different claim and is retained beside it.
+new caller id bound to the same canonical `criterionId` replaces the older claims.
+Explicitly superseded and withdrawn claims are excluded before the carry budget is spent.
 
 A claim whose links do not all resolve inside the submission is left in the tray rather than
 frozen, because freezing a claim beside evidence the submission does not hold would be a
@@ -1591,13 +1669,16 @@ claim and the exact links that would not resolve, so a claim the author register
 find is inspectable rather than silent.
 
 Readiness persists the effective claim selection separately from retained ancestry. A new
-unique declaration replaces the selected claim for that criterion. Two current declarations
-remain ambiguous, with one exception: where they share a criterion's exact wording and exactly
-one of them satisfies its declared proof class, that one supersedes the other. A reserved claim
-cannot be amended, so re-registering under a new criterion id is the only repair open to an
-author, and this is what keeps following that instruction from wedging the run. Differing
-wording, or two declarations that both satisfy their class, stay ambiguous: the first are two
-assertions and the second is a choice between author statements.
+explicit binding takes priority over semantic matches. Re-registering a claim under the same
+`clientCriterionId` updates its mutable registration, including its canonical binding, while
+past submissions remain immutable. Identical updates are idempotent.
+
+Use `coverage[].supersedes: ["old-client-id"]` to replace differently worded claims atomically,
+or `withdrawClientCriterionIds: ["old-client-id"]` to retire claims without registering a
+replacement. Withdrawal is idempotent and applies to reserved and inherited claims as well as
+staged claims. A call cannot both register and retire the same caller id. Retirement markers
+are scoped to the conversation and reservation generation, so later rounds cannot revive an
+old claim and replaying a prior capture cannot apply a future withdrawal.
 
 A later repair of another criterion retains the earlier selection. Missing
 selected claims or links become gaps instead of reviving an older claim. Each new snapshot
@@ -1634,21 +1715,50 @@ including its own text, readiness records the citation under `rejectedCitations`
 `unknown_criterion_id`, and the repair packet names the claim and the id it cited before listing
 the criteria that went uncovered because of it.
 
-A claim CARRIED from an earlier submission is the one exception. Its cited id may no longer
-resolve, and the author of the repair in front of it cannot withdraw an id they did not write, so
-it keeps the pre-citation behaviour: matched by its own text, and eligible for semantic
-reconciliation like any uncited claim. `classifyWorkflowCoverageCitation` in
-`src/shared/workflow.ts` decides which of those four cases a citation is, and criterion mapping,
-the reconciliation provider filter and readiness all read it rather than re-deriving the rule.
-The field is optional on the wire and absent from every historical row, so an older daemon strips
-it and matches by text as before.
+Inherited claims follow the same citation rules. New registrations with an unknown id return
+`unknown_criterion_id` immediately and atomically, before staging any evidence. Registration
+validates citations against the runs that receive their repository scope: a scoped claim
+cannot borrow an id from a sibling repository's run, and an `all` claim's id must exist in every
+receiving run. Legacy frozen unknown citations remain visible as readiness gaps until withdrawn
+or corrected. For legacy runs without frozen criteria, registration follows failed capture
+ancestry to the last captured criteria instead of treating an empty failed context as authoritative.
+The tool checks `workflow-coverage-mutations-v1` before sending canonical bindings, supersession, or
+withdrawal, so an older daemon cannot silently strip those fields. Restart Mission Control
+when the tool reports an incompatible daemon.
 
-One claim may answer several criteria, and each of them counts it. Linking one evidence item from
-several claims has always been allowed, so a claim covering two criteria is the same proof a
-compliant author would have written as two claims citing one item; discarding it proved nothing
-and cost the criterion it did answer every one of its links. Two claims matched to ONE criterion
-remains `ambiguous_mapping`, because a criterion carries a single author proof class and there is
-nothing to choose between them. The repair packet names the competing claim ids.
+One uncited claim may answer several criteria. Replacing one criterion with an id-bound claim
+preserves a prior uncited claim that still answers another criterion; explicit `supersedes`
+retires the whole claim. Replacement follows the receiving repository even when scope changes:
+an `all` replacement retires prior scoped claims, while a scoped replacement displaces a shared
+claim only in that repository. Siblings keep their shared proof, and withdrawing the replacement
+does not revive its predecessor in the replaced repository. A changed same-`clientCriterionId`
+registration creates a new claim version and retires its predecessor for the receiving scope,
+even if the new claim's links later drift and prevent it from freezing. Identical replays retain
+their version and generation. When scope narrows, the earlier staged version remains available
+under the same caller id for siblings that have not captured yet. Freezing selects one applicable,
+unretired version per caller id; an all-scope update or explicit withdrawal retires every earlier
+version. When several claims still answer one
+criterion, `ambiguous_mapping` is a warning. Readiness uses a complete claim's own proof class and links,
+selected in stable caller-id order, and displays the competing ids. It never combines incomplete
+claims to manufacture a complete proof. If none is complete, the representative's invalid links,
+scope conflicts, or missing required roles still block. Missing coverage also remains a hard gap.
+
+Existing runs require a recheck, not a rewrite of their immutable submissions. The Runs view's
+**Recover inherited coverage** action (or `recover-evidence` via MCP) creates a new snapshot and
+re-evaluates legacy ambiguity with the current rules. Claims whose canonical ids were stripped
+must be re-registered with the intended id; no text heuristic can reconstruct author intent.
+Recovery honors claim retirements committed before it starts while retaining the parent's frozen
+evidence; it does not capture later staged proof into that recovered snapshot.
+The database upgrade creates the retirement ledger and records retired registration versions and
+each submission's retirement cutoff. Historical claims remain unchanged. Retirement records have
+optional receiving-repository roots; existing records remain global. Retirement follows a
+claim version across conversation reattachment; a fresh registration with the same caller id is
+a new version. Resetting the old conversation retains retirement records still needed by that run.
+Schema v9 preserves existing registrations while allowing retained staged versions alongside the
+single current registration. It does not reconstruct shared versions already overwritten by an
+older daemon; those claims must be registered again for any sibling that never captured them.
+A resubmit after an image capture failure walks past the incomplete capture to retain earlier
+coverage and evidence, while preserving verification across changed repository snapshots.
 
 Reconciliation records its input fingerprint, completion status, consumed attempts and failure
 cause separately from readiness. Each operation allows two actual provider executions, including

@@ -123,6 +123,8 @@ function fakeDaemon(opts: {
       return opts.sessions(afterRead);
     },
     getConfig: async () => CFG,
+    // Upstream's CodeRabbit follow-up reads the Shipping config each pass; off here.
+    shippingConfig: async () => ({ codeRabbitAutoResolve: false }),
     workflowRuns: async () => {
       calls.push("workflowRuns");
       return opts.workflowRuns?.(afterRead) ?? [];

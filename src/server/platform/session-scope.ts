@@ -5,7 +5,8 @@ import { resolve } from "node:path";
 import { locateExecutableSync } from "../executables/locator.ts";
 import { socketExists, userManagerReachable } from "../graphical-session.ts";
 import { stateDir } from "../../shared/harness-runtime.mjs";
-import { resolveCurrentOwnedRuntime } from "../../shared/owned-runtime.mjs";
+import { resolveOwnedRuntime } from "../../shared/owned-runtime.mjs";
+import { currentOwnedRuntime } from "../owned-runtime.ts";
 import { run } from "../util/exec.ts";
 import { underTestRunner } from "../util/test-runner.ts";
 import type { SdkExitCause } from "../harness/types.ts";
@@ -465,7 +466,7 @@ export const productionSessionScopeDeps: SessionScopeDeps = {
   choom: () => locateExecutableSync("choom")?.path ?? null,
   socketExists,
   ownCgroup: readOwnCgroup,
-  probeRuntime: () => resolveCurrentOwnedRuntime(process.execPath),
+  probeRuntime: () => resolveOwnedRuntime(currentOwnedRuntime()),
   run: async (bin, args, opts) => {
     const result = await run(bin, args, opts);
     // A child that died rather than answered, our own timeout included, reports no code.

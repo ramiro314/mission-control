@@ -380,6 +380,7 @@ export const TRANSCRIPT_DEFAULT_TAIL_TURNS = 48;
  * reason `InjectPromptSchema.origin` states at length: a caller that forgets the field
  * should under-claim, never over-claim, and almost every caller IS a human.
  */
+// Delegated session origin is server-owned, just like delegated answer identity.
 const PromptOriginSchema = z.enum(["human", "foreman", "workflow"]).default("human");
 
 /** A message the user sends into a session from the dashboard. */
@@ -418,6 +419,7 @@ export type SendText = z.infer<typeof SendTextSchema>;
  * exactly as the dashboard does, so it declares itself rather than being inferred - and the
  * default is the human, because every other caller IS one.
  */
+// Delegated session identity is server-owned and never accepted in a request body.
 const AnswerActorSchema = z.enum(["human", "foreman"]).optional().default("human");
 
 export const SelectOptionSchema = z.object({
@@ -1003,7 +1005,7 @@ export const ResolveReviewSchema = z.object({
   action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
   selections: z.array(PlanDecisionAnswerSchema).nullable().optional().default(null),
-  by: z.enum(["human", "foreman"]).optional().default("human"),
+  by: AnswerActorSchema,
 }).transform((resolution) => ({
   ...resolution,
   response: resolution.action === "dismiss" ? null : resolution.response,
@@ -1916,10 +1918,10 @@ export const ForemanConfigSchema = z.object({
    * Whether Foreman is switched on at all. On by default, and that authorises far less than
    * it sounds like.
    *
-   * `mode` still ships `dry-run`, so Foreman drafts and never sends; `repoAllowlist` still
-   * ships empty, so `mayActLive` is false everywhere; and the worker is a SEPARATE PROCESS
-   * (`npm run foreman`) that nothing here starts. Enabled with no worker running is enabled
-   * and idle.
+   * `repoAllowlist` still ships empty, so `mayActLive` is false everywhere even though `mode`
+   * ships `live`, and Foreman drafts rather than sends until a human grants a repository in
+   * Trust. The worker is a SEPARATE PROCESS (`npm run foreman`) that nothing here starts.
+   * Enabled with no worker running is enabled and idle.
    *
    * It flipped because it had become a gate in front of something else: `bindingModeBlock`
    * refuses a `foreman_complete` binding outright when this is false, so the automatic repair
@@ -1928,7 +1930,16 @@ export const ForemanConfigSchema = z.object({
    * persisted `false` and keeps it - this default is only read when nobody ever answered.
    */
   enabled: z.boolean().default(true),
-  mode: z.enum(["dry-run", "live", "semi-auto"]).default("dry-run"),
+  /**
+   * Ships `live`, on `liveEnabled`'s reasoning in `@shared/workflow.ts`: the allowlist is the
+   * consent, and it ships empty, so a fresh install still types into no session until a
+   * repository is granted in Trust. A `dry-run` default in front of that grant meant the
+   * grant alone never made Foreman act, and the operator had to find a second switch.
+   *
+   * Only read when nobody ever answered. `setForemanConfig` persists the whole parsed blob,
+   * so an install that has saved any Foreman setting keeps the mode it already had.
+   */
+  mode: z.enum(["dry-run", "live", "semi-auto"]).default("live"),
   /**
    * Repo roots Foreman may act in when live (realpaths). Empty = act nowhere live.
    *
@@ -2642,6 +2653,20 @@ export const InspectorInspectionSchema = z.object({
   title: z.string().nullable(),
   adoptedAt: z.number(),
   updatedAt: z.number(),
+  // Upstream's CodeRabbit projection (`CodeRabbitSummary` in `code-rabbit.ts`), restated here
+  // for the same reason as the rest of this schema.
+  codeRabbit: z.object({
+    status: z.enum(["unknown", "complete", "error"]),
+    observationId: z.string().nullable(),
+    headSha: z.string().nullable(),
+    observedAt: z.number().nullable(),
+    freshUntil: z.number().nullable(),
+    unresolved: z.number().nullable(),
+    error: z.string().nullable(),
+    threads: z.array(z.object({ id: z.string(), url: z.string(), path: z.string().nullable() })),
+    pending: z.number(),
+    delivery: z.string(),
+  }).optional(),
   openFindings: z.number().int(),
   postedOpenFindings: z.number().int(),
   resolvedFindings: z.number().int(),
@@ -2695,6 +2720,8 @@ void inspectorInspectionSchemaMatchesType;
  * nothing is reviewed, so nothing qualifies and nothing merges.
  */
 export const ShippingConfigSchema = z.object({
+  /** Prompt the eligible owner about CodeRabbit threads, independently of merge consent. */
+  codeRabbitAutoResolve: z.boolean().default(false),
   /** The master switch. Off means the gate is never even evaluated as passable. */
   autoMerge: z.boolean().default(false),
   /**
@@ -3828,7 +3855,15 @@ export function seedHiddenDisplayItems(raw: unknown): unknown {
 }
 
 export const UI_CONFIG_DEFAULTS = {
-  layout: "console",
+  /**
+   * Board, which is the product's intended first view. Retiring Cards (#706) moved this to
+   * Console by accident, and fresh installs opened in Console from then on.
+   *
+   * Only a profile that never stored a layout reads this. Any write to `app_config.ui`
+   * persists the whole parsed blob, so an install that has saved any preference keeps the
+   * layout it already had, including a Console it was handed by the old default.
+   */
+  layout: "board",
   conversationView: "terminal",
   /**
    * Condensed, which CHANGES what an existing operator sees on upgrade - and is the
@@ -4797,6 +4832,11 @@ export const EditWorkItemSchema = z.object({
 });
 export type EditWorkItem = z.infer<typeof EditWorkItemSchema>;
 
+/** Delegated approval binds consent to the proposal the controller inspected. */
+export const ApproveWorkItemSchema = z.object({
+  revision: EditWorkItemSchema.shape.revision,
+}).strict();
+
 /** Reorder a queue: the full id list in the new authored order, renumbered in a txn. */
 export const ReorderQueueSchema = z.object({
   ids: z.array(z.string().min(1)).min(1),
@@ -5161,6 +5201,7 @@ export const CONVERSATION_TEXT_MAX_LENGTH = 100_000;
  * multi-line intent or a bulleted gap list at all.
  */
 export const InjectPromptSchema = z.object({
+  codeRabbit: z.object({ prKey: z.string().min(1).max(512), observationId: z.string().uuid() }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
   /** Human conversation composers opt into the editable outbox by default. */
   buffer: z.boolean().optional().default(true),
@@ -5855,10 +5896,9 @@ export const WorkflowEvidenceCoverageClaimSchema: z.ZodType<WorkflowEvidenceCove
       (value) => utf8AtMost(value, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
       `Workflow coverage criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
     ),
-  // Optional on the wire and absent on every historical row. An older daemon strips it and
-  // matches the claim by text exactly as it always did, so a mismatched build degrades to the
-  // previous behaviour rather than refusing the packet.
   criterionId: z.string().min(1).max(200).nullable().optional(),
+  supersedes: z.array(z.string().min(1).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars))
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional(),
   proofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
   repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
   links: z.array(WorkflowEvidenceCoverageLinkSchema)
@@ -6140,12 +6180,15 @@ export const SubmitWorkflowEvidenceSchema = z.object({
       message: "Workflow evidence client item ids must be unique",
     }).optional().default([]),
   coverage: WorkflowEvidenceCoverageClaimsSchema.optional().default([]),
+  withdrawClientCriterionIds: z.array(z.string().min(1).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars))
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional().default([]),
 }).superRefine((value, ctx) => {
   if (
     value.images.length === 0
     && value.artifacts.length === 0
     && value.commandOutputs.length === 0
     && value.coverage.length === 0
+    && value.withdrawClientCriterionIds.length === 0
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -6620,6 +6663,22 @@ export const UpdateWorkflowSchema = z
   });
 export type UpdateWorkflow = z.infer<typeof UpdateWorkflowSchema>;
 export const UpdateWorkflowDraftSchema = UpdateWorkflowSchema;
+
+/**
+ * The whole of what an operator may change on a built-in workflow without duplicating it.
+ *
+ * Strict, so a body that also names a graph, policy or any other binding default is refused
+ * rather than having the rest silently dropped. `null` returns to the shipped value.
+ */
+export const UpdateBuiltinWorkflowRoundLimitSchema = z.object({
+  maxRepairRounds: z
+    .number()
+    .int()
+    .min(WORKFLOW_LIMITS.repairRoundsMin)
+    .max(WORKFLOW_LIMITS.repairRoundsMax)
+    .nullable(),
+}).strict();
+export type UpdateBuiltinWorkflowRoundLimit = z.infer<typeof UpdateBuiltinWorkflowRoundLimitSchema>;
 
 export const ValidateWorkflowSchema = z.object({ expectedDraftRevision: z.number().int().positive() });
 export const PublishWorkflowSchema = ValidateWorkflowSchema;
@@ -8692,3 +8751,42 @@ export const SessionTransferQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(100),
 });
+
+
+/** A dashboard-only grant. No dispatch, task, schedule or global default accepts it. */
+export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().uuid().optional() }).strict();
+const ControlIdSchema = z.string().min(1).max(256);
+export const SessionControlReadSchema = z.object({
+  sessionId: ControlIdSchema.optional(),
+  transcript: z.boolean().optional().default(false),
+}).strict();
+
+/** Fixed operations, never arbitrary URLs or caller-supplied actor attribution. */
+export const SessionControlActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("message"), text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH) }).strict(),
+  z.object({ action: z.literal("interrupt") }).strict(),
+  z.object({ action: z.literal("select_option"), requestId: z.string().min(1), number: z.number().int().min(1).max(99), label: z.string().min(1) }).strict(),
+  z.object({ action: z.literal("submit_options"), form: SubmitOptionsSchema.refine(
+    (form) => !form.answers || Boolean(form.requestId),
+    { message: "delegated SDK form answers require the current requestId", path: ["requestId"] },
+  ) }).strict(),
+  z.object({ action: z.literal("resolve_review"), reviewId: ControlIdSchema, resolution: ResolveReviewSchema }).strict(),
+  z.object({ action: z.literal("pending_deliver"), turnId: ControlIdSchema, revision: z.number().int().min(0), delivery: z.enum(["steer", "interrupt"]) }).strict(),
+  z.object({ action: z.literal("pending_recall"), turnId: ControlIdSchema, revision: z.number().int().min(0) }).strict(),
+  z.object({ action: z.literal("pending_retry"), turnId: ControlIdSchema, revision: z.number().int().min(0) }).strict(),
+  z.object({ action: z.literal("pending_resolve"), turnId: ControlIdSchema, revision: z.number().int().min(0) }).strict(),
+  z.object({ action: z.literal("queue_add"), intent: AddWorkItemSchema.shape.intent }).strict(),
+  z.object({ action: z.literal("queue_edit"), itemId: ControlIdSchema, intent: EditWorkItemSchema.shape.intent, revision: EditWorkItemSchema.shape.revision }).strict(),
+  z.object({ action: z.literal("queue_remove"), itemId: ControlIdSchema }).strict(),
+  z.object({ action: z.literal("queue_approve"), itemId: ControlIdSchema, revision: ApproveWorkItemSchema.shape.revision }).strict(),
+  z.object({ action: z.literal("queue_reorder"), ids: ReorderQueueSchema.shape.ids }).strict(),
+  z.object({ action: z.literal("rename"), name: RenameSchema.shape.name }).strict(),
+  z.object({ action: z.literal("set_model"), model: SetSessionModelSchema.shape.model }).strict(),
+  z.object({ action: z.literal("set_effort"), effort: SetSessionEffortSchema.shape.effort }).strict(),
+  z.object({ action: z.literal("set_permission_mode"), mode: SetPermissionModeSchema.shape.mode }).strict(),
+]);
+export const SessionControlRequestSchema = z.object({
+  sessionId: ControlIdSchema,
+  command: SessionControlActionSchema,
+}).strict();
+export type SessionControlAction = z.infer<typeof SessionControlActionSchema>;

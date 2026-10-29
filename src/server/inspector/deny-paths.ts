@@ -62,6 +62,8 @@ export const STATE_DENY_FILES = [
   "foreman.log",
   "update.log",
   "update-outcome.json",
+  // The operator's own statusline command, saved when the integrations wrap it.
+  "statusline-inner",
   "foreman-spend-outbox.*",
   "foreman-spend-quarantine.*",
 ] as const;

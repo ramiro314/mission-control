@@ -1,3 +1,4 @@
+import { APP_EXECUTABLE_NAME, binaryBundleName } from "../src/shared/app-naming.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -7,23 +8,50 @@ import { getCurrentFuseWire, FuseV1Options } from '@electron/fuses';
 import { inspectBundle, verifyBinaryPublisher } from './install-staged-app.mjs';
 import { UPDATE_HELPER_FILES } from './update-helper-files.mjs';
 import { assertBuildMetadata } from './distribution-contract.mjs';
+import { distributionDiagnostic, distributionToolError } from './distribution-diagnostics.mjs';
+import { imagePublisherRequirement } from '../src/shared/binary-publisher-policy.mjs';
+
+function runMacTool(command, args) {
+  return spawnSync(command, args, {encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}});
+}
 
 function macTool(command, args) {
-  const result = spawnSync(command, args, {encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}});
-  if (result.error || result.status !== 0) throw new Error(`Distribution verification failed: ${command}`);
+  const result = runMacTool(command, args);
+  if (result.error || result.status !== 0) throw distributionToolError(command, result);
   return {stdout: result.stdout.trim(), stderr: result.stderr};
+}
+
+export async function validateDistributionTicket(path, {
+  run = runMacTool, wait = (ms) => new Promise((done) => setTimeout(done, ms)), log = console.log,
+} = {}) {
+  for (let attempt = 0; ; attempt++) {
+    const result = run('/usr/bin/xcrun', ['stapler', 'validate', path]);
+    if (!result.error && !result.signal && result.status === 0) return;
+    // validate still contacts CloudKit even after stapling succeeded. Retry only
+    // the observed dropped-connection failure, never a ticket/trust refusal.
+    const connectionLost = result.status === 68 && !result.error && !result.signal
+      && /\bNSURLErrorDomain Code=-1005\b/.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+    if (!connectionLost || attempt === 3) throw distributionToolError('/usr/bin/xcrun', result);
+    const retryInMs = 1000 * 2 ** attempt;
+    // No raw tool output or argv in retry logs; the final failure goes through
+    // the existing bounded, redacted stage diagnostic.
+    log(`[distribution] ${distributionDiagnostic({command: 'stapler', operation: 'validate',
+      status: result.status, attempt: attempt + 1, retryInMs, reason: 'Apple ticket service connection lost'})}`);
+    await wait(retryInMs);
+  }
 }
 
 export async function verifyDistributionApp(app, metadata, policy) {
   assertBuildMetadata(metadata);
   verifyBinaryPublisher(app, policy);
-  macTool('/usr/bin/xcrun', ['stapler', 'validate', app]);
+  await validateDistributionTicket(app);
   const plist = join(app, 'Contents/Info.plist');
-  for (const [key, value] of Object.entries({CFBundleIdentifier: policy.bundleId,
+  for (const [key, value] of Object.entries({CFBundleIdentifier: policy.bundleId, CFBundleExecutable: APP_EXECUTABLE_NAME,
+    CFBundleName: binaryBundleName(metadata).slice(0, -4),
     CFBundleShortVersionString: metadata.version, LSMinimumSystemVersion: metadata.minimumSystemVersion})) {
     assert.equal(macTool('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, plist]).stdout, value, key);
   }
-  const executable = join(app, 'Contents/MacOS/Mission Control');
+  const executable = join(app, 'Contents/MacOS', APP_EXECUTABLE_NAME);
   assert.equal(macTool('/usr/bin/lipo', ['-archs', executable]).stdout, 'arm64');
   const signature = macTool('/usr/bin/codesign', ['-d', '--verbose=4', app]).stderr;
   assert.match(signature, /flags=.*\bruntime\b/);
@@ -39,10 +67,9 @@ export async function verifyDistributionApp(app, metadata, policy) {
   assert.equal(fuses[FuseV1Options.OnlyLoadAppFromAsar], 48, 'Plain-file satellites and helpers require asar disabled');
 }
 
-export function verifyDistributionDmg(dmg, policy) {
-  macTool('/usr/bin/codesign', ['--verify', '--strict', '-R',
-    `anchor apple generic and certificate leaf[subject.OU] = "${policy.teamId}"`, dmg]);
-  macTool('/usr/bin/xcrun', ['stapler', 'validate', dmg]);
+export async function verifyDistributionDmg(dmg, policy) {
+  macTool('/usr/bin/codesign', ['--verify', '--strict', '-R', imagePublisherRequirement(policy.teamId), dmg]);
+  await validateDistributionTicket(dmg);
   const assessment = macTool('/usr/sbin/spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=4', dmg]);
   assert.match(assessment.stderr, /^source=Notarized Developer ID$/m);
 }
@@ -56,14 +83,14 @@ export async function verifyDistributionArchives({app, appDigest, files, metadat
     assert.match(digest ?? '', /^[a-f0-9]{64}$/);
     macTool('/usr/bin/hdiutil', ['attach', files.dmg, '-readonly', '-nobrowse', '-mountpoint', mount]);
     mounted = true;
-    const dmgApp = join(mount, 'Mission Control.app');
+    const dmgApp = join(mount, binaryBundleName(metadata));
     assert.equal(inspectBundle(dmgApp).digest, digest, 'DMG must contain the exact signed app');
     await verifyDistributionApp(dmgApp, metadata, policy);
     const extracted = join(root, 'zip'); mkdirSync(extracted);
     // Locally produced or retained producer artifacts, not the later client
     // untrusted-download extractor or an installer entry point.
     macTool('/usr/bin/ditto', ['-x', '-k', files['app-zip'], extracted]);
-    const zipApp = join(extracted, 'Mission Control.app');
+    const zipApp = join(extracted, binaryBundleName(metadata));
     assert.equal(inspectBundle(zipApp).digest, digest, 'ZIP must contain the exact signed app');
     await verifyDistributionApp(zipApp, metadata, policy);
     if (requalifyRuntime) {

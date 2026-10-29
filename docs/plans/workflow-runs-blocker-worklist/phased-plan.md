@@ -4,7 +4,7 @@
 
 - Approved plan: [`plan.md`](plan.md)
 - Design comparison the selection came from:
-  [`docs/reports/workflow-runs-triage-mockups/report.html`](../../reports/workflow-runs-triage-mockups/report.html)
+  [`docs/reports/workflow-runs-triage-mockups/report.html`](https://github.com/teamupstart/mission-control/blob/baf85ef86ca1a9c43775f5e582cd81491bb04994/docs/reports/workflow-runs-triage-mockups/report.html)
 
 ## Incorporated human decisions
 

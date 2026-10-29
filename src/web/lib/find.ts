@@ -69,6 +69,7 @@ export interface FindHit {
 const SNIPPET_PAD = 46;
 
 const ORIGIN_LABEL: Record<TurnOrigin, string> = {
+  session: "Delegated session",
   foreman: "foreman",
   harness: "mission control",
   workflow: "workflow",
@@ -101,9 +102,15 @@ export function turnAuthor(m: TranscriptMessage): TurnAuthor {
   return m.origin ?? "operator";
 }
 
-/** What to call a machine-typed turn's author, on a byline or a rail row. */
-export function originLabel(origin: TurnOrigin): string {
-  return ORIGIN_LABEL[origin];
+/**
+ * What to call a machine-typed turn's author, on a byline or a rail row. A delegated turn
+ * names the session that sent it, so a reader of the target can tell which controller typed
+ * it rather than only that one did.
+ */
+export function turnOriginLabel(m: TranscriptMessage, origin: TurnOrigin): string {
+  return origin === "session" && m.originSession
+    ? `${ORIGIN_LABEL.session} from ${m.originSession.name}`
+    : ORIGIN_LABEL[origin];
 }
 
 /**
@@ -116,7 +123,7 @@ export function originLabel(origin: TurnOrigin): string {
 export function turnWho(m: TranscriptMessage, agentLabel: string): string {
   const author = turnAuthor(m);
   if (author === "agent") return agentLabel;
-  return author === "operator" ? "you" : ORIGIN_LABEL[author];
+  return author === "operator" ? "you" : turnOriginLabel(m, author);
 }
 
 function snippet(text: string, start: number, end: number): Pick<FindHit, "pre" | "hit" | "post"> {

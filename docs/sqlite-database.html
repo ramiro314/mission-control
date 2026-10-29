@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 100 cataloged application tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 104 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>101</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>105</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -552,7 +552,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Sessions, reviews, and operator state</strong><span>15 tables</span></summary>
+              <summary><strong>Sessions, reviews, and operator state</strong><span>17 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>reviews</code><p>Human review requests and resolutions, including kind, body, structured decisions, answer selections, status, response, and attribution.</p></div>
                 <div class="table-row"><code>session_events</code><p>An append-only session event log written by hook ingestion. It also proves whether precise hooks have ever been observed for a session.</p></div>
@@ -561,6 +561,8 @@ LIMIT 20;
                 <div class="table-row"><code>session_goals</code><p>The durable objective and latest prompt reconciliation state shown as a session goal.</p></div>
                 <div class="table-row"><code>session_goal_steering</code><p>Classified human steering, keyed by note key and prompt revision. Each append commits atomically with goal reconciliation. New runs freeze a bounded suffix as method, sequence and priority context, separate from acceptance criteria.</p></div>
                 <div class="table-row"><code>session_launch_turns</code><p>How the dashboard presents the turn that started a Mission Control-managed conversation, per stable note key: a fingerprint of the composed prompt that was delivered, plus the human task request captured at dispatch. Marker state only - the composed prompt itself stays in the harness transcript, which remains authoritative for every server-side consumer.</p></div>
+                <div class="table-row"><code>session_delegated_turns</code><p>Which controlling session sent each message delivered through delegated session control, one row per delivery keyed by the target conversation's stable note key: a fingerprint of the text, the controller's id and name at send time, the target transcript's byte size at send (NULL when no transcript was located yet or its size could not be read, and then the row is never bound), whether another send of the same words raced it (a contested row is never bound), and the native transcript turn it was bound to: the first matching user turn written after that offset. Lets the target's log keep naming each sender after a restart, and when two controllers send identical words one after the other; concurrent identical deliveries from different controllers are contested and stay unnamed. The message text itself is not stored.</p></div>
+                <div class="table-row"><code>session_other_sends</code><p>Non-delegated sends to a session that are still inside the 24-hour race window, keyed by the target conversation's stable note key: a fingerprint of the text, when it was sent, and the target transcript's byte size at that moment (NULL when unknown). A delegated message of the same words that starts while one is in flight is contested and left unnamed, including across a daemon restart, so a pasted draft the operator submits later is never credited to a controller. Rows are deleted when a send provably did not land and pruned after the window. The message text itself is not stored.</p></div>
                 <div class="table-row"><code>session_standing_instructions</code><p>What repository standing instructions one session actually received at launch, per stable note key: the whole composed block byte for byte, which channel carried it, and one provenance entry per contributing repository. The launch text and its provenance are written once and never amended - a session keeps the standing instructions it launched with, so this is what an assignment replays and what the session header reads, never a fresh resolution of live configuration. The one field that can be corrected afterwards is the mechanism, and only in one direction: a resumed Codex session that finds its developer-instructions channel unusable is sent the same stored block as prose instead, and the row is moved to <code>prompt-prefix</code> to say so - because that field is what decides whether a later assignment repeats the rule, and a prefix governs only the turn it rode in.</p></div>
                 <div class="table-row"><code>sdk_sessions</code><p>Restorable daemon-owned session identity, runtime choices, lifecycle status, and whether a turn was interrupted.</p></div>
                 <div class="table-row"><code>session_runtime_transfers</code><p>Durable reservations for Continue in terminal: expected task and pinned workflow ownership, source process lifetime, prepared resume lease, launch proof, revision and recovery outcome. An unresolved row holds ownership across source removal and daemon restart until a proven successor is adopted or absence permits safe settlement. It contains neither credentials nor copied workflow evidence.</p></div>
@@ -591,12 +593,13 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Workflow definitions and execution</strong><span>26 tables</span></summary>
+              <summary><strong>Workflow definitions and execution</strong><span>28 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot (test, lint, typecheck, build) holding its optional repository-neutral default argv, revision, and timestamps. Seeded on first open, so all four rows exist before anything is configured.</p></div>
                 <div class="table-row"><code>workflow_command_overrides</code><p>One repository or subdirectory exception to a slot's default command, keyed uniquely by slot and repository root. The longest matching root wins at resolution time, which is how a monorepo package overrides its repository.</p></div>
                 <div class="table-row"><code>testing_settings</code><p>Stored testing settings: one row per repository root, keyed by the canonical path a Command override uses, holding the validated tests.patterns, tests.includeImporters and tests.smokeSet the affected-tests gate lays over the committed .mission/testing.json, with a compare-and-swap revision. Never holds flakes.</p></div>
                 <div class="table-row"><code>command_document_proposals</code><p>Pending Command documents an agent session proposed for one of its task's repositories: at most one row per repository, holding the validated document, a proposal id, the proposing task and session, and when it was proposed. A newer proposal replaces the row. Applying or dismissing it in Library › Commands removes it. Machine state: no settings backup domain reads it.</p></div>
+                <div class="table-row"><code>workflow_builtin_round_limits</code><p>The operator's maximum repair rounds for one built-in workflow, keyed by its stable id, the one setting a built-in takes without Duplicate. A NULL count is a reset to the shipped value; the row stays so its time still dates the definition.</p></div>
                 <div class="table-row"><code>workflow_definitions</code><p>Mutable workflow identity, draft graph, policies, draft revision, archive state, and pointer to the current published version.</p></div>
                 <div class="table-row"><code>workflow_versions</code><p>Immutable published graph and policy snapshots, numbered within a workflow.</p></div>
                 <div class="table-row"><code>workflow_bindings</code><p>A published version attached to a stable session note key, with frozen compatibility facts, trigger and delivery modes, and repair budget.</p></div>
@@ -606,6 +609,7 @@ LIMIT 20;
                 <div class="table-row"><code>workflow_evidence_scope_generations</code><p>Repository-specific evidence generation high-water marks, keyed by stable session note and resolved source root, so unrelated repositories do not wake each other's workflows.</p></div>
                 <div class="table-row"><code>workflow_evidence_staging</code><p>Mutable image or UTF-8 text-artifact metadata staged for the next eligible submission. Command exit status remains structured beside the immutable display content. Server-only source locators remain here and never enter model context or API responses.</p></div>
                 <div class="table-row"><code>workflow_evidence_coverage_staging</code><p>Mutable, bounded author claims mapping acceptance criteria and proof roles to staged evidence. Claims share evidence ownership, generation, and reservation semantics.</p></div>
+                <div class="table-row"><code>workflow_evidence_coverage_retirements</code><p>Conversation-scoped claim withdrawals and supersession markers, keyed by reservation generation. Prevents later submissions from reviving retired coverage while preserving frozen history.</p></div>
                 <div class="table-row"><code>workflow_evidence_reservations</code><p>The ordered, durable mapping from staged evidence to each immutable submission that reserved it, written in the submission transaction so capture can resume after interruption.</p></div>
                 <div class="table-row"><code>workflow_submission_images</code><p>Immutable submission-owned image metadata and retained body locators, including digest, order, availability, and pruning state.</p></div>
                 <div class="table-row"><code>workflow_submission_evidence_coverage</code><p>Immutable submission-owned acceptance-criterion claims and evidence-role links, frozen atomically with the evidence they reference.</p></div>

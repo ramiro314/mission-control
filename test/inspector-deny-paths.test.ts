@@ -177,7 +177,7 @@ function definedStateEntries(): Array<{ file: string; expr: string; entry: strin
     if (!/\bSTATE_DIR\b|\bstateDir\(\)/.test(text)) continue;
     const consts = new Map([
       ...exported,
-      ...[...text.matchAll(/\bconst\s+(\w+)\s*=\s*"([^"]*)"/g)].map((m) => [m[1]!, m[2]!] as const),
+      ...[...text.matchAll(/\bconst\s+(\w+)\s*=\s*(["'])([^"']*)\2/g)].map((m) => [m[1]!, m[3]!] as const),
     ]);
     // Locals that hold the state dir: `const state = stateDir()`, `directory = stateDir()`.
     const aliases = new Set(["STATE_DIR", "stateDir\\(\\)"]);
@@ -188,7 +188,8 @@ function definedStateEntries(): Array<{ file: string; expr: string; entry: strin
     for (const m of text.matchAll(call)) {
       const expr = m[1]!.trim();
       let value: string | undefined;
-      if (/^"[^"]*"$/.test(expr)) value = expr.slice(1, -1);
+      // Either quote: the scripts under `scripts/` are single-quoted.
+      if (/^"[^"]*"$|^'[^']*'$/.test(expr)) value = expr.slice(1, -1);
       else if (/^`[^`]*`$/.test(expr)) {
         value = expr.slice(1, -1).replace(/\$\{(\w+)\}/g, (_, id: string) => consts.get(id) ?? "*");
       } else value = consts.get(expr);

@@ -57,7 +57,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `PI_SKILLS_DIR` | `~/.pi/agent/skills` | the same override for Pi's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/pi-skills`. Pi loads SKILL.md skills from the same standard as Claude and Codex, so the reconciler links the catalog into this dir too. Identity-bound Pi sessions dispatched by Mission Control receive `/reload` when idle; operator-started Pi sessions need a launch or restart |
 | `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - for dispatched agents and every headless Claude call, whether its wire transport is `claude -p` or Agent SDK `query()` (Foreman's review and Tier 1 router, the [Goal](sessions.md#goal) refiner, the untitled-[dispatch](dispatch-and-backlog.md#dispatch-an-agent) titler, the [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review)'s review and reply) |
 | `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless Claude call through either transport; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the GitHub Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
-| `MISSION_INSPECTOR_POLL_MS` | `90000` | [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick does nothing at all while the GitHub Inspector is off |
+| `MISSION_INSPECTOR_POLL_MS` | `90000` | [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick runs when GitHub Inspector or Shipping CodeRabbit follow-up is enabled. With only CodeRabbit enabled it observes without Inspector reviews or GitHub writes |
 | `MISSION_INSPECTOR_MODEL` | `claude-sonnet-5` | GitHub Inspector: the model both the review and the follow-up replies run on. **Settings → Models** wins where it is set, then this, then the shipped default. Named rather than left to the `claude` CLI: an unset `--model` inherits whatever that CLI defaults to, which is the priciest tier available and is not recorded anywhere |
 | `MISSION_INSPECTOR_TIMEOUT_MS` | `600000` | GitHub Inspector: hard cap on one review. Far larger than the Foreman reviewer's 120s because this one has tool round-trips inside it: a 10KB five-file diff measured 225s on Opus and 272s on Sonnet, so a wire near either is a guaranteed failure rather than a safety net - the run is killed, the head never advances, and the PR climbs the retry backoff having produced nothing |
 | `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `300000` | GitHub Inspector: hard cap on one follow-up reply - a smaller job than a review, but the same shape (the diff in the prompt, the same read-only tools), so it moves with the review's ceiling rather than sitting at a fraction of it |
@@ -215,14 +215,18 @@ for the operator to fix.
 **Settings → Setup → Application updates → Alpha updates** opts a managed desktop app into
 updates from the latest commit on `main`. It defaults off. Alpha checks about every five
 minutes and on **Check for updates**; stable mode retains its six-hour release checks.
-Both modes require an explicit **Update Now**, followed by **Restart and Install**.
+Both modes require an explicit **Update Now**, followed by **Restart and Install**. Stable selects
+complete signed release assets; alpha pins the exact observed main SHA and reports pending or
+unavailable when its binary is missing. Neither channel requires host Node/npm or compiles locally.
+A channel change clears an unaccepted offer; an accepted download keeps its immutable identity.
+Cancel waits for owned work to stop before another attempt can start.
 
 The desktop shell owns `update-preferences.json` in `MISSION_HOME`, containing
 `{"alpha":false}` by default. The preference survives updates and restarts and is separate
 from daemon settings snapshots, so repair updates do not depend on a healthy daemon.
 Missing or invalid preferences select stable mode. Change this setting through the desktop
 UI; browser-only dashboards do not offer application updates. See
-[alpha updates](desktop-and-packaging.md#alpha-updates) for source identity and channel changes.
+[alpha updates](desktop-and-packaging.md#alpha-updates) for binary identity and channel changes.
 
 ## Automatic settings snapshots
 
@@ -368,3 +372,14 @@ contributor execution mechanics; they are deliberately not restated here.
 for a pre-fix revision beside it, so a change to what the GitHub Inspector carries can be shown in
 bytes rather than asserted. It reads the older source out of git and never touches the
 working tree, so it is safe to run on dirty state.
+
+## Binary desktop installation
+
+See [Binary installation and manual recovery](desktop-and-packaging.md#binary-installation-and-manual-recovery)
+for installer options, recovery behavior, and qualification limits.
+
+
+Shipping stores `codeRabbitAutoResolve` as a default-false boolean in its existing config blob.
+Settings snapshots include it; restoring an older snapshot leaves it off. It authorizes only
+CodeRabbit follow-up observation and prompts through Foreman, independently of `autoMerge` and
+Inspector consent. See [CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).

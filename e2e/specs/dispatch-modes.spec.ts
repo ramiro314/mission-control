@@ -347,7 +347,9 @@ test("a contradictory opening shows no form in the browser, and the same layer r
     });
 
     await dashboard.goto(`${dev.origin}/#/fleet`);
-    await expect(dashboard.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+    // Navigation finishes at the small bootstrap, before Vite's cold application transform
+    // has loaded: startup gets its own bounded budget, as in `tour-picker.spec.ts`.
+    await expect(dashboard.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible({ timeout: 90_000 });
     await dashboard.evaluate(async ({ modulePath, row }) => {
       const mount = await import(/* @vite-ignore */ `/@fs${modulePath}`);
       const w = window as unknown as Record<string, unknown>;

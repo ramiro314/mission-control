@@ -1,3 +1,12 @@
+import { paneToken } from "@shared/pane.ts";
+import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
+import { claimCodeRabbit, finishCodeRabbit } from "./db.ts";
+import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
+import { registerSessionControlRoutes, sessionControlActor } from "./session-control.ts";
+import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
+import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
+import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import { parseBody } from "./http-body.ts";
 import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, carriedPlanApproval, finalBundleDecision } from "./plans/publication.ts";
 import { decisionLead, formatResponse } from "@shared/review-item.ts";
 import { validatePlanInputs } from "./plans/inputs.ts";
@@ -32,6 +41,7 @@ import { homedir } from "node:os";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
 import {
   AddWorkItemSchema,
+  ApproveWorkItemSchema,
   AssignTaskSchema,
   AwayConfigPatchSchema,
   BacklogPlanSchema,
@@ -187,6 +197,7 @@ import {
   ArchivePersonaSchema,
   CreateWorkflowSchema,
   UpdateWorkflowSchema,
+  UpdateBuiltinWorkflowRoundLimitSchema,
   ValidateWorkflowSchema,
   PublishWorkflowSchema,
   ArchiveWorkflowSchema,
@@ -423,6 +434,7 @@ import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
+import { currentOwnedRuntime } from "./owned-runtime.ts";
 import type { SetupDeps } from "./setup/types.ts";
 import {
   DEFAULT_SETUP_INSTALL_CATALOG,
@@ -516,7 +528,7 @@ import {
   retryWritebacks,
   shapeTicketFollowupForTask,
   getSkillsAcks,
-  loadHumanResolvedReviews,
+  loadConversationResolvedReviews,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
   loadInspectorInspection,
@@ -817,25 +829,6 @@ export const WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES =
   + 8 * 1024;
 
 /**
- * Parse + validate a JSON request body against a schema. Returns the typed data,
- * or a ready-to-return 400 response - collapsing the safeParse/400 boilerplate
- * every write endpoint otherwise repeats.
- */
-// `error` is carried alongside the ready-made `res` so a route with extra facts to
-// report on a refusal can build its own body without re-reading this one's. /inject
-// is that route: its contract is that EVERY refusal states whether text was pasted.
-async function parseBody<S extends ZodTypeAny>(
-  c: Context,
-  schema: S,
-): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; error: string; res: Response }> {
-  const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) {
-    return { ok: false, error: parsed.error.message, res: c.json({ error: parsed.error.message }, 400) };
-  }
-  return { ok: true, data: parsed.data };
-}
-
-/**
  * The same, for a body whose SIZE is part of the contract.
  *
  * `parseBody` above buffers whatever arrives and hands it to Zod. That is right for every
@@ -929,7 +922,7 @@ interface ForemanWriteRefusal {
 function foremanWriteRefusal(
   activity: ComposerActivityTracker,
   session: Session,
-  by: "human" | "foreman" | "workflow",
+  by: ReviewActor | "workflow" | "session",
 ): ForemanWriteRefusal | null {
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
@@ -1202,6 +1195,8 @@ export interface RouteDeps {
    * embedded session can exist.
    */
   sdkSessions?: SdkSupervisor;
+  /** Private desktop authorization; defaults to the owning utility-process channel. */
+  authorizeSessionControl?: AuthorizeSessionControl;
   /**
    * How a handed-off session's terminal home is opened. Injected so the handoff route is
    * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
@@ -1324,6 +1319,7 @@ export const ROUTE_DEP_NAMES = [
   "schedules",
   "ensembles",
   "sdkSessions",
+  "authorizeSessionControl",
   "handoffDeps",
   "launchSessionTerminal",
   "sessionActions",
@@ -1620,6 +1616,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     schedules,
     ensembles,
     sdkSessions,
+    authorizeSessionControl,
     handoffDeps,
     launchSessionTerminal,
     sessionActions,
@@ -2055,6 +2052,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     };
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
+  registerSessionControlRoutes(app, registry, authorizeSessionControl);
+
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
@@ -2107,6 +2106,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
+  registerWorkflowMcpRoutes(app, registry, workflowManager);
   const localPlans = workflows ? workflows.localPlanPublication(tasks) : null;
   app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
@@ -2493,8 +2493,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (result.reason === "builtin") {
       return c.json({
         ...body,
-        error: "this workflow ships with Mission Control: it cannot be edited, published, "
-          + "archived, restored, or deleted. Duplicate it to make a copy you own.",
+        error: "this workflow ships with Mission Control: only its maximum repair rounds can be "
+          + "changed, and it cannot be edited, published, archived, restored, or deleted. "
+          + "Duplicate it to make a copy you own.",
+      }, 409);
+    }
+    if (result.reason === "not_builtin") {
+      return c.json({
+        ...body,
+        error: "only a built-in workflow takes a round limit in place: edit this workflow's draft "
+          + "and publish it instead.",
       }, 409);
     }
     return c.json(body, 409);
@@ -2856,6 +2864,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const result = manager.update(c.req.param("id"), parsed.data);
     return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
+  });
+  // A built-in's round budget, the one setting it lets an operator change without Duplicate.
+  // Its own route rather than a PATCH exception, so the schema itself is the proof that
+  // nothing else about a built-in can be written.
+  app.put("/api/workflows/:id/round-limit", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateBuiltinWorkflowRoundLimitSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.setBuiltinRoundLimit(c.req.param("id"), parsed.data.maxRepairRounds);
+    return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result);
   });
   app.delete("/api/workflows/:id", async (c) => {
     const manager = workflowManager();
@@ -4569,6 +4588,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           page.messages,
           resolveLaunchMarker(registry, session.id),
           (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
+          { key: noteKeyFor(session), transcript: t },
         ),
       });
     }
@@ -5829,6 +5849,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         artifacts: parsed.data.artifacts,
         commandOutputs: parsed.data.commandOutputs,
         coverage: parsed.data.coverage,
+        withdrawClientCriterionIds: parsed.data.withdrawClientCriterionIds,
       }));
     } catch (error) {
       const known = error instanceof WorkflowImageEvidenceError ? error : null;
@@ -6075,6 +6096,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/reviews/:id/resolve", async (c) => {
     const parsed = await parseBody(c, ResolveReviewSchema);
     if (!parsed.ok) return parsed.res;
+    const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // The fourth Foreman-marked write, and the one the phase plan left as a judgment call
     // on whether its session could be resolved cheaply. It can: a review record names its
     // `sessionId`, so this is two map lookups and no I/O.
@@ -6086,7 +6108,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
     const refusal = ownerSession
-      ? foremanWriteRefusal(composerActivity, ownerSession, parsed.data.by)
+      ? foremanWriteRefusal(composerActivity, ownerSession, by)
       : null;
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
@@ -6096,7 +6118,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         c.req.param("id"),
         parsed.data.action,
         parsed.data.response,
-        parsed.data.by,
+        by,
         parsed.data.selections,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
@@ -6122,21 +6144,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
+    const origin = sessionControlActor(c.req.raw) ? "session" : parsed.data.origin;
     // The twin of /inject's backstop, and the reason `origin` exists on this schema at
     // all: the Foreman worker splits one delivery across the two routes, sending a
     // SUBMITTED answer through /inject and an unsubmitted one - a draft the model asked to
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.origin);
+    const refusal = foremanWriteRefusal(composerActivity, session, origin);
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
-    if (parsed.data.origin === "human" && parsed.data.submit && pendingTurns) {
+    if (origin === "human" && parsed.data.submit && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
-      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
+      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(origin, c.req.raw.headers));
       return c.json(result, result.ok ? 200 : 409);
     }
+    // These words may race a delegated send of the same ones; say so before they are written.
+    // An unsubmitted draft counts too: the operator's Enter turns it into a message outside
+    // Mission Control, so it stays in flight until the race window closes.
+    const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, parsed.data.text);
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
@@ -6146,8 +6173,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         session,
         parsed.data.text,
         undefined,
-        parsed.data.origin,
+        origin,
       );
+      // A driver refusal is positive evidence nothing landed, so it races nothing after all.
+      if (otherSend && sent.pasted === false) withdrawOtherSend(otherSend);
       // AFTER the delivery, because "delivered" is the only fact worth recording and it is
       // not known before. No text, no length and no draft content travels with it: the
       // question this answers is how often conversation operations land, not what they said.
@@ -6155,7 +6184,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         session,
         operation: "send",
         outcome: sent.ok ? "delivered" : "refused",
-        actor: promptActor(parsed.data.origin, c.req.raw.headers),
+        actor: promptActor(origin, c.req.raw.headers),
         operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
       });
       return c.json(
@@ -6180,7 +6209,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // is a different operation from a send and is recorded as one.
       operation: parsed.data.submit ? "send" : "queued",
       outcome: r.ok ? "delivered" : "refused",
-      actor: promptActor(parsed.data.origin, c.req.raw.headers),
+      actor: promptActor(origin, c.req.raw.headers),
       operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
     });
     return c.json(r, r.ok ? 200 : 500);
@@ -6198,10 +6227,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SelectOptionSchema);
     if (!parsed.ok) return parsed.res;
+    const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // An absent invite stays 403 because it will not change when the pane settles. Active
     // human composition is 409 because retrying after the quiet period is expected.
     // Nothing is typed and no ask is retired in either case.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -6218,15 +6248,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         (dialog) => driverOptionAnswer(dialog, parsed.data),
-        { reviews, by: parsed.data.by },
+        { reviews, by },
       );
-      if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
-      observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
+      if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
+      observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r, r.ok ? 200 : 409);
     }
     const r = await selectPaneOption(session, parsed.data, panes);
-    if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
-    observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
+    if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
+    observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -6241,8 +6271,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SubmitOptionsSchema);
     if (!parsed.ok) return parsed.res;
+    const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // See `/select-option`: refuse before the shape check and before anything is ticked.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -6265,10 +6296,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         (dialog) => driverFormAnswer(dialog, answers, parsed.data.requestId),
-        { reviews, by: parsed.data.by },
+        { reviews, by },
       );
-      if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
-      observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
+      if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
+      observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r.ok ? { ...r, outcome: "submitted" as const } : r, r.ok ? 200 : 409);
     }
     if (!options) {
@@ -6280,11 +6311,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const r = await submitPaneForm(session, options, panes);
     // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
     // nothing, and retiring on either drops a decision that is still owed.
-    if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
+    if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, by);
     // `formDelivered`, not `ok`, for the same reason the retirement above uses it: a pane form
     // reports `ok` for two states that sent the child nothing, and recording those as answered
     // questions would count decisions that are still owed.
-    observeQuestionResponse(session, formDelivered(r), parsed.data.by, c.req.raw.headers);
+    observeQuestionResponse(session, formDelivered(r), by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -6342,6 +6373,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // It also carries `paneBlocked` when a pane in a tmux mode refused the write, which
   // is what stops the worker charging an attempt for a human reading their scrollback.
   // Both ride along on the ActionResult itself, so neither can be forgotten here.
+  const codeRabbitSending = new Set<string>();
   app.post("/api/sessions/:id/inject", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session", pasted: false }, 404);
@@ -6353,18 +6385,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
+    const controller = sessionControlActor(c.req.raw)?.slice("session:".length);
+    const origin = controller ? "session" : parsed.data.origin;
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.origin);
+    const refusal = foremanWriteRefusal(composerActivity, session, origin);
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
-    if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
+    if (origin === "human" && parsed.data.buffer && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
       // Retained for the delivery seam, exactly as /send does: the row reaches the agent later,
       // through `onTurnDelivered`, and without this that `send` is recorded with no actor.
-      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
+      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(origin, c.req.raw.headers));
       // QUEUED, not sent. A row in `pending_turns` has not reached the agent and may never -
       // it can be recalled or dropped - so recording it as a delivery would count turns the
       // session never saw. `mission.session.operation` keeps the two apart by name.
@@ -6372,10 +6406,41 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         session,
         operation: "queued",
         outcome: result.ok ? "delivered" : "refused",
-        actor: promptActor(parsed.data.origin, c.req.raw.headers),
+        actor: promptActor(origin, c.req.raw.headers),
         operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
       });
       return c.json(result, result.ok ? 200 : 409);
+    }
+    let text = parsed.data.text;
+    let claim: { id: string; noteKey: string; episodeKey: string; checkout: string } | null = null;
+    const request = parsed.data.codeRabbit;
+    const codeRabbitGuard = (): string | null => {
+      if (!request) return null;
+      try {
+        if (origin !== "foreman" || !workflowManager()) return "CodeRabbit delivery requires Foreman and workflow ownership";
+        const candidate = codeRabbitCandidate(registry, session.id, request, claim !== null);
+        if (candidate.error !== undefined) return candidate.error;
+        if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "CodeRabbit delivery channel changed";
+        if (claim && (candidate.owner.noteKey !== claim.noteKey || candidate.owner.episodeKey !== claim.episodeKey || candidate.checkout !== claim.checkout)) return "CodeRabbit owner changed";
+        const refusal = foremanWriteRefusal(composerActivity, candidate.session, origin);
+        if (refusal) return refusal.error;
+        const queue = queues.get(session.id);
+        if (queue?.items.some((item) => !codeRabbitTerminalItem(item.state))) return "Queued work owns this session";
+        const runs = workflowManager()!.runs().filter((run) => run.noteKey === candidate.owner.noteKey || run.sessionId === session.id);
+        if (activeWorkflowOwnsSession(runs)) return "An active workflow owns this session";
+        return null;
+      } catch { return "CodeRabbit delivery prerequisites are unavailable"; }
+    };
+    if (request) {
+      const blocked = codeRabbitGuard();
+      if (blocked) return c.json({ error: blocked, pasted: false }, 409);
+      const candidate = codeRabbitCandidate(registry, session.id, request);
+      if (candidate.error !== undefined) return c.json({ error: candidate.error, pasted: false }, 409);
+      if (codeRabbitSending.has(candidate.owner.noteKey)) return c.json({ error: "A PR follow-up is already being delivered", pasted: false }, 409);
+      const id = claimCodeRabbit(request.prKey, candidate.owner, request.observationId);
+      if (!id) return c.json({ error: "CodeRabbit feedback was already claimed or its history limit was reached", pasted: false }, 409);
+      claim = { id, ...candidate.owner, checkout: candidate.checkout };
+      text = candidate.payload;
     }
     // The same delivery, reported in this route's own vocabulary. Both of its ambiguous
     // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
@@ -6389,28 +6454,56 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // place. Claiming afterwards left it open on exactly the deliveries that matter most.
     // Narrowed once into a value rather than re-tested, so the reservation and its release
     // cannot drift apart on which origins they consider ours.
-    const daemonOrigin = parsed.data.origin === "human" ? null : parsed.data.origin;
-    if (daemonOrigin) reserveInjection(session.id, parsed.data.text, daemonOrigin);
+    const daemonOrigin = origin === "human" ? null : origin;
+    if (daemonOrigin) reserveInjection(session.id, text, daemonOrigin);
+    // The durable sender, reserved on the same terms. Named as the controller is now, so the
+    // target's log still says who sent it after that session ends or the daemon restarts.
+    // Any other sender of these words is reported first, so a race leaves both unattributed.
+    const delegatedKey = noteKeyFor(session);
+    const conversation = { key: delegatedKey, transcript: sessionMessages(session) };
+    const otherSend = controller ? null : noteOtherSend(conversation, text);
+    const delegatedTurn = controller
+      ? reserveDelegatedTurn(conversation, text, {
+          id: controller,
+          name: registry.getSession(controller)?.name ?? controller,
+        })
+      : null;
+    // All reservations above are synchronous. Acquire only when the transport's finally
+    // can release it, so a reservation failure cannot strand this conversation's lock.
+    if (claim) codeRabbitSending.add(claim.noteKey);
     const r = await injectPromptForRuntime(
       sdkSessions,
       session,
-      parsed.data.text,
+      text,
       undefined,
-      () => registry.promptResourceBlockerForSession(session.id),
-      parsed.data.origin,
-    );
+      () => codeRabbitGuard() ?? registry.promptResourceBlockerForSession(session.id),
+      origin,
+    ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
+      .finally(() => { if (claim) codeRabbitSending.delete(claim.noteKey); });
+    if (request && claim) {
+      try {
+        if (r.ok || r.pasted === false) finishCodeRabbit(request.prKey, claim.id, r.ok ? "delivered" : "refused");
+        registry.refreshInspections();
+      } catch (error) {
+        // Transport already completed. A failed receipt stays uncertain, but must not
+        // prevent attribution from settling or replace the actual delivery response.
+        console.warn(`[mission-control] CodeRabbit delivery bookkeeping failed for ${request.prKey}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     if (daemonOrigin) {
       // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation
       // would each owe an echo for one delivery.
-      if (r.ok) confirmReservedInjection(session.id, parsed.data.text, daemonOrigin);
+      if (r.ok) confirmReservedInjection(session.id, text, daemonOrigin);
       // `pasted === false` and nothing weaker, which is the same line every other sender
       // draws. The note above about a refusal being positive evidence is true of the DRIVER
       // arm; this route also serves pane-backed sessions, where `ok: false, pasted: true` is
       // a real outcome - the text is in the composer and only the Enter failed. That echo may
       // still arrive, so the claim stands. Releasing on a bare `!r.ok` handed it back and
       // reopened this race on the path Foreman's recovery packets travel.
-      else if (r.pasted === false) releaseInjection(session.id, parsed.data.text);
+      else if (r.pasted === false) releaseInjection(session.id, text);
     }
+    if (delegatedTurn && !r.ok && r.pasted === false) releaseDelegatedTurn(delegatedKey, delegatedTurn);
+    if (otherSend && !r.ok && r.pasted === false) withdrawOtherSend(otherSend);
     // The dashboard composer's real route, and the one the fleet's automation shares. Recorded
     // here rather than at the button for the reason this whole route exists: `ok` is the only
     // place delivery is actually known, and on the pane arm it is genuinely different from
@@ -6419,7 +6512,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       session,
       operation: "send",
       outcome: r.ok ? "delivered" : "refused",
-      actor: promptActor(parsed.data.origin, c.req.raw.headers),
+      actor: promptActor(origin, c.req.raw.headers),
       operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
     });
     return c.json(r, r.ok ? 200 : 500);
@@ -6992,7 +7085,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/resolved-reviews", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    return c.json(loadHumanResolvedReviews(session.id));
+    return c.json(loadConversationResolvedReviews(session.id));
   });
 
   // --- Foreman session work queues (localhost only) ---
@@ -7048,10 +7141,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : 409);
   });
 
-  app.post("/api/sessions/:id/queue/:itemId/approve", (c) => {
+  app.post("/api/sessions/:id/queue/:itemId/approve", async (c) => {
+    let revision: number | undefined;
+    if (sessionControlActor(c.req.raw)) {
+      const parsed = await parseBody(c, ApproveWorkItemSchema);
+      if (!parsed.ok) return parsed.res;
+      revision = parsed.data.revision;
+    }
     const owned = ownedItem(registry, queues, c);
     if (!owned.ok) return owned.res;
-    const r = queues.approve(owned.item.id);
+    const r = queues.approve(owned.item.id, Date.now(), revision);
     return c.json(r, r.ok ? 200 : r.error === "no such item" ? 404 : 409);
   });
 
@@ -7609,7 +7708,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // a second endpoint over one ledger is a second thing to keep honest.
   app.get("/api/inspector/prs", (c) => {
     const raw = c.req.query("adoptedSince");
-    if (raw === undefined) return c.json(loadInspectorInspections(50));
+    if (raw === undefined) return c.json(loadInspectorInspections(50).map((row) => ({ ...row, codeRabbit: codeRabbitStanding(registry, row.key) })));
     // Two guards, each doing work the other cannot.
     //
     // The SHAPE is matched as text before anything is coerced, because `Number()` is far too
@@ -8659,6 +8758,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     setupRound ??= setupChecksView(setupDeps ?? defaultSetupDeps()).finally(() => { setupRound = null; });
     return c.json(setupSnapshots.issue(await setupRound));
   });
+
+  // Pi's independently launched CLI asks the serving daemon which runtime owns our bridge.
+  app.get("/api/integrations/runtime", (c) => c.json(currentOwnedRuntime()));
   // The same resource path as the read, so dismissal adds no second setup read or endpoint.
   // The browser sends the required broken row ids from the snapshot it is dismissing; argv,
   // probes, and any install behavior remain completely outside this write.
@@ -9514,10 +9616,11 @@ function trustedLoopbackJsonRequest(c: Context): boolean {
  * origin rather than assuming one.
  */
 function promptActor(
-  origin: "human" | "foreman" | "workflow",
+  origin: ReviewActor | "workflow" | "session",
   headers: { get(name: string): string | null },
 ): TelemetryActor {
   const context = resolveOperationContext(headers);
+  if (origin === "session" || origin.startsWith("session:")) return { kind: "agent", origin: "mcp", basis: "declared" };
   if (context.actor.kind !== "unknown" && context.actor.kind !== origin) {
     return { kind: "unknown", origin: context.actor.origin, basis: "unknown" };
   }
@@ -9536,7 +9639,7 @@ function promptActor(
 function observeQuestionResponse(
   session: Session,
   delivered: boolean,
-  by: "human" | "foreman" | "workflow",
+  by: ReviewActor | "workflow" | "session",
   headers: { get(name: string): string | null },
 ): void {
   observeSessionOperation({

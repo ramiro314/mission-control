@@ -22,6 +22,16 @@ Prerequisites:
 
 - Node.js 24 or newer. Check with `node --version`.
 - npm, supplied with Node.js.
+
+  The full `npm test` suite was last checked on macOS with two Node.js 24 releases. 24.18.0
+  passes. 24.13.0 fails 26 tests in 12 files: it throws `ERR_FS_EISDIR` when a test removes a
+  symlink to a directory with `rmSync`, and 17 telemetry tests also fail there for a reason
+  not yet identified. Other 24.x releases have not been tried, so if you
+  see those errors, move to a newer 24.x before debugging. With a version manager, install
+  one and select it for the command. With asdf, run `asdf install nodejs 24.18.0` once, then
+  `ASDF_NODEJS_VERSION=24.18.0 npm test`. With Homebrew, run `brew install node@24` and put
+  `$(brew --prefix node@24)/bin` first on `PATH`. Confirm with `node --version` before you
+  run the suite.
 - A C++ toolchain for the small native module the build compiles: the Xcode command line
   tools on macOS (`xcode-select --install`), or a C++ compiler, `make` and `python3` on Linux
   (for example `build-essential python3` on Debian or Ubuntu, `base-devel python` on Arch).

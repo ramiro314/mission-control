@@ -4,8 +4,9 @@ export function resolveOwnedRuntime({executable, kind}) {
   return {command: executable, env: kind === 'electron' ? {ELECTRON_RUN_AS_NODE: '1'} : {}};
 }
 
-// The runtime this process runs on, as a Mission-owned script should be launched with it: a
-// `node` binary as itself, anything else (the Electron app) with ELECTRON_RUN_AS_NODE=1.
-export function resolveCurrentOwnedRuntime(execPath) {
-  return resolveOwnedRuntime({executable: execPath, kind: /(^|[\\/])node(\.exe)?$/.test(execPath) ? 'node' : 'electron'});
+/** Shell spelling only for our scripts. Keep the Node-mode flag on this invocation. */
+export function ownedScriptCommand(runtime, script, args = []) {
+  const quote = (value) => `"${value.replace(/[\\"$`]/g, '\\$&')}"`;
+  return [...Object.entries(runtime.env).map(([key, value]) => `${key}=${quote(value)}`),
+    ...[runtime.command, script, ...args].map(quote)].join(' ');
 }

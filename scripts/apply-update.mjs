@@ -15,7 +15,7 @@ import { acknowledgeHelper, finishHelper } from "./update-helper-runtime.mjs";
 import { prepareSourceUpdate, installStagedApp, bundleCommit as bundleSourceCommit } from "./install-staged-app.mjs";
 import { readReceipt } from "../src/shared/install-receipt.mjs";
 import { randomBytes } from "node:crypto";
-import { assertSafeAppLaunch, realMacAppOps, waitForBundleExit, prepareAppLaunch, verifyAppLaunch, stopAttemptLaunch, launchAckPath } from "./mac-app-lifecycle.mjs";
+import { assertSafeAppLaunch, COMMAND_TIMEOUT_MS, realMacAppOps, waitForBundleExit, prepareAppLaunch, verifyAppLaunch, stopAttemptLaunch, launchAckPath } from "./mac-app-lifecycle.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   appendFileSync,
@@ -204,6 +204,23 @@ function restoreReceipt({ receiptPath, backupReceipt, hadReceipt, ops }) {
   ops.move(staged, receiptPath);
 }
 
+/**
+ * Relaunch the app through LaunchServices, within `COMMAND_TIMEOUT_MS`.
+ *
+ * `spawn` is injectable so the budget is observable in a test; production always uses
+ * `spawnSync`. `open` returns once LaunchServices has the request, so the bound is on a hung
+ * `open`, not on the app's own startup.
+ */
+export function openAppForRelaunch(appPath, nonce, spawn = spawnSync) {
+  const env = {...process.env};
+  delete env.ELECTRON_RUN_AS_NODE;
+  const result = spawn("/usr/bin/open", [appPath, ...(nonce ? ["--args", "--mission-update-launch", nonce] : [])], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, env });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`macOS could not relaunch the app (open exited ${result.status ?? 1})`);
+  }
+}
+
 export function realApplyOperations(
   logPath,
   installTimeoutMs = INSTALL_TIMEOUT_MS,
@@ -255,7 +272,7 @@ export function realApplyOperations(
         if (!previous) throw new Error("A staged update requires its existing managed receipt");
         const descriptor = prepareSourceUpdate({receipt: previous, bundle: stagedBundle, revision: stagedRevision, targetTag: tag});
         if (stagedDigest !== null && descriptor.digest !== stagedDigest) throw new Error("The accepted staged app bytes changed");
-        if (descriptor.receipt.appPath !== join(appsDir, "Mission Control.app")) throw new Error("The installation destination changed");
+        if (dirname(descriptor.receipt.appPath) !== appsDir) throw new Error("The installation destination changed");
         installStagedApp(descriptor, {stateDirectory: dirname(logPath)});
         return;
       }
@@ -301,15 +318,7 @@ export function realApplyOperations(
     bundleVersion: (path) => bundleShortVersion(path),
     bundleCommit: bundleSourceCommit,
     lock: realHelperLockOperations(),
-    launch: (appPath, nonce) => {
-      const env = {...process.env};
-      delete env.ELECTRON_RUN_AS_NODE;
-      const result = spawnSync("/usr/bin/open", [appPath, ...(nonce ? ["--args", "--mission-update-launch", nonce] : [])], { encoding: "utf8", timeout: 5000, env });
-      if (result.error) throw result.error;
-      if (result.status !== 0) {
-        throw new Error(`macOS could not relaunch the app (open exited ${result.status ?? 1})`);
-      }
-    },
+    launch: (appPath, nonce) => openAppForRelaunch(appPath, nonce),
     log,
   };
 }
@@ -322,7 +331,7 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     if (plan.source !== args.sourceApp || plan.target !== args.targetApp || plan.stateDirectory !== realpathSync(args.stateDirectory) || plan.stagedBundle !== args.stagedBundle || plan.stagedRevision !== args.stagedRevision || plan.oldReceipt.sourceClone !== args.sourceClone || handoff.parent?.pid !== args.parentPid || typeof handoff.parent.identity !== "string" || !Number.isInteger(handoff.port) || handoff.port < 1 || handoff.port > 65535) throw new Error("The migration handoff changed.");
     const targetTag = /^[0-9a-f]{40}$/.test(args.targetTag) ? null : args.targetTag;
     if ((targetTag === null && plan.targetIdentity.commit !== args.targetTag) || (targetTag !== null && plan.targetIdentity.version !== targetTag.replace(/^v/, ""))) throw new Error("The migration target does not match the accepted update.");
-    if (plan.kind !== "in-place") updateMigrationReceipt(plan, {releaseTag: targetTag});
+    if (!plan.kind) updateMigrationReceipt(plan, {releaseTag: targetTag});
     // The journal takes ownership of this private inventory. Do not leave credentials
     // from MCP env settings in a second, unbounded temp handoff after it is consumed.
     const privateManifest = join(dirname(dirname(fileURLToPath(import.meta.url))), "migration-plan.json");
@@ -346,9 +355,12 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     }
     const waitForSource = ports.waitForParent;
     ports.waitForParent = async () => {
+      // The acknowledged parent is still quitting. Its runningboard job and
+      // Foreground registration can disappear at different times, so inspecting
+      // them now can mistake our own shutdown for a persistent launch conflict.
+      await waitForSource();
       await ops.preflight(plan.source);
       await ops.preflight(plan.target);
-      await waitForSource();
       await ops.waitForBundle(plan.source);
       await ops.waitForBundle(plan.target);
       await ops.preflight(plan.source);

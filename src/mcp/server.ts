@@ -1,3 +1,4 @@
+import { SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -51,6 +52,7 @@ import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { isUnknownRoute } from "./unknown-route.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
+import { GetWorkflowRunSchema, ListWorkflowRunsSchema, WorkflowMcpActionSchema } from "@shared/workflow-mcp.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -238,6 +240,67 @@ async function responseResult(res: Response): Promise<{ status: number; body: un
 }
 
 const server = new McpServer({ name: "mission-control", version: "0.1.0" });
+
+server.registerTool("list_workflow_runs", {
+  description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires the operator's Control other sessions opt-in on your session. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
+  inputSchema: ListWorkflowRunsSchema,
+}, async (input) => {
+  try {
+    const res = await http("/mcp/workflows/list", "POST", input, true);
+    return textResult(await res.text(), !res.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
+server.registerTool("get_workflow_run", {
+  description: "Inspect your own workflow run, including its binding, submissions, deliveries and recovery actions. Reading another session's run requires the operator's Control other sessions opt-in on your session. Returns IDs needed by trigger_workflow_action.",
+  inputSchema: GetWorkflowRunSchema,
+}, async ({ runId }) => {
+  try {
+    const res = await http("/mcp/workflows/read", "POST", { runId }, true);
+    return textResult(await res.text(), !res.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
+server.registerTool("trigger_workflow_action", {
+  description: "Execute your own workflow's dashboard controls: grant repair rounds, cancel, retry, resubmit (resubmitUnchanged explicitly reviews unchanged work), restart, prepare PR, recheck Inspector, toggle nodes, set/remove Persona feedback, recover/retry/override evidence readiness, retry/resolve delivery, submit a binding (also Run again), reattach, or start a session review. Controlling another session's workflows requires the operator's Control other sessions opt-in on YOUR session. Inspect get_workflow_run first. Reuse the same requestId when retrying the same intent after a lost response; use a new id for a new intent. Confirmations, acknowledgedRisk, delivery target identity, limits and dashboard state checks remain enforced. Failures return without automatic retry or fallback.",
+  inputSchema: WorkflowMcpActionSchema,
+}, async ({ request }) => {
+  try {
+    const res = await http("/mcp/workflows/act", "POST", { request }, true);
+    return textResult(await res.text(), !res.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
+server.registerTool(
+  "read_sessions",
+  {
+    title: "Inspect sessions for delegated control",
+    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions; supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
+    inputSchema: SessionControlReadSchema.shape,
+  },
+  async (args) => {
+    const res = await http("/mcp/session-control/read", "POST", args, true);
+    return { content: [{ type: "text" as const, text: await res.text() }], isError: !res.ok };
+  },
+);
+server.registerTool(
+  "control_session",
+  {
+    title: "Steer another session on the operator's behalf",
+    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort and permission mode. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
+    inputSchema: SessionControlRequestSchema.shape,
+  },
+  async (args) => {
+    const res = await http("/mcp/session-control/act", "POST", args, true);
+    return { content: [{ type: "text" as const, text: await res.text() }], isError: !res.ok };
+  },
+);
 
 server.registerTool(
   "share_plan",
@@ -1502,6 +1565,10 @@ server.registerTool(
         )
         .optional()
         .describe("Optional exact output from completed focused commands, without creating a temporary file."),
+      withdrawClientCriterionIds: z.array(z.string().min(1)
+        .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars))
+        .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional()
+        .describe("Withdraw these caller claim ids from future submissions, including inherited claims. Idempotent; frozen history is unchanged."),
       coverage: z.array(z.object({
         clientCriterionId: z.string().min(1)
           .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars)
@@ -1514,13 +1581,16 @@ server.registerTool(
             `Workflow coverage criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
           )
           .describe("The material acceptance criterion the linked evidence is intended to prove."),
+        supersedes: z.array(z.string().min(1).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars))
+          .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional()
+          .describe("Caller claim ids this registration replaces atomically. Use for differently worded replacements."),
         criterionId: z.string().min(1).max(200).optional()
           .describe(
             "The workflow's own criterion id, copied exactly from an evidence preflight repair"
             + " message. Supplying it binds this claim to that criterion with no text matching."
-            + " An id that matches no criterion of the run is refused by name in the next repair"
-            + " message and the claim is matched by nothing, including its own text, so omit the"
-            + " field entirely when no repair message has named the criteria.",
+            + " Unknown ids are rejected during registration. A new claim bound to the same id"
+            + " replaces the session's prior claims for that criterion. Omit this field when no"
+            + " repair message has named the criteria. Use withdrawClientCriterionIds to retire claims.",
           ),
         proofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES)
           .describe("The author's proof class, which selects deterministic required evidence roles."),
@@ -1560,9 +1630,9 @@ server.registerTool(
         .describe("Optional acceptance criteria mapped to registered evidence and proof roles."),
     },
   },
-  async ({ images, artifacts, commandOutputs, coverage }) => {
+  async ({ images, artifacts, commandOutputs, coverage, withdrawClientCriterionIds }) => {
     const result = await submitWorkflowEvidenceToDaemon(
-      { images, artifacts, commandOutputs, coverage },
+      { images, artifacts, commandOutputs, coverage, withdrawClientCriterionIds },
       { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() },
       http,
     );

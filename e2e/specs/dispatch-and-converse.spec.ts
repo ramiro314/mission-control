@@ -266,6 +266,9 @@ test("the dispatch shortcut works after focus leaves the task description", asyn
   // Reproduce the reported boundary: the task textarea no longer owns DOM focus. The
   // shortcut belongs to the dialog, so moving into another field must not disable it.
   const kind = dialog.getByLabel("Kind");
+  // The select is disabled while the dialog settles, and focusing a disabled control is a
+  // no-op that `toBeFocused` cannot recover from. Wait for it to take focus first.
+  await expect(kind).toBeEnabled();
   await kind.focus();
   await expect(kind).toBeFocused();
   await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
@@ -1345,14 +1348,16 @@ test("a managed launch shows only the human task request, and the agent still ge
 
   // 2. The Native rendering draws the same projection. It is a second renderer over the
   //    same rows, which is exactly how a fix applied to only one of them would be caught.
-  const terminalView = detail.getByRole("button", { name: "Terminal view" });
+  const terminalView = detail.getByRole("button", { name: "Conversation view" });
   await terminalView.click();
+  await dashboard.getByRole("menuitemradio", { name: "Terminal" }).click();
   await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
   // The terminal rendering draws a user turn as a command line rather than a bubble, so
   // the text lives under its own class. Same turn, same projection, different element.
   await expect(yourTurns()).toHaveCount(1);
   await expect(yourTurns().locator(".pty-command")).toHaveText(HUMAN_REQUEST);
   await terminalView.click();
+  await dashboard.getByRole("menuitemradio", { name: "Chat" }).click();
   await expect(detail.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
 
   // 3. Find-in-conversation cannot reach the hidden text - a hidden turn that is still

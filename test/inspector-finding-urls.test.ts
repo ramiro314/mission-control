@@ -349,7 +349,7 @@ test("the snapshot query asks for each comment's and review's link, and the pars
   assert.equal(snap.value.threads[0]!.comments[0]!.url, `${PR}7#discussion_r11`);
   assert.equal(snap.value.reviews[0]!.url, `${PR}7#pullrequestreview-21`);
   const query = readGithubState().lastQuery ?? "";
-  assert.match(query, /comments\(first:100\)\{\s*nodes\{ databaseId url body/);
+  assert.match(query, /comments\(first:100\)\{\s*nodes\{ id url databaseId body/);
   assert.match(query, /reviews\(last:100\)\{\s*nodes\{ url body/);
   assert.deepEqual(ghCalls(), ["graphql snapshot"], "one read, as before");
 });
@@ -364,7 +364,7 @@ test("a later page of review threads asks for each comment's link, and the parse
   const page = await fetchThreadPage(null, "mission", "control", 7, "cursor-1");
   assert.ok(page.ok && page.value);
   assert.equal(page.value.threads[0]!.comments[0]!.url, url);
-  assert.match(readGithubState().lastQuery ?? "", /comments\(first:1\)\{ nodes\{ databaseId url body/);
+  assert.match(readGithubState().lastQuery ?? "", /comments\(first:1\)\{ nodes\{ id url databaseId body/);
   assert.deepEqual(ghCalls(), ["graphql thread page"]);
 });
 

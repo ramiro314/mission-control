@@ -40,6 +40,19 @@ is unavailable there. Windows is not supported.
 | Headless model runs' directory | Per-user temp dir | `~/.mission-control/headless` | Nothing to do; old `~/.claude/projects/-tmp/` transcripts can be [removed by hand](troubleshooting.md#old-headless-transcripts-remain-in-claudeprojects-tmp) |
 | Electron tests (`npm test`, `npm run test:electron`) | Yes | Yes, with `--no-sandbox` | Run under `xvfb-run -a` when there is no display |
 
+## Install the desktop binary
+
+For ordinary desktop use, the [binary installer and manual recovery route](desktop-and-packaging.md#binary-installation-and-manual-recovery)
+requires macOS 12+ on Apple Silicon and native GitHub CLI authentication, without host Node,
+npm, npx, Git or local compilation. Signed release qualification is still pending; unavailable
+assets refuse installation. Existing source installs can be replaced in place by this command
+once assets are published, preserving their state and destination. Copied signed DMGs can enroll
+through **Settings > Setup > Application updates**. Reopen an enrolled app to enable automatic stable and exact-SHA alpha binary updates.
+
+The commands below concern source development. Electron includes Node for the desktop app,
+updates and Mission-owned helpers. Independent agent CLIs, user projects and optional Conductor
+keep their own prerequisites.
+
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
@@ -96,17 +109,32 @@ The row links to [Running Mission Control at Upstart](upstart.md), which include
 plugin installation, sign-in, restart, daemon certificate, and verification steps. Machines
 without the plugin remain free of Upstart-specific setup chrome.
 
-The **Runtime** family checks the selected system **Node.js**, using the same minimum as the
-installer and update preflight (currently Node.js 24). It reports a missing or older runtime as
+The **Runtime** family identifies the process serving this dashboard: the app's bundled
+Electron runtime, development Electron, or standalone Node. Connecting an Electron window to
+an existing source daemon does not change that daemon's runtime. Older daemons without this
+field report **Serving runtime unknown**.
+
+External **Node.js** is optional for desktop use. Its diagnostic uses the source-development
+minimum (currently Node.js 24), while third-party tools retain their own version requirements. It reports a missing or older runtime as
 **Needs setup**, and failed or unparseable version probes as **Unknown**. On macOS,
 **Run in a terminal** opens `brew install node` in the selected visible terminal to install or
 update Node.js and npm. This command requires Homebrew; if you manage Node another way, select a
-supported version in that manager instead. On Linux the row names the `nodejs` package for your
-distribution's package manager, or a version manager, and runs nothing. Read the command's exit status, then press **Re-check**. Opening the
+supported version in that manager instead. On Linux, which runs from a source checkout, the row
+names the `nodejs` package for your distribution's package manager, or a version manager, and
+runs nothing. Read the command's exit status, then press **Re-check**. Opening the
 installer alone never marks Node ready. If `MISSION_NODE_BIN`, a version manager, or inherited
 PATH still selects an older runtime, correct that selection and restart Mission Control with
-the corrected environment. The updater still performs its fuller Node/npm checks in the build
-directory before preparing an update.
+the corrected environment. Desktop binary updates do not use that host runtime, and this row
+never creates a universal Setup warning. Other required gaps and first-launch guidance remain.
+
+In the desktop app, **Agent extensions > Install Claude integrations** installs or repairs
+owned hooks and MCP registrations using the app runtime, including existing source registrations
+with a recognized literal command. Existing owned statusline wrappers move to the bundled wrapper;
+their saved inner command stays unchanged, with its independent prerequisites. No statusline or
+third-party inner command is installed implicitly. Custom syntax, disabled registrations, comments,
+permissions and unrelated settings are preserved. Concurrent edits leave recovery originals and
+manual reconciliation guidance. The tray menu offers the same action. See the
+[owned-runtime inventory and R2 handoff](owned-runtimes.md).
 
 On Linux the **Runtime** family also has a required **lsof** row. A missing `lsof` names the
 package for your distribution's package manager and runs nothing. macOS ships `lsof`, so the row
@@ -293,3 +321,9 @@ To regenerate the committed README imagery after a dashboard change, first run
 `npx playwright install chromium` once on a new machine, then build and run
 `npm run docs:screenshots`. The capture tool uses its own disposable demo state root, fixed
 viewport, and local scenario players, so it does not use agent models or alter your normal demo.
+
+### Installed macOS name
+
+The current binary is Agent Mission Control.app. Use the current installer for an old-name
+installation; it preserves the existing folder, scope and state. Saved old bootstraps refuse
+the new layout. See [migration and compatibility](app-name-migration.md).

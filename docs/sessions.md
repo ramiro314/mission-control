@@ -1260,6 +1260,16 @@ when they happened, so an agent that blocked on a question for an hour shows you
 after the hour of work, not before it. The original pull request includes a runtime capture of
 how the four read against each other.
 
+A fifth voice appears only when another session is
+[controlling this one](#let-a-session-steer-other-sessions): a message it sends is drawn in pink, under a
+**Delegated session** tag followed by **from** and the sending session's name, whenever Mission
+Control can tell which turn that message produced. The terminal rendering names the sender on the
+shell host, as `<session-name>@session`. Hover the sender for its session id. When it cannot
+tell - identical words sent by you, Foreman or a second controlling session while the first is
+still on its way, so either turn could have arrived first - the message is left unlabelled
+rather than credited to the wrong sender, and it then reads like an ordinary turn. See
+[Let a session steer other sessions](#let-a-session-steer-other-sessions) for the exact cases.
+
 What the CLI writes into the conversation on its own behalf is not one of those voices and
 never reaches the dashboard: the note it leaves in place of a pasted image, the payload it
 attaches when a skill loads, its own resume nudge. The CLI marks those records as its own
@@ -1390,8 +1400,8 @@ no exit code and no duration for any of them. Where it shows an elapsed time, th
 span between the run's first and last recorded turn, and its tooltip says so.
 
 **Settings → Display → Conversation** chooses the default for every session. Any single
-conversation can be flipped on its own with the **Terminal view** button in the detail's
-tab strip in Console and Board, where it appears only while the
+conversation can choose **Chat** or **Terminal** from the **Conversation view** icon menu
+in the detail's tab strip in Console and Board, where it appears only while the
 Conversation tab is the one you are reading. It
 wins over that default for that session until you close the tab - so one agent can be
 read as a chat log while the rest stay in the terminal stream. Nothing about the
@@ -1991,6 +2001,69 @@ including dated ids and long-context variants, use Claude Code's reported cost w
 model allowlist; a missing reported cost is never guessed.
 Claude's estimate can include provider-priced server tools such as web search; Codex
 rollouts do not currently expose every separately billed hosted-tool fee.
+
+### Let a session steer other sessions
+
+In the Mission Control desktop app, open a session's Conversation tab and open the **Session control** icon menu,
+to the left of the chat/terminal view menu. Choose **On** under **Control other sessions**
+to let that session act on your behalf across the other live sessions. It always starts off.
+The grant belongs to the controller, so targets do not need their own control enabled. You can revoke it
+at any time; subsequent reads and actions refuse immediately. An action already accepted
+may finish. The grant lasts only for the current conversation, task and work episode in this
+daemon run. A reset, replacement conversation, different task, session removal or Mission
+Control restart requires another explicit opt-in. There is no global, dispatch or task default.
+
+Changing this setting requires a real desktop click. Browser dashboards show the menu's options disabled.
+The adjacent **Conversation view** icon menu lets you choose **Chat** or **Terminal** for this session.
+The desktop app must own its daemon: if it reused a standalone daemon, stop that daemon and
+reopen the app. Local HTTP requests cannot grant control, even with agent credentials or
+forged browser headers.
+
+The session uses two Mission Control tools:
+
+- `read_sessions` lists other live sessions. Supply `sessionId` to inspect a target's state,
+  pending review prompts, native approval/question dialog, outbox and work queue. The top-level
+  `queue` contains full items with their ids, revisions and proposed payloads, or is `null`
+  when the target has no queue. Set `transcript: true` to include a bounded recent conversation window.
+- `control_session` takes that target's `sessionId` and a typed `command`. It supports
+  messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
+  outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
+  and model, effort and permission-mode changes. Use current request ids, option labels and
+  revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
+  `queue_approve` requires the inspected item revision. A changed proposal invalidates that
+  revision and any earlier approval, so read the new text before approving it.
+
+For example, after inspecting the target:
+
+```json
+{"sessionId":"sdk:target-id","command":{"action":"message","text":"Focus on the failing parser test first."}}
+```
+
+Messages are marked **Delegated session** in the live conversation, in their own pink colour
+and with the controller named beside the tag (**from Controller**). The name is the one the
+controller had when it sent the message, so it still reads after that session ends. Unlike the
+other bylines, the sender is recorded durably, one row per delivery, and bound to the
+transcript turn the first time the conversation is read, so a daemon restart does not hand the
+message back to you, and identical words sent by two controllers each name their own sender
+when the second is sent after the first one's message has arrived.
+A later turn you type with the same words reads as yours, even when nobody had the target open
+in between: each delivery claims the first turn with its words written to the transcript after
+it was sent, so neither a turn you wrote just before it nor a later repeat is mistaken for it.
+If you send the same words while the controller's message is still on its way, so that either
+turn could be written first, neither is labelled: the message is never credited to the
+controller when it might be yours, nor labelled as Foreman's. A draft you paste without
+submitting counts as a send, because pressing Enter sends it. A send of yours that is refused
+before anything reaches the session does not count as a race. The same holds between two controlling sessions: if both send
+identical words before either message reaches the transcript, neither is labelled, because
+either could have arrived first. A second controller sending after the first one's message has
+arrived keeps both labels. Review answers retain
+`session:<controller-id>` attribution and remain visible after reload. They are not recorded
+as direct human approvals for managed plan publication. The daemon's session event ledger
+records the controller, target, action and HTTP outcome without recording the message body.
+
+These tools cannot change the controller grant, global settings, delete sessions, or reset
+worktrees. The target's normal runtime and resource guards continue to apply. See
+[Security](security.md#delegated-session-control) for the caller identity and local trust boundary.
 
 ### Review channel (MCP)
 
