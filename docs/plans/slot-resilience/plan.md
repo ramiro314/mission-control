@@ -1,6 +1,6 @@
 # Make worktree slots survive large monorepos
 
-**Status:** Shaped with the operator in two interview rounds (2026-10-28 and 2026-10-29). Approval is the Mission Control plan review of this exact revision.\
+**Status:** Shaped with the operator in two interview rounds (2026-10-28 and 2026-10-29). Revision 1 was approved on 2026-10-29. Revision 2 repairs three findings from the Plan Validation review: the reset rule now counts the ignored entries a reset really discards, phase 1 produces the blocking path its card shows, and a check tree's lease settles before its registration is pruned. Approval is the Mission Control plan review of this exact revision.\
 **Scope:** native worktree pools, check fallback trees, slot observation and recovery, the Worktrees slot card, the dev-mode daemon log\
 **Builds on:** `docs/plans/disk-reclaim/plan.md` (approved 2026-10-26, shipped as #602, #604, #608, #609, #611 and #615)\
 **Amends:** disk-reclaim D6, D10, D11 and D20, and four documented rules in `docs/worktrees-and-checks.md` (see [What this changes in earlier decisions](#what-this-changes-in-earlier-decisions))\
@@ -37,7 +37,7 @@ operator's running build, on 2026-10-28.
 | # | Finding | Basis | Confidence |
 | --- | --- | --- | --- |
 | F1 | In uwf slots 13 and 14, the only ignored entry outside `REGENERABLE_IGNORED_PATHS` is `.yarn/install-state.gz`. Slots 10 to 12 also hold ignored `.idea/`, `apps/personal-loans/tsconfig.tsbuildinfo` and `e2e/test-results/`. Each of these makes automatic Recover and settled-tree reclaim read the slot as holding work. The list is fixed in `src/server/git/worktree-return-safety.ts`. | `git --no-optional-locks status --ignored=matching` in each slot; the source file | Verified |
-| F2 | A pool reset runs `checkout --force --detach`, then `reset --hard`, then `clean -fd`, never `-fdx`. It keeps every ignored file, except one at a path that the target commit tracks, which checkout overwrites. Recover's work check (`WorktreeManager.slotWork`) still counts ignored files as work it would discard. | `worktrees/git.ts` `reset`, `docs/agent-guides/architecture.md` | Verified |
+| F2 | A pool reset runs `checkout --force --detach`, then `reset --hard`, then `clean -fd`, never `-fdx`. It keeps an ignored file only while that file stays ignored. Checkout overwrites an ignored path that the target commit tracks. `clean -fd` runs after checkout, under the target's `.gitignore` files, so it deletes an entry the target no longer ignores. Recover's work check (`WorktreeManager.slotWork`) still counts ignored files as work it would discard. | `worktrees/git.ts` `reset`, `docs/agent-guides/architecture.md` | Verified |
 | F3 | `run()` reports a child killed by its timeout as code 1, empty stderr and `outcomeUnknown: true`, and `failure()` in `worktrees/git.ts` prints only "exit 1". uwf 14 ("git status failed: exit 1") and mc 12 ("git symbolic-ref HEAD failed: exit 1") have that exact shape: a `symbolic-ref --quiet` that really exited 1 with nothing on stderr would have been read as detached, not failed. The same `git status` now answers in under 1 s, and load average passed 100 while installs ran. | `src/server/util/exec.ts`, `worktrees/git.ts` `detachedAt` and `failure`, live timings | Inferred, about 85%: these were 15 s timeouts |
 | F4 | `NativeWorktreeGit.status` runs without `--no-optional-locks`, so it may take `index.lock` to refresh the index. If it is killed mid-refresh, the lock can be left behind, and the next reset then fails with "Unable to create '...index.lock': File exists". | `worktrees/git.ts` `status`; `worktree-activity.ts` documents the same hazard | Inferred, about 60%: the mechanism is verified, but no instance was caught |
 | F5 | One failed listing, or one PID whose cwd `lsof` omitted, makes occupancy unknown for every target (`inspectWorktreeOccupancy`). `reconcilePool` then quarantines every slot whose occupancy or Git state is unknown, leased ones included. `screenIdleSlots` does the same to available siblings, during seed-source selection as well. | `worktrees/occupancy.ts`, `worktrees/manager.ts` | Verified |
@@ -107,12 +107,20 @@ These follow from the answers above; they were not asked:
 - **Kill's guarded return keeps its stricter check.** A safe Kill of a live task still counts
   every ignored file, as disk-reclaim decided. S1 changes only Recover, automatic recovery and
   settled pool-slot reclaim.
+- **S1 counts what the reset really discards** (added in revision 2, after the Plan Validation
+  review). A reset keeps an ignored entry only while it stays ignored. The reset rule therefore
+  counts an ignored entry as work when either of these holds, unless the entry is regenerable:
+  - the target commit tracks a path at or under it, which checkout overwrites;
+  - the target's ignore rules no longer ignore it, which `clean -fd` deletes.
+
+  This only narrows what automatic recovery may touch, so the operator's answer and safety line
+  stand as given.
 
 ### What this changes in earlier decisions
 
 | Earlier rule | Where | Now |
 | --- | --- | --- |
-| "Clean" means no ignored file outside `REGENERABLE_IGNORED_PATHS` (D6, D10, D20) | disk-reclaim plan; `docs/worktrees-and-checks.md` Recover and Task worktree retention | For an action that resets a pool slot, ignored files are not work. The one exception is an ignored path that the reset's target commit tracks (S1) |
+| "Clean" means no ignored file outside `REGENERABLE_IGNORED_PATHS` (D6, D10, D20) | disk-reclaim plan; `docs/worktrees-and-checks.md` Recover and Task worktree retention | For an action that resets a pool slot, ignored files are not work, except an ignored entry that the reset would overwrite or delete and that is not regenerable (S1) |
 | The regenerable list is fixed (D11, and the "clean" note) | disk-reclaim plan; Orphan tree sweep, Unowned trees | For actions that delete a folder, the regenerable set also includes the pool claim's `seed.paths` (S2) |
 | Automatic recovery covers only `index.lock` (D10) | disk-reclaim plan; Recover | It also covers occupancy unknown, Git state unknown, and occupied or dirty, under the same safety line (S4) |
 | "Reconcile ... keeps uncertainty quarantined"; "Startup reconciliation uses the same fail-closed rules" | `docs/worktrees-and-checks.md` Native pools and the operations list | Uncertainty leaves a slot as it was. Such a slot is never leased, reset or returned while unknown, and it is never quarantined for being unknown (S3) |
@@ -194,10 +202,19 @@ flowchart LR
    - every automatic-recovery refusal and every "left unchanged after a failed read", logged
      only when the slot's reason changes, so a 5-minute pass repeating the same refusal stays
      quiet.
-7. **The card shows what it knows.** `WorktreeSettingsPanel` shows each of these on its own line:
+7. **Work checks name what blocks them.** `worktree-return-safety.ts` gains
+   `worktreeWork(path, options)`. It returns the first entry that blocks, as its path and its kind
+   (tracked, untracked, ignored or unpushed), instead of a sentence.
+   - In this phase it applies exactly today's rule, the one `regenerableIgnored` gives, so no
+     decision changes.
+   - `worktreeReturnBlocker` and `WorktreeManager.slotWork` become thin wrappers over it.
+   - Automatic recovery records the blocking entry with each refusal. The lock check already
+     names the lock path for a lock-caused refusal.
+   - Phase 2 adds the reset and delete rules to this same function.
+8. **The card shows what it knows.** `WorktreeSettingsPanel` shows each of these on its own line:
    - the reason and the detail;
-   - the last automatic-recovery refusal, with the exact path that blocked it (from phase 2's
-     detailed work check, and from today's lock check until then);
+   - the last automatic-recovery refusal, with the exact path that blocked it: the entry
+     `worktreeWork` returned, or the lock path;
    - the known occupants, with PID, command (bounded to 512 bytes) and start time.
 
    The inventory carries a bounded occupant list for each slot, which already exists inside the
@@ -215,14 +232,48 @@ stateDiagram-v2
   quarantined --> [*]: Forget (phase 4) or Destroy, after a preview
 ```
 
-1. **Two work rules, chosen by what the action does.** `worktree-return-safety.ts` gains
-   `worktreeWork(path, { rule, regenerable, targetCommit })`. It returns the first entry that
-   blocks (its path and its kind: tracked, untracked, ignored or unpushed), so the card can name
-   it. `worktreeReturnBlocker` stays as it is for safe Kill and the other callers.
-   - **Reset rule** (the slot keeps its folder, and `clean -fd` keeps ignored files). Work is a
-     staged or unstaged tracked change, an untracked file that is not ignored (other than the
-     allowed conductor scratch), an unpublished commit, or an ignored entry at a path that
-     `targetCommit` tracks (checked with one `git ls-tree` over the ignored entries). It is used by:
+1. **Two work rules, chosen by what the action does.** Phase 1's `worktreeWork` gains the
+   options `rule`, `regenerable` and `targetCommit`, and still returns the first blocking entry
+   with its path and kind. `worktreeReturnBlocker` keeps today's rule for safe Kill and the other
+   callers.
+   - **Reset rule** (the slot keeps its folder). Work is:
+     - a staged or unstaged tracked change;
+     - an untracked file that is not ignored, other than the allowed conductor scratch;
+     - an unpublished commit;
+     - an ignored entry that the reset would overwrite or delete, unless it is in the regenerable
+       set described under the delete rule. Checkout overwrites an ignored entry when
+       `targetCommit` tracks a path at or under it. `clean -fd` runs after checkout, under the
+       target's `.gitignore` files, so it deletes an ignored entry that the target's rules no
+       longer ignore.
+
+     How the last item is evaluated, without writing anything in the slot:
+     - **Tracked by the target:** one
+       `git --no-optional-locks ls-tree -r -z --name-only <target> -- <ignored entries>`. Any path
+       it prints overwrites that entry, and a directory entry such as `.idea/` matches every
+       tracked path under it.
+     - **Not ignored by the target:** first, `git diff --name-only <HEAD> <target>` over every
+       `.gitignore` path. The other ignore sources, `info/exclude` and `core.excludesFile`, do not
+       change with the commit. When no `.gitignore` differs, no ignored entry can become
+       un-ignored. When one does, the target's rules are evaluated in a private temporary
+       repository holding:
+       - each `.gitignore` blob from the target, at its path;
+       - the common directory's `info/exclude`;
+       - the slot's effective `core.excludesFile`;
+       - an empty file or directory for each ignored entry, so directory-only patterns match as
+         they would in the slot.
+
+       `git check-ignore --no-index --stdin -z` then runs over the entries. An entry it does not
+       report as ignored is one `clean -fd` would delete. The temporary repository is removed
+       afterwards.
+     - **Fail closed:** any of these steps that fails or times out counts as work, so ignore
+       rules that cannot be evaluated never let a reset run unattended.
+     - **The same target:** the check runs against the commit the reset will move to. Automatic
+       recovery and settled pool-slot reclaim repeat it inside `resetToDefault`'s `beforeIntent`,
+       after the fetch, so a default that moved between the check and the reset is caught. Manual
+       Recover's preview names each such entry, and its execute refuses a work set that changed
+       since the preview.
+
+     It is used by:
      - manual Recover's discard acknowledgement;
      - automatic recovery;
      - reclaiming a settled task's **pool slot** (`TaskManager.reclaimSettledTreesIfClean`, per
@@ -266,10 +317,16 @@ stateDiagram-v2
    - the attempt's process group is proven empty;
    - a fresh occupancy read of the folder is known and empty.
 
-   The folder is deleted without following symlinks. #611's scoped prune then runs for that one
-   path, and the lease settles as `returned`, which clears its `stuck-return` problem. A tree
-   that Git still recognizes keeps today's path, and so does a native check slot, which is a pool
-   slot and goes through Recover or Repair.
+   The steps run in this order:
+   1. The folder is deleted, without following symlinks.
+   2. The lease settles as `returned`, which clears its `stuck-return` problem.
+   3. #611's scoped prune runs. It skips any path a `held` or `returning` lease names, so it
+      can remove the registration only once step 2 has settled the lease.
+
+   If the prune fails, the registration stays prunable, and the next sweep removes it, because no
+   row names the path any more. If the deletion fails, the lease stays `returning` and the return
+   is retried, as today. A tree that Git still recognizes keeps today's path, and so does a
+   native check slot, which is a pool slot and goes through Recover or Repair.
 
 ### Phase 3: owned and occupied slots
 
@@ -443,13 +500,13 @@ label or placeholder. A new modal calls `expectContentClearsBorder`.
 | AC6 | 1 | Every observation argv from `worktrees/git.ts` puts `--no-optional-locks` before the subcommand, and no mutation argv does | `test/worktree-git-observation.test.ts` (new) |
 | AC7 | 1 | Inventory runs no Git in a slot whose lock is held, and shows it as busy with its holder | `test/worktree-background-operations.test.ts` |
 | AC8 | 1 | Each quarantine, recovery, restore and automatic-recovery refusal logs one line. The same refusal on later passes is not logged again | `test/worktree-recover.test.ts` |
-| AC9 | 1 | The slot card shows the reason and the detail on separate lines, the last automatic-recovery refusal with its blocking path, and the occupants with PID, command and start time | `test/worktree-settings-panel.test.ts`, `e2e/specs/settings-worktrees.spec.ts` |
-| AC10 | 2 | Reset rule: ignored `.yarn/install-state.gz`, `.idea/`, `*.tsbuildinfo`, `.env` and `.evidence/` are not work. A tracked change, an untracked non-ignored file, an unpushed commit, and an ignored file at a path the target commit tracks are. Delete rule: in a pool whose `seed.paths` lists `.yarn/install-state.gz` it is regenerable, while `.idea/` and `.env` are work. A pool with no claim uses the built-in list. The blocking path and kind are returned | `test/worktree-return-safety.test.ts` |
-| AC11 | 2 | Manual Recover asks for acknowledgement only for reset-rule work, and names it. A slot holding only ignored files recovers without one and keeps every ignored file with the same inode | `test/worktree-recover-actions.test.ts` |
-| AC12 | 2 | Automatic recovery clears an owner-gone, empty slot quarantined for occupancy unknown, Git unknown, or occupied or dirty. It leaves untouched a slot with reset-rule work, an occupant, a live or unknown owner, or a fresh read that fails, and it never clears a registration or identity quarantine | `test/worktree-recover.test.ts` |
+| AC9 | 1 | Under today's rule, `worktreeWork` returns the first blocking entry with its path and kind (tracked, untracked, ignored or unpushed), and `worktreeReturnBlocker` and `slotWork` decide exactly as before. The automatic pass records the blocking entry with each refusal. The slot card shows the reason and the detail on separate lines, the last automatic-recovery refusal with that path (or the lock path), and the occupants with PID, command and start time | `test/worktree-return-safety.test.ts`, `test/worktree-recover.test.ts`, `test/worktree-settings-panel.test.ts`, `e2e/specs/settings-worktrees.spec.ts` |
+| AC10 | 2 | Reset rule, against a target whose ignore rules match HEAD's: ignored `.yarn/install-state.gz`, `.idea/`, `*.tsbuildinfo`, `.env` and `.evidence/` are not work. A tracked change, an untracked non-ignored file and an unpushed commit are. Against a target that tracks a file inside the ignored `.idea/`, `.idea/` is work. Against a target whose `.gitignore` no longer ignores `.env` or `.evidence/`, each is work. Against a target that stops ignoring `node_modules/`, it is not work, because it is regenerable. An evaluation step that fails or times out counts as work. Delete rule: in a pool whose `seed.paths` lists `.yarn/install-state.gz` it is regenerable, while `.idea/` and `.env` are work. A pool with no claim uses the built-in list. The blocking path and kind are returned, and the slot's files are byte-for-byte unchanged by the check | `test/worktree-return-safety.test.ts` |
+| AC11 | 2 | Manual Recover asks for acknowledgement only for reset-rule work, and names it. That includes a target that un-ignores `.env` and a target that tracks a file inside the ignored `.idea/`, each naming the path. A slot whose ignored files the target keeps ignored and untracked recovers without acknowledgement, and keeps every one of them with the same inode. Execute refuses when the default moved to a target whose work set differs from the preview's | `test/worktree-recover-actions.test.ts` |
+| AC12 | 2 | Automatic recovery clears an owner-gone, empty slot quarantined for occupancy unknown, Git unknown, or occupied or dirty. It leaves untouched a slot with reset-rule work, an occupant, a live or unknown owner, or a fresh read that fails, and it never clears a registration or identity quarantine. It refuses a slot whose ignored `.env` the target un-ignores, and one whose ignored `.idea/` holds a path the target tracks, leaving both files unchanged. It also refuses when the default moves to such a target between its check and the reset | `test/worktree-recover.test.ts` |
 | AC13 | 2 | A failed-read quarantine whose owner is referenced returns to `leased` with HEAD, index and every file untouched, even when dirty and occupied. One whose owner cannot be read stays quarantined | `test/worktree-reconciliation.test.ts` |
 | AC14 | 2 | A settled task's pool slot holding only ignored files is reclaimed at once. Its disposable tree holding `.yarn/install-state.gz`, in a pool whose seed paths list it, is reclaimed. One holding `.env` is listed as `dirty-settled-tree`. The sweep applies the delete rule with the pool's seed paths | `test/task-worktree-retention-cleanup.test.ts`, `test/orphan-tree-sweep.test.ts` |
-| AC15 | 2 | A `returning` check lease whose tree lost `.git` is completed: the folder is gone, its registration pruned, the lease `returned`, and `stuck-return` cleared. It is refused while its process group or any occupant is alive, for a path that resolves outside `check-worktrees/`, and through a symlink. A tree Git still recognizes keeps today's path | `test/workflow-check-lease.test.ts` |
+| AC15 | 2 | A `returning` check lease whose tree lost `.git` is completed. The folder is deleted, then the lease settles `returned` and `stuck-return` clears, then the scoped prune removes the registration in the same pass. With the prune made to fail, the registration is removed by the next sweep. With the deletion made to fail, the lease stays `returning`. It is refused while its process group or any occupant is alive, for a path that resolves outside `check-worktrees/`, and through a symlink. A tree Git still recognizes keeps today's path | `test/workflow-check-lease.test.ts`, `test/orphan-tree-sweep.test.ts` |
 | AC16 | 2 | After a maintenance pass, an ownerless quarantined fixture slot holding only `.yarn/install-state.gz` shows available, and one quarantined for unknown occupancy with a live owner shows leased | `e2e/specs/worktree-reclaim.spec.ts` |
 | AC17 | 3 | A quarantined slot whose owner is referenced names the owner and offers Return. Return opens the owner's ordinary preview and is refused while a process is inside | `test/worktree-actions.test.ts`, `e2e/specs/worktree-reclaim.spec.ts` |
 | AC18 | 3 | Removing the last session in a cancelled or failed task's slot reclaims that task's trees at once when they are clean by their rule. The startup pass does the same | `test/task-worktree-retention-cleanup.test.ts` |
