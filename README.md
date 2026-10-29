@@ -1,15 +1,29 @@
 # Mission Control
 
+## Installation
+
 Install the macOS app (Apple Silicon), without keeping a repository checkout:
 
 ```bash
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mission-control/main/scripts/install.sh | bash -s -- "$@"' --
 ```
 
-Requires Node.js 24+ with npm, Git, an authenticated GitHub CLI (`gh auth login`), and
-Xcode command line tools (`xcode-select --install`). Run as your own account, without `sudo`.
-The Bash installer builds the newest stable release and installs it in `~/Applications` on a
-new installation. See [installation details and options](docs/overview.md#desktop-app-macos).
+Requires macOS 12+ on Apple Silicon and the native GitHub CLI (`gh auth login`). Run as
+your own account, without `sudo`. The binary installer downloads a complete signed release;
+it does not use host Node, npm, npx, Git or Xcode. Fresh installs use `~/Applications`;
+reruns preserve the recorded destination and state home. Quit the existing app before replacing it.
+Use `--scope system` for a fresh shared installation, `--apps-dir DIR` for an existing writable
+custom directory, or `--ref vX.Y.Z` / `--ref FULL_SHA` to pin stable / alpha bytes.
+
+New binaries install **Agent Mission Control.app**. Existing managed installations migrate in
+the same folder, preserving their state and receipt scope. Older saved installers must be
+replaced with the current command above; see [app-name migration and compatibility](docs/app-name-migration.md).
+
+**Release qualification is still pending.** Until a signed ready manifest is published, this
+command refuses installation. It never falls back to compilation. The explicit developer route
+remains `scripts/install-source.sh` or `make install` with Node.js 24+, npm, Git and Xcode tools.
+See [binary installation and recovery](docs/desktop-and-packaging.md#binary-installation-and-manual-recovery)
+for manually copied DMGs, enrollment, legacy replacement and current qualification limits.
 
 On Linux there is no packaged app: run Mission Control from a checkout (the second path under
 [Get started](#get-started)). The [platform-support matrix](docs/setup.md#platform-support) lists
@@ -260,7 +274,9 @@ Personas each own one reviewing concern. Session actions can send authored instr
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
 command output can reach reviewers without being committed to the repository.
 Evidence readiness allows six total evidence attempts in workflow round 1 and three in each later
-round, with applicable evidence carried forward between submissions.
+round, with applicable evidence carried forward between submissions. Canonical criterion IDs bind
+claims directly; authors can replace or withdraw claims without losing prior proof. Duplicate
+valid coverage produces a warning while missing or invalid proof still blocks readiness.
 You can retry failed criterion mapping from the dashboard. See
 [workflow evidence recovery](docs/workflows.md) for retry and recovery behavior.
 
@@ -273,6 +289,13 @@ against.
 When Foreman's **Keep sessions on track with CI** option is selected, newly prepared workflow
 Pull Request instructions also ask the agent to follow CI and repair failures on the same branch.
 
+Agents can operate the same workflow run controls through Mission Control's MCP:
+`list_workflow_runs` finds runs, `get_workflow_run` inspects their state and recovery options,
+and `trigger_workflow_action` grants rounds, cancels, retries, restarts, and performs the other
+dashboard recovery actions. Sessions can control their own workflows by default. Access to another
+session's workflows requires the operator's **Control other sessions** opt-in on the caller.
+Signed session identity, existing server checks, and explicit acknowledgements still apply.
+
 ![Mission Control workflow run](docs/images/workflows.png)
 
 Read more in [Workflows and Personas](docs/workflows.md) and
@@ -283,6 +306,11 @@ Read more in [Workflows and Personas](docs/workflows.md) and
 The GitHub Inspector reviews pull requests Mission Control can prove it opened. It comments inline,
 answers replies in its own threads, re-reviews every pushed head, and resolves findings when the
 code fixes them. Dry run records what it would say without publishing anything.
+
+Settings > Shipping also offers **Follow up on CodeRabbit comments**, off by default. It prompts
+eligible owning sessions about unresolved CodeRabbit review threads on known PRs, including
+attached repositories. It works with Inspector reviews and YOLO off, requires Foreman Live,
+invitation and repository trust, and waits while a workflow owns the session.
 
 Optional shipping automation can merge only after the current head has a clean published review,
 CI is green, every review thread is resolved, no human veto remains, the soak window has elapsed,
@@ -360,8 +388,7 @@ and control surface stay coherent.
 
 Release maintainers: [signed binary production and verification](docs/release-verification.md)
 documents stable and exact-commit alpha assets. Distribution remains gated on approved Apple
-credentials and real signed qualification; installation and in-app updates still use the
-existing source workflow.
+credentials and real signed qualification. Binary installation, automatic updates and owned integrations are implemented; the complete signed journey remains release qualification.
 
 The illustrated [setup guide](docs/setup-guide.html) walks the whole journey in one page:
 install, set this machine up from **Settings → Setup**, tell the necessary settings apart from
@@ -369,16 +396,21 @@ the optional ones, and keep the app current. The short version is two paths thro
 repository:
 
 - **Use Mission Control** as a managed macOS app that supervises the daemon, delivers alerts with
-  the window closed, and receives updates. Updates check Node.js and npm before building and
-  offer remediation with **Check again** when the runtime is incompatible. See the
+  the window closed, and installs verified stable or exact-SHA alpha binaries. Desktop installation,
+  updates and Mission-owned integrations use Electron's bundled Node, without host Node/npm/npx.
+  Independent agents, project commands and source development keep their own prerequisites. See the
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
   A local **Starting Mission Control** screen stays visible during startup. After 60 seconds
   it offers **Retry now** and keeps checking readiness, so a slow restart recovers automatically.
-  **Settings → Setup → Runtime** also checks Node.js and can open its Homebrew installation
-  command in a visible terminal, with **Re-check** to confirm the repair.
-  To track unreleased source, enable **Alpha updates** in **Settings → Setup → Application
+  **Settings → Setup → Runtime** identifies the serving daemon and shows external Node as an
+  optional source/tool prerequisite. An adopted standalone daemon retains its own runtime.
+  **Agent extensions → Install Claude integrations** repairs owned hooks, statusline wrappers and
+  MCP registrations while preserving custom commands. See the [runtime inventory](docs/owned-runtimes.md).
+  To track unreleased builds, enable **Alpha updates** in **Settings → Setup → Application
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
+  **Later** on an update banner snoozes that version for 48 hours, including across app restarts.
+  You can still check for updates manually at any time.
   Fresh installs use `~/Applications`. Eligible legacy system installations move there when
   accepting an update from an enabled build; see [migration and recovery](docs/desktop-and-packaging.md#moving-an-existing-system-installation).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:

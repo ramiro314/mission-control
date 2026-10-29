@@ -104,12 +104,14 @@ const PLANNING_VERIFIED_HANDOFF = [
   "the verification the planning work requires has been run",
   "workflow evidence registration the task asked for is done when an active Persona workflow accepts it, including the current plan text and required cross-file context",
 ] as const;
+const PLAN_PHASING_REQUIREMENT = "the human has been offered the selectable phased-plan follow-up once per root plan, on its first review, to break up and schedule it or stop, even when there are no other open choices; only their selection authorizes phasing and scheduling, and later repair or re-approval reviews retain that choice without another offer, as do derived phases";
 
 const PLAN_CONTRACT: TaskCompletionContract = {
   kind: "plan",
   owner: "Mission Control",
   boundary: "the planning handoff before publication",
   complete: [
+    PLAN_PHASING_REQUIREMENT,
     ...PLANNING_APPROVED_PLAN,
     "when requested, phase files, the audited dependency graph, and the phase-to-task-id map are complete; declined phasing requires no phase tasks",
     "Markdown artifacts referenced by phase tasks and policy-included HTML are committed and pushed, with exact paths verified before scheduling; policy-excluded HTML is verified in its retained revision, and every phase task depends on the planning session",
@@ -126,6 +128,7 @@ const LOCAL_PLAN_CONTRACT: TaskCompletionContract = {
   ...PLAN_CONTRACT,
   boundary: "the local plan publication handoff",
   complete: [
+    PLAN_PHASING_REQUIREMENT,
     "the complete final Markdown and HTML bundle is saved as an immutable local revision",
     "the human explicitly approved that exact final bundle through a managed plan review; dismissal is not approval",
     "requested phases carry exact structured Markdown inputs, local artifact prerequisites, and direct implementation merge dependencies",

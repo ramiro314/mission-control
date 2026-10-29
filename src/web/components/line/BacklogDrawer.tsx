@@ -19,6 +19,7 @@ import {
   blockedLabel,
   blockersNeedYou,
   plannerFacts,
+  type AutopilotGate,
   type BacklogTaskNoticeView,
   type BacklogTrustView,
   type PlannerFact,
@@ -341,8 +342,8 @@ export function BacklogDrawer({
   autoBacklog,
   /** The daemon's derived readout, or null before the first status poll lands. */
   autopilot,
-  /** Whether the machine would actually launch: Foreman on, and in live mode. */
-  autopilotLaunches,
+  /** Whether the machine would actually launch, and if not, which half of the gate is shut. */
+  autopilotGate,
   onClose,
   onEditTask,
   onOpenSitrep,
@@ -355,7 +356,7 @@ export function BacklogDrawer({
   now?: number;
   autoBacklog: boolean | null;
   autopilot: ForemanStatus["autopilot"] | null;
-  autopilotLaunches: boolean;
+  autopilotGate: AutopilotGate;
   onClose: () => void;
   onEditTask: (taskId: string) => void;
   onOpenSitrep: () => void;
@@ -519,7 +520,7 @@ export function BacklogDrawer({
               : autopilotReadout({
                   on: autoBacklog,
                   status: autopilot,
-                  launches: autopilotLaunches,
+                  gate: autopilotGate,
                 })}
           </span>
           <Tooltip label="Open the Sitrep - the whole fleet, its reviews, and the backlog with its blockers">

@@ -154,6 +154,8 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
 export const FIXED_OS_EXECUTABLES = {
   env: "/usr/bin/env",
   sh: "/bin/sh",
+  // The macOS binary-install bootstrap uses the OS-provided Bash before daemon startup.
+  bash: "/bin/bash",
   osascript: "/usr/bin/osascript",
   // Launch Services, which is the only thing that can hand a launch to an app bundle and reveal
   // an instance that is already running rather than starting a second one. Not searched, and
@@ -167,6 +169,10 @@ export const FIXED_OS_EXECUTABLES = {
   // platform's own: `-c` is macOS clonefile and `--reflink=always` is GNU coreutils, so a PATH
   // that put GNU `cp` first on a Mac would turn the clone into a refusal or something else.
   cp: "/bin/cp",
+  // Binary update platform checks use the OS tools, never an operator override.
+  swVers: "/usr/bin/sw_vers",
+  lipo: "/usr/bin/lipo",
+  plistBuddy: "/usr/libexec/PlistBuddy",
 } as const;
 
 export type FixedOsExecutableId = keyof typeof FIXED_OS_EXECUTABLES;

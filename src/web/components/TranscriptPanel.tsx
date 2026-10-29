@@ -8,6 +8,7 @@ import type {
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
+  TurnOriginSession,
   Session,
 } from "@shared/types.ts";
 import type { ConversationView } from "@shared/protocol.ts";
@@ -52,6 +53,7 @@ import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { mergeConversation } from "../lib/episodes.ts";
 import { projectLaunchPresentation } from "../lib/launch-presentation.ts";
+import { collapseSteerEchoes } from "@shared/message-delivery.ts";
 import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
 import {
   collectHits,
@@ -70,7 +72,8 @@ import { ConversationActivity, type ActivityTab } from "./ConversationActivity.t
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { TerminalStatusLine, TerminalTitlebar } from "./ConversationTerminal.tsx";
-import { useSessionConversationView } from "../lib/conversation-view.ts";
+import { SessionToolbarIcon, SessionToolbarMenu } from "./SessionToolbarMenu.tsx";
+import { CONVERSATION_VIEW_OPTIONS, useSessionConversationView } from "../lib/conversation-view.ts";
 import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
@@ -528,9 +531,10 @@ export function TranscriptPanel({
    *
    * Today this substitutes the human task request for a Mission Control launch contract.
    * See `projectLaunchPresentation` for why that has to happen exactly once, here, rather
-   * than inside the turn component.
+   * than inside the turn component. It also draws once a steer the agent recorded twice
+   * (`collapseSteerEchoes`).
    */
-  const visible = useMemo(() => projectLaunchPresentation(messages), [messages]);
+  const visible = useMemo(() => collapseSteerEchoes(projectLaunchPresentation(messages)), [messages]);
   /**
    * The conversation as rows, computed once and shared by the renderer and the
    * search. Both MUST walk the same list: hits are addressed by row id and offset,
@@ -1523,24 +1527,7 @@ export function TranscriptPanel({
   );
 }
 
-/**
- * The per-session rendering switch, at the head of the launcher run.
- *
- * A toggle BUTTON rather than a second radio group: there are two renderings and the
- * question at this level is "read this one differently", which is one press. `aria-pressed`
- * carries the state, so the control keeps one stable accessible name instead of relabelling
- * itself to the thing it is not currently showing - the relabelling toggle is the one every
- * screen reader user has to read twice.
- *
- * It sits beside the launchers because that strip is already the answer to "where am I and
- * how do I get at this session".
- *
- * Exported so ConsoleDetail can render it into the toolbar's `leading` slot. It takes its state as props and
- * holds none, so the caller's `useSessionConversationView` is still the single reader of
- * that module's map - which matters, because that hook notifies only its OWN caller. A
- * console-detail caller works because the panel re-renders as its child; a SIBLING of the
- * panel would set the override and leave the log drawn in the other rendering.
- */
+/** Per-session view menu; the caller still owns the shared conversation-view state. */
 export function ConversationViewToggle({
   terminal,
   overridden,
@@ -1551,25 +1538,16 @@ export function ConversationViewToggle({
   onChange: (next: ConversationView) => void;
 }): React.JSX.Element {
   return (
-    <Tooltip
-      label={
-        terminal
-          ? "Read this session as a chat log again"
-          : "Read this session as a terminal stream - just this session, until you close the tab"
-      }
-    >
-      <button
-        type="button"
-        className={`launch-btn conv-view-btn${overridden ? " is-overridden" : ""}`}
-        aria-pressed={terminal}
-        onClick={() => onChange(terminal ? "chat" : "terminal")}
-      >
-        <span className="launch-glyph-lead" aria-hidden>
-          ▤
-        </span>
-        <span className="launch-word">Terminal view</span>
-      </button>
-    </Tooltip>
+    <SessionToolbarMenu label={`Conversation view: ${terminal ? "Terminal" : "Chat"}`} title="Conversation view"
+      icon={<SessionToolbarIcon kind={terminal ? "terminal" : "chat"} />}
+      className={`conv-view-btn${overridden ? " is-overridden" : ""}`}>
+      {close => <>{CONVERSATION_VIEW_OPTIONS.map(({ id: view, label, description }) => <Tooltip key={view} label={description}><button type="button"
+        role="menuitemradio" aria-checked={terminal === (view === "terminal")} className="session-toolbar-option"
+        onClick={() => { onChange(view); close(); }}>
+        <SessionToolbarIcon kind={view} /><span>{label}</span>
+        <span className="session-toolbar-check" aria-hidden="true">{terminal === (view === "terminal") ? "✓" : ""}</span>
+      </button></Tooltip>)}</>}
+    </SessionToolbarMenu>
   );
 }
 
@@ -1867,7 +1845,7 @@ function Turn({
       {/* Not searched: a byline is chrome, not conversation. Were it included,
           "you" would match the label above every message the human ever sent. */}
       <div className="turn-role">
-        {who}
+        {m.origin === "session" && m.originSession ? <DelegatedByline source={m.originSession} /> : who}
         {receivedBy && <span className="turn-received" role="status">✓ received by {receivedBy}</span>}
         <ConversationTimestamp at={m.ts} className="turn-time" />
       </div>
@@ -1895,6 +1873,23 @@ function Turn({
         onViewInFiles={onViewInFiles}
       />
     </article>
+  );
+}
+
+/**
+ * A delegated turn's byline: the delegation itself, then the session that sent it. Two
+ * parts so the source reads as its own fact, never as the human or Foreman typing.
+ */
+function DelegatedByline({ source }: { source: TurnOriginSession }): React.JSX.Element {
+  return (
+    <>
+      <span className="turn-delegated-tag">Delegated session</span>
+      <Tooltip label={`Sent by session ${source.id}`}>
+        <span className="turn-delegated-from">
+          from <span className="turn-delegated-source">{source.name}</span>
+        </span>
+      </Tooltip>
+    </>
   );
 }
 
@@ -2017,16 +2012,28 @@ function TerminalTurn({
   // readers most of the time.
   if (m.role === "user") {
     const foreman = m.origin === "foreman";
+    const delegated = m.origin === "session";
+    // A delegated turn's shell host is the sending session, on the `session` host.
+    const host = delegated && m.originSession
+      ? `${m.originSession.name.replace(/\s+/g, "-")}@session`
+      : `${who.replace(/\s+/g, "-")}@mission`;
     return (
       <article
-        className={`pty-entry pty-user${foreman ? " pty-foreman" : ""}${flashed ? " is-flashed" : ""}`}
+        className={`pty-entry pty-user${foreman ? " pty-foreman" : ""}${delegated ? " pty-session" : ""}${flashed ? " is-flashed" : ""}`}
         aria-label={who}
         data-turn-id={m.id}
       >
         <p className="pty-commandline">
           {/* A shell host is one token, so a two-word author becomes one: "mission
               control" is `mission-control@mission`, the same name the titlebar uses. */}
-          <span className="pty-host">{who.replace(/\s+/g, "-")}@mission</span>
+          {/* A delegated host names the sending session; hover it for that session's id. */}
+          {delegated && m.originSession ? (
+            <Tooltip label={`Sent by session ${m.originSession.id}`}>
+              <span className="pty-host">{host}</span>
+            </Tooltip>
+          ) : (
+            <span className="pty-host">{host}</span>
+          )}
           {/* `~/leaf` is the shell's own shorthand and the shape the mockup drew, which
               means it is short by leaving something out. The whole path is one hover
               away, so the abbreviation never has to be taken at face value. Rendered

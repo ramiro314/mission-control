@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { ghBin } from "../config.ts";
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
@@ -232,6 +233,8 @@ export interface PrSnapshot {
   title: string;
   body: string;
   isDraft: boolean;
+  threadError?: string | null;
+  responseBytes?: number;
   threads: ThreadSnapshot[];
   /** Pagination state for the first review-thread page. */
   threadsPageInfo?: ThreadPageInfo;
@@ -266,6 +269,9 @@ export interface ThreadSnapshot {
   isResolved: boolean;
   path: string | null;
   comments: {
+    id?: string;
+    updatedAt?: string;
+    actorType?: string | null;
     databaseId: number | null;
     /** The comment's GitHub link, or null when GitHub did not report one. */
     url: string | null;
@@ -288,7 +294,7 @@ export interface ReviewPageInfo {
   startCursor: string | null;
 }
 
-interface ThreadPageInfo {
+export interface ThreadPageInfo {
   hasNextPage: boolean;
   endCursor: string | null;
 }
@@ -298,7 +304,9 @@ interface ReviewPage {
   pageInfo: ReviewPageInfo;
 }
 
-interface ThreadPage {
+export interface ThreadPage {
+  error?: string | null;
+  responseBytes?: number;
   threads: ThreadSnapshot[];
   pageInfo: ThreadPageInfo;
 }
@@ -317,7 +325,7 @@ const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
         nodes{
           id isResolved path
           comments(first:100){
-            nodes{ databaseId url body createdAt author{ login } }
+            nodes{ id url databaseId body createdAt updatedAt author{ __typename login } }
           }
         }
         pageInfo{ hasNextPage endCursor }
@@ -345,7 +353,7 @@ const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$afte
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       reviewThreads(first:100,after:$after){
-        nodes{ id isResolved path comments(first:1){ nodes{ databaseId url body createdAt author{ login } } } }
+        nodes{ id isResolved path comments(first:1){ nodes{ id url databaseId body createdAt updatedAt author{ __typename login } } } }
         pageInfo{ hasNextPage endCursor }
       }
     }
@@ -388,7 +396,7 @@ export async function fetchPr(
     // of them, so this read gets more room than the default before it would fail the poll.
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, maxBuffer: PR_QUERY_MAX_BUFFER },
   );
-  if (res.code !== 0) return fail("gh api graphql", res, `${owner}/${repo}`);
+  if (res.code !== 0 || res.overflowed) return fail("gh api graphql", res, `${owner}/${repo}`);
   try {
     const json = JSON.parse(res.stdout) as {
       data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
@@ -400,7 +408,7 @@ export async function fetchPr(
     }
     const pr = json.data?.repository?.pullRequest;
     if (!pr) return { ok: false, error: "no such pull request" };
-    return { ok: true, value: toSnapshot(pr) };
+    return { ok: true, value: { ...toSnapshot(pr), responseBytes: utf8Bytes(res.stdout) } };
   } catch (err) {
     return { ok: false, error: `could not parse gh output: ${String(err)}` };
   }
@@ -430,9 +438,8 @@ function toChecks(state: unknown): ChecksState {
 }
 
 function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
-  const threadNodes =
-    ((pr.reviewThreads as { nodes?: unknown[] } | undefined)?.nodes as unknown[]) ?? [];
   const reviewPage = toReviewPage(pr.reviews);
+  const firstThreads = threadPage(pr.reviewThreads);
   const headCommit = (
     ((pr.commits as { nodes?: unknown[] } | undefined)?.nodes ?? []) as {
       commit?: {
@@ -472,25 +479,10 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
           ),
         }
       : null,
-    threads: threadNodes.filter(Boolean).map((raw) => {
-      const t = raw as Record<string, unknown>;
-      const commentNodes = ((t.comments as { nodes?: unknown[] } | undefined)?.nodes ?? []) as unknown[];
-      return {
-        id: String(t.id ?? ""),
-        isResolved: t.isResolved === true,
-        path: typeof t.path === "string" ? t.path : null,
-        comments: commentNodes.filter(Boolean).map((c) => {
-          const o = c as Record<string, unknown>;
-          return {
-            databaseId: typeof o.databaseId === "number" ? o.databaseId : null,
-            url: linkOf(o.url),
-            body: typeof o.body === "string" ? o.body : "",
-            author: String((o.author as { login?: unknown } | null)?.login ?? "unknown"),
-            createdAt: String(o.createdAt ?? ""),
-          };
-        }),
-      };
-    }),
+    threads: firstThreads.threads,
+    threadError: firstThreads.error
+      ?? (typeof pr.isDraft !== "boolean" || !["OPEN", "CLOSED", "MERGED"].includes(String(pr.state))
+        || typeof pr.headRefOid !== "string" || !pr.headRefOid ? "Missing PR identity or state" : null),
     threadsPageInfo: threadPageInfo(pr.reviewThreads),
     reviews: reviewPage.reviews,
     reviewsPageInfo: reviewPage.pageInfo,
@@ -510,6 +502,17 @@ function threadPageInfo(raw: unknown): ThreadPageInfo {
   };
 }
 
+const ThreadConnectionSchema = z.object({
+  nodes: z.array(z.object({
+    id: z.string().min(1), isResolved: z.boolean(), path: z.string().nullable(),
+    comments: z.object({ nodes: z.tuple([z.object({
+      id: z.string().min(1), url: z.string().url(), body: z.string(), updatedAt: z.string().datetime(),
+      author: z.object({ __typename: z.string().min(1), login: z.string().min(1) }),
+    })]).rest(z.unknown()) }),
+  })),
+  pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
+});
+
 function threadPage(raw: unknown): ThreadPage {
   const connection = (raw ?? {}) as { nodes?: unknown[] };
   const threads = (connection.nodes ?? []).filter(Boolean).map((rawThread) => {
@@ -522,6 +525,10 @@ function threadPage(raw: unknown): ThreadPage {
       comments: comments.filter(Boolean).map((rawComment) => {
         const comment = rawComment as Record<string, unknown>;
         return {
+          id: typeof comment.id === "string" ? comment.id : undefined,
+          updatedAt: typeof comment.updatedAt === "string" ? comment.updatedAt : undefined,
+          actorType: typeof (comment.author as { __typename?: unknown } | null)?.__typename === "string"
+            ? (comment.author as { __typename: string }).__typename : null,
           databaseId: typeof comment.databaseId === "number" ? comment.databaseId : null,
           url: linkOf(comment.url),
           body: typeof comment.body === "string" ? comment.body : "",
@@ -531,7 +538,7 @@ function threadPage(raw: unknown): ThreadPage {
       }),
     } satisfies ThreadSnapshot;
   });
-  return { threads, pageInfo: threadPageInfo(connection) };
+  return { threads, pageInfo: threadPageInfo(connection), error: ThreadConnectionSchema.safeParse(raw).success ? null : "Incomplete review-thread connection or root identity" };
 }
 
 function toReviewPage(raw: unknown): ReviewPage {
@@ -616,6 +623,7 @@ export async function fetchThreadPage(
   repo: string,
   number: number,
   after: string,
+  timeoutMs = GH_TIMEOUT_MS,
 ): Promise<GhResult<ThreadPage>> {
   const res = await run(
     ghBin(),
@@ -623,9 +631,9 @@ export async function fetchThreadPage(
       "api", "graphql", "-f", `query=${THREAD_PAGE_QUERY}`, "-F", `owner=${owner}`,
       "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `after=${after}`,
     ],
-    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+    { cwd: cwd ?? undefined, timeoutMs: Math.min(timeoutMs, GH_TIMEOUT_MS), maxBuffer: 8 * 1024 * 1024 },
   );
-  if (res.code !== 0) return fail("gh api graphql (review threads)", res, `${owner}/${repo}`);
+  if (res.code !== 0 || res.overflowed) return fail("gh api graphql (review threads)", res, `${owner}/${repo}`);
   try {
     const json = JSON.parse(res.stdout) as {
       data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
@@ -634,7 +642,7 @@ export async function fetchThreadPage(
     if (json.errors?.length) return { ok: false, error: `graphql: ${json.errors.map((e) => e.message).join("; ")}` };
     const pr = json.data?.repository?.pullRequest;
     if (!pr) return { ok: false, error: "no such pull request" };
-    return { ok: true, value: threadPage(pr.reviewThreads) };
+    return { ok: true, value: { ...threadPage(pr.reviewThreads), responseBytes: utf8Bytes(res.stdout) } };
   } catch (err) {
     return { ok: false, error: `could not parse gh review-thread output: ${String(err)}` };
   }

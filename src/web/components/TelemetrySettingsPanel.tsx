@@ -605,14 +605,27 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
   const config = status?.config ?? null;
   const unavailable = (state.summary?.productEnrollment ?? "unavailable") === "unavailable";
   const product = profile(state, "product");
-  // Typed and not yet saved, or null - derived rather than adopted by an effect, for the reason
-  // given on the personal destination above.
-  const [endpointDraft, setEndpointDraft] = useState<string | null>(null);
-  const [temporalityDraft, setTemporalityDraft] = useState<"cumulative" | "delta" | null>(null);
-  const [shapeDraft, setShapeDraft] = useState<TelemetryExportShapeId | null>(null);
-  const endpoint = endpointDraft ?? config?.product.endpoint ?? "";
-  const temporality = temporalityDraft ?? config?.product.temporality ?? "cumulative";
-  const shape = shapeDraft ?? config?.product.exportShape ?? "full";
+  const [endpoint, setEndpoint] = useState("");
+  const [temporality, setTemporality] = useState<"cumulative" | "delta">("cumulative");
+  const [shape, setShape] = useState<TelemetryExportShapeId>("full");
+  const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const editVersionRef = useRef(0);
+
+  const markDirty = (): void => {
+    editVersionRef.current += 1;
+    dirtyRef.current = true;
+    setDirty(true);
+  };
+
+  useEffect(() => {
+    // Match the personal destination: a queued config effect must see edits that
+    // happened after its render, before React has committed the dirty state.
+    if (dirtyRef.current || !config) return;
+    setEndpoint(config.product.endpoint);
+    setTemporality(config.product.temporality);
+    setShape(config.product.exportShape);
+  }, [config, dirty]);
 
   // The same shared predicate the personal destination and the daemon both use. No credential is
   // stored for this profile, so `hasCredential` is false rather than optimistic.
@@ -644,21 +657,30 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
             value={endpoint}
             disabled={!config}
             aria-label="Product analytics endpoint"
-            onChange={(e) => setEndpointDraft(e.target.value)}
+            onChange={(e) => {
+              markDirty();
+              setEndpoint(e.target.value);
+            }}
           />
         </label>
 
         <MetricTemporalitySelect
           destination="product analytics"
           value={temporality}
-          onChange={(value) => setTemporalityDraft(value)}
+          onChange={(value) => {
+            markDirty();
+            setTemporality(value);
+          }}
         />
 
         <ExportShapeSelect
           destination="product analytics"
           value={shape}
           stored={config?.product.exportShape ?? null}
-          onChange={(value) => setShapeDraft(value)}
+          onChange={(value) => {
+            markDirty();
+            setShape(value);
+          }}
         />
 
         {check && !check.ok && <span className="settings-error">{check.detail}</span>}
@@ -671,13 +693,14 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
               disabled={!config || busy !== null || (check !== null && !check.ok)}
               aria-label="Save the product analytics destination"
               onClick={() => {
+                const submittedVersion = editVersionRef.current;
                 void update({
                   product: { endpoint: endpoint.trim(), temporality, exportShape: shape },
                 }).then((ok) => {
-                  if (!ok) return;
-                  setEndpointDraft(null);
-                  setTemporalityDraft(null);
-                  setShapeDraft(null);
+                  if (ok && editVersionRef.current === submittedVersion) {
+                    dirtyRef.current = false;
+                    setDirty(false);
+                  }
                 });
               }}
             >

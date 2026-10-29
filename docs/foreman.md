@@ -116,15 +116,19 @@ taking a body.
 > rail; embedded sessions are unaffected.
 
 Each session is reviewed in a **fresh headless model call**, using Claude's Agent SDK transport
-by default, so context never bleeds between reviews. Foreman ships **enabled but inert**, and the distinction is the whole point:
-it starts in **dry-run**, its repository allowlist starts empty, and its worker is a separate
-process the packaged app supervises. So on a fresh install Foreman types nothing, sends nothing
-and runs nothing - it *drafts* answers onto the session detail until you trust it. `enabled` flipped on
+by default, so context never bleeds between reviews. Foreman ships **enabled and Live, but inert until
+you grant a repository**, and the distinction is the whole point: its repository allowlist starts
+empty, and its worker is a separate process the packaged app supervises. So on a fresh install
+Foreman types nothing, sends nothing and runs nothing - it *drafts* answers onto the session detail
+until you grant a repository in Trust, and from then on it acts in that repository without a
+second switch. Live became the default because the allowlist is the consent: a dry-run default in
+front of it meant a grant alone never made Foreman act. `enabled` flipped on
 because it is a prerequisite gate rather than an action: while it shipped off, a **Foreman
 Complete** workflow binding could not be created at all, which left
 [the repair loop](workflows.md#the-repair-loop-end-to-end) unreachable on a fresh install no matter what
-you configured in Workflow settings. If you have ever switched Foreman off in Settings, that
-answer is persisted and survives - the new default only reaches installs that never answered.
+you configured in Workflow settings. If you have ever switched Foreman off, or saved any Foreman
+setting in a mode other than Live, that answer is persisted and survives - the new defaults only
+reach installs that never answered.
 
 The packaged desktop app starts and supervises the worker automatically. In a source-only
 development stack, start that plain HTTP-only process with:
@@ -138,9 +142,9 @@ pick a mode.
 
 | Mode | What it does |
 |------|--------------|
-| **dry-run** (default) | drafts a reply onto the session detail; never sends |
+| **dry-run** | drafts a reply onto the session detail; never sends |
 | **semi-auto** | drafts a reply with a one-click **Approve & send** on the session detail |
-| **live** | sends the reply on your behalf - but only in repos you've **allowlisted** |
+| **live** (default) | sends the reply on your behalf - but only in repos you've **allowlisted** |
 
 Live sending is gated by an explicit **repo allowlist**, granted in
 **Settings → [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository)** (the Foreman panel shows the
@@ -750,3 +754,19 @@ This permission does not put pipeline tasks into backlog autopilot and does not 
 re-entry. Foreman reads the daemon's halt view and posts its episode and action over HTTP. The
 daemon remains the only SQLite writer, and each attempted provider action is reserved in the
 decision ledger before the engine is called so a lost response cannot cause a duplicate act.
+
+
+### CodeRabbit review follow-through
+
+The off-by-default **Settings > Shipping > Follow up on CodeRabbit comments** switch adds a
+third source to Foreman's existing PR pass. It is independent of Inspector-comment and CI
+tracking. It uses the same invitation, Live mode, trust, settled-idle, human-input and queue
+rules. Non-terminal workflows retain ownership, including parked runs.
+
+The daemon rechecks the owning conversation, current intent episode, repository checkout,
+branch, PR association and complete fresh observation when claiming feedback and again inside
+the runtime write lock. Attached repositories require their own trust. One prompt per session
+per pass keeps PR follow-through ahead of ship recovery and ordinary queue work. Inspector/CI
+marks retain their existing clocks; CodeRabbit generations and claims live in the adoption
+ledger, never in the Foreman process. Unknown delivery stays spent across restarts and appears
+in Shipping with manual messaging available. Nothing in this source authorizes a merge.

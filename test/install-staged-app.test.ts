@@ -2,39 +2,67 @@ import type { BinaryInstallReceipt } from "../src/shared/install-receipt-schema.
 import type { BinaryIdentity } from "../src/shared/binary-distribution.mjs";
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, existsSync, readdirSync, chmodSync, cpSync, renameSync } from 'node:fs';
+import fs, { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, existsSync, readdirSync, chmodSync, cpSync, renameSync, symlinkSync, type PathLike } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { stagingPaths } from '../scripts/app-bundle-swap.mjs';
 import { prepareStagedInstall, prepareSourceUpdate, installStagedApp, inspectBundle, requireInstallSpace } from '../scripts/install-staged-app.mjs';
 import { prepareInPlaceInstall, runMigration, recoverMigration, migrationReceipt, readMigrationJournal, validateMigrationPlan, atomicMigrationJson, MIGRATION_JOURNAL, type MigrationJournal } from '../scripts/install-migration.mjs';
 import { cleanupHelperSnapshots } from '../scripts/update-helper-runtime.mjs';
+import { realApplyOperations, runApplyUpdate } from '../scripts/apply-update.mjs';
+import { processIdentity } from '../scripts/update-lock.mjs';
+import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
 
-function fixture(t: test.TestContext) {
+ensureNativeStateLockAddon();
+
+function fixture(t: test.TestContext, rename = false, scope?: "user" | "system" | "custom") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'staged-install-')));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const stateDirectory = join(root, 'state'); mkdirSync(stateDirectory);
-  const apps = join(root, 'apps'); mkdirSync(apps);
+  const apps = join(root, scope ?? 'apps'); mkdirSync(apps);
   const app = join(apps, 'Mission Control.app');
   const candidate = join(root, 'candidate.app');
   for (const [path, commit] of [[app, 'a'.repeat(40)], [candidate, 'b'.repeat(40)]] as const) {
     mkdirSync(join(path, 'Contents/Resources/app'), {recursive: true});
     writeFileSync(join(path, 'Contents/Info.plist'), '<key>CFBundleShortVersionString</key><string>1.26.0</string>');
     writeFileSync(join(path, 'Contents/Resources/app/package.json'), JSON.stringify({missionCommit: commit,
-      missionInstallMigration: {protocol: 1, automatic: true}, missionInstallTransaction: {protocol: 1, receiptSchemas: [1, 2]}}));
+      missionInstallMigration: {protocol: 1, automatic: true}, missionInstallTransaction: {protocol: 1, appNaming: 1, receiptSchemas: [1, 2]}}));
   }
   const oldReceipt = {schema: 1, repo: 'teamupstart/mission-control', releaseTag: 'v1.26.0', installedVersion: '1.26.0',
-    installedCommit: 'a'.repeat(40), sourceClone: '/source-that-must-not-be-executed', appPath: app, installedAt: '2026-10-14T00:00:00.000Z'};
+    ...(scope ? {installScope: scope} : {}), installedCommit: 'a'.repeat(40), sourceClone: '/source-that-must-not-be-executed', appPath: app, installedAt: '2026-10-14T00:00:00.000Z'};
   const receiptPath = join(stateDirectory, 'install-receipt.json');
   const oldBytes = `\n${JSON.stringify(oldReceipt, null, 4)}\n\n`;
   writeFileSync(receiptPath, oldBytes);
-  const descriptor = prepareStagedInstall({bundle: candidate, receipt: {...oldReceipt, installedCommit: 'b'.repeat(40)}});
+  const descriptor = prepareStagedInstall({bundle: candidate, receipt: {...oldReceipt, ...(rename ? {appPath: join(apps, 'Agent Mission Control.app')} : {}), installedCommit: 'b'.repeat(40)}});
   const events: string[] = [];
   const ports = {waitForParent: async () => {}, waitForDaemonExit: async () => {},
     launchTarget: async () => {events.push('launch'); return {pid: 987654, identity: 'fixture'};},
     waitForReady: async () => {assert.equal(readFileSync(receiptPath, 'utf8'), oldBytes);},
     stopTarget: async () => {events.push('stop');}, launchSource: async () => {events.push('restore');}};
   return {root, stateDirectory, app, candidate, descriptor, receiptPath, oldBytes, ports, events};
+}
+
+/** The `ps` state letter, or null once the pid is gone. `Z` is exited but not yet reaped. */
+function processState(pid: number) {
+  try {
+    return execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}).trim().charAt(0) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the parent has not exited yet. `kill(pid, 0)` alone is the wrong oracle here: the
+ * parent is this test's own child, so after it exits it stays a zombie until this process's
+ * event loop reaps it, and `kill` still succeeds on a zombie. The helper correctly treats an
+ * exited process as gone, so a liveness check that counts the zombie flakes whenever the
+ * helper's poll lands inside that reap window.
+ */
+function parentIsRunning(pid: number) {
+  const state = processState(pid);
+  return state !== null && state !== 'Z';
 }
 
 function finishedSnapshot(journal: MigrationJournal) {
@@ -45,6 +73,128 @@ function finishedSnapshot(journal: MigrationJournal) {
   atomicMigrationJson(join(path, 'finished.json'), {nonce, ...journal.owner});
   return path;
 }
+
+test('detached migration waits for its identified parent before checking launch conflicts', async t => {
+  const f = fixture(t, true);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  const parent = spawn(process.execPath, ['-e', 'process.stdin.resume()'], {stdio: ['pipe', 'ignore', 'ignore']});
+  t.after(() => {if (parent.exitCode === null) parent.kill();});
+  const pid = parent.pid!;
+  const identity = processIdentity(pid);
+  assert.ok(identity);
+  const handoff = join(f.stateDirectory, 'handoff.json');
+  atomicMigrationJson(handoff, {plan, parent: {pid, identity}, port: 59999});
+  const events: string[] = [];
+  const logPath = join(f.stateDirectory, 'update.log');
+  // Keep the parent alive until the helper has entered its async shutdown wait.
+  // A preflight taken during quit can see a runningboard job without a matching
+  // Foreground registration and mistake its own parent for a restart conflict.
+  const quit = setTimeout(() => parent.stdin.end(), 250);
+  t.after(() => clearTimeout(quit));
+  const ops = {...realApplyOperations(logPath), preflight: async (bundle: string) => {
+    if (parentIsRunning(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
+    events.push(bundle);
+    // Stop at the real conflict boundary without staging or launching an app.
+    if (bundle === plan.target) throw Object.assign(new Error('checked target after parent exit'), {migrationCrash: true});
+  }};
+  await assert.rejects(runApplyUpdate({sourceClone: plan.oldReceipt.sourceClone!, targetTag: 'v1.26.0',
+    appPath: plan.source, sourceApp: plan.source, targetApp: plan.target, parentPid: pid,
+    stateDirectory: f.stateDirectory, logPath, stagedBundle: plan.stagedBundle,
+    stagedRevision: plan.stagedRevision, migrationPlan: handoff}, ops), /checked target after parent exit/);
+  assert.deepEqual(events, [plan.source, plan.target]);
+  assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
+  assert.equal(existsSync(plan.target), false);
+});
+
+test('detached migration treats an exited but unreaped parent as gone', async t => {
+  const f = fixture(t, true);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  const parent = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300)'], {stdio: 'ignore'});
+  t.after(() => {if (parent.exitCode === null) parent.kill();});
+  const pid = parent.pid!;
+  const identity = processIdentity(pid);
+  assert.ok(identity);
+  const handoff = join(f.stateDirectory, 'handoff.json');
+  atomicMigrationJson(handoff, {plan, parent: {pid, identity}, port: 59999});
+  const logPath = join(f.stateDirectory, 'update.log');
+  // Hold the event loop until the parent has exited. This process cannot reap its
+  // own child until the loop turns, so the helper sees the zombie the CI runner did.
+  const deadline = Date.now() + 10_000;
+  while (processState(pid) !== 'Z') assert.ok(Date.now() < deadline, 'the parent never exited');
+  const events: string[] = [];
+  const ops = {...realApplyOperations(logPath), preflight: async (bundle: string) => {
+    // The first check must still see the zombie: the helper proceeded on it, not after a later poll reaped it.
+    if (events.length === 0) assert.equal(processState(pid), 'Z');
+    if (parentIsRunning(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
+    events.push(bundle);
+    if (bundle === plan.target) throw Object.assign(new Error('checked target after parent exit'), {migrationCrash: true});
+  }};
+  await assert.rejects(runApplyUpdate({sourceClone: plan.oldReceipt.sourceClone!, targetTag: 'v1.26.0',
+    appPath: plan.source, sourceApp: plan.source, targetApp: plan.target, parentPid: pid,
+    stateDirectory: f.stateDirectory, logPath, stagedBundle: plan.stagedBundle,
+    stagedRevision: plan.stagedRevision, migrationPlan: handoff}, ops), /checked target after parent exit/);
+  assert.deepEqual(events, [plan.source, plan.target]);
+});
+
+for (const collision of ['directory', 'symlink'] as const) test(`rename staging never writes into a raced ${collision} destination`, async t => {
+  const f = fixture(t, true);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  const foreign = join(f.root, 'unrelated.app');
+  cpSync(f.candidate, foreign, {recursive: true});
+  writeFileSync(join(foreign, 'Contents/Resources/app/package.json'), 'unrelated app bytes');
+  chmodSync(foreign, 0o750);
+  const before = inspectBundle(foreign);
+  const old = inspectBundle(f.app);
+  const result = await runMigration(plan, {...f.ports, checkpoint(stage) {
+    if (stage !== 'target-staging') return;
+    if (existsSync(plan.target)) renameSync(plan.target, join(f.root, 'displaced-reservation'));
+    if (collision === 'directory') renameSync(foreign, plan.target);
+    else symlinkSync(foreign, plan.target);
+  }});
+  assert.equal(result.committed, false);
+  assert.deepEqual(inspectBundle(collision === 'directory' ? plan.target : foreign), before,
+    'copy, chmod, and recovery must leave every foreign byte and mode unchanged');
+  assert.deepEqual(inspectBundle(f.app), old);
+  assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
+  assert.equal(f.events.includes('launch'), false);
+});
+
+for (const occupied of [false, true]) test(`private staging cleanup denial preserves ${occupied ? 'publication failure' : 'successful publication'}`, async t => {
+  const f = fixture(t, true);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  const remove = fs.rmSync;
+  let retained = '';
+  t.mock.method(fs, 'rmSync', ((path: PathLike, options: fs.RmOptions) => {
+    if (String(path).startsWith(join(dirname(f.app), '.mission-rename-staging-'))) {
+      retained = String(path);
+      throw Object.assign(new Error('fixture system parent denies staging removal'), {code: 'EACCES'});
+    }
+    return remove(path, options);
+  }) as typeof fs.rmSync);
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (message: string) => {warnings.push(message);});
+  syncBuiltinESMExports();
+  t.after(() => {t.mock.restoreAll(); syncBuiltinESMExports();});
+  const result = await runMigration(plan, {...f.ports, checkpoint(stage) {
+    if (!occupied || stage !== 'target-staging') return;
+    mkdirSync(plan.target); writeFileSync(join(plan.target, 'foreign'), 'unrelated app');
+  }});
+  assert.ok(retained);
+  assert.ok(existsSync(retained));
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0]!.includes(retained), 'manual cleanup gets the actual retained path');
+  assert.equal(result.committed, !occupied, result.error);
+  if (occupied) {
+    assert.match(result.error!, /EEXIST|File exists/);
+    assert.equal(readFileSync(join(plan.target, 'foreign'), 'utf8'), 'unrelated app');
+    assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
+    assert.equal(f.events.includes('launch'), false);
+  } else {
+    assert.deepEqual(readdirSync(retained), [], 'only the empty private container remains');
+    assert.deepEqual(migrationReceipt(f.stateDirectory), plan.intendedReceipt);
+    assert.equal(existsSync(f.app), false);
+  }
+});
 
 for (const fallback of [false, true]) test(`repeated completed in-place installs reclaim their exact ${fallback ? 'fallback' : 'fixed'} swap sibling`, {
   skip: fallback && (!process.getuid || process.getuid() === 0),
@@ -223,7 +373,7 @@ test('in-place plans reject a missing or mismatched kind discriminator', (t) => 
   const f = fixture(t);
   const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
   for (const kind of [undefined, 'relocation']) {
-    assert.throws(() => validateMigrationPlan({...plan, kind}), /Invalid in-place/);
+    assert.throws(() => validateMigrationPlan({...plan, kind}), /Unsupported or invalid migration protocol/);
   }
   assert.equal(validateMigrationPlan(plan), plan);
 });
@@ -355,3 +505,173 @@ test('legacy source targets without embedded commits do not inherit a false prio
   assert.equal(descriptor.receipt.schema, 1);
   assert.throws(() => prepareSourceUpdate({receipt: f.descriptor.receipt, bundle: f.candidate, targetTag: 'b'.repeat(40)}), /accepted update/);
 });
+
+for (const scope of ['user', 'system', 'custom'] as const) test(`old-name ${scope} install migrates with exact state and scope, then accepts another update`, async t => {
+  const f = fixture(t, true, scope);
+  const state = join(f.stateDirectory, 'synthetic-state');
+  writeFileSync(state, 'sessions/settings/database sentinel', {mode: 0o600});
+  const prior = inspectBundle(f.app);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  assert.equal(plan.kind, 'rename');
+  assert.equal(plan.protocol, 3);
+  const result = await runMigration(plan, {...f.ports, waitForReady: async () => {
+    assert.deepEqual(inspectBundle(f.app), prior, 'old app remains intact until commitment');
+    assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
+    assert.equal(inspectBundle(plan.target).digest, f.descriptor.digest);
+  }});
+  assert.equal(result.committed, true, result.error);
+  assert.equal(result.error, undefined);
+  assert.equal(existsSync(f.app), false, 'only the renamed app remains at a public install path');
+  assert.deepEqual(inspectBundle(plan.backup!), prior);
+  assert.equal(migrationReceipt(f.stateDirectory).appPath, plan.target);
+  assert.equal(migrationReceipt(f.stateDirectory).installScope, scope);
+  assert.equal(readFileSync(state, 'utf8'), 'sessions/settings/database sentinel');
+  // Integration repair owns completion for a path change. Forward recovery never launches old code.
+  await recoverMigration(f.stateDirectory, f.ports);
+  assert.equal(f.events.includes('restore'), false);
+  const journal = readMigrationJournal(f.stateDirectory)!;
+  atomicMigrationJson(join(f.stateDirectory, MIGRATION_JOURNAL), {...journal, stage: 'complete'});
+  const next = prepareStagedInstall({bundle: f.candidate, receipt: {...migrationReceipt(f.stateDirectory), installedAt: '2026-10-27T00:00:00.000Z'}});
+  const second = prepareInPlaceInstall({descriptor: next, stateDirectory: f.stateDirectory});
+  assert.equal(second.kind, 'in-place');
+  const updated = await runMigration(second, {...f.ports, waitForReady: async () => {}});
+  assert.equal(updated.committed, true, updated.error);
+  assert.equal(migrationReceipt(f.stateDirectory).appPath, plan.target);
+  assert.equal(readFileSync(state, 'utf8'), 'sessions/settings/database sentinel');
+});
+
+for (const point of ['prepared', 'source-backed-up', 'target-staging', 'target-staged', 'target-ready', 'receipt-renamed', 'receipt-committed']) {
+  test(`rename interruption at ${point} preserves pre-commit identity or recovers forward`, async t => {
+    const f = fixture(t, true);
+    const prior = inspectBundle(f.app);
+    const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+    await assert.rejects(runMigration(plan, {...f.ports, checkpoint: stage => {
+      if (stage === point) throw Object.assign(new Error('interrupted'), {migrationCrash: true});
+    }}), /interrupted/);
+    await recoverMigration(f.stateDirectory, f.ports);
+    if (point.startsWith('receipt-')) {
+      assert.equal(migrationReceipt(f.stateDirectory).appPath, plan.target);
+      assert.equal(existsSync(f.app), false);
+      assert.equal(f.events.includes('restore'), false);
+      assert.deepEqual(inspectBundle(plan.backup!), prior);
+    } else {
+      assert.deepEqual(inspectBundle(f.app), prior);
+      assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
+      assert.equal(existsSync(plan.target), false);
+      assert.equal(f.events.at(-1), 'restore');
+      assert.equal(readMigrationJournal(f.stateDirectory), null, 'old readers never encounter protocol 3 after restoration');
+    }
+  });
+}
+
+for (const failure of ['cancel', 'readiness', 'receipt-write']) test(`rename ${failure} failure restores exact old receipt and bundle`, async t => {
+  const f = fixture(t, true);
+  const prior = inspectBundle(f.app);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  const result = await runMigration(plan, {...f.ports,
+    waitForParent: async () => {if (failure === 'cancel') throw new Error('cancelled before shutdown');},
+    waitForReady: async () => {
+      if (failure === 'readiness') throw new Error('readiness refused');
+      if (failure === 'receipt-write') mkdirSync(`${f.receiptPath}.${process.pid}.tmp`);
+    },
+  });
+  assert.equal(result.committed, false);
+  assert.deepEqual(inspectBundle(f.app), prior);
+  assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
+  assert.equal(existsSync(plan.target), false);
+});
+
+test('rename refuses an occupied new name before shutdown and detects a raced collision', async t => {
+  const f = fixture(t, true);
+  const target = f.descriptor.receipt.appPath;
+  mkdirSync(target); writeFileSync(join(target, 'foreign'), 'unrelated app');
+  assert.throws(() => prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory}), /already exists/);
+  rmSync(target, {recursive: true});
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  mkdirSync(target); writeFileSync(join(target, 'foreign'), 'raced unrelated app');
+  await assert.rejects(runMigration(plan, f.ports), /occupied/);
+  assert.equal(readFileSync(join(target, 'foreign'), 'utf8'), 'raced unrelated app');
+  assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
+  assert.deepEqual(f.events, []);
+});
+
+test('rename refuses unsupported targets and arbitrary cross-directory policy changes', t => {
+  const f = fixture(t, true);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  assert.throws(() => validateMigrationPlan({...plan, source: '/Applications/Unrelated.app'}), /policy changed/);
+  assert.throws(() => validateMigrationPlan({...plan, protocol: 2}), /protocol/);
+  assert.throws(() => validateMigrationPlan({...plan, intendedReceipt: {...plan.intendedReceipt, installScope: 'system'}}), /policy changed/);
+  const file = join(f.candidate, 'Contents/Resources/app/package.json');
+  const pkg = JSON.parse(readFileSync(file, 'utf8')); delete pkg.missionInstallTransaction.appNaming;
+  writeFileSync(file, JSON.stringify(pkg));
+  const descriptor = prepareStagedInstall({bundle: f.candidate, receipt: f.descriptor.receipt});
+  assert.throws(() => prepareInPlaceInstall({descriptor, stateDirectory: f.stateDirectory}), /cannot migrate the app name/);
+});
+
+for (const entry of ['install', 'recovery'] as const) {
+  for (const phase of ['rollback', 'retirement'] as const) {
+    for (const race of ['capture', 'recreate'] as const) {
+      test(`rename ${entry} ${phase} preserves foreign apps and receipt/state when a path changes at ${race}`, async t => {
+        const f = fixture(t, true);
+        const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+        const sourceDigest = inspectBundle(f.app).digest;
+        const state = join(f.stateDirectory, 'synthetic-state'); writeFileSync(state, 'sessions/settings unchanged');
+        const cleanupPath = phase === 'rollback' ? plan.target : plan.source;
+        const saved = join(f.root, 'verified-before-race.app');
+        if (entry === 'recovery') {
+          await assert.rejects(runMigration(plan, {...f.ports, checkpoint(stage) {
+            if (stage === (phase === 'rollback' ? 'target-staged' : 'receipt-committed')) {
+              throw Object.assign(new Error('fixture helper exited'), {migrationCrash: true});
+            }
+          }}), /fixture helper exited/);
+        }
+        let capture = '';
+        const move = fs.renameSync;
+        t.mock.method(fs, 'renameSync', (from: PathLike, to: PathLike) => {
+          if (String(from) !== cleanupPath || !String(to).includes('.mission-rename-cleanup-')) return move(from, to);
+          capture = String(to);
+          if (race === 'capture') move(from, saved);
+          else move(from, to);
+          mkdirSync(String(from)); writeFileSync(join(String(from), 'foreign'), 'unrelated app');
+          if (race === 'capture') move(from, to);
+        });
+        syncBuiltinESMExports();
+        t.after(() => {t.mock.restoreAll(); syncBuiltinESMExports();});
+        let result: {committed: boolean; error?: string};
+        if (entry === 'recovery') {
+          let error: string | undefined;
+          try { await recoverMigration(f.stateDirectory, f.ports); }
+          catch (failure) { error = String(failure); }
+          result = {committed: phase === 'retirement', error};
+        } else {
+          result = await runMigration(plan, {...f.ports, waitForReady: async () => {
+            if (phase === 'rollback') throw new Error('fixture readiness failure');
+          }});
+        }
+        assert.ok(capture, 'the real migration must reach the cleanup capture');
+        assert.equal(result.committed, phase === 'retirement');
+        const foreign = race === 'capture' ? capture : cleanupPath;
+        assert.equal(readFileSync(join(foreign, 'foreign'), 'utf8'), 'unrelated app');
+        assert.equal(readFileSync(state, 'utf8'), 'sessions/settings unchanged');
+        assert.equal(inspectBundle(plan.backup!).digest, sourceDigest);
+        if (phase === 'rollback') {
+          assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
+          assert.equal(inspectBundle(f.app).digest, sourceDigest);
+        } else {
+          assert.deepEqual(migrationReceipt(f.stateDirectory), plan.intendedReceipt);
+          assert.equal(f.events.includes('restore'), false, 'never roll back committed state');
+        }
+        if (race === 'capture') {
+          assert.match(result.error!, /identity changed/);
+          assert.ok(result.error!.includes(capture), 'recovery names retained foreign material');
+          assert.equal(f.events.includes('restore'), false, 'failed cleanup retains the journal for manual recovery');
+          assert.ok(readMigrationJournal(f.stateDirectory));
+          assert.ok(existsSync(saved));
+        } else {
+          assert.equal(existsSync(capture), false, 'only the verified captured directory was removed');
+          assert.equal(phase === 'rollback' ? f.events.at(-1) : result.error, phase === 'rollback' ? 'restore' : undefined);
+        }
+      });
+    }
+  }
+}

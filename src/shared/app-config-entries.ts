@@ -248,6 +248,7 @@ const inspectorFields = {
 } satisfies Record<keyof InspectorConfig, AppConfigValueClass>;
 
 const shippingFields = {
+  codeRabbitAutoResolve: "setting",
   autoMerge: "setting",
   soakMinutes: "setting",
   method: "setting",

@@ -1,4 +1,4 @@
-import { resolveCurrentOwnedRuntime } from "../shared/owned-runtime.mjs";
+import { resolveOwnedRuntime } from "../shared/owned-runtime.mjs";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -70,7 +70,12 @@ export const MISSION_MCP_SERVER_NAME = "mission-control";
  * reads the server's own `registerTool` calls and fails if the two drift.
  */
 export const MISSION_MCP_TOOLS = [
+  "list_workflow_runs",
+  "get_workflow_run",
+  "trigger_workflow_action",
   "share_plan",
+  "read_sessions",
+  "control_session",
   PLAN_DECISIONS_TOOL,
   "request_review",
   PLAN_SCHEDULING_TOOL,
@@ -234,8 +239,8 @@ interface MissionMcpRuntime {
  * bundle on Node 18, which has no `crypto` global, and every Mission Control tool call in
  * that session failed with "ReferenceError: crypto is not defined".
  */
-export function resolveMissionMcpRuntime(execPath: string = process.execPath): MissionMcpRuntime {
-  return resolveCurrentOwnedRuntime(execPath);
+export function resolveMissionMcpRuntime(execPath: string = process.execPath, kind: "node" | "electron" = process.versions.electron ? "electron" : "node"): MissionMcpRuntime {
+  return resolveOwnedRuntime({executable: execPath, kind});
 }
 
 /**

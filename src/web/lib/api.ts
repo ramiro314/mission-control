@@ -1703,6 +1703,7 @@ export interface ArchiveArtifactBody {
 }
 
 export const api = {
+  setSessionControl: (id: string, enabled: boolean, requestId: string) => request("PUT", `/api/sessions/${encodeURIComponent(id)}/session-control`, { enabled, requestId }),
   listFiles: fetchSessionFiles,
   readFile: fetchSessionFile,
   readFileIfChanged: fetchSessionFileIfChanged,

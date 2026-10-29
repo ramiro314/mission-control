@@ -1003,6 +1003,7 @@ export async function runReviewFollowup(
   const liveIds = new Set(sessions.map((s) => s.id));
   for (const id of reviewNudged.keys()) if (!liveIds.has(id)) reviewNudged.delete(id);
 
+  const shipping = await client.shippingConfig().catch(() => null);
   const now = Date.now();
   for (const session of sessions) {
     // No open PR anywhere: forget this session's marks - a merged/closed PR is done, and a
@@ -1043,6 +1044,7 @@ export async function runReviewFollowup(
         mark: marks.get(pr.prKey) ?? null,
         cfg: {
           trackReviewComments: cfg.trackReviewFeedback,
+          codeRabbitAutoResolve: shipping?.codeRabbitAutoResolve === true,
           trackCiFailures: cfg.trackCiFailures,
           trackMergeConflicts: cfg.trackMergeConflicts,
           settleMs: SETTLE_MS,
@@ -1066,9 +1068,10 @@ export async function runReviewFollowup(
         if (!read) break;
       }
 
-      const [freshCfg, freshSessions] = await Promise.all([
+      const [freshCfg, freshSessions, freshShipping] = await Promise.all([
         client.getConfig().catch(() => null),
         client.sessions().catch(() => null),
+        client.shippingConfig().catch(() => null),
       ]);
       if (!freshCfg || !freshSessions || !holdsLease()) break;
 
@@ -1104,6 +1107,7 @@ export async function runReviewFollowup(
         mark: freshMark,
         cfg: {
           trackReviewComments: freshCfg.trackReviewFeedback,
+          codeRabbitAutoResolve: freshShipping?.codeRabbitAutoResolve === true,
           trackCiFailures: freshCfg.trackCiFailures,
           trackMergeConflicts: freshCfg.trackMergeConflicts,
           settleMs: SETTLE_MS,
@@ -1165,7 +1169,7 @@ async function deliverReviewFollowup(
   const prior = marks.get(nudge.prKey) ?? null;
   marks.set(nudge.prKey, nudge.mark);
   try {
-    await client.inject(session.id, nudge.payload);
+    await client.inject(session.id, nudge.payload, nudge.codeRabbit);
   } catch (err) {
     // Only a delivery the daemon POSITIVELY reported as undelivered frees this session: its
     // previous mark is restored so it re-nudges, and it is NOT claimed, so the target loop

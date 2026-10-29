@@ -316,3 +316,15 @@ test("a shared round that fails fails every joined read, and the next read probe
   assert.equal(typeof (await retry.json() as { snapshotToken: unknown }).snapshotToken, "string");
   assert.equal(rounds, 2);
 });
+
+test("runtime descriptor and Setup snapshot describe the serving process", async () => {
+  const setup = deps(null,null);
+  setup.runtime = () => ({origin:"standalone",node:process.versions.node,executable:process.execPath});
+  const app = appFor(setup);
+  const descriptor = await app.request("/api/integrations/runtime",{headers:LOOPBACK});
+  assert.equal(descriptor.status,200);
+  assert.deepEqual(await descriptor.json(), {executable:process.execPath,kind:"node"});
+  const snapshot = await (await app.request("/api/setup/checks",{headers:LOOPBACK})).json();
+  assert.deepEqual(snapshot.runtime,setup.runtime());
+  assert.equal(typeof snapshot.snapshotToken,"string");
+});

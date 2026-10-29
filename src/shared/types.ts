@@ -523,6 +523,8 @@ export interface Session {
    * human review resolution never consult it; it governs the background loop only.
    */
   foremanInvite: ForemanInvite | null;
+  /** Explicit controller grant for this live work episode; absent means off. */
+  sessionControlEnabled?: boolean;
   /**
    * Display name. A discovered terminal session takes it from the highest-priority backend holding
    * its pane - a multiplexer's session name, else an emulator's tab title, else an
@@ -2793,7 +2795,7 @@ export type ReviewStatus =
  * not say so, and the conversation must not claim an answer the human cannot be shown to
  * have given.
  */
-export type ReviewActor = "human" | "foreman";
+export type ReviewActor = "human" | "foreman" | `session:${string}`;
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
@@ -3160,6 +3162,7 @@ export type InspectorLegacyPosted = (typeof INSPECTOR_LEGACY_POSTED)[number];
  * PR itself is where you look.
  */
 export interface InspectorSummary {
+  codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
   prKey: string;
   url: string;
   mode: InspectorMode;
@@ -3214,6 +3217,7 @@ export interface RetroSummary {
 
 /** A ledger row plus its finding tallies - what the settings panel lists. */
 export interface InspectorInspection extends InspectorPr {
+  codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
   openFindings: number;
   postedOpenFindings: number;
   resolvedFindings: number;
@@ -3759,6 +3763,24 @@ export interface TranscriptMessage {
    */
   origin?: TurnOrigin;
   /**
+   * The controlling session that sent a `session` turn, as it was named at delivery. Present
+   * only beside `origin: "session"`, and only when the daemon still remembers the delivery.
+   */
+  originSession?: TurnOriginSession;
+  /**
+   * True when this user turn may be a delegated message whose sender could not be established
+   * (its words raced another send, or the send boundary was unknown). It carries no `origin`,
+   * so it reads unlabelled; readers that count the operator's own words must skip it.
+   */
+  originUnresolved?: true;
+  /**
+   * True when the agent recorded this user turn as a message it took into a turn already
+   * running (Claude Code's `queued_command` attachment), rather than as a turn of its own.
+   * Lets the dashboard draw it once if the same words are also written as a plain record
+   * before the agent says anything (see `collapseSteerEchoes`).
+   */
+  takenMidTurn?: true;
+  /**
    * How the DASHBOARD should present this turn, when that differs from how the transcript
    * records it. Absent on every turn the log renders literally, which is nearly all of
    * them, and absent on the wire for any client or fixture that never asked.
@@ -3800,7 +3822,13 @@ export type TranscriptPresentation = {
  * The transcript file records all of them exactly as it records a person's typing, so without this the log credits the human
  * with instructions they never wrote - and hides the machinery doing its job.
  */
-export type TurnOrigin = "foreman" | "harness" | "workflow";
+export type TurnOrigin = "foreman" | "harness" | "workflow" | "session";
+
+/** The session that typed a delegated turn: its id, and its name when the turn was sent. */
+export interface TurnOriginSession {
+  id: string;
+  name: string;
+}
 
 /**
  * Messages on the per-session transcript SSE stream

@@ -7,7 +7,7 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | Surface | Entry point | Ownership |
 |---|---|---|
 | Daemon | `src/server/index.ts` | State-home owner, loopback HTTP server, and the only SQLite writer |
-| Web dashboard | `src/web/main.tsx` | React UI over HTTP plus one Server-Sent Events connection |
+| Web dashboard | `src/web/bootstrap.ts` → `src/web/main.tsx` | Startup diagnostics, then React UI over HTTP plus one Server-Sent Events connection |
 | Shared contracts | `src/shared/` | Wire types, schemas, and browser-safe shared logic |
 | Electron shell | `src/main/index.ts`, `src/preload/index.ts` | Starts and embeds the daemon; supervises the packaged Foreman worker |
 | MCP server | `src/mcp/server.ts` | Stdio child that reaches the daemon over HTTP |
@@ -58,8 +58,8 @@ There are two explicit exceptions:
   shared child environment, under the Workflow process supervisor. Their resolved record carries
   `id: null` so it cannot impersonate a built-in catalog entry.
 - Truly fixed OS utilities are absolute paths declared in `FIXED_OS_EXECUTABLES`. The class is
-  currently `/usr/bin/env`, `/bin/sh`, `/usr/bin/osascript`, `/usr/bin/open`, `/usr/bin/tail` and
-  `/bin/cp`. Do not add a bare command to this class.
+  currently `/usr/bin/env`, `/bin/sh`, `/bin/bash`, `/usr/bin/osascript`, `/usr/bin/open`,
+  `/usr/bin/tail` and `/bin/cp`. Do not add a bare command to this class.
 
 ## Session ownership
 
@@ -214,6 +214,85 @@ flow and tool contracts. `plans/inputs.ts` verifies pinned inputs at dispatch an
 `plans/publication.ts` owns exact human approval, frozen validation and durable local receipts.
 WorkflowManager owns its notification/recovery lifetime. Receipts update only plan artifact edges;
 TaskManager retains completion and eviction ownership. Foreman and MCP never write SQLite.
+
+## Delegated session control
+
+The Registry owns the transient per-controller grant and its session projection.
+The desktop preload arms a single-use authorization from a trusted menu selection. Main
+consumes it over the private utility-process channel; HTTP supplies only the request id,
+session id and setting, never the authorization. The daemon rechecks the same Registry
+identity used by the grant after the asynchronous check before enabling control. Standalone
+daemons fail closed.
+Main registers every dashboard click arm, this one and the Feedback report's, through
+`serveDashboardClick` in `src/main/dashboard-click-ipc.ts`, which owns the reply rule. The
+desktop e2e fixtures use the same registrar.
+`session-control.ts` authenticates the current signed session credential and checks that
+grant before translating typed commands to the existing dashboard routes. It introduces no
+second driver, terminal write policy, queue owner or review lifecycle. New session-control
+actions belong in the shared discriminated schema and the exhaustive route translator;
+there is no arbitrary-path proxy. Grant changes and actions use the existing session event
+ledger. Delegated reviews are conversation history, while human approval queries keep their
+human-only meaning.
+The verified controller is associated with the exact internal `Request` through a private
+WeakMap in `session-control.ts`, removed when dispatch finishes. Answer handlers read that
+association separately from their public human/Foreman schemas, so concurrent direct requests
+cannot inherit delegated attribution. Delegated single-option commands and SDK form answers
+require the current prompt id. Pane form rows retain their existing request-id compatibility. Authenticated revocation
+still removes the grant if the live session identity changes while authorization is pending.
+A delegated `/inject` also reserves a `session_delegated_turns` row through
+`delegated-turns.ts`, keyed by the target's note key, before delivery and releases it only on
+positive evidence nothing landed. `attributeTranscript` binds each row write-once to the native
+turn it produced, so the sender survives a restart and identical text from two controllers
+keeps two senders when the second is reserved after the first is bound (concurrent rivals are
+contested, below). Each row records the target transcript's byte size at send, and an unbound
+row binds, in rowid (reservation) order, to the first unclaimed user turn with its words
+written after that offset in the file, walked with the reader's forward `after` page. Binding
+never depends on the page being read, so an operator turn written before the delivery, or a
+later repeat on a page that skips the delivery's own turn, is never claimed. Bound turns answer
+by exact native id; the timestamp fallback for re-synthesized ids (Codex) applies only when the
+whole transcript, not just the page, holds exactly one user turn with those words at that
+timestamp, so a same-millisecond operator repeat is left unattributed rather than credited.
+Every other sender of words to the target - the `/send` and `/inject` direct arms and the
+pending-turn delivery seams - calls `noteOtherSend` before it writes, which persists the send in
+`session_other_sends` so it still races a delegated send after a daemon restart; `/send` does so for an
+unsubmitted draft too, since the operator's Enter submits it outside Mission Control. While a
+delivery of some words is contested or boundary-less, `delegatedTurnSources` reports matching
+unbound turns written inside such a delivery's window (judged on the turn's own timestamp, so
+the doubt does not lapse) as `ambiguous`, and `attributeTranscript` drops every live label on them,
+Foreman's included, and marks them `originUnresolved` so a reader of the operator's own words
+(the retro correction scanner) skips them. Rivalry and `reconsider` compare the stored sender as
+id plus name, so one controller renamed between two in-flight identical sends counts as two. A delegated row whose
+words race such a send, in either order, is marked `contested`, persisted, and never bound. An
+in-flight check never credits a landed turn to another send while a contested or boundary-less
+delivery of the same words is unbound. A send with positive evidence that nothing landed
+(`pasted: false`) is withdrawn with `withdrawOtherSend`, which clears the contest once no
+other send of those words remains. A transcript that is not located yet, or whose size cannot be read, stores a NULL offset,
+and that row is never bound. A reservation whose words match a different controller's unbound,
+unexpired delivery contests both, after first binding what has already landed; the same
+controller twice cannot swap names and stays bindable. Withdrawing a send and releasing a
+delivery both call `reconsider`, which clears a contest only when no other send is remembered
+and the remaining unbound deliveries of those words belong to one controller. The text-keyed `injections.ts` label still covers the other origins and Goal suppression.
+
+Workflow tools reuse the identity-only `sessionControlCaller` verifier through
+`workflows/mcp.ts`. Current binding session and note-key ownership permits self-control;
+other targets require the existing Registry grant. The daemon enforces ownership for list,
+detail and all action target families before invoking dashboard handlers. List scope is a
+store SQL predicate applied before pagination. Shared request contracts and the closed endpoint
+translator live in `src/shared/workflow-mcp.ts`; the stdio child supplies the signed credential
+and never falls back to an unscoped dashboard route. WorkflowManager remains the state owner.
+
+```mermaid
+flowchart LR
+  Operator[Trusted desktop menu selection] --> Shell[Private preload and Electron shell]
+  Shell -->|Single-use private reply| Auth[Daemon authorization and identity check]
+  Auth --> Registry[Registry grant]
+  Agent[Controller MCP tools] --> Gate[Live credential and grant check]
+  Registry --> Gate
+  Gate --> Routes[Existing dashboard action routes]
+  Routes --> Runtime[SDK or terminal]
+  Routes --> Reviews[Review and queue owners]
+  Registry --> SSE[Session upsert to dashboard]
+```
 
 ## Harnesses and terminals
 
@@ -402,3 +481,16 @@ The GitHub Inspector stays in the daemon so it is present in packaged Electron b
 The GitHub Inspector comment marker `mission-inspector:v1` is append-only because it already exists on GitHub. Parse a future version alongside it rather than replacing it.
 
 The GitHub Inspector's poll is also the only place a PR's remote state is READ. Its tick writes what it saw - `observed_head_sha`, `observed_state`, `head_ref_name` - onto the adoption ledger beside `head_sha`, which records only what the last completed review was about. That split matters: "has the branch reached the pull request yet" is a question the review head cannot answer, and it is the question a `pull_request` session action must answer before downstream stages read fresh evidence. Anything else that needs a PR's remote state reads those columns; adding a second poller would double the API cost of every open PR to answer a question this one already answers.
+
+
+### CodeRabbit observation and delivery
+
+The Inspector adoption ledger owns CodeRabbit state through the validated `code_rabbit_state`
+column. The same daemon poll runs for Inspector or the independent Shipping switch, completing
+thread observation before review work. Inspector review/posting and Shipping merge consent stay
+separate. The nested `InspectorSummary.codeRabbit` projection carries equivalent primary and
+attached-PR observations through Registry/SSE; it is not an Inspector finding or review receipt.
+
+Foreman's existing PR pass requests a bound CodeRabbit injection. The existing `/inject` route
+rebuilds ownership and consent, assembles the text, claims current root generations atomically,
+and rechecks under the existing terminal/SDK write lock. No other process writes SQLite.

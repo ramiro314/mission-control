@@ -418,8 +418,11 @@ One receipt may cross submissions, and only one: the attempt a child segment nam
 cross-submission source would let a node activated on one evidence snapshot advance a graph
 running on another.
 
-Criterion coverage follows the same evidence identity. Mutable claims are keyed by
-`(note_key, client_criterion_id)` and carry the staged generation. A claim's optional
+Criterion coverage follows the same evidence identity. One current mutable registration is keyed
+by `(note_key, client_criterion_id)` and carries the staged generation. Earlier versions may remain
+in the same staging table for sibling repositories after a scope change. Freezing selects one
+unretired version per caller id for its receiving repository; retained versions never overwrite
+the current registration or change historical submissions. A claim's optional
 `criterion_id` is the canonical criterion it cites, not part of its key: both coverage tables
 carry the column and every freeze path copies it. A value THIS submission's author wrote that
 names no criterion of the run is refused by name through `rejectedCitations` and
@@ -1322,3 +1325,23 @@ A prepared destination may move; uncertain or historical delivery attribution mu
 The Phase 1 lease stays the only credential-lifetime owner. Do not downgrade while any
 transfer is pending, and do not turn runtime transfer into a task-worktree return or a second
 session eviction path.
+
+
+## CodeRabbit follow-through state
+
+`inspector_prs.code_rabbit_state` is versioned, schema-validated JSON owned by the existing
+adoption row. Complete success, retained historical data, latest error, per-root generation and
+per-conversation/intent-episode receipt are distinct facts. Root edits and observed reopenings
+advance generations; head-only pushes and shrinking unresolved sets do not. Receipt outcomes
+`uncertain` and `delivered` are persisted vocabulary. A claim binds its id, exact root generations,
+observation id and head before transport; only positive refusal releases that exact claim.
+
+The record retains at most 2,000 root identities and 10,000 latest per-root owner/episode receipts.
+Reaching a bound holds work rather than discarding replay protection. A newer generation replaces
+only its matching receipt; delayed old results cannot clear it. Adoption-row deletion owns final
+cleanup. Neither session exit, toggle nor process restart clears receipts. Stored observations
+from an earlier daemon are history until the current process completes a provider read.
+
+The Shipping setting is the only source grant. Foreman consent and workflow ownership govern
+messaging; existing merge gates govern merge. Adding a CodeRabbit status must never synthesize
+an Inspector clean review or change those gates. A missing or invalid saved record is unknown.

@@ -399,3 +399,19 @@ test("the ship handoff commits locally before completion and defers only publica
   assert.match(prompt, /committed locally on the task branch/);
   assert.doesNotMatch(prompt, /- committing the work/);
 });
+
+test("plan completion requires offering phasing in both storage modes", () => {
+  for (const storage of ["repository", "local"] as const) {
+    const contract = taskCompletionContract("plan", true, storage)!;
+    const requirement = contract.complete.find((item) => /offered.*selectable.*phased-plan/.test(item));
+    assert.ok(requirement, `${storage} completion must require the follow-up choice`);
+    assert.match(requirement, /even when there are no other open choices/);
+    assert.match(requirement, /once per root plan, on its first review/);
+    assert.match(requirement, /later repair or re-approval reviews retain that choice without another offer/);
+    assert.ok(buildVerifyPrompt(mkVerifyInput({ completionContract: contract })).includes(requirement));
+    const delivered = withTaskKindContract(mkTask({ kind: "plan", workflowId: "plan-review", planPolicy: { version: 2, storage, commitPlanHtml: false } }), "Plan the work", {
+      planSkills: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" },
+    });
+    assert.ok(delivered.includes(requirement));
+  }
+});

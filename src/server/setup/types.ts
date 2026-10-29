@@ -2,7 +2,7 @@ import type { AgentType } from "@shared/types.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
 import type { PipelineProbe } from "@shared/pipeline.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
-import type { SetupBannerDismissal, SetupRemedy, SetupStatus } from "@shared/setup-catalog.ts";
+import type { SetupBannerDismissal, SetupRemedy, SetupStatus, SetupRuntimeView } from "@shared/setup-catalog.ts";
 import type { ExecutableId } from "@shared/executables.ts";
 
 import type { EnvironmentDeps } from "../environment/types.ts";
@@ -37,6 +37,7 @@ export interface SetupSkillsRead {
 export interface SetupDeps {
   /** The host whose remedies and rows are offered. Defaults to `process.platform`. */
   platform?: NodeJS.Platform;
+  runtime?(): SetupRuntimeView;
   canInstallPiExtension?(): boolean;
   /** One fresh login-shell PATH snapshot for this explicit machine inspection. */
   refreshPath?(): Promise<void>;

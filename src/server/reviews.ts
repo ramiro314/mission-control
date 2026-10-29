@@ -11,6 +11,7 @@ import type {
 import {
   decisionLead,
   formatResponse,
+  isConversationResolvedReview,
   isHumanResolvedReview,
   reviewToolResult,
 } from "@shared/review-item.ts";
@@ -558,7 +559,7 @@ export class ReviewManager {
       this.registry.retireNoteAnsweredByYou(cur.sessionId, `review:${cur.id}`);
     }
     this.markSteered(updated);
-    if (isHumanResolvedReview(updated)) {
+    if (isConversationResolvedReview(updated)) {
       const candidate = loadReviewContinuationCandidates(updated.id)[0];
       if (candidate) this.deliverContinuation(candidate);
     }

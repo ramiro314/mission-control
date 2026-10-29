@@ -1,13 +1,12 @@
 import { spawnBundledUpdateHelper } from "./update-helper-runtime.mjs";
 // OS ports for the relocation protocol. All waits have deadlines; all signals require
 // the recorded process identity, never just a PID that macOS may have reused.
-import { assertSafeAppLaunch, prepareAppLaunch, realMacAppOps, parseLaunchServices, parseAppProcesses } from "./mac-app-lifecycle.mjs";
+import { assertSafeAppLaunch, COMMAND_TIMEOUT_MS, prepareAppLaunch, realMacAppOps, parseLaunchServices, parseAppProcesses } from "./mac-app-lifecycle.mjs";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createConnection } from "node:net";
-import { dirname, join } from "node:path";
-import { APP_BUNDLE_NAME } from "./app-bundle-swap.mjs";
+import { basename, dirname, join } from "node:path";
 import { processIdentity, processIsAlive } from "./update-lock.mjs";
 import {
   MIGRATION_ACK, MIGRATION_LAUNCH, MIGRATION_JOURNAL, MIGRATION_TIMEOUT_MS, atomicMigrationJson,
@@ -46,7 +45,7 @@ export function migrationPortOccupied(port) {
 async function openMigrationApp(bundle, args, mac, stateDirectory = process.env.MISSION_HOME) {
   await prepareAppLaunch(bundle, mac);
   await assertSafeAppLaunch(bundle, mac);
-  const result = await mac.run("/usr/bin/open", [bundle, ...(stateDirectory ? ["--env", `MISSION_HOME=${stateDirectory}`] : []), ...(args.length ? ["--args", ...args] : [])], 5000);
+  const result = await mac.run("/usr/bin/open", [bundle, ...(stateDirectory ? ["--env", `MISSION_HOME=${stateDirectory}`] : []), ...(args.length ? ["--args", ...args] : [])], COMMAND_TIMEOUT_MS);
   if (result.code !== 0) throw new Error("LaunchServices could not open the migration app.");
 }
 
@@ -155,7 +154,7 @@ export async function migrationStartupGate({ stateDirectory, runningBundle, nonc
     // launch can now use the ordinary redirect/single-instance path immediately.
     return {proceed: true, committed: true, fresh: false};
   }
-  if (target && plan.kind === "in-place" && !nonce && !sameMigrationProcess(journal.owner) && !migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {
+  if (target && plan.kind && !nonce && !sameMigrationProcess(journal.owner) && !migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {
     // Recovery must outlive this launch too. Copy a complete runtime before asking
     // this process to leave; never restore over the executable doing the recovery.
     await spawnBundledUpdateHelper({runtimeBundle: runningBundle,
@@ -171,7 +170,7 @@ export async function migrationStartupGate({ stateDirectory, runningBundle, nonc
   if (target && !migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {
     if (!nonce) throw new Error("An uncommitted personal app cannot start. Reopen the system app to recover the interrupted update.");
     validateMigrationTarget(plan);
-    if (realpathSync(runningBundle) !== join(realpathSync(dirname(plan.target)), APP_BUNDLE_NAME)) throw new Error("The migration target resolves to another app.");
+    if (realpathSync(runningBundle) !== join(realpathSync(dirname(plan.target)), basename(plan.target))) throw new Error("The migration target resolves to another app.");
     recordMigrationLaunch(plan);
     if (!sameMigrationProcess(journal.owner)) throw new Error("The migration helper exited. Reopen the system app to recover the interrupted update.");
     verifyMigrationAssets(plan.target);

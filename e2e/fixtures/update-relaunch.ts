@@ -49,6 +49,7 @@ export async function updateOutcomeHost(page: Page, directory: string) {
     // The updater refuses off macOS (fork: Linux support), so the port presents macOS.
     packaged: true, platform: "darwin", arch: "x64", // outcome still appears, background update checks stay disabled
     currentVersion: () => "1.26.0", currentCommit: () => null,
+    readSnoozes: () => ({}), writeSnoozes: () => {},
     readAlpha: () => false, writeAlpha: unexpected,
     installSnapshot: unexpected, latestRelease: unexpected, latestMainCommit: unexpected,
     runtime: unexpected, stage: unexpected, stagedBundleIdentity: unexpected,

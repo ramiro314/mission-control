@@ -117,7 +117,7 @@ import {
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 import { matchesSessionFilter } from "./lib/fleet-filter.ts";
-import type { BacklogTrustView } from "./lib/backlog-copy.ts";
+import { autopilotGate, type BacklogTrustView } from "./lib/backlog-copy.ts";
 import { clearInterrupting, markInterrupting } from "./lib/interrupting.ts";
 import {
   OverlayHost,
@@ -4104,7 +4104,7 @@ export function App(): React.JSX.Element {
           onCheck={desktopUpdates.check}
           onDismiss={desktopUpdates.dismiss}
         />
-        <UpdateDialog request={updateDialog.request} onAnswer={updateDialog.answer} />
+        <UpdateDialog request={updateDialog.request} onAnswer={updateDialog.answer} snapshot={desktopUpdates.snapshot} />
         <SettingsRestoredBanner
           event={settingsRestoreNotice}
           onReload={() => window.location.reload()}
@@ -4376,12 +4376,13 @@ export function App(): React.JSX.Element {
             backlogPlan={foreman.backlogPlan}
             // The same three values the Foreman popover reads, from the same hook: the
             // config the switch writes, the derived readout, and the gate that decides
-            // whether an armed autopilot actually launches anything (`worker.ts` takes
-            // `enabled && mode === "live"`). Threaded rather than re-fetched, so the two
-            // surfaces cannot disagree about a switch they both write.
+            // whether an armed autopilot actually launches anything (`autopilotGate`: the
+            // worker's `enabled && mode === "live"`, then a granted repository). Threaded
+            // rather than re-fetched, so the two surfaces cannot disagree about a switch
+            // they both write.
             autoBacklog={foreman.config?.autoBacklog ?? null}
             autopilot={foreman.status?.autopilot ?? null}
-            autopilotLaunches={foremanEnabled && foremanMode === "live"}
+            autopilotGate={autopilotGate(foreman.config)}
             onSetAutoBacklog={(next) => foreman.update({ autoBacklog: next })}
             backlogTrust={backlogTrust}
             onManageTrust={openForemanTrust}

@@ -1,3 +1,4 @@
+import { codeRabbitSummary } from "./db.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
   adoptedTransferHome, transferSummary, updateSessionTransfer, transferScopeMatches, unresolvedSessionTransfers, type SessionTransfer } from "./session-transfers/store.ts";
@@ -310,6 +311,7 @@ import { activeWorkflowOwnsSession } from "./foreman/review-followup.ts";
 import type { PrReference } from "./pr-conflicts.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { shapeTicketsSummary } from "./shape-tickets.ts";
+import { pruneDelegatedTurns } from "./delegated-turns.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -979,6 +981,8 @@ export class Registry extends EventEmitter {
    */
   private ensembleProjection: ((taskId: string) => TaskEnsembleLink | null) | null = null;
   private workflowReset: ((noteKey: string) => void) | null = null;
+  /** Explicit grants, bounded by live sessions and never persisted. */
+  private sessionControlGrants = new Map<string, string>();
   /** A terminal side effect must not cross the asynchronous reset boundary. */
   private resettingSessionCounts = new Map<string, number>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
@@ -1086,7 +1090,7 @@ export class Registry extends EventEmitter {
    * Kept apart from the session because the field on the session is not the same claim.
    * There it is the last binding we LEARNED, from a hook or from `lastAgentBinding` after
    * a restart, and a `/clear` is supposed to replace it. Here it is evidence from the
-   * process table, which a hook cannot contradict - so this, and only this, is what
+   * process table, which a hook cannot contradict - so for terminal sessions this is what
    * `applyHook` refuses a mismatching event against. Reading the session's own field
    * instead makes the guard reject the rebinding it exists to protect.
    */
@@ -1296,7 +1300,7 @@ export class Registry extends EventEmitter {
       sessionActions: [...this.sessionActions.values()],
       workflowCommands: [...this.workflowCommands.values()],
       workflowSummaries: [...this.workflowSummaries.values()],
-      workflowRunSummaries: [...this.workflowRuns.values()],
+      workflowRunSummaries: this.workflowRunSummaries(),
       workflowBindingSummaries: [...this.workflowBindings.values()],
       ensembleSummaries: [...this.ensembles.values()],
       schedules: [...this.schedules.values()],
@@ -1439,6 +1443,37 @@ export class Registry extends EventEmitter {
     const restored: SettingsRestoredEvent = { type: "settings_restored", ...event };
     this.latestSettingsRestore = restored;
     this.emitEvent(restored);
+  }
+
+  /** Shared binding for private click authorization and the resulting transient grant. */
+  sessionControlIdentity(id: string): string | null {
+    const session = this.sessions.get(id);
+    if (!session || session.state === "exited" || session.state === "stopping" || this.sessionResetInProgress(id)) return null;
+    const episode = this.workEpisodeForSession(id);
+    if (!episode || episode.awaitingAgentRebind) return null;
+    return JSON.stringify([session.pid, session.agentSessionId, session.cwd, episode.episodeId, this.taskForSession(id, session.cwd)?.id ?? null]);
+  }
+
+  /** Grants never survive a daemon restart, reset, or replacement work episode. */
+  sessionControlEnabled(id: string): boolean {
+    const grant = this.sessionControlGrants.get(id);
+    if (!grant) return false;
+    const valid = grant === this.sessionControlIdentity(id);
+    if (!valid) this.sessionControlGrants.delete(id);
+    return valid;
+  }
+
+  setSessionControlEnabled(id: string, enabled: boolean): boolean {
+    const session = this.sessions.get(id);
+    if (!session || session.state === "exited" || session.state === "stopping") return false;
+    const identity = this.sessionControlIdentity(id);
+    if (enabled && !identity) return false;
+    if (enabled) this.sessionControlGrants.set(id, identity!);
+    else this.sessionControlGrants.delete(id);
+    const next = { ...session, sessionControlEnabled: enabled };
+    this.sessions.set(id, next);
+    this.emitSession(next);
+    return true;
   }
 
   getSession(id: string): Session | undefined {
@@ -1686,6 +1721,7 @@ export class Registry extends EventEmitter {
   }
 
   beginSessionReset(id: string): void {
+    if (this.sessionControlGrants.has(id)) this.setSessionControlEnabled(id, false);
     this.resettingSessionCounts.set(id, (this.resettingSessionCounts.get(id) ?? 0) + 1);
   }
 
@@ -2000,6 +2036,7 @@ export class Registry extends EventEmitter {
     if (LINE_INPUT_EVENTS.has(e.type)) this.scheduleLineRecompute();
   }
   private emitSession(s: Session): void {
+    s.sessionControlEnabled = this.sessionControlEnabled(s.id);
     this.emitEvent({ type: "session_upsert", session: s });
   }
 
@@ -2095,6 +2132,11 @@ export class Registry extends EventEmitter {
 
   initializeWorkflowRuns(runs: WorkflowRunSummary[]): void {
     this.workflowRuns = new Map(runs.map((run) => [run.id, run]));
+  }
+
+  /** Live workflow ownership without computing the full dashboard snapshot. */
+  workflowRunSummaries(): WorkflowRunSummary[] {
+    return [...this.workflowRuns.values()];
   }
 
   upsertWorkflowRun(run: WorkflowRunSummary): void {
@@ -2576,6 +2618,7 @@ export class Registry extends EventEmitter {
       // Resolved below with note/goal, once the overlay may have supplied the binding
       // that decides the key.
       foremanInvite: null,
+      sessionControlEnabled: prev?.sessionControlEnabled ?? false,
       name: d.name,
       nameSource: d.nameSource,
       renameable: canRenameTerminal(d),
@@ -3280,6 +3323,13 @@ export class Registry extends EventEmitter {
     }
     const target = this.findSessionForHook(evt, key);
     if (target && taskSessionClosureForSession(target.id)?.retiredAt != null) return;
+
+    // SDK identity belongs to the owned driver, including initial binding and clears.
+    // An auxiliary CLI can inherit this cwd or pane without MISSION_HEADLESS, so those
+    // coordinates alone cannot authorize its hooks. Refuse before retaining an overlay
+    // or rotating the work episode and its task/workflow ownership. Matching native
+    // hooks may still supply instrumentation; only driver events can replace the owner.
+    if (target?.runtime === "sdk" && (!evt.sessionId || evt.sessionId !== target.agentSessionId)) return;
 
     // Passive PID/open-file identity is exact. A conflicting hook belongs to another
     // process/pane and must not move this card or poison its pane overlay.
@@ -5206,7 +5256,7 @@ export class Registry extends EventEmitter {
       prMergeable: live.prMergeable,
       prBaseRef: live.prBaseRef,
       prHeadSha: live.prHeadSha,
-      inspector: this.inspectorSummaryForUrl(prUrl),
+      inspector: this.inspectorSummaryForUrl(prUrl, this.sessions.get(sessionId)),
       prConflictEscalated: this.escalatedPrUrls.has(prUrl),
     };
   }
@@ -6731,6 +6781,7 @@ export class Registry extends EventEmitter {
     // where "the row goes", so this is where it is forgotten.
     this.retroCorrections.delete(id);
     if (!this.sessions.delete(id)) return;
+    this.sessionControlGrants.delete(id);
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
     // liveness from this very map - so no sibling's hint is right until this runs.
@@ -8329,6 +8380,15 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Delegated-turn senders: live keys are never touched. Before the first sweep liveness is
+   * unknown and nothing is pruned; after it, an empty session map is a known "none live", so
+   * old rows of finished conversations still go.
+   */
+  pruneDelegatedTurns(olderThan: number): number {
+    return pruneDelegatedTurns(this.sweptSessions ? [...this.sessions.values()].map((s) => noteKeyFor(s)) : null, olderThan);
+  }
+
+  /**
    * Drop markers belonging to no live session and older than `olderThan`. Returns how many.
    *
    * Owned here, gated on `sweptSessions`, and protecting `sessions` rather than
@@ -9155,7 +9215,7 @@ export class Registry extends EventEmitter {
    * a PR chip and no inspector chip is saying that PR came from somewhere else.
    */
   private inspectorSummaryFor(s: Session): InspectorSummary | null {
-    return this.inspectorSummaryForUrl(s.prUrl);
+    return this.inspectorSummaryForUrl(s.prUrl, s);
   }
 
   /**
@@ -9165,13 +9225,16 @@ export class Registry extends EventEmitter {
    * in this very ledger and reaches no session scalar, so the only difference between its chip
    * facts and the primary's is which url you ask about.
    */
-  private inspectorSummaryForUrl(prUrl: string | null): InspectorSummary | null {
+  private inspectorSummaryForUrl(prUrl: string | null, session?: Session): InspectorSummary | null {
     if (!prUrl) return null;
     const parsed = parsePrUrl(prUrl);
     if (!parsed) return null;
     const row = this.inspections.get(parsed.key);
     if (!row) return null;
+    const episodeKey = session ? resolvedSessionIntent(this.getGoal(session.id))?.episodeKey : undefined;
+    const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
     return {
+      codeRabbit: codeRabbitSummary(row.key, owner),
       prKey: row.key,
       url: row.url,
       mode: getInspectorConfig().mode,
@@ -10222,6 +10285,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // resolves to a new value with often nothing else on the session changing - left out,
   // the phase 3 rail control would swap only when something unrelated shook the card.
   foremanInvite: byValue,
+  sessionControlEnabled: byValue,
   name: byValue,
   nameSource: byValue,
   renameable: byValue,
