@@ -83,6 +83,20 @@ async function reportedProcess(monitor: OrphanProcessMonitor, pid: number) {
   return { problem, process: problem.process };
 }
 
+test("a named process is still reported, and the report carries its name", async () => {
+  const { root, tree } = fixture();
+  const reported = { pid: 4242, ppid: 1, startRaw: "s", startMs: 1, command: "gopls", cwd: tree, knownOwner: "IDE language server" };
+  const monitor = new OrphanProcessMonitor({
+    trees: () => [{ path: tree, slotId: null, owner: taskOwner }],
+    retryReturn: () => {},
+    unpooledRoots: [root],
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known", occupants: [reported] }])),
+  });
+  const { problem, process } = await reportedProcess(monitor, 4242);
+  assert.equal(problem.kind, "orphan-process");
+  assert.equal(process.knownOwner, "IDE language server");
+});
+
 test("finished trees are pending task returns, returning check leases and quarantined slots", () => {
   const slot = (id: string, path: string, state: string, activeLeaseId: string | null = null) =>
     ({ id, path, state, activeLeaseId }) as WorktreeSlotRow;

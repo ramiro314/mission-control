@@ -579,6 +579,7 @@ function OrphanList({
         {orphans.map((orphan) => (
           <li key={`${orphan.pid}:${orphan.startedAt}`} className="wt-orphan">
             <div>
+              {orphan.knownOwner && <strong>{orphan.knownOwner}</strong>}
               <code>{orphan.command}</code>
               <span>PID {orphan.pid} · parent {orphan.ppid} · started {startedLabel(orphan.startedAt)}</span>
             </div>
@@ -891,6 +892,7 @@ function SlotDiagnosis({
           <ul>
             {occupants.map((occupant) => (
               <li key={`${occupant.pid}:${occupant.startedAt}`}>
+                {occupant.knownOwner && <strong>{occupant.knownOwner}</strong>}
                 <code>{occupant.command}</code>
                 <span>PID {occupant.pid} · started {startedLabel(occupant.startedAt)}</span>
               </li>

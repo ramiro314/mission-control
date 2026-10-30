@@ -60,6 +60,8 @@ export const OrphanProcessSchema = z.object({
   command: z.string(),
   /** Epoch milliseconds of the process's start, as `ps` reports it. */
   startedAt: z.number().int().nonnegative(),
+  /** What the process is, when something names it. Absent from a report that predates names. */
+  knownOwner: z.string().nullable().optional(),
 });
 
 export type OrphanProcess = z.output<typeof OrphanProcessSchema>;

@@ -876,6 +876,24 @@ its row under [Unowned trees](#unowned-trees), which lists the same processes wi
 Unlike the inventory, the storage report carries each orphan process's command line, bounded to
 512 bytes, because the confirmation must show what will be signalled.
 
+A slot card names the processes it can identify, on the process's own line in the list and on its
+orphan row:
+
+- **`Session <name>`** is a live Mission Control session's own process or a descendant of it: a
+  terminal pane's process, or an SDK session's driver child and what that runs. Process ancestry
+  alone decides this, with the session's process matched by PID and start time, so a reused PID is
+  not the session. A process that only shares a session's cwd, pane or hook coordinates is not named
+  as that session. An SDK session with no recorded process names nothing.
+- **`<agent> background process`** is a process the harness's own background vocabulary recognizes,
+  such as `claude daemon` or `claude mcp serve`, or a descendant of one, such as an MCP server. A
+  background process a session spawned is named as that session.
+- **An IDE helper**, such as `VS Code helper`, `JetBrains IDE helper` or `IDE language server`, is
+  matched by its executable name against a small table. Its children are not named.
+
+A name never makes a process safe to ignore. Occupancy, every refusal and the orphan report count
+a named process exactly as they count any other, and a process with no name is only one nothing
+identified. When the names cannot be read, the occupants are still counted, without them.
+
 Native slot cleanliness allows a narrow set of untracked ai-conductor scratch files at the
 checkout root: `.pipeline/.memory-count-at-start`, `conduct-state.json`, `engineer-run.json`,
 `HALT`, `HALT.class`, `DONE`, `events.jsonl`, and `.pipeline/gates/<step>.json` (all files are

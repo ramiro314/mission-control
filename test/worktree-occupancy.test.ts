@@ -5,10 +5,16 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Proc } from "../src/server/discovery/processes.ts";
 import {
+  knownOwnerLabels,
+  sessionProcesses,
+  type SessionProcess,
+} from "../src/server/worktrees/known-owners.ts";
+import {
   inspectWorktreeOccupancy,
   pathContains,
 } from "../src/server/worktrees/occupancy.ts";
 import { bothAttempts } from "../src/server/worktrees/observation-retry.ts";
+import type { Session } from "../src/shared/types.ts";
 
 function process(pid: number, ppid = 1): Proc {
   return {
@@ -62,7 +68,7 @@ test("occupancy batches one process read and one cwd read across every target", 
       assert.deepEqual(pids, [10, 20]);
       return { cwds: new Map([[10, nested], [20, ten]]), unknownReason: null };
     },
-    knownOwner: (proc) => (proc.pid === 10 ? "terminal:session-1" : null),
+    knownOwner: () => (proc) => (proc.pid === 10 ? "terminal:session-1" : null),
   });
 
   assert.equal(processReads, 1);
@@ -636,4 +642,131 @@ test("a listing too large to buffer is not retried, because asking again cannot 
     status: "unknown",
     reason: "cwd listing failed: the cwd listing was too large to buffer",
   });
+});
+
+/** The occupants of one slot, labelled as the daemon labels them, keyed by PID. */
+async function labels(
+  table: Proc[],
+  sessions: SessionProcess[],
+  options: { outOfScope?: number[] } = {},
+): Promise<Map<number, string | null>> {
+  const { one } = fixture();
+  const scoped = table.filter((row) => !options.outOfScope?.includes(row.pid));
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: table,
+      unknownReason: null,
+      cwdScopePids: scoped.map((row) => row.pid),
+      completedCollectorPids: [],
+    }),
+    readCwds: async (pids) => ({ cwds: new Map(pids.map((pid) => [pid, one])), unknownReason: null }),
+    knownOwner: knownOwnerLabels(() => sessions),
+  });
+  const state = result.get(one)!;
+  assert.equal(state.status, "known");
+  return new Map(state.status === "known" ? state.occupants.map((row) => [row.pid, row.knownOwner]) : []);
+}
+
+const session: SessionProcess = { pid: 100, startMs: 100_000, name: "fix the login" };
+
+test("a session's own process and its descendants are named as that session", async () => {
+  const named = await labels([process(100), process(101, 100), process(102, 101)], [session]);
+  assert.deepEqual([...named.values()], Array(3).fill("Session fix the login"));
+});
+
+test("a descendant is named through an ancestor outside the cwd scope", async () => {
+  // A `sudo` between the session and its child belongs to another user, so no cwd is read for
+  // it, but the parent links still run through it.
+  const named = await labels([process(100), process(101, 100), process(102, 101)], [session], { outOfScope: [101] });
+  assert.equal(named.get(102), "Session fix the login");
+  assert.equal(named.has(101), false);
+});
+
+test("a process that only shares a session's cwd is not named as that session", async () => {
+  const named = await labels([process(100), process(200, 1)], [session]);
+  assert.equal(named.get(100), "Session fix the login");
+  assert.equal(named.get(200), null);
+});
+
+test("a reused PID is not the session, and neither are its children", async () => {
+  const reused = { ...process(100), startMs: 999_000 };
+  const named = await labels([reused, process(101, 100)], [session]);
+  assert.deepEqual([...named.values()], [null, null]);
+});
+
+test("a Claude Code background process and its MCP children are named", async () => {
+  const daemon = { ...process(300), command: "/home/me/.local/share/claude/versions/2.1.195 daemon run" };
+  const mcp = { ...process(301, 300), command: "node /srv/mcp/server.js" };
+  const named = await labels([daemon, mcp], []);
+  assert.deepEqual([...named.values()], Array(2).fill("Claude Code background process"));
+});
+
+test("a background role a session spawned belongs to that session", async () => {
+  const mcp = { ...process(101, 100), command: "claude mcp serve" };
+  assert.equal((await labels([process(100), mcp], [session])).get(101), "Session fix the login");
+});
+
+test("an IDE helper is named by its executable, and its children are not", async () => {
+  const plugin = "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin) --type=utility";
+  const named = await labels([
+    { ...process(400), command: "/home/me/go/bin/gopls serve" },
+    { ...process(401), command: plugin },
+    { ...process(402), command: "/opt/idea/bin/fsnotifier" },
+    { ...process(403, 400), command: "go list ./..." },
+    { ...process(404), command: "vim gopls" },
+  ], []);
+  assert.deepEqual([...named.values()], [
+    "IDE language server", "VS Code helper", "JetBrains IDE helper", null, null,
+  ]);
+});
+
+test("a named process stays an occupant", async () => {
+  const { one } = fixture();
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [process(100)],
+      unknownReason: null,
+      cwdScopePids: [100],
+      completedCollectorPids: [],
+    }),
+    readCwds: async () => ({ cwds: new Map([[100, one]]), unknownReason: null }),
+    knownOwner: knownOwnerLabels(() => [session]),
+  });
+  const state = result.get(one)!;
+  assert.equal(state.status === "known" && state.occupants.length, 1);
+});
+
+test("names that cannot be read leave the occupant counted and unnamed", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const { one } = fixture();
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [process(100)],
+      unknownReason: null,
+      cwdScopePids: [100],
+      completedCollectorPids: [],
+    }),
+    readCwds: async () => ({ cwds: new Map([[100, one]]), unknownReason: null }),
+    knownOwner: knownOwnerLabels(() => {
+      throw new Error("database is closed");
+    }),
+  });
+  const state = result.get(one)!;
+  assert.equal(state.status, "known");
+  if (state.status === "known") assert.deepEqual(state.occupants.map((row) => [row.pid, row.knownOwner]), [[100, null]]);
+});
+
+test("a session's process is its process start, or its recorded SDK lifetime", () => {
+  const live = (over: Partial<Session>) => ({ id: "s", name: "n", runtime: "terminal", pid: 7, startedAt: 7_000, ...over }) as Session;
+  const lifetimes = new Map([["sdk:a", { pid: 8, startMs: 8_000 }]]);
+  assert.deepEqual(
+    sessionProcesses([
+      live({ id: "terminal" }),
+      // An SDK session's `startedAt` is when it registered, which matches no process.
+      live({ id: "sdk:a", runtime: "sdk", pid: 8, startedAt: 1 }),
+      live({ id: "sdk:unbound", runtime: "sdk", pid: 0 }),
+      live({ id: "no-start", startedAt: null }),
+    ], (id) => lifetimes.get(id) ?? null),
+    [{ pid: 7, startMs: 7_000, name: "n" }, { pid: 8, startMs: 8_000, name: "n" }],
+  );
 });

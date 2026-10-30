@@ -43,7 +43,7 @@ const overCapacityPool: WorktreeRepositoryView = {
     defaultRelation: "unmerged",
     dirty: true,
     processes: { state: "known", count: 1, reason: null },
-    occupants: [{ pid: 4242, command: "node server.js", startedAt: 0 }],
+    occupants: [{ pid: 4242, command: "node server.js", startedAt: 0, knownOwner: null }],
     diskBytes: 4096,
     quarantineReason: null,
     diagnostic: null,
@@ -655,8 +655,8 @@ test("a quarantined slot card shows its reason, detail, last automatic-recovery 
           diagnostic: "git checkout failed: fatal: Unable to create index.lock: File exists",
           processes: { state: "known", count: 18, reason: null },
           occupants: [
-            { pid: 4242, command: "node /pool/1/repo/node_modules/.bin/tsserver", startedAt: started },
-            ...Array.from({ length: 15 }, (_, index) => ({ pid: 5000 + index, command: "sleep 600", startedAt: started })),
+            { pid: 4242, command: "node /pool/1/repo/node_modules/.bin/tsserver", startedAt: started, knownOwner: "Session fix the login" },
+            ...Array.from({ length: 15 }, (_, index) => ({ pid: 5000 + index, command: "sleep 600", startedAt: started, knownOwner: null })),
           ],
           recoveryRefusal: {
             at: started,
@@ -675,7 +675,7 @@ test("a quarantined slot card shows its reason, detail, last automatic-recovery 
   assert.match(html, /<dd>Blocked by ignored file <code>.idea\/workspace.xml<\/code><\/dd>/);
   // Occupants name PID, command and start time; past the inventory's bound, the rest are counted.
   assert.match(html, /<section class="wt-occupants" aria-label="Processes in slot 1">/);
-  assert.match(html, /<code>node \/pool\/1\/repo\/node_modules\/.bin\/tsserver<\/code><span>PID 4242 · started [^<]+<\/span>/);
+  assert.match(html, /<strong>Session fix the login<\/strong><code>node \/pool\/1\/repo\/node_modules\/.bin\/tsserver<\/code><span>PID 4242 · started [^<]+<\/span>/);
   assert.match(html, /and 2 more not listed/);
 });
 

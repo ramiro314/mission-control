@@ -644,6 +644,7 @@ export class WorktreeOperationsService {
                 pid: occupant.pid,
                 command: clipUtf8Bytes(occupant.command, WORKTREE_INVENTORY_LIMITS.occupantCommandBytes),
                 startedAt: occupant.startMs,
+                knownOwner: occupant.knownOwner && clipUtf8Bytes(occupant.knownOwner, WORKTREE_INVENTORY_LIMITS.textBytes),
               }))
               : [],
             // Recursive size walks are intentionally absent from inventory. Large warm

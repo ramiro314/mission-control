@@ -123,6 +123,8 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { StorageHealthService, stuckReturnSource } from "./storage-health.ts";
+import { knownOwnerLabels, sessionProcesses } from "./worktrees/known-owners.ts";
+import { inspectWorktreeOccupancy } from "./worktrees/occupancy.ts";
 import { finishedTrees, OrphanProcessMonitor } from "./worktrees/orphan-processes.ts";
 import { LeaseActivityObserver } from "./worktrees/lease-activity.ts";
 import { quarantinedSlotProblems } from "./worktrees/storage-problems.ts";
@@ -238,7 +240,12 @@ const publishWorktreesChanged = () => {
   registry.emitWorktreesChanged();
   recomputeStorageHealth();
 };
+// Names what an inspection finds, for the slot card. Passed to the two readers a card shows.
+const namedOccupancy = (paths: readonly string[]) => inspectWorktreeOccupancy(paths, {
+  knownOwner: knownOwnerLabels(() => sessionProcesses(registry.liveSessions())),
+});
 const worktrees = new WorktreeManager(undefined, {
+  occupancy: namedOccupancy,
   ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference),
   publishChanged: () => {
     publishWorktreesChanged();
@@ -476,6 +483,7 @@ let stopDatabaseBackups = async () => {};
 // Scanned after each maintenance pass, which sweeps first, and reported as `orphan-process`
 // problems; Kill retries the blocked return at once, and sweeps again for an unowned tree.
 const orphanProcesses = new OrphanProcessMonitor({
+  occupancy: namedOccupancy,
   trees: () => finishedTrees({
     slots: worktrees.store.slots(),
     taskReturns: tasks.pendingWorktreeReturns(),
