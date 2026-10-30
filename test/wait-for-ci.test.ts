@@ -200,9 +200,46 @@ test("the observation survives an upgraded database and reads back only while it
   };
   recordInspectorCiObservation("owner/repo#7", current);
   assert.deepEqual(getInspectorCiObservation("owner/repo#7"), current);
+  // The total the rollup returns when GitHub gave no usable one: stored, not refused.
+  const unknownTotal: CiObservation = { ...current, totalCount: null };
+  recordInspectorCiObservation("owner/repo#7", unknownTotal);
+  assert.deepEqual(getInspectorCiObservation("owner/repo#7"), unknownTotal);
   assert.equal(getInspectorCiObservation("owner/repo#404"), null);
   openDb().prepare("UPDATE inspector_prs SET observed_ci_json = '{\"nope\":1}' WHERE key = 'owner/repo#7'").run();
   assert.equal(getInspectorCiObservation("owner/repo#7"), null);
+});
+
+test("a fetched snapshot's CI is stored with its total and required flags, or a null total", async () => {
+  const respond = (contexts: Record<string, unknown>) => writeFileSync(join(ghDir, "response.json"), JSON.stringify({
+    data: { repository: { pullRequest: {
+      state: "OPEN", headRefOid: HEAD, headRefName: "feature", isDraft: false, title: "t", body: "",
+      createdAt: "2026-01-01T00:00:00Z", mergeable: "MERGEABLE", reviewDecision: null,
+      commits: { nodes: [{ commit: { oid: HEAD, statusCheckRollup: { state: "PENDING", contexts } } }] },
+      reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
+    } } },
+  }));
+  const nodes = [
+    { name: "unit", status: "COMPLETED", conclusion: "SUCCESS", isRequired: true },
+    { context: "deploy", state: "PENDING", isRequired: true },
+    { name: "lint", status: "COMPLETED", conclusion: "FAILURE", isRequired: false },
+  ];
+  for (const [contexts, total] of [[{ totalCount: 140, nodes }, 140], [{ nodes }, null]] as const) {
+    respond(contexts);
+    const result = await fetchPr(null, "owner", "repo", 7);
+    assert.ok(result.ok && result.value?.ci, result.ok ? "no ci" : result.error);
+    // Recorded exactly as the Inspector worker records a poll: the snapshot's CI plus the instant.
+    recordInspectorCiObservation("owner/repo#7", { ...result.value.ci, observedAt: 9 });
+    const stored = getInspectorCiObservation("owner/repo#7");
+    assert.ok(stored, `total ${total}: the observation must parse back`);
+    assert.equal(stored.totalCount, total);
+    assert.deepEqual(stored.checkRuns.map((run) => [run.name, run.required]), [
+      ["unit", true],
+      ["deploy", true],
+      ["lint", undefined],
+    ]);
+    assert.equal(requiredChecksRollup(stored.checkRuns), "pending");
+  }
 });
 
 // ---- required checks -------------------------------------------------------------------------
