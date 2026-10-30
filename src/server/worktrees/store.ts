@@ -4,6 +4,8 @@ import {
   WORKTREE_HISTORY_LIMITS,
   type WorktreeHistoryActor,
   type WorktreeHistoryKind,
+  type WorktreeHistoryOperation,
+  type WorktreeOperationOutcome,
 } from "../../shared/worktrees.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { splitObservationFailure } from "./quarantine-reasons.ts";
@@ -166,8 +168,21 @@ interface WorktreeHistoryInput {
   reason: string | null;
   /** Never a claim step's output: only a failed read's or a Git command's bounded reason. */
   detail?: string | null;
+  operation?: WorktreeHistoryOperation | null;
   outcome?: string | null;
   actor: WorktreeHistoryActor;
+  durationMs?: number | null;
+  meta?: Record<string, unknown> | null;
+}
+
+/** One finished operation's entry for one slot. */
+export interface WorktreeOperationEntry {
+  at: number;
+  operation: WorktreeHistoryOperation;
+  outcome: WorktreeOperationOutcome;
+  reason: string | null;
+  actor: WorktreeHistoryActor;
+  durationMs: number;
   meta?: Record<string, unknown> | null;
 }
 
@@ -255,8 +270,8 @@ export class WorktreeStore {
     this.db
       .prepare(
         `INSERT INTO worktree_slot_history
-           (pool_id, slot_id, ordinal, at, kind, from_state, to_state, reason, detail, outcome, actor, meta)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (pool_id, slot_id, ordinal, at, kind, from_state, to_state, reason, detail, operation, outcome, actor, duration_ms, meta)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         slot.poolId,
@@ -268,8 +283,10 @@ export class WorktreeStore {
         entry.toState,
         text(entry.reason),
         text(entry.detail),
+        entry.operation ?? null,
         entry.outcome ?? null,
         entry.actor,
+        entry.durationMs ?? null,
         boundedMeta(entry.meta),
       );
   }
@@ -332,6 +349,33 @@ export class WorktreeStore {
       }
       return true;
     });
+  }
+
+  /**
+   * One slot's entry for a finished operation. It changes no slot, and a slot the operation
+   * removed still takes one, so the slot's identity falls back to its own last history row.
+   * False for an id that names neither, which is no slot at all.
+   */
+  recordOperation(slotId: string, entry: WorktreeOperationEntry): boolean {
+    const slot = this.slot(slotId) ?? this.historicalSlot(slotId);
+    if (!slot) return false;
+    this.record(slot, { ...entry, kind: "operation", fromState: null, toState: null });
+    return true;
+  }
+
+  private historicalSlot(slotId: string): Pick<WorktreeSlotRow, "id" | "poolId" | "ordinal"> | null {
+    const row = this.db
+      .prepare(`SELECT pool_id, ordinal FROM worktree_slot_history WHERE slot_id = ? ORDER BY id DESC LIMIT 1`)
+      .get(slotId) as { pool_id: string; ordinal: number } | undefined;
+    return row ? { id: slotId, poolId: row.pool_id, ordinal: Number(row.ordinal) } : null;
+  }
+
+  /** Each slot's newest history row. The inventory carries it, so an open History can follow. */
+  historyHeads(): Map<string, number> {
+    const rows = this.db
+      .prepare(`SELECT slot_id, MAX(id) AS head FROM worktree_slot_history GROUP BY slot_id`)
+      .all() as Array<{ slot_id: string; head: number }>;
+    return new Map(rows.map((row) => [row.slot_id, Number(row.head)]));
   }
 
   /** One page of a slot's history, newest first. A destroyed slot's rows still answer. */

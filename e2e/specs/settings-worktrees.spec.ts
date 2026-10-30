@@ -915,12 +915,68 @@ test("a closed History reads nothing, and a Return from Settings is recorded as 
   const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
   const entries = history.getByRole("listitem");
   await history.getByRole("button", { name: "History" }).click();
-  await expect(entries).toHaveCount(4);
+  await expect(entries).toHaveCount(5);
   expect(reads).toBe(1);
-  await expect(entries.nth(0)).toContainText("returning → available");
+  await expect(entries.nth(0)).toContainText("Return done");
   await expect(entries.nth(0)).toContainText("by the operator");
-  await expect(entries.nth(1)).toContainText("leased → returning");
+  await expect(entries.nth(1)).toContainText("returning → available");
   await expect(entries.nth(1)).toContainText("by the operator");
+  await expect(entries.nth(2)).toContainText("leased → returning");
+  await expect(entries.nth(2)).toContainText("by the operator");
+});
+
+/**
+ * An outcome beside the transitions, and the report it outlives. The Return is refused for real:
+ * its lease goes back through the owner's own route while the preview is open, so Execute's safety
+ * rebuild no longer matches. The list stays open throughout, because a refusal moves no slot and
+ * only the inventory's history head tells it there is a row to read.
+ */
+test("History lists a refused operation's outcome and reason, and dismissing its report keeps them", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history refused operation" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+  const entries = history.getByRole("listitem");
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries).toHaveCount(2);
+
+  await slot.getByRole("button", { name: "Return", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+  await preview.getByRole("button", { name: "Execute" }).click();
+
+  const background = dashboard.getByRole("region", { name: "Background cleanup" });
+  await expect(background.getByText("State changed after this preview.")).toBeVisible({ timeout: EXECUTES_MS });
+  const refused = entries.filter({ hasText: "Return refused" });
+  await expect(refused).toHaveCount(1, { timeout: EXECUTES_MS });
+  await expect(refused).toContainText("worktree state changed after preview; refresh before executing");
+  await expect(refused).toContainText("by the operator");
+  await expect(entries.nth(0)).toContainText("Return refused");
+  await expect(entries.nth(1)).toContainText("returning → available");
+  await history.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "26-slot-history-refused-operation");
+
+  await background.getByRole("button", { name: "Dismiss" }).click();
+  await expect(background).toHaveCount(0);
+  await dashboard.reload();
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries.filter({ hasText: "Return refused" })).toHaveCount(1);
 });
 
 /**

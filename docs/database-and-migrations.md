@@ -26,7 +26,10 @@ independent of the usage ledger and never contributes dollars or tokens.
 `worktree_slot_history` is the durable record of what happened to each native slot. `WorktreeStore`
 writes one row for every slot transition in the same transaction as the change, so a failed
 transition writes nothing and a row that cannot be written rolls the transition back. A slot's
-failed-read state adds a row only when it starts or clears, never on each pass. Text is bounded to
+failed-read state adds a row only when it starts or clears, never on each pass. Each finished
+worktree operation adds one `operation` row per slot it targeted, naming the operation, its outcome
+(`done`, `refused`, `partial` or `failed`), who ran it and how long it took; that row commits after
+the operation and on its own, so losing it never changes the result. Text is bounded to
 2 KB and a row's JSON meta likewise, and no row holds a claim variable's value. Rows have no foreign
 key, so a destroyed slot's rows stay until retention ages them out: each maintenance pass drops rows
 older than 90 days, then anything beyond 2,000 rows per pool, oldest first. Retention is the table's

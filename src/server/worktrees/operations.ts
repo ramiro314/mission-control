@@ -14,7 +14,9 @@ import {
   type WorktreeActionRisk,
   type WorktreeActionSubmitResult,
   type WorktreeClaimVariableView,
+  type WorktreeHistoryOperation,
   type WorktreeInventory,
+  type WorktreeOperationOutcome,
   type WorktreeOperationView,
   type WorktreeOwnerView,
   type WorktreeRepositoryView,
@@ -70,11 +72,12 @@ import {
 } from "./manager.ts";
 import { runAsWorktreeActor } from "./actor.ts";
 import { isTerminalOwnerKey } from "./owners.ts";
-import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
+import { depsCutOff, type WorktreeOperationEntry, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
 import { registrationRepairQuarantine, splitObservationFailure } from "./quarantine-reasons.ts";
 import { describeRegistrationFix } from "./registration-repair.ts";
 import type { UnownedTreeDiscards } from "./orphan-sweep.ts";
+import type { OrphanKillRecord } from "./orphan-processes.ts";
 import {
   inspectWorktreeOccupancy,
   type WorktreeOccupancy,
@@ -267,6 +270,16 @@ export class WarmLogFile {
   }
 }
 
+/** How far an accepted operation got, which is what its outcome is read from. */
+interface OperationProgress {
+  /** Slots whose whole part is finished. */
+  finished: Set<string>;
+  /** A step short of finishing a slot landed, such as a Destroy returning its owner's lease. */
+  moved: boolean;
+  /** Set when the operation ended short of its goal without an error. */
+  partly: string | null;
+}
+
 interface NativeTarget {
   pool: NativePoolStatus;
   slot: NativeSlotStatus;
@@ -342,6 +355,42 @@ function manualLabel(key: string): string {
 function ownerReturns(status: NativeSlotStatus, owner: WorktreeOwnerView | null): boolean {
   return status.slot.state === "quarantined" && status.ownerReferenced === true &&
     owner !== null && owner.kind !== "warm";
+}
+
+/**
+ * The operation a request's history rows name, or null for one that records none: Reconcile
+ * re-observes and leaves its own transitions, and an Unowned trees removal has no slot.
+ */
+function historyOperation(action: WorktreeActionRequest["action"]): WorktreeHistoryOperation | null {
+  switch (action) {
+    case "return":
+    case "legacyReturn":
+      return "return";
+    case "destroy":
+    case "prune":
+    case "warm":
+    case "recover":
+    case "repair":
+      return action;
+    case "reconcile":
+    case "removeUnowned":
+      return null;
+  }
+}
+
+/** A Warm decides each slot on its own turn, so each row carries that slot's own result. */
+function warmOutcome(result: WarmSlotResult): WorktreeOperationOutcome {
+  switch (result.outcome) {
+    case "warmed":
+      return "done";
+    case "skipped":
+      return "refused";
+    case "claimFailed":
+    case "cancelled":
+      return "partial";
+    case "failed":
+      return "failed";
+  }
 }
 
 function ownerGoneBlocker(status: NativeSlotStatus): string {
@@ -590,6 +639,7 @@ export class WorktreeOperationsService {
     } catch {
       // A chip is context. An unreadable clock shows none rather than failing the inventory.
     }
+    const historyHeads = this.manager.store.historyHeads();
     const repositories: WorktreeRepositoryView[] = [];
     for (const pool of shown) {
       const slots = pool.slots
@@ -679,6 +729,7 @@ export class WorktreeOperationsService {
                 path: clipUtf8Bytes(entry.recoveryRefusal.blocking.path, WORKTREE_INVENTORY_LIMITS.textBytes),
               },
             },
+            historyHead: historyHeads.get(entry.slot.id) ?? null,
             actions,
             dependencies: slotDependencies({
               hasClaim: Boolean(pool.policy.claim),
@@ -1799,6 +1850,7 @@ export class WorktreeOperationsService {
         }
         target.outcome = "running";
         this.deps.notifyChanged();
+        const startedAt = this.deps.now();
         let result: WarmSlotResult;
         try {
           result = await this.manager.warmSlot({
@@ -1825,6 +1877,15 @@ export class WorktreeOperationsService {
             target.outcome = result.outcome;
             target.detail = compact(result.reason);
         }
+        this.writeOperationEntry(target.slotId, {
+          at: this.deps.now(),
+          operation: "warm",
+          outcome: warmOutcome(result),
+          reason: target.detail,
+          actor: "operator",
+          durationMs: this.deps.now() - startedAt,
+          meta: { operationId: entry.view.id },
+        });
         this.warmOutput(entry, `Slot ${target.ordinal}: ${target.outcome}${target.detail ? `. ${target.detail}` : ""}\n`);
       }
       entry.view.state = "finished";
@@ -1832,6 +1893,18 @@ export class WorktreeOperationsService {
       entry.view.state = "failed";
       entry.view.error = compact(error instanceof Error ? error.message : String(error)) ?? "Warm failed";
       console.error("[worktrees] Warm operation failed:", error);
+      // The one slot a throw can leave undecided: nothing past it was reached.
+      for (const target of warm.targets.filter((candidate) => candidate.outcome === "running")) {
+        this.writeOperationEntry(target.slotId, {
+          at: this.deps.now(),
+          operation: "warm",
+          outcome: "failed",
+          reason: entry.view.error,
+          actor: "operator",
+          durationMs: this.deps.now() - entry.view.queuedAt,
+          meta: { operationId: entry.view.id },
+        });
+      }
     } finally {
       entry.view.finishedAt = this.deps.now();
       if (warm.timer) clearTimeout(warm.timer);
@@ -2029,24 +2102,118 @@ export class WorktreeOperationsService {
     operationId: string | null = null,
     removed: (target: WorktreeActionAffected) => void = () => {},
   ): Promise<WorktreeActionExecuteResult> {
-    const observed = await this.observe();
-    const rebuilt = await this.buildPreview(held.preview.request, observed, operationId);
-    const currentFingerprint = previewFingerprint(rebuilt);
-    if (currentFingerprint !== held.fingerprint) {
-      throw new WorktreeOperationError(409, "worktree state changed after preview; refresh before executing", "changed");
+    const startedAt = this.deps.now();
+    const progress: OperationProgress = { finished: new Set(), moved: false, partly: null };
+    try {
+      const observed = await this.observe();
+      const rebuilt = await this.buildPreview(held.preview.request, observed, operationId);
+      const currentFingerprint = previewFingerprint(rebuilt);
+      if (currentFingerprint !== held.fingerprint) {
+        throw new WorktreeOperationError(409, "worktree state changed after preview; refresh before executing", "changed");
+      }
+      // The rebuild matched the preview, so its work set is the preview's.
+      const expectedWork = this.recoverWork.get(rebuilt);
+      // publishOnSuccess covers legacy-only actions where no native manager method calls
+      // publish(). Supplying the service publisher also coalesces native mutations through the
+      // same content-free invalidation path instead of emitting once from each dependency.
+      await runAsWorktreeActor("operator", () => this.manager.runChangeBatch(
+        () => this.dispatch(held.preview, acknowledgementSet, removed, progress, expectedWork),
+        true,
+        this.deps.notifyChanged,
+      ));
+    } catch (error) {
+      const reason = compact(error instanceof Error ? error.message : String(error)) ?? "operation failed";
+      const refused = error instanceof WorktreeOperationError && error.code !== "unavailable";
+      const outcome = progress.moved || progress.finished.size > 0 ? "partial" : refused ? "refused" : "failed";
+      this.recordOperation(held.preview, operationId, startedAt, outcome, reason, progress);
+      throw error;
     }
-    // The rebuild matched the preview, so its work set is the preview's.
-    const expectedWork = this.recoverWork.get(rebuilt);
-    // publishOnSuccess covers legacy-only actions where no native manager method calls
-    // publish(). Supplying the service publisher also coalesces native mutations through the
-    // same content-free invalidation path instead of emitting once from each dependency.
-    await runAsWorktreeActor("operator", () => this.manager.runChangeBatch(
-      () => this.dispatch(held.preview, acknowledgementSet, removed, expectedWork),
-      true,
-      this.deps.notifyChanged,
-    ));
+    this.recordOperation(
+      held.preview,
+      operationId,
+      startedAt,
+      progress.partly === null ? "done" : "partial",
+      progress.partly,
+      progress,
+    );
     if (held.preview.request.action === "legacyReturn") this.legacyVisibleRevision = null;
     return { ok: true, action: held.preview.request.action, message: this.successMessage(held.preview.request.action) };
+  }
+
+  /**
+   * One row per slot a finished operation targeted, each with the whole operation's outcome. A
+   * partly done row says which side of the stop its slot fell on. An Unowned trees removal has
+   * no slot, so it is logged instead.
+   */
+  private recordOperation(
+    preview: WorktreeActionPreview,
+    operationId: string | null,
+    startedAt: number,
+    outcome: WorktreeOperationOutcome,
+    reason: string | null,
+    progress: OperationProgress,
+  ): void {
+    const { request } = preview;
+    if (request.action === "removeUnowned") {
+      console.log(`[worktrees] Unowned tree ${request.path}: ${outcome}${reason ? `: ${reason}` : ""}`);
+      return;
+    }
+    const operation = historyOperation(request.action);
+    if (!operation) return;
+    const at = this.deps.now();
+    for (const target of preview.affected) {
+      if (target.provider !== "mission") continue;
+      const stopped = outcome === "partial" && progress.partly === null;
+      this.writeOperationEntry(target.id, {
+        at,
+        operation,
+        outcome,
+        reason: !stopped
+          ? reason
+          : progress.finished.has(target.id)
+            ? `This slot finished, and the operation stopped at a later step: ${reason}`
+            : `The operation stopped partway, before this slot finished: ${reason}`,
+        actor: "operator",
+        durationMs: at - startedAt,
+        meta: { operationId },
+      });
+    }
+  }
+
+  /** The record of an operation that already happened, so losing it never changes that result. */
+  private writeOperationEntry(slotId: string, entry: WorktreeOperationEntry): void {
+    try {
+      this.manager.store.recordOperation(slotId, entry);
+    } catch (error) {
+      console.warn(`[worktrees] a finished operation's history entry was lost: ${compact(String(error))}`);
+    }
+  }
+
+  /**
+   * One guarded Kill's entry. A process in a tree no slot holds is logged instead, as an Unowned
+   * trees operation is. The entry names the PID and never the command, whose arguments can
+   * carry what a claim variable held.
+   */
+  recordKill(kill: OrphanKillRecord): void {
+    const { result, pid } = kill;
+    const outcome = result.ok ? "done" : result.failed ? "failed" : "refused";
+    const reason = result.ok ? `Stopped process ${pid} with ${result.signal}.` : result.error;
+    const slotId = kill.slotId ?? this.manager.store.slots().find((slot) => slot.path === kill.path)?.id;
+    if (!slotId) {
+      console.log(`[worktrees] Kill in unowned tree ${kill.path}: ${outcome}: ${reason}`);
+      return;
+    }
+    const at = this.deps.now();
+    this.writeOperationEntry(slotId, {
+      at,
+      operation: "kill",
+      outcome,
+      reason,
+      actor: "operator",
+      durationMs: at - kill.startedAt,
+      meta: { pid },
+    });
+    this.deps.notifyChanged();
   }
 
   /** `removed` hears each slot the moment its removal is confirmed, so a later failure is partial, not silent. */
@@ -2054,9 +2221,14 @@ export class WorktreeOperationsService {
     preview: WorktreeActionPreview,
     acknowledgements: Set<WorktreeRiskKey>,
     removed: (target: WorktreeActionAffected) => void,
+    progress: OperationProgress,
     expectedWork?: string,
   ): Promise<void> {
     const request = preview.request;
+    const finished = (target: WorktreeActionAffected): void => {
+      progress.finished.add(target.id);
+      removed(target);
+    };
     if (request.action === "reconcile") {
       if (!(await this.manager.reconcilePoolById(request.poolId))) {
         throw new WorktreeOperationError(409, "native pool disappeared before reconciliation", "changed");
@@ -2082,7 +2254,11 @@ export class WorktreeOperationsService {
     if (request.action === "repair") {
       const target = preview.affected[0]!;
       const result = await this.manager.repairSlot({ slotId: target.id, expectedVersion: target.version ?? undefined });
-      if (result.outcome === "recovered" || result.outcome === "heldWork") return;
+      if (result.outcome === "recovered") return;
+      if (result.outcome === "heldWork") {
+        progress.partly = `The registration is repaired, and the slot stays quarantined for its work: ${result.reason}`;
+        return;
+      }
       throw new WorktreeOperationError(
         result.outcome === "outcomeUnknown" ? 503 : 409,
         result.reason,
@@ -2103,7 +2279,7 @@ export class WorktreeOperationsService {
           allowUnmerged: false,
         });
         this.assertRemoved(result);
-        removed(target);
+        finished(target);
       }
       return;
     }
@@ -2146,6 +2322,7 @@ export class WorktreeOperationsService {
           throw new WorktreeOperationError(released.outcome === "outcomeUnknown" ? 503 : 409, released.reason, released.outcome === "outcomeUnknown" ? "unavailable" : "changed");
         }
       }
+      progress.moved = true;
       if (ownerIdentity) recoveredOwners.add(ownerIdentity);
     }
     if (request.action === "destroy") {
@@ -2156,7 +2333,7 @@ export class WorktreeOperationsService {
           allowUnmerged: acknowledgements.has("unlanded"),
         });
         this.assertRemoved(result);
-        removed(target);
+        finished(target);
       }
     }
   }

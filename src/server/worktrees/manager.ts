@@ -11,6 +11,7 @@ import {
   type WorktreeHistoryActor,
   type WorktreeOwnerKind,
   type WorktreeRecoveryRefusalView,
+  type WorktreeOperationOutcome,
 } from "@shared/worktrees.ts";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
@@ -3252,7 +3253,9 @@ export class WorktreeManager {
     for (const id of this.recoveryRefusals.keys()) if (!ids.has(id)) this.recoveryRefusals.delete(id);
     for (const slot of candidates) {
       if (this.stopped) return;
-      const result = registrationRepairQuarantine(slot.quarantineReason)
+      const startedAt = this.deps.now();
+      const repairing = registrationRepairQuarantine(slot.quarantineReason);
+      const result = repairing
         ? await this.repairSlot({ slotId: slot.id, expectedVersion: slot.version })
         : await this.recoverSlot({
           slotId: slot.id,
@@ -3274,6 +3277,7 @@ export class WorktreeManager {
         // one repeated on a later pass reaches neither.
         if (prior?.version !== slot.version || prior.refusal.reason !== refusal.reason ||
           prior.refusal.blocking?.path !== refusal.blocking?.path) {
+          this.recordAutomaticOperation(slot.id, repairing, "refused", refusal.reason, startedAt);
           this.publish();
           console.warn(oneLine(
             `[worktrees] automatic recovery of ${this.slotLabel(slot)} refused: ${refusal.reason}` +
@@ -3285,7 +3289,39 @@ export class WorktreeManager {
       this.recoveryRefusals.delete(slot.id);
       if (result.outcome === "outcomeUnknown") {
         console.warn(`[worktrees] automatic recover of slot ${slot.ordinal} did not finish: ${result.reason}`);
+        this.recordAutomaticOperation(slot.id, repairing, "failed", result.reason, startedAt);
+      } else if (result.outcome === "heldWork") {
+        this.recordAutomaticOperation(slot.id, repairing, "partial", result.reason, startedAt);
+      } else {
+        this.recordAutomaticOperation(slot.id, repairing, "done", null, startedAt);
       }
+      this.publish();
+    }
+  }
+
+  /**
+   * One slot's entry for an automatic Recover or Repair. A pass that repeats a refusal does not
+   * reach this, so retention keeps what happened instead of a 5-minute heartbeat.
+   */
+  private recordAutomaticOperation(
+    slotId: string,
+    repairing: boolean,
+    outcome: WorktreeOperationOutcome,
+    reason: string | null,
+    startedAt: number,
+  ): void {
+    const at = this.deps.now();
+    try {
+      this.store.recordOperation(slotId, {
+        at,
+        operation: repairing ? "repair" : "recover",
+        outcome,
+        reason,
+        actor: "automatic",
+        durationMs: at - startedAt,
+      });
+    } catch (error) {
+      console.warn(`[worktrees] a finished operation's history entry was lost: ${bounded(String(error))}`);
     }
   }
 

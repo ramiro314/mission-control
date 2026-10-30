@@ -700,6 +700,23 @@ this order:
   entry in the same transaction as the change, and a failed read adds an entry only when it starts
   and when it clears. See [the database guide](database-and-migrations.md) for retention.
 
+  Operation results go into the same list, beside the transitions they caused. Every operation
+  this page accepts writes one entry per slot it targeted once it finishes: Return, Destroy,
+  Prune, Warm, Recover, Repair and Kill. The entry names the outcome: done, refused with its reason
+  (the slot was left as it was, such as a preview that went stale), partly done, or failed (the
+  outcome is unknown, or the reset went wrong). A partly done entry says whether its slot finished
+  before the operation stopped, and a Repair that kept the slot quarantined for its work is partly
+  done too. A Warm decides each slot on its own turn, so each entry carries that slot's own result:
+  a slot skipped reads refused, a failed claim or a Cancel that reached the slot reads partly done,
+  and a slot Cancel stopped before its turn was never touched and has no entry. Automatic Recover
+  and Repair write the same entries as automatic; a refusal writes one when its reason changes, so
+  a pass repeating it stays quiet. A Kill entry names the PID and never the command. The operations
+  list above the pools keeps its behavior, and dismissing a report there leaves the history alone.
+  An Unowned trees operation has no slot, so it is logged to the daemon log only. A request refused
+  before it was accepted (an expired token, a target with a cleanup already queued) answers the
+  dialog and writes nothing, and a return a task or check makes on its own is recorded by its
+  transitions.
+
   The group states loading, empty, and unavailable separately, and never renders a heading over
   nothing. An inventory that could not be observed says so and offers Refresh; it is never drawn as
   zero pools.

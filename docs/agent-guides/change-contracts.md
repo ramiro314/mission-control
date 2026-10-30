@@ -203,10 +203,11 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   approved Datadog cost optimizations, so changing them needs an audit entry in
   `docs/plans/upstart-datadog-telemetry/phase-2-lean-export-shape.md`. Telemetry gap kinds
   (`TELEMETRY_GAP_KINDS`) are `telemetry_gaps.kind` and are append-only for the same reason
-- Worktree slot history kinds and actors (`WORKTREE_HISTORY_KINDS` and `WORKTREE_HISTORY_ACTORS` in
-  `src/shared/worktrees.ts`) - persisted as `worktree_slot_history.kind` and `.actor`, and read back
-  as strings so a value a later build appended stays readable after a downgrade. Append a value;
-  never rename or reorder one
+- Worktree slot history kinds, actors, operations and outcomes (`WORKTREE_HISTORY_KINDS`,
+  `WORKTREE_HISTORY_ACTORS`, `WORKTREE_HISTORY_OPERATIONS` and `WORKTREE_OPERATION_OUTCOMES` in
+  `src/shared/worktrees.ts`) - persisted as `worktree_slot_history.kind`, `.actor`, `.operation` and
+  `.outcome`, and read back as strings so a value a later build appended stays readable after a
+  downgrade. Append a value; never rename or reorder one
 - Organization ids (`ORGANIZATION_IDS` in `src/shared/organizations.ts`) - persisted as
   `organization` in the `telemetry.organization` record and read back by exact value. Append an
   organization; never rename one. The detection rule and the managed lock are the approved

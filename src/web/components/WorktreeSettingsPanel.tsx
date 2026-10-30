@@ -885,16 +885,33 @@ function SlotCard({
       <SlotHistory
         slotId={slot.id}
         ordinal={slot.ordinal}
-        refreshKey={`${slot.version}:${slot.observationFailure ?? ""}`}
+        refreshKey={slot.historyHead}
       />
     </article>
   );
 }
 
-/** What one history row is, in the row's first line. A kind a later build added reads as itself. */
+const HISTORY_OPERATIONS: Record<string, string> = {
+  return: "Return",
+  destroy: "Destroy",
+  prune: "Prune",
+  warm: "Warm",
+  recover: "Recover",
+  repair: "Repair",
+  kill: "Kill",
+};
+
+const HISTORY_OUTCOMES: Record<string, string> = { partial: "partly done" };
+
+/** What one history row is, in the row's first line. A value a later build added reads as itself. */
 export function slotHistoryHeadline(entry: WorktreeSlotHistoryEntry): string {
   if (entry.kind === "transition") return `${entry.fromState ?? "new"} → ${entry.toState ?? "removed"}`;
   if (entry.kind === "observation") return entry.outcome === "cleared" ? "Failed read cleared" : "Failed read";
+  if (entry.kind === "operation") {
+    const operation = entry.operation ?? "Operation";
+    const outcome = entry.outcome ?? "";
+    return `${HISTORY_OPERATIONS[operation] ?? operation} ${HISTORY_OUTCOMES[outcome] ?? outcome}`.trim();
+  }
   return entry.kind;
 }
 
@@ -916,7 +933,7 @@ function SlotHistory({
 }: {
   slotId: string;
   ordinal: number;
-  refreshKey: string;
+  refreshKey: number | null;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<WorktreeSlotHistoryPage | null>(null);
