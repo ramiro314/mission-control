@@ -147,9 +147,12 @@ untouched.
 
 A slot an earlier build quarantined only because a read failed, while its owner was alive, goes
 back to that owner. Reconcile returns a quarantined slot to `leased` when its reason is in the
-failed-read set, its active identity is complete, its owner is positively referenced, and this
-pass read it: registration exact, Git readable, path and common directory matching, occupancy
-known. The compare-and-swap, `WorktreeStore.restoreLease`, changes the slot's state and clears its
+failed-read set and was taken on a granted lease, its active identity is complete, its owner is
+positively referenced, and this pass read it: registration exact, Git readable, path and common
+directory matching, occupancy known. The "slot occupancy became unknown before ..." reasons do not
+qualify, because only a reservation could be quarantined with them: its caller saw an error and
+holds no lease, even when a manual owner's row still answers for itself, so the slot stays
+quarantined for its card's Return. The compare-and-swap, `WorktreeStore.restoreLease`, changes the slot's state and clears its
 quarantine fields, and nothing on disk is touched: HEAD, the index and every file stay as they
 were, and a slot may be dirty and occupied, as any live lease may. A slot whose owner cannot be
 read stays quarantined and records that on its card. One whose owner is positively gone loses its

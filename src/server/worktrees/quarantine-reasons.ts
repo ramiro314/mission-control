@@ -17,6 +17,17 @@ export const OBSERVATION_FAILURE = {
 } as const;
 
 /**
+ * The failed-read reasons older builds wrote only for a reservation, while its lease was still
+ * ungranted. The caller saw an error, so no owner holds that lease, even when a manual lease's
+ * row, which answers for itself, still says one does.
+ */
+const PRE_GRANT_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  "slot occupancy became unknown before reset",
+  "slot occupancy became unknown before it was warmed",
+  "slot occupancy became unknown before it was seeded from",
+]);
+
+/**
  * Every quarantine reason that is an observation failure: the labels above, and the reasons
  * older builds quarantined with for the same failed reads, so rows already in the database
  * qualify without a migration. The writer and every matcher read this one set.
@@ -33,9 +44,7 @@ export const OBSERVATION_FAILURE_REASONS: ReadonlySet<string> = new Set([
   "slot Git state could not be inspected",
   "slot occupancy is unknown",
   "last-released domain ownership could not be read",
-  "slot occupancy became unknown before reset",
-  "slot occupancy became unknown before it was warmed",
-  "slot occupancy became unknown before it was seeded from",
+  ...PRE_GRANT_FAILURE_REASONS,
 ]);
 
 /**
@@ -47,6 +56,11 @@ export function isObservationFailure(reason: string | null): boolean {
   if (OBSERVATION_FAILURE_REASONS.has(reason)) return true;
   const colon = reason.indexOf(": ");
   return colon > 0 && OBSERVATION_FAILURE_REASONS.has(reason.slice(0, colon));
+}
+
+/** Whether a quarantine is a failed read taken on a granted lease, which its owner may resume. */
+export function isLeaseObservationFailure(reason: string | null): boolean {
+  return isObservationFailure(reason) && !PRE_GRANT_FAILURE_REASONS.has((reason ?? "").split(": ", 1)[0]!);
 }
 
 /**

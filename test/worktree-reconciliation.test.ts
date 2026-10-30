@@ -8,9 +8,14 @@ import {
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit, type WorktreeGit } from "../src/server/worktrees/git.ts";
-import { OBSERVATION_FAILURE_REASONS, RESERVATION_NOT_HANDED_BACK } from "../src/server/worktrees/quarantine-reasons.ts";
+import {
+  isLeaseObservationFailure,
+  OBSERVATION_FAILURE_REASONS,
+  RESERVATION_NOT_HANDED_BACK,
+} from "../src/server/worktrees/quarantine-reasons.ts";
 import { run, type RunResult } from "../src/server/util/exec.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { nativeWorktreeOwnerReferenced } from "../src/server/worktrees/owners.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const db = openDb();
@@ -985,8 +990,11 @@ test("a failed-read quarantine goes back to its referenced owner untouched, even
   const prior = manager.store.slot(lease.slotId)!;
   const logged = t.mock.method(console, "log", () => {});
 
-  // Every reason in the shared set qualifies, the older build's suffixed one included.
-  const reasons = [...OBSERVATION_FAILURE_REASONS, "Git worktree registrations are unknown: exit 1"];
+  // Every failed-read reason taken on a granted lease qualifies, the older build's suffixed one
+  // included.
+  const reasons = [...OBSERVATION_FAILURE_REASONS, "Git worktree registrations are unknown: exit 1"]
+    .filter(isLeaseObservationFailure);
+  assert.ok(reasons.length > 0);
   for (const [index, reason] of reasons.entries()) {
     quarantineForFailedRead(lease.slotId, reason);
     await manager.reconcile();
@@ -1153,6 +1161,46 @@ test("a proven fault is not restored, however live its owner and however good th
     assert.equal(slot.activeOwnerKey, "task-restore-fault:0", reason);
   }
   assert.equal(logged.mock.callCount(), 0, "no restore is logged");
+});
+
+test("a manual reservation an earlier build quarantined before its grant is not restored as a lease", async (t) => {
+  const repository = repo("mission-reconcile-restore-pre-grant-");
+  // The real lookup: a manual owner has no row of its own, so its slot row always answers yes.
+  const manager = new WorktreeManager(db, {
+    resolvePolicy: () => ({ enabled: true, maxSlots: 16, setupArgv: null }),
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])),
+    ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference, db),
+  });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "manual", key: "manual-pre-grant" },
+    }),
+  );
+  const logged = t.mock.method(console, "log", () => {});
+
+  for (const reason of [
+    "slot occupancy became unknown before reset",
+    "slot occupancy became unknown before it was warmed",
+    "slot occupancy became unknown before it was seeded from",
+  ]) {
+    quarantineForFailedRead(lease.slotId, reason);
+    const before = manager.store.slot(lease.slotId)!;
+    await manager.reconcile();
+    const slot = manager.store.slot(lease.slotId)!;
+    assert.equal(slot.state, "quarantined", reason);
+    assert.equal(slot.version, before.version, reason);
+    assert.equal(slot.quarantineReason, reason, reason);
+    assert.equal(slot.activeLeaseId, lease.leaseId, reason);
+  }
+  assert.equal(logged.mock.callCount(), 0, "no restore is logged");
+
+  // The same owner under a reason taken on a granted lease does come back.
+  quarantineForFailedRead(lease.slotId, "slot occupancy is unknown");
+  await manager.reconcile();
+  assert.equal(manager.store.slot(lease.slotId)?.state, "leased");
+  assert.equal(logged.mock.callCount(), 1);
 });
 
 test("a restore that loses its compare-and-swap reports the race and restores nothing", async (t) => {

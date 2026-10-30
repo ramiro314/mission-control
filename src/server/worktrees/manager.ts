@@ -53,7 +53,7 @@ import {
 import { ensureWorktreePoolMarker, observeWorktreePoolMarker, readWorktreePoolMarker } from "./marker.ts";
 import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observation-retry.ts";
 import {
-  isObservationFailure,
+  isLeaseObservationFailure,
   OBSERVATION_FAILURE,
   observationFailureText,
   RESERVATION_NOT_HANDED_BACK,
@@ -3155,10 +3155,11 @@ export class WorktreeManager {
             // identity, names an owner that never received it. Withdraw that identity only when
             // the owner is positively proven not to reference it.
             if (this.store.withdrawQuarantinedLease(slot.id, slot.version, owner.leaseId, now)) this.publish();
-          } else if (owner && isObservationFailure(slot.quarantineReason)) {
+          } else if (owner && isLeaseObservationFailure(slot.quarantineReason)) {
             // An earlier build quarantined this live lease only because a read failed. Everything
             // has now read, so the lease resumes as it stands, dirty and occupied included, as a
-            // live lease may be. Nothing on disk is touched.
+            // live lease may be. Nothing on disk is touched. A reservation quarantined before its
+            // grant never reaches here: a manual owner answers for itself, but nobody holds it.
             if (this.store.restoreLease(slot.id, slot.version, owner.leaseId, now)) {
               this.publish();
               console.log(oneLine(
