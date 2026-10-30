@@ -1217,6 +1217,12 @@ conditionally returns the exact native lease. A missing, stale, occupied, or unc
 kept for startup or maintenance reconciliation rather than guessed away. Native check leak
 reclamation runs on the native maintenance cadence after slot startup reconciliation.
 
+Check lease startup reconciliation does not hold the daemon back from listening. It pins every
+live lease's tree synchronously, so a new check cannot take a tree a durable row still names, and
+then resolves each row in the background. Releasing a tree Git no longer recognizes deletes the
+whole checkout, which can take minutes for a large monorepo, and a failure is logged and retried
+by the next maintenance pass.
+
 A Git fallback tree that Git no longer recognizes is deleted rather than retried forever. Once a
 tree's `.git` file is gone, `git worktree remove --force` refuses it with "validation failed",
 and the orphan tree sweep leaves it because the lease still names it. So when that return fails,
