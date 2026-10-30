@@ -8,7 +8,7 @@ import {
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit, type WorktreeGit } from "../src/server/worktrees/git.ts";
-import { OBSERVATION_FAILURE_REASONS } from "../src/server/worktrees/quarantine-reasons.ts";
+import { OBSERVATION_FAILURE_REASONS, RESERVATION_NOT_HANDED_BACK } from "../src/server/worktrees/quarantine-reasons.ts";
 import { run, type RunResult } from "../src/server/util/exec.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -1057,7 +1057,8 @@ test("a failed-read quarantine whose owner cannot be read stays quarantined unti
   assert.equal(slot.lastError, null);
 });
 
-test("a failed-read quarantine stays quarantined when a fresh read does not hold, or names no live owner", async () => {
+test("a failed-read quarantine stays quarantined when a fresh read does not hold, or names no live owner", async (t) => {
+  const logged = t.mock.method(console, "log", () => {});
   const cases = [
     { name: "owner gone", withdrawn: true },
     { name: "incomplete identity", arrange: (slotId: string) => {
@@ -1067,17 +1068,20 @@ test("a failed-read quarantine stays quarantined when a fresh read does not hold
       gitIn(clone, "worktree", "lock", path);
     } },
     { name: "failed Git read", failInspect: true },
+    { name: "path mismatch", misread: { path: "/elsewhere/slot" } },
+    { name: "common directory mismatch", misread: { commonDirectory: "/elsewhere/.git" } },
     { name: "unknown occupancy", occupancy: "ps timed out" },
   ] as const;
   for (const entry of cases) {
     const repository = repo(`mission-reconcile-restore-${entry.name.replace(/ /g, "-")}-`);
     const referenced = new Set<string>();
-    let inspectFails = false;
-    class InspectFails extends NativeWorktreeGit {
-      override inspect(path: string): ReturnType<NativeWorktreeGit["inspect"]> {
-        return inspectFails
-          ? Promise.resolve({ ok: false, reason: "git status timed out", outcomeUnknown: true })
-          : super.inspect(path);
+    let quarantined = false;
+    class FreshRead extends NativeWorktreeGit {
+      override async inspect(path: string): ReturnType<NativeWorktreeGit["inspect"]> {
+        const read = await super.inspect(path);
+        if (!quarantined) return read;
+        if ("failInspect" in entry) return { ok: false, reason: "git status timed out", outcomeUnknown: true };
+        return "misread" in entry && read.ok ? { ...read, value: { ...read.value, ...entry.misread } } : read;
       }
     }
     const manager = new WorktreeManager(db, {
@@ -1090,7 +1094,7 @@ test("a failed-read quarantine stays quarantined when a fresh read does not hold
       ])),
       ownerReferenced: async (reference) => referenced.has(reference.leaseId),
       pause: async () => {},
-      git: new InspectFails(),
+      git: new FreshRead(),
     });
     const lease = acquired(
       await manager.acquire({
@@ -1102,7 +1106,7 @@ test("a failed-read quarantine stays quarantined when a fresh read does not hold
     if (!("withdrawn" in entry)) referenced.add(lease.leaseId);
     quarantineForFailedRead(lease.slotId);
     if ("arrange" in entry) entry.arrange(lease.slotId, lease.path, repository.clone);
-    inspectFails = "failInspect" in entry;
+    quarantined = true;
 
     await manager.reconcile();
     const slot = manager.store.slot(lease.slotId)!;
@@ -1111,6 +1115,83 @@ test("a failed-read quarantine stays quarantined when a fresh read does not hold
     assert.equal(slot.activeLeaseId, "withdrawn" in entry ? null : lease.leaseId, entry.name);
     if (entry.name === "locked registration") gitIn(repository.clone, "worktree", "unlock", lease.path);
   }
+  assert.equal(logged.mock.callCount(), 0, "no restore is logged");
+});
+
+test("a proven fault is not restored, however live its owner and however good the read", async (t) => {
+  const repository = repo("mission-reconcile-restore-fault-");
+  const referenced = new Set<string>();
+  const manager = harness({ referenced });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-restore-fault:0" },
+    }),
+  );
+  referenced.add(lease.leaseId);
+  const logged = t.mock.method(console, "log", () => {});
+
+  for (const reason of [
+    "return reset failed",
+    "slot Git registration is bare, locked, or prunable",
+    "pool marker is missing, unreadable, or belongs to another pool",
+    "native worktree materialization outcome is unknown",
+    RESERVATION_NOT_HANDED_BACK,
+    "slot Git state is unknown, really",
+  ]) {
+    quarantineForFailedRead(lease.slotId, reason);
+    const before = manager.store.slot(lease.slotId)!;
+    await manager.reconcile();
+    const slot = manager.store.slot(lease.slotId)!;
+    assert.equal(slot.state, "quarantined", reason);
+    assert.equal(slot.version, before.version, reason);
+    assert.equal(slot.quarantineReason, reason, reason);
+    assert.equal(slot.quarantinedAt, 1000, reason);
+    assert.equal(slot.lastError, "the read that failed", reason);
+    assert.equal(slot.activeLeaseId, lease.leaseId, reason);
+    assert.equal(slot.activeOwnerKey, "task-restore-fault:0", reason);
+  }
+  assert.equal(logged.mock.callCount(), 0, "no restore is logged");
+});
+
+test("a restore that loses its compare-and-swap reports the race and restores nothing", async (t) => {
+  const repository = repo("mission-reconcile-restore-raced-");
+  let leaseId = "";
+  let slotId = "";
+  const manager = new WorktreeManager(db, {
+    resolvePolicy: () => ({ enabled: true, maxSlots: 16, setupArgv: null }),
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])),
+    ownerReferenced: async (reference) => {
+      if (reference.leaseId !== leaseId) return false;
+      // Something else moved the slot while reconcile was waiting on its owner.
+      db.prepare("UPDATE worktree_slots SET version = version + 1 WHERE id = ?").run(slotId);
+      return true;
+    },
+  });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-restore-raced:0" },
+    }),
+  );
+  leaseId = lease.leaseId;
+  slotId = lease.slotId;
+  quarantineForFailedRead(lease.slotId);
+  const before = manager.store.slot(lease.slotId)!;
+  const logged = t.mock.method(console, "log", () => {});
+
+  await manager.reconcile();
+  const slot = manager.store.slot(lease.slotId)!;
+  assert.equal(slot.state, "quarantined");
+  assert.equal(slot.version, before.version + 1, "only the version the race moved");
+  assert.equal(slot.quarantineReason, "slot occupancy is unknown");
+  assert.equal(slot.quarantinedAt, 1000);
+  assert.equal(slot.lastError, "the read that failed");
+  assert.equal(slot.activeLeaseId, lease.leaseId);
+  assert.match(manager.store.pools()[0]!.reconciliationError ?? "", /slot 1: lease restore raced/);
+  assert.equal(logged.mock.callCount(), 0, "a restore that did not land is not logged");
 });
 
 test("restoreLease is a compare-and-swap on the quarantine it judged", async () => {
