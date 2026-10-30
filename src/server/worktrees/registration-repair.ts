@@ -18,7 +18,11 @@ export type RegistrationDiagnosis =
   | { status: "fixable"; fixes: RegistrationFix[] }
   | { status: "refused"; reason: string };
 
-/** What `git worktree add` writes to `locked` while it runs. Any other lock is someone's. */
+/**
+ * What `git worktree add` writes to `locked` while it runs, under the `LANGUAGE=C` this daemon
+ * adds with. Git translates it otherwise, and a translated lock cannot be told from an operator's
+ * reason, so anything else is left alone.
+ */
 const INTERRUPTED_ADD_LOCK = "initializing";
 
 /** The `.git` path an administrative directory's `gitdir` file names, or null when it names none. */
@@ -102,7 +106,7 @@ export async function diagnoseRegistration(input: {
   }
   if (locked === INTERRUPTED_ADD_LOCK) fixes.push("unlock");
   else if (locked !== null) {
-    return refused(`the registration was locked on purpose${locked ? ` (${locked})` : ""}`);
+    return refused(`the registration is locked${locked ? ` (${locked})` : ""}, and only Git's own initializing lock is cleared here`);
   }
   if (fixes.length > 0) return { status: "fixable", fixes };
   return registration && !registration.prunable && !registration.locked

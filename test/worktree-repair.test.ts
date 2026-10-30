@@ -16,6 +16,7 @@ import {
 } from "../src/server/worktrees/quarantine-reasons.ts";
 import { diagnoseRegistration } from "../src/server/worktrees/registration-repair.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
+import { run } from "../src/server/util/exec.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const db = openDb();
@@ -253,7 +254,7 @@ test("a pass records why it could not repair, and does not touch what only an op
 
   assert.deepEqual(m.store.slot(slot.slotId), row);
   assert.equal(readFileSync(join(slot.administrative, "locked"), "utf8"), "keep this slot for the audit\n");
-  assert.deepEqual(m.recoveryRefusal(row)?.reason, "the registration was locked on purpose (keep this slot for the audit)");
+  assert.deepEqual(m.recoveryRefusal(row)?.reason, "the registration is locked (keep this slot for the audit), and only Git's own initializing lock is cleared here");
 });
 
 test("Repair leaves re-registration and every other cause to the operator", async () => {
@@ -472,7 +473,9 @@ test("what cannot be traced to one registration, or is not Git's own to fix, is 
   rmSync(locked, { recursive: true });
 
   writeFileSync(locked, "");
-  assert.deepEqual(await diagnose(), { status: "refused", reason: "the registration was locked on purpose" });
+  assert.deepEqual(await diagnose(), {
+    status: "refused", reason: "the registration is locked, and only Git's own initializing lock is cleared here",
+  });
   rmSync(locked);
 
   const dotGit = join(slot.path, ".git");
@@ -576,7 +579,7 @@ test("a preview blocks an occupant, a live or unknown owner, a claim and a fix G
   manager.claims.unregister(slot.slotId, claim);
 
   writeFileSync(join(slot.administrative, "locked"), "held on purpose\n");
-  assert.match(await blockers(), /Git has no fix for this slot: the registration was locked on purpose \(held on purpose\)/);
+  assert.match(await blockers(), /Git has no fix for this slot: the registration is locked \(held on purpose\), and only Git's own/);
 });
 
 test("execute refuses a registration that changed after its preview", async () => {
@@ -992,4 +995,35 @@ test("git worktree repair <path> reaches every broken .git file, so its preview 
 
   assert.equal(repaired.outcome, "recovered");
   assert.equal(readFileSync(join(sibling.path, ".git"), "utf8").trim(), `gitdir: ${sibling.administrative}`);
+});
+
+test("a slot is added with Git's messages untranslated, so an interrupted add's lock reads initializing", async () => {
+  const { clone, sha } = repository("mission-repair-add-language-");
+  let added: NodeJS.ProcessEnv | undefined;
+  const git = new NativeWorktreeGit((bin, args, opts) => {
+    if (args.includes("add")) added = opts?.env;
+    return run(bin, args, opts);
+  });
+  const m = managerWith(git);
+
+  assert.equal((await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key: "task-repair-add-language" } })).outcome, "acquired");
+
+  assert.equal(added?.LANGUAGE, "C");
+  assert.equal(added?.LC_ALL, process.env.LC_ALL, "a hook keeps the daemon's locale");
+  assert.equal(added?.PATH, process.env.PATH);
+});
+
+test("a lock an earlier build left in another language is refused, and is not called deliberate", async () => {
+  const { clone, sha } = repository("mission-repair-translated-");
+  const m = managerWith();
+  const slot = await quarantinedSlot(m, clone, sha, "task-repair-translated");
+  writeFileSync(join(slot.administrative, "locked"), "initialisiere\n");
+  const row = m.store.slot(slot.slotId)!;
+
+  assert.deepEqual(await m.repairSlot({ slotId: slot.slotId }), {
+    outcome: "refused",
+    reason: "the registration is locked (initialisiere), and only Git's own initializing lock is cleared here",
+  });
+  assert.deepEqual(m.store.slot(slot.slotId), row);
+  assert.equal(readFileSync(join(slot.administrative, "locked"), "utf8"), "initialisiere\n");
 });

@@ -273,10 +273,12 @@ export class NativeWorktreeGit implements WorktreeGit {
         outcomeUnknown: false,
       };
     }
+    // Git translates the `initializing` it writes to `locked`, and Repair recognizes an
+    // interrupted add by that word. `LANGUAGE` reaches only messages, so hooks keep their locale.
     const result = await this.execute(
       "git",
       ["-C", identity.mainCheckoutRoot, "worktree", "add", "--detach", path, commit],
-      { timeoutMs: 60_000 },
+      { timeoutMs: 60_000, env: { ...process.env, LANGUAGE: "C" } },
     );
     if (commandFailed(result)) return failure("git worktree add", result);
     return { ok: true, value: undefined };

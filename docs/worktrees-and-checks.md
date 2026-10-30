@@ -868,7 +868,10 @@ The operations have deliberately narrow meanings:
   itself reads:
 
   - a registration locked `initializing`, which an interrupted `git worktree add` leaves, is
-    unlocked with `git worktree unlock`. Any other lock is someone's, and refuses Repair;
+    unlocked with `git worktree unlock`. Any other lock refuses Repair. That includes a lock an
+    earlier build left in another language, because Git translates that word and a translated
+    lock cannot be told from a reason someone wrote. Slots are now added with `LANGUAGE=C`, so
+    new locks always read `initializing`;
   - a `.git` file that is missing or wrong, while an administrative directory under
     `<common>/worktrees/` still names this path, is fixed with `git worktree repair`;
   - a `.git` file naming an administrative directory whose `gitdir` points elsewhere is fixed
