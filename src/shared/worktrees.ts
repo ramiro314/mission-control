@@ -1,4 +1,5 @@
 import type { WorktreeClaim, WorktreesConfig } from "./protocol.ts";
+import type { ProcessSession } from "./storage-health.ts";
 import type { TerminalBackendId } from "./terminal.ts";
 
 export const WORKTREE_INVENTORY_LIMITS = {
@@ -65,6 +66,8 @@ export interface WorktreeOccupantView {
   startedAt: number;
   /** What the process is, when something names it. A name never makes it safe to ignore. */
   knownOwner: string | null;
+  /** The live session it belongs to, with its name bounded like any other inventory text. */
+  session?: ProcessSession | null;
 }
 
 /**

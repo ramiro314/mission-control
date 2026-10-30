@@ -102,6 +102,21 @@ test("a named process is still reported, and the report carries its name", async
   assert.equal(process.knownOwner, "IDE language server");
 });
 
+test("a live session's process is still reported, and the report carries that session", async () => {
+  const { root, tree } = fixture();
+  const owner = { id: "session-1", name: "fix the login" };
+  const reported = { pid: 4242, ppid: 1, startRaw: "s", startMs: 1, command: "claude", cwd: tree, knownOwner: "Session fix the login", session: owner };
+  const monitor = new OrphanProcessMonitor({
+    trees: () => [{ path: tree, slotId: null, owner: taskOwner }],
+    retryReturn: () => {},
+    unpooledRoots: [root],
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known", occupants: [reported] }])),
+  });
+  const { problem, process } = await reportedProcess(monitor, 4242);
+  assert.equal(problem.kind, "orphan-process");
+  assert.deepEqual(process.session, owner);
+});
+
 test("finished trees are pending task returns, returning check leases, quarantined slots and available slots", () => {
   const slot = (id: string, path: string, state: string, activeLeaseId: string | null = null) =>
     ({ id, path, state, activeLeaseId }) as WorktreeSlotRow;
@@ -405,6 +420,56 @@ test("Kill rescans after itself, so a scan that inspected before the kill cannot
   assert.deepEqual(monitor.problems(), [], "the dead process is not reported once Kill answers");
 });
 
+test("Kill refuses a live session's process from the fresh inspection, so a stale list cannot reach it", async () => {
+  const { root, tree } = fixture();
+  const child = await occupant(tree);
+  const owner = { id: "session-1", name: "fix the login" };
+  let session: typeof owner | null = null;
+  let namesUnread = false;
+  const retried: FinishedTreeOwner[] = [];
+  const { monitor, signals } = harness([{ path: tree, slotId: null, owner: taskOwner }], root, {
+    retryReturn: (finished) => {
+      retried.push(finished);
+    },
+    occupancy: async (paths) => {
+      const observed = await inspectWorktreeOccupancy(paths);
+      for (const [path, state] of observed) {
+        if (state.status !== "known") continue;
+        observed.set(path, {
+          status: "known",
+          occupants: state.occupants.map((each) => ({ ...each, session })),
+          ...(namesUnread ? { namesUnread: true as const } : {}),
+        });
+      }
+      return observed;
+    },
+  });
+  // Reported as nobody's, so this list is exactly what a stale card would act on.
+  const { process: listed } = await reportedProcess(monitor, child.pid!);
+  assert.equal(listed.session, null);
+  const exact = { path: tree, pid: listed.pid, startedAt: listed.startedAt, command: listed.command };
+
+  session = owner;
+  assert.deepEqual(await monitor.kill(exact), {
+    ok: false,
+    error: `process ${child.pid} belongs to live session fix the login; end it from the session`,
+  });
+  session = null;
+  namesUnread = true;
+  assert.deepEqual(await monitor.kill(exact), {
+    ok: false,
+    error: `process ${child.pid} could not be checked against the live sessions`,
+  });
+  assert.deepEqual(signals, []);
+  assert.deepEqual(retried, [], "a refusal retries no return");
+  assert.equal(alive(child.pid!), true);
+
+  // The session is gone, so a card that still called it one no longer protects it.
+  namesUnread = false;
+  assert.deepEqual(await monitor.kill(exact), { ok: true, signal: "SIGTERM" });
+  assert.equal(alive(child.pid!), false);
+});
+
 test("a scan that cannot inspect a tree keeps the last report for it", async () => {
   const { root, tree } = fixture();
   const child = await occupant(tree);
@@ -428,7 +493,18 @@ test("the routes: Storage scans before it answers, and Kill answers 409 for a re
   const { databaseBackupStatusFrom } = await import("../src/shared/database-backups.ts");
   const { root, tree } = fixture();
   const child = await occupant(tree);
-  const { monitor, signals } = harness([{ path: tree, slotId: null, owner: taskOwner }], root);
+  let session: { id: string; name: string } | null = null;
+  const { monitor, signals } = harness([{ path: tree, slotId: null, owner: taskOwner }], root, {
+    occupancy: async (paths) => {
+      const observed = await inspectWorktreeOccupancy(paths);
+      for (const [path, state] of observed) {
+        if (state.status === "known") {
+          observed.set(path, { status: "known", occupants: state.occupants.map((each) => ({ ...each, session })) });
+        }
+      }
+      return observed;
+    },
+  });
   const storageHealth = new StorageHealthService({
     backups: { status: () => databaseBackupStatusFrom(undefined), keptCopies: () => [] },
     publish: () => {},
@@ -458,6 +534,14 @@ test("the routes: Storage scans before it answers, and Kill answers 409 for a re
   assert.equal((await kill({ path: tree, pid: listed.pid })).status, 400);
   const refused = await kill({ path: homedir(), pid: listed.pid, startedAt: listed.startedAt, command: listed.command });
   assert.equal(refused.status, 409);
+  session = { id: "session-1", name: "fix the login" };
+  const sessions = await kill({ path: tree, pid: listed.pid, startedAt: listed.startedAt, command: listed.command });
+  assert.equal(sessions.status, 409);
+  assert.deepEqual(await sessions.json(), {
+    ok: false,
+    error: `process ${listed.pid} belongs to live session fix the login; end it from the session`,
+  });
+  session = null;
   assert.deepEqual(signals, []);
   const killed = await kill({ path: tree, pid: listed.pid, startedAt: listed.startedAt, command: listed.command });
   assert.equal(killed.status, 200);

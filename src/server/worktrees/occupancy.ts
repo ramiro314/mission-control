@@ -1,5 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import type { ProcessSession } from "@shared/storage-health.ts";
 import {
   listProcessesSnapshot,
   type Proc,
@@ -16,6 +17,7 @@ import {
   OBSERVATION_RETRY_TIMEOUT_SCALE,
   pauseFor,
 } from "./observation-retry.ts";
+import type { KnownOwner } from "./known-owners.ts";
 import { ownWorktreeProcesses } from "./own-processes.ts";
 
 const MAX_TARGETS = 256;
@@ -32,10 +34,13 @@ export interface WorktreeOccupant {
   cwd: string;
   /** What this process is, for a person reading the slot card; null when nothing names it. */
   knownOwner: string | null;
+  /** The live Mission Control session it belongs to, which is the only way it may end. */
+  session?: ProcessSession | null;
 }
 
 export type WorktreeOccupancy =
-  | { status: "known"; occupants: WorktreeOccupant[] }
+  /** `namesUnread`: every occupant is counted, but none could be checked against the sessions. */
+  | { status: "known"; occupants: WorktreeOccupant[]; namesUnread?: true }
   | { status: "unknown"; reason: string };
 
 export interface WorktreeOccupancyDeps {
@@ -45,7 +50,7 @@ export interface WorktreeOccupancyDeps {
    * Labels one inspection's occupants against its whole process table, which an ancestor outside
    * the cwd scope is still part of. Never decides occupancy: a process counts, named or not.
    */
-  knownOwner: (table: readonly Proc[]) => (process: Proc) => string | null;
+  knownOwner: (table: readonly Proc[]) => (process: Proc) => KnownOwner | null;
   /** This daemon's running worktree Git commands; never occupants of the slot they read. */
   ownProcesses: () => ReadonlySet<number>;
   /** The wait before the one retry of a failed inspection. */
@@ -136,7 +141,7 @@ export async function inspectWorktreeOccupancy(
     return result;
   }
   const { table, processes, cwds } = observed;
-  const ownerOf = occupantLabels(d, table);
+  const owners = occupantOwners(d, table);
 
   const canonicalTargets = new Map<string, string>();
   await Promise.all(targets.map(async (target) => canonicalTargets.set(target, await physical(target))));
@@ -149,6 +154,7 @@ export async function inspectWorktreeOccupancy(
     const cwd = await physical(cwdPath);
     for (const [target, canonicalTarget] of canonicalTargets) {
       if (!pathContains(canonicalTarget, cwd)) continue;
+      const owner = owners.of(process);
       occupants.get(target)!.push({
         pid: process.pid,
         ppid: process.ppid,
@@ -156,7 +162,8 @@ export async function inspectWorktreeOccupancy(
         startMs: process.startMs,
         command: process.command.slice(0, MAX_COMMAND_BYTES),
         cwd,
-        knownOwner: ownerOf(process),
+        knownOwner: owner?.label ?? null,
+        session: owner?.session ?? null,
       });
     }
   }
@@ -165,18 +172,25 @@ export async function inspectWorktreeOccupancy(
     result.set(target, {
       status: "known",
       occupants: occupants.get(target)!.sort((a, b) => a.pid - b.pid),
+      ...(owners.unread ? { namesUnread: true as const } : {}),
     });
   }
   return result;
 }
 
-/** A label is a courtesy, so one that cannot be read leaves the occupant counted and unnamed. */
-function occupantLabels(d: WorktreeOccupancyDeps, table: readonly Proc[]): (process: Proc) => string | null {
+/**
+ * A label is a courtesy, so one that cannot be read leaves the occupant counted and unnamed. It
+ * says so, because Kill's session guard is not a courtesy and has to refuse rather than proceed.
+ */
+function occupantOwners(
+  d: WorktreeOccupancyDeps,
+  table: readonly Proc[],
+): { of: (process: Proc) => KnownOwner | null; unread: boolean } {
   try {
-    return d.knownOwner(table);
+    return { of: d.knownOwner(table), unread: false };
   } catch (error) {
     console.warn(`[worktrees] occupant names are unavailable: ${String(error)}`);
-    return () => null;
+    return { of: () => null, unread: true };
   }
 }
 

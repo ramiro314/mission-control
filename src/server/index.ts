@@ -123,7 +123,7 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { StorageHealthService, stuckReturnSource } from "./storage-health.ts";
-import { knownOwnerLabels, sessionProcesses } from "./worktrees/known-owners.ts";
+import { knownOwnerLabels, observedSessionProcesses } from "./worktrees/known-owners.ts";
 import { inspectWorktreeOccupancy } from "./worktrees/occupancy.ts";
 import { finishedTrees, OrphanProcessMonitor } from "./worktrees/orphan-processes.ts";
 import { LeaseActivityObserver } from "./worktrees/lease-activity.ts";
@@ -242,7 +242,7 @@ const publishWorktreesChanged = () => {
 };
 // Names what an inspection finds, for the slot card. Passed to the two readers a card shows.
 const namedOccupancy = (paths: readonly string[]) => inspectWorktreeOccupancy(paths, {
-  knownOwner: knownOwnerLabels(() => sessionProcesses(registry.liveSessions())),
+  knownOwner: knownOwnerLabels(() => observedSessionProcesses(registry)),
 });
 const worktrees = new WorktreeManager(undefined, {
   occupancy: namedOccupancy,

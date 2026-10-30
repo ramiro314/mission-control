@@ -4285,6 +4285,7 @@ export function App(): React.JSX.Element {
               })}
               // The return leg of the Pipelines tab's own "Conductor settings" button.
               onOpenPipelines={() => navigate({ page: "runs", kind: "pipelines" })}
+              onOpenSession={focusSession}
               onLeave={() => { if (!isOverlayOpen()) navigate({ page: "fleet" }); }}
               foreman={foreman}
               cost={cost}

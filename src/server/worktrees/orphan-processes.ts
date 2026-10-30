@@ -154,6 +154,11 @@ function errorMessage(error: unknown): string {
  * reported list itself: it only ever names pool slots and children of `worktrees/` and
  * `check-worktrees/`, so a request naming any other directory is refused before a single
  * process is inspected.
+ *
+ * That same fresh inspection refuses a process of a live session, and one it could not check
+ * against the sessions (S15). The report still lists such a process, because it still occupies
+ * the tree, but a session only ever leaves through `Registry.beginEviction`. Reading this from
+ * the fresh inspection rather than the report is what stops a stale list.
  */
 export class OrphanProcessMonitor {
   private reported = new Map<string, ReportedTree>();
@@ -195,6 +200,7 @@ export class OrphanProcessMonitor {
         command: occupant.command,
         startedAt: occupant.startMs,
         knownOwner: occupant.knownOwner,
+        session: occupant.session ?? null,
       },
     })));
   }
@@ -217,6 +223,12 @@ export class OrphanProcessMonitor {
     if (!current) return { ok: false, error: `process ${request.pid} is no longer in that tree` };
     if (current.startRaw !== listed.startRaw || current.command !== listed.command) {
       return { ok: false, error: `process ${request.pid} changed its start time or command since it was reported` };
+    }
+    if (current.session) {
+      return { ok: false, error: `process ${request.pid} belongs to live session ${current.session.name}; end it from the session` };
+    }
+    if (fresh.namesUnread) {
+      return { ok: false, error: `process ${request.pid} could not be checked against the live sessions` };
     }
 
     let sent: "SIGTERM" | "SIGKILL" = "SIGTERM";

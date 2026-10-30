@@ -875,8 +875,9 @@ The operations have deliberately narrow meanings:
   actions. It never touches a leased or quarantined slot. See [Warm](#warm).
 - **Kill** stops one orphan process: a process still running inside a tree whose owner has
   finished, or inside an available slot, which has no owner. It is offered on the process's row in the slot card, behind a confirmation. With
-  more than one listed, **Kill all** confirms every one of them in a single dialog. See
-  [Orphan processes](#orphan-processes).
+  more than one killable process listed, **Kill all** confirms every one of them in a single
+  dialog. A live Mission Control session's process offers **Open session** instead, and neither
+  action reaches it. See [Orphan processes](#orphan-processes).
 
 #### Orphan processes
 
@@ -906,10 +907,14 @@ Such a process blocks the tree's return, because the return guard refuses an occ
 available slot, which has no return, it keeps the slot from being leased, because acquisition
 passes over an occupied slot. Its problem says the tree is one no task or check owns.
 The Storage problem's Open slot link lands on the slot's card, which lists each orphan process
-with **Kill**. The confirmation names the process and what happens. When the card lists more
-than one, **Kill all** opens one confirmation naming every listed process and sends one guarded
-request per process, all at once. Any it could not kill stay in the dialog with their reasons, so
-a retry never signals a process that is already gone.
+with **Kill**. The confirmation names the process and what happens. A process that belongs to a
+live Mission Control session stays in the list, because it still holds the tree, but it shows
+the session's name and **Open session** instead of Kill, so a session still leaves only through
+the registry's eviction path. When the card lists more than one process that offers Kill,
+**Kill all** opens one confirmation naming those processes and sends one guarded request per
+process, all at once. It never counts, confirms or signals a session's process, and with fewer
+than two killable processes it is not offered. Any it could not kill stay in the dialog with
+their reasons, so a retry never signals a process that is already gone.
 `POST /api/worktrees/processes/kill` takes `{ path, pid, startedAt, command }` and signals nothing
 unless all of these hold:
 
@@ -917,6 +922,11 @@ unless all of these hold:
    a symlink that resolves anywhere else, is refused before any process is inspected.
 2. That report lists the same PID with the same start time and command.
 3. A fresh inspection still finds that PID inside the tree with the same start time and command.
+4. That inspection does not name the PID as a live session's, and could read the live sessions at
+   all. Otherwise the refusal says `belongs to live session <name>; end it from the session`, or
+   that the process could not be checked. This is read fresh, not from the report, so a Kill all
+   built from a stale list cannot reach a session. Until the first discovery sweep after a
+   restart the sessions are unread, so every Kill is refused.
 
 It then sends `SIGTERM`, and `SIGKILL` 5 seconds later if the same process (same start time) is
 still running. It retries the tree's pending task or check return at once, skipping that
@@ -945,7 +955,9 @@ orphan row:
 
 A name never makes a process safe to ignore. Occupancy, every refusal and the orphan report count
 a named process exactly as they count any other, and a process with no name is only one nothing
-identified. When the names cannot be read, the occupants are still counted, without them.
+identified. The only thing a name changes is Kill, and only a `Session <name>` name changes it: a
+session's process offers **Open session**, on its row in **Processes inside** as well as in the
+orphan list, and the Kill route refuses it. When the names cannot be read, the occupants are still counted, without them.
 
 Native slot cleanliness allows a narrow set of untracked ai-conductor scratch files at the
 checkout root: `.pipeline/.memory-count-at-start`, `conduct-state.json`, `engineer-run.json`,
@@ -1201,7 +1213,7 @@ unowned tree, from the live `storage_health` aggregate: each folder the sweep ke
 Each Storage problem's **Open tree** link lands on that tree's row.
 
 - A process in the tree is listed with **Kill**, through the same confirmation and guarded route
-  as a slot card's. A folder the sweep skipped because a process occupies it is inspected by the
+  as a slot card's, or with **Open session** when a live session owns it. A folder the sweep skipped because a process occupies it is inspected by the
   orphan process scan too, so a process holding a folder nobody owns is reported, not just
   skipped. After a kill a fresh sweep runs, one that starts after the kill rather than a pass
   already in flight that may have seen the process: a clean folder is removed, and one holding
