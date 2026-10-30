@@ -570,6 +570,9 @@ test("Forget runs from the slot card through its preview when Repair has no answ
   await execute.click();
   await expect(preview).toHaveCount(0);
   await expect(kept).toHaveCount(0, { timeout: EXECUTES_MS });
+  // The pane is left at the foot of the settings, so the pool the cards sat in is brought into frame.
+  await dashboard.locator(".wt-pool-head").first().evaluate((head) => head.scrollIntoView({ block: "start" }));
+  await shoot(dashboard, "17-forgotten-slots-gone");
   expect(existsSync(pruneCutOff.path)).toBe(false);
   expect(worktrees()).not.toContain(`worktree ${pruneCutOff.path}\n`);
 });
