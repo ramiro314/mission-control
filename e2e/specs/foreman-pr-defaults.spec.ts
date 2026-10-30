@@ -87,6 +87,12 @@ test("Which failures count defaults to All checks, follows the CI toggle and per
   await expect(picker()).toBeEnabled();
   await expect(picker()).toHaveValue("all");
   await expect(picker().locator("option:checked")).toHaveText("All checks");
+  const pickerRow = controls.locator("label", {
+    has: dashboard.getByRole("combobox", { name: "Which failures count", exact: true }),
+  });
+  await expect(pickerRow).toHaveAccessibleDescription(
+    "Choose which failing checks Foreman sends back to a parked PR session, and which checks new workflow PR instructions ask it to follow",
+  );
   await expect(controls.getByText(
     "Required checks: only checks GitHub marks required on the PR count, read through GitHub Inspector. "
       + "With none marked, or the Inspector off, every check counts.",
