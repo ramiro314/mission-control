@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Task } from "../src/shared/types.ts";
 import type { ActivityFingerprint } from "../src/server/git/worktree-activity.ts";
-import type { WorktreeGit } from "../src/server/worktrees/git.ts";
+import type { GitResult, WorktreeGit } from "../src/server/worktrees/git.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 import { mkTask as baseTask, mkSession } from "./helpers/session-fixture.ts";
 
@@ -159,10 +159,8 @@ function world(options: {
      * Wait for startup reconciliation to leave the shared cleanup queue.
      *
      * `TaskManager` enqueues a startup job per resource-holding task into the very queue
-     * retention uses, and the queue is one-deep per task - so a cleanup asked for while a
-     * task's startup job is still in flight is refused and retried on the next pass. That is
-     * correct backpressure in production, where the first retention pass runs long after boot
-     * settles, and it is only a test-timing artifact here.
+     * retention uses. A cleanup asked for meanwhile waits for that job rather than being
+     * refused; these tests settle first so a pass reads a task that has finished starting.
      */
     async ready(): Promise<void> {
       for (let attempt = 0; attempt < 500 && tasks.pendingCleanupJobs > 0; attempt += 1) {
@@ -1211,8 +1209,8 @@ test("a default that moves between a settled slot's check and its reset is caugh
   let origin = "";
   class MovingDefaultGit extends NativeWorktreeGit {
     override async fetchDefaultSha(identity: Parameters<WorktreeGit["fetchDefaultSha"]>[0]) {
-      // The first fetch is the check's. The second is the reset's own, after the check passed.
-      if ((fetches += 1) === 2) {
+      // The startup check fetches nothing, so the first fetch is the reset's own.
+      if ((fetches += 1) === 1) {
         writeIn(origin, ".gitignore", "node_modules/\n");
         gitIn(origin, "commit", "-qam", "stop ignoring .env");
       }
@@ -1227,7 +1225,7 @@ test("a default that moves between a settled slot's check and its reset is caugh
   const manager = slot.restart();
   await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
   assert.match(keptTree(manager, id)!.problem(1).message, /ignored \.env \(the target's \.gitignore files no longer ignore it\)/);
-  assert.equal(fetches, 2, "the reset's own refusal is listed, so nothing judges the slot a second time");
+  assert.equal(fetches, 1, "the reset's fetch is the only one: its refusal is listed, and nothing judges the slot again");
   assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased", "the refusal came before the reset's intent");
   assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
   assert.equal(readFileSync(join(slot.path, ".env"), "utf8"), "TOKEN=1\n");
@@ -1255,9 +1253,9 @@ test("a read that fails once at the reset's repeated check is what is listed, th
     }
 
     override async fetchDefaultSha(identity: Parameters<WorktreeGit["fetchDefaultSha"]>[0]) {
-      // The first fetch is the check's and the second the reset's. A third could only be a
-      // second opinion, which would now read a clean slot and lose the refusal.
-      if ((fetches += 1) === 3) restore();
+      // The first fetch is the reset's. A second could only be a second opinion, which would
+      // read a clean slot and lose the refusal.
+      if ((fetches += 1) === 2) restore();
       return super.fetchDefaultSha(identity);
     }
   }
@@ -1268,29 +1266,49 @@ test("a read that fails once at the reset's repeated check is what is listed, th
   const manager = slot.restart();
   await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
   assert.match(keptTree(manager, id)!.problem(1).message, /working tree could not be read/);
-  assert.equal(fetches, 2, "nothing judged the slot a second time");
+  assert.equal(fetches, 1, "nothing judged the slot a second time");
   assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
   assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
 });
 
 test("a settled pool slot whose reset-rule read fails keeps its window and is listed, with the failure", async () => {
   const id = uid("settled-unreadable");
-  let unreachable = false;
-  class UnreachableGit extends NativeWorktreeGit {
-    override async fetchDefaultSha(identity: Parameters<WorktreeGit["fetchDefaultSha"]>[0]) {
-      return unreachable
-        ? { ok: false as const, reason: "git fetch timed out after 60 s", outcomeUnknown: true }
-        : super.fetchDefaultSha(identity);
+  let unreadable = false;
+  class UnreadableDefaultGit extends NativeWorktreeGit {
+    override async observedDefaultSha(identity: Parameters<WorktreeGit["observedDefaultSha"]>[0]) {
+      return unreadable
+        ? { ok: false as const, reason: "git rev-parse timed out after 15 s", outcomeUnknown: true }
+        : super.observedDefaultSha(identity);
     }
   }
-  const slot = await settledPoolSlot(id, new UnreachableGit());
-  unreachable = true;
+  const slot = await settledPoolSlot(id, new UnreadableDefaultGit());
+  unreadable = true;
 
   const manager = slot.restart();
   await eventually(() => keptTree(manager, id) !== undefined, "the unreadable slot was never listed");
-  assert.match(keptTree(manager, id)!.problem(1).message, /origin's default could not be fetched: git fetch timed out after 60 s/);
+  assert.match(keptTree(manager, id)!.problem(1).message, /origin's default could not be read: git rev-parse timed out after 15 s/);
   assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
   assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+});
+
+test("a settled pool slot's check never fetches, and an unreachable origin keeps the slot without calling it work", async (t) => {
+  const warned = t.mock.method(console, "warn", () => {});
+  const id = uid("settled-unreachable");
+  let fetches = 0;
+  class UnreachableGit extends NativeWorktreeGit {
+    override async fetchDefaultSha(): Promise<GitResult<string>> {
+      fetches += 1;
+      return { ok: false, reason: "git fetch timed out after 60 s", outcomeUnknown: true };
+    }
+  }
+  const slot = await settledPoolSlot(id, new UnreachableGit());
+
+  const manager = slot.restart();
+  await eventually(() => warned.mock.calls.some((call) => String(call.arguments[0]).includes(id)), "the reclaim was never tried");
+  assert.equal(fetches, 1, "only the reset fetched");
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+  assert.equal(keptTree(manager, id), undefined, "a clean slot behind an unreachable origin holds no work to list");
 });
 
 test("a settled pool slot whose read fails only at the reset's repeated check is kept and listed", async (t) => {
@@ -1317,4 +1335,58 @@ test("a settled pool slot whose read fails only at the reset's repeated check is
   assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased", "the refusal came before the reset's intent");
   assert.equal(readFileSync(join(slot.path, ".env"), "utf8"), "TOKEN=1\n");
   assert.equal(gitIn(slot.path, "rev-parse", "HEAD"), slot.sha);
+});
+
+test("a due cleanup that arrives during the task's startup reconcile waits for it, instead of losing six hours", async () => {
+  const id = uid("startup-race");
+  const registry = new Registry();
+  for (const stale of registry.listTasks()) registry.removeTask(stale.id);
+  registry.upsertTask(baseTask({
+    id,
+    status: "running",
+    dispatchedAt: 5_000,
+    repoRoot: "/repo/startup-race",
+    worktreePath: "/repo/startup-race/tree",
+    branch: "b",
+    provider: "git",
+    sessionId: `proc:${id}`,
+  }));
+  let checking = false;
+  let finishCheck = () => {};
+  const teardowns: string[] = [];
+  const tasks = new TaskManager(
+    registry,
+    undefined,
+    { taskLiveness: () => false } as never,
+    undefined,
+    undefined,
+    {
+      occupancy: unoccupied,
+      // The startup job's read-only check, held open so the race is not a matter of milliseconds.
+      returnBlocker: async () => {
+        checking = true;
+        await new Promise<void>((resolve) => { finishCheck = resolve; });
+        return "checkout has unpublished commits";
+      },
+      teardown: async (task) => { teardowns.push((task as Task).id); },
+    },
+  );
+  await eventually(() => checking, "the startup job never reached its check");
+
+  let settled = false;
+  const reclaim = tasks.enqueueRetentionCleanup({
+    taskId: id,
+    generation: taskResourceGeneration(registry.getTask(id)!),
+    fingerprint: "fp",
+    probe: async () => ({ kind: "known", digest: "fp" }),
+  }).finally(() => { settled = true; });
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  // Read first and released after: a failed assertion must not leave the job open behind it.
+  const waited = !settled;
+  const tornDown = [...teardowns];
+  finishCheck();
+  assert.equal(waited, true, "the cleanup waits for the startup job");
+  assert.deepEqual(tornDown, [], "and nothing is torn down under it");
+  assert.deepEqual(await reclaim, { kind: "reclaimed" });
+  assert.deepEqual(teardowns, [id]);
 });

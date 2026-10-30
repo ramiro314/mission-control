@@ -510,6 +510,8 @@ export interface TaskManagerStartupDeps {
 interface TaskCleanupJob {
   taskId: string;
   repoKeys: readonly string[];
+  /** A startup reconcile, which `startupReconcile` lets a due cleanup wait for. */
+  startup?: boolean;
   run: () => Promise<void>;
 }
 
@@ -538,6 +540,7 @@ class TaskCleanupQueue {
   /** In-flight and queued jobs by task, so the same task cannot be enqueued twice. */
   private readonly enqueued = new Set<string>();
   private readonly idleWaiters: (() => void)[] = [];
+  private readonly startupJobs = new Map<string, { gone: Promise<void>; leave: () => void }>();
 
   async settled(): Promise<void> {
     if (this.size === 0) return;
@@ -555,9 +558,22 @@ class TaskCleanupQueue {
   enqueue(job: TaskCleanupJob): boolean {
     if (this.enqueued.has(job.taskId)) return false;
     this.enqueued.add(job.taskId);
+    if (job.startup) {
+      let leave = (): void => {};
+      const gone = new Promise<void>((resolve) => { leave = resolve; });
+      this.startupJobs.set(job.taskId, { gone, leave });
+    }
     this.pending.push(job);
     this.drain();
     return true;
+  }
+
+  /**
+   * Settles once this task's startup reconcile has left the queue, at once when it has none.
+   * The queue says when, because only it knows the task can be enqueued again.
+   */
+  startupReconcile(taskId: string): Promise<void> {
+    return this.startupJobs.get(taskId)?.gone ?? Promise.resolve();
   }
 
   /** How many jobs are queued or running. Retention bounds its own fan-in against this. */
@@ -584,6 +600,10 @@ class TaskCleanupQueue {
         .finally(() => {
           for (const key of job.repoKeys) this.activeRepoKeys.delete(key);
           this.enqueued.delete(job.taskId);
+          if (job.startup) {
+            this.startupJobs.get(job.taskId)?.leave();
+            this.startupJobs.delete(job.taskId);
+          }
           this.drain();
           if (this.size === 0) for (const resolve of this.idleWaiters.splice(0)) resolve();
         });
@@ -1140,6 +1160,7 @@ export class TaskManager {
       this.cleanupQueue.enqueue({
         taskId: t.id,
         repoKeys: taskCleanupRepoKeys(t),
+        startup: true,
         run: async () => {
           // A queued job can wait minutes. Re-read instead of resurrecting the startup
           // snapshot after an operator has already reclaimed, removed, or rescheduled it.
@@ -6291,10 +6312,15 @@ export class TaskManager {
    * cleanup and startup reconciliation contend for a repository through ONE mechanism. The
    * refusal when the queue already holds this task is not an error: the ledger claim stays
    * exactly as it was and the next pass tries again.
+   *
+   * A startup reconcile is the exception, and is waited for. It is no cleanup attempt, and the
+   * first pass runs as soon as sessions are observed, so a refusal here would cost a due task
+   * the whole observation interval because it happened to be read at boot.
    */
   async enqueueRetentionCleanup(
     request: AutomaticReclaimRequest,
   ): Promise<AutomaticReclaimOutcome | { kind: "not-queued" }> {
+    await this.cleanupQueue.startupReconcile(request.taskId);
     const task = this.registry.getTask(request.taskId) ?? getDurableTask(request.taskId);
     if (!task) return { kind: "not-queued" };
     type Settled = AutomaticReclaimOutcome | { kind: "not-queued" };

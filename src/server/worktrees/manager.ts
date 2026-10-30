@@ -2895,16 +2895,32 @@ export class WorktreeManager {
 
   /**
    * Why a reset of the pool slot at `path` would lose something, in words, or null: its first
-   * entry by the reset rule, against `target` or else against origin's default fetched now.
-   * For an automatic caller outside this class, which passes the `target` a release's
-   * `beforeReset` was given so that its answer is about that reset.
+   * entry by the reset rule. With `target`, the commit a release's `beforeReset` was given,
+   * the answer is about that reset. Without one it is against the last fetched default and
+   * reaches no network: a settled task's startup check runs inside the cleanup queue, where a
+   * fetch would stand in front of retention, and the reset judges again once it has fetched.
    */
   async slotResetBlocker(path: string, target?: string): Promise<string | null> {
     const slot = this.store.slotByPath(path);
     if (!slot) return "native slot no longer exists";
-    const work = target === undefined ? await this.slotResetWork(slot) : await this.resetWork(path, target);
+    const work = await this.resetWorkAgainst(slot, target);
     if (work.status === "clean") return null;
     return work.status === "unknown" ? work.reason : describeWorktreeResetWork(work.entries[0]!);
+  }
+
+  private async resetWorkAgainst(slot: WorktreeSlotRow, target: string | undefined): Promise<WorktreeResetWork> {
+    if (target !== undefined) return this.resetWork(slot.path, target);
+    const pool = this.store.poolForSlot(slot.id);
+    const identity = pool ? this.identity(pool.mainCheckoutRoot) : null;
+    if (!identity) return { status: "unknown", reason: "pool repository identity can no longer be proven" };
+    let observed: Awaited<ReturnType<WorktreeGit["observedDefaultSha"]>>;
+    try {
+      observed = await this.deps.git.observedDefaultSha(identity);
+    } catch (error) {
+      return { status: "unknown", reason: bounded(String(error)) };
+    }
+    if (!observed.ok) return { status: "unknown", reason: `origin's default could not be read: ${observed.reason}` };
+    return this.resetWork(slot.path, observed.value);
   }
 
   /** The last automatic-recovery refusal of this slot's current quarantine, or null. */
