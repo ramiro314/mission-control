@@ -7,6 +7,7 @@ import {
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { treeGitCommonDirectory } from "../util/git.ts";
+import { NO_SEED, type RegenerableSeed } from "./seed.ts";
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.worktrees;
 
@@ -73,17 +74,18 @@ export function resolveWorktreePolicy(
 }
 
 /**
- * The seed paths of the pool that owns this tree: its claim's `seed.paths`, for the pool keyed
- * by the Git common directory the tree's `.git` names. A tree with no repository, a pool with
- * no claim or no seed, and a policy that cannot be read all get none, so the delete rule falls
- * back to the built-in regenerable list and never discounts more than it can prove.
+ * The seed of the pool that owns this tree: its claim's `seed.paths` and `seed.exclude`, for the
+ * pool keyed by the Git common directory the tree's `.git` names. A tree with no repository, a
+ * pool with no claim or no seed, and a policy that cannot be read all get `NO_SEED`, so the
+ * delete rule falls back to the built-in regenerable list and never discounts more than it can prove.
  */
-export function treeSeedPaths(tree: string, config?: WorktreesConfig): readonly string[] {
+export function treeSeed(tree: string, config?: WorktreesConfig): RegenerableSeed {
   const commonDirectory = treeGitCommonDirectory(tree);
-  if (!commonDirectory) return [];
+  if (!commonDirectory) return NO_SEED;
   try {
-    return (config ?? getWorktreesConfig()).repositories[commonDirectory]?.claim?.seed?.paths ?? [];
+    const seed = (config ?? getWorktreesConfig()).repositories[commonDirectory]?.claim?.seed;
+    return seed ? { paths: seed.paths, exclude: seed.exclude } : NO_SEED;
   } catch {
-    return [];
+    return NO_SEED;
   }
 }

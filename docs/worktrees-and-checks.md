@@ -928,7 +928,10 @@ tree the task holds. This amends the earlier settle-and-retain rule for clean tr
   `seed.paths` (see "Seeding" under [Dependency claims](#dependency-claims)), matched as
   repository-relative patterns exactly as a seed matches them. In a pool whose seed paths list
   `.yarn/install-state.gz`, a tree holding it is still clean, while `.idea/` and `.env` stay
-  work. The tree is mapped to its pool by the Git common directory its `.git` file names. A pool
+  work. A path `seed.exclude` could reach is not regenerable: a seed strips it from every clone,
+  so it never comes back. That covers an excluded path, anything inside one, and a directory an
+  exclusion could match under, so `**` in an exclusion takes a seeded directory out of the set
+  (the built-in directories stay in it). The tree is mapped to its pool by the Git common directory its `.git` file names. A pool
   with no claim or no seed, and a folder with no repository, get only the list above. A pool slot
   keeps its folder and is checked against the list above only.
 - **Anything else keeps the 30-day window.** Any other ignored file is work here: workflow
@@ -992,7 +995,8 @@ maintenance starts, after startup reconciliation, and again on every maintenance
   That set is the regenerable directories (`node_modules/`, `dist/`, `build/`, `coverage/`,
   `.cache/`, `.turbo/` and `.next/`) plus the `seed.paths` of the pool whose Git common
   directory the tree's `.git` file names, so a tree holding only its pool's installed state is
-  removed. A pool with no claim or no seed gets the directories alone. Its `harness/*` branch is
+  removed. A path `seed.exclude` could reach stays work. A pool with no claim or no seed gets the
+  directories alone. Its `harness/*` branch is
   deleted only when a remote branch contains it.
 - Anything else is kept: a dirty or unpushed worktree, one whose safety cannot be read, and a
   folder that is not a worktree but still holds files, such as a tree whose `.git` file was
@@ -1037,7 +1041,8 @@ Each Storage problem's **Open tree** link lands on that tree's row.
   names, so any write after it, such as another edit to a file already listed as changed, refuses
   the run. The walk stops at regenerable directories (`node_modules/`, `dist/` and the rest of
   that list) and at the pool's seed paths, which count by their own entry only, since they are
-  deleted either way. An entry
+  deleted either way. It goes on through a seed path `seed.exclude` could reach, so a later write
+  to an excluded file refuses the run. An entry
   that vanishes or cannot be read during the walk makes the tree read as changed. The sweep then
   checks again under its own pass lock that it still keeps the folder, with the same inode, that
   no row names it, that nothing is creating it, and that no process is in it. A worktree is

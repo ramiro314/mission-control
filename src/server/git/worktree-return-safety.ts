@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { run } from "../util/exec.ts";
-import { withinSeedPaths } from "../worktrees/seed.ts";
+import { NO_SEED, seedRegenerates, type RegenerableSeed } from "../worktrees/seed.ts";
 
 /** Ignored directories an install or build recreates, discounted at any depth by `regenerableIgnored`. */
 export const REGENERABLE_IGNORED_PATHS = ["node_modules/", "dist/", "build/", "coverage/", ".cache/", ".turbo/", ".next/"] as const;
@@ -47,12 +47,12 @@ export function worktreeWorkBlocker(work: WorktreeWork): string | null {
 /**
  * Whether an ignored entry, as Git's status names it, is regenerable: a directory on the
  * built-in list itself, at any depth, which is how `--ignored=matching` reports one, or a path
- * at or under one of the owning pool claim's `seedPaths`. A file merely under a tracked
+ * the owning pool claim's seed regenerates (`seedRegenerates`). A file merely under a tracked
  * `build/` (`!! build/.env`) is not. The caller has already established that the entry is ignored.
  */
-export function regenerableIgnoredPath(path: string, seedPaths: readonly string[] = []): boolean {
+export function regenerableIgnoredPath(path: string, seed: RegenerableSeed = NO_SEED): boolean {
   const rooted = `/${path}`;
-  return REGENERABLE_IGNORED_PATHS.some((dir) => rooted.endsWith(`/${dir}`)) || withinSeedPaths(path, seedPaths);
+  return REGENERABLE_IGNORED_PATHS.some((dir) => rooted.endsWith(`/${dir}`)) || seedRegenerates(path, seed);
 }
 
 interface StatusEntry {
@@ -83,14 +83,14 @@ function entryKind(code: string): WorktreeWorkKind {
 /**
  * How a work check reads a tree. `regenerableIgnored` is for reclaim and sweep only: it
  * discounts ignored entries under `REGENERABLE_IGNORED_PATHS`, while every other ignored file
- * (evidence, `.env`) still blocks. `seedPaths` widens that discount to the owning pool claim's
- * seed paths, which is the delete rule an action that removes the folder applies
- * (`treeSeedPaths` resolves them); it has no effect without `regenerableIgnored`.
+ * (evidence, `.env`) still blocks. `seed` widens that discount to what the owning pool claim's
+ * seed regenerates, which is the delete rule an action that removes the folder applies
+ * (`treeSeed` resolves it); it has no effect without `regenerableIgnored`.
  */
 export interface WorktreeWorkOptions {
   fetch?: boolean;
   regenerableIgnored?: boolean;
-  seedPaths?: readonly string[];
+  seed?: RegenerableSeed;
   execute?: typeof run;
 }
 
@@ -126,7 +126,7 @@ export async function worktreeWork(
     const status = await git(["status", "--porcelain", "-z", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"]);
     if (status.code !== 0 || status.outcomeUnknown || status.overflowed) return unknown("working tree could not be read");
     const blocking = statusEntries(status.stdout).find((entry) =>
-      !(options.regenerableIgnored && entry.code === "!!" && regenerableIgnoredPath(entry.path, options.seedPaths)));
+      !(options.regenerableIgnored && entry.code === "!!" && regenerableIgnoredPath(entry.path, options.seed)));
     if (blocking) return { status: "work", entry: { kind: entryKind(blocking.code), path: blocking.path } };
     const unpublished = await hasUnpublishedCommits(git);
     if (unpublished === null) return unknown("commits could not be compared against origin");

@@ -474,6 +474,39 @@ test("the preview and its signature take the delete rule: the pool's seed paths 
   }
 });
 
+test("the preview and its signature never treat what the seed excludes as regenerable", async () => {
+  const commonDirectory = realpathSync(join(repo, ".git"));
+  writeFileSync(join(commonDirectory, "info", "exclude"), "vendor-cache/\n");
+  setWorktreesConfig({
+    repositories: {
+      [commonDirectory]: {
+        claim: WorktreeClaimSchema.parse({ steps: [{ argv: ["yarn", "install"] }], seed: { paths: ["vendor-cache"], exclude: ["vendor-cache/secrets/*"] } }),
+      },
+    },
+  });
+  try {
+    const path = join(worktreesDir, `excluded-${trees++}`);
+    git(repo, "worktree", "add", "-q", "-b", `harness/excluded-${trees}`, path);
+    const token = join(path, "vendor-cache", "secrets", "token");
+    mkdirSync(join(path, "vendor-cache", "secrets"), { recursive: true });
+    writeFileSync(token, "first\n");
+    await sweep.sweep();
+
+    const shown = await preview(path);
+    assert.equal(shown.status, 200, "the sweep kept the tree for it");
+    assert.ok(shown.body.consequences.includes(`Discards the work in ${path}: checkout has uncommitted, untracked or ignored work.`), shown.body.consequences.join("\n"));
+    assert.equal(await filesLine(path), "Files it deletes include: vendor-cache/ (ignored).");
+    // The walk goes on past the seed path, so a later write to the excluded file stales the preview.
+    writeFileSync(token, "first\nsecond\n");
+    const done = await execute(shown.body.token, ["dirty"]);
+    assert.notEqual(done.status === 202 && done.failed === null, true, "Execute must refuse");
+    assert.ok(existsSync(token));
+  } finally {
+    setWorktreesConfig({ repositories: { [commonDirectory]: null } });
+    writeFileSync(join(commonDirectory, "info", "exclude"), "");
+  }
+});
+
 test("an entry the walk cannot read is part of the signature, not a failed preview", async () => {
   const path = join(checksDir, "unreadable-inside");
   const locked = join(path, "locked");

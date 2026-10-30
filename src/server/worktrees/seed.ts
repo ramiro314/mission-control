@@ -79,17 +79,50 @@ function seedSegmentMatches(name: string, segment: string): boolean {
   return isSeedPattern(segment) ? matchesGlob(name, segment) : name === segment;
 }
 
+/** A pool claim's seed as the delete rule reads it: what a seed copies, and what it leaves out. */
+export interface RegenerableSeed {
+  paths: readonly string[];
+  exclude: readonly string[];
+}
+
+/** No claim, no seed, or a policy that could not be read: only the built-in list is regenerable. */
+export const NO_SEED: RegenerableSeed = { paths: [], exclude: [] };
+
 /**
- * Whether a repository-relative path is a seed path, or lies under one, matched segment by
- * segment exactly as `expandSeedPaths` matches them in a slot. A trailing slash, which Git's
- * status prints for a directory, is ignored. Pure: nothing on disk is read.
+ * Whether an exclusion glob could match `names` itself, one of its ancestors, or, for a
+ * `directory`, anything under it. Deliberately generous, so the answer is never "no" when the
+ * seed's own `matchesGlob` over a whole path could say "yes": a segment holding `**` stands for
+ * any number of segments, dot directories included.
  */
-export function withinSeedPaths(path: string, globs: readonly string[]): boolean {
-  const names = path.replace(/\/$/, "").split("/");
-  return globs.some((glob) => {
+function exclusionReaches(names: readonly string[], segments: readonly string[], directory: boolean, i = 0, j = 0): boolean {
+  // The glob matched all of the entry or a prefix of it, so the entry is excluded or lies inside
+  // an excluded path.
+  if (j === segments.length) return true;
+  // The entry ran out first: the rest of the glob can only match under it, or nothing at all.
+  if (i === names.length) return directory || segments.slice(j).every((segment) => segment.includes("**"));
+  const segment = segments[j]!;
+  if (segment.includes("**")) {
+    return exclusionReaches(names, segments, directory, i, j + 1) || exclusionReaches(names, segments, directory, i + 1, j);
+  }
+  return matchesGlob(names[i]!, segment) && exclusionReaches(names, segments, directory, i + 1, j + 1);
+}
+
+/**
+ * Whether a seed regenerates a repository-relative path: it is a seed path or lies under one,
+ * matched segment by segment exactly as `expandSeedPaths` matches them in a slot, and no
+ * `exclude` glob could match it, an ancestor, or anything under it. A seed strips excluded
+ * paths from every clone, so those are local to each tree and never come back; a path any
+ * exclusion might reach is therefore never called regenerable. A trailing slash, which Git's
+ * status prints for a directory, says the path is one. Pure: nothing on disk is read.
+ */
+export function seedRegenerates(path: string, seed: RegenerableSeed): boolean {
+  const directory = path.endsWith("/");
+  const names = (directory ? path.slice(0, -1) : path).split("/");
+  const seeded = seed.paths.some((glob) => {
     const segments = glob.split("/");
     return segments.length <= names.length && segments.every((segment, index) => seedSegmentMatches(names[index]!, segment));
   });
+  return seeded && !seed.exclude.some((glob) => exclusionReaches(names, glob.split("/"), directory));
 }
 
 /** One path a seed path glob matched, repository-relative, and whether it is a directory. */

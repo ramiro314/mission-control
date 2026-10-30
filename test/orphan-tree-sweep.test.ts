@@ -155,6 +155,26 @@ test("the sweep applies the delete rule with the owning pool's seed paths", asyn
   assert.match(plain.kept[0]!.reason, /ignored work/);
 });
 
+test("the sweep keeps a tree holding what the pool's seed excludes, even inside a seed path", async () => {
+  const f = fixture();
+  writeFileSync(join(f.repo, ".git", "info", "exclude"), ".yarn/\n");
+  setWorktreesConfig({
+    repositories: {
+      [realpathSync(join(f.repo, ".git"))]: {
+        claim: WorktreeClaimSchema.parse({ steps: [{ argv: ["yarn", "install"] }], seed: { paths: [".yarn"], exclude: [".yarn/secrets/*"] } }),
+      },
+    },
+  });
+  const path = addWorktree(f, join(f.worktrees, "secrets"), "harness/secrets");
+  mkdirSync(join(path, ".yarn", "secrets"), { recursive: true });
+  writeFileSync(join(path, ".yarn", "secrets", "token"), "local only");
+
+  const result = await sweeper(f).sweep();
+  assert.deepEqual(result.removed, [], "no seed will ever put an excluded file back");
+  assert.deepEqual(result.kept.map((tree) => tree.path), [path]);
+  assert.ok(existsSync(join(path, ".yarn", "secrets", "token")));
+});
+
 test("a tree with unpublished commits is kept, with its branch", async () => {
   const f = fixture();
   const path = addWorktree(f, join(f.worktrees, "unpushed"), "harness/unpushed");

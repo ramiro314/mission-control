@@ -354,6 +354,6 @@ test("a disposable or Treehouse tree takes the delete rule's seed paths; a pool 
     await until(() => listed(manager, id), `the ${provider} tree was never listed`);
     assert.deepEqual(asked[0], provider === "mission"
       ? { regenerableIgnored: true }
-      : { regenerableIgnored: true, seedPaths: ["node_modules", ".yarn/install-state.gz"] });
+      : { regenerableIgnored: true, seed: { paths: ["node_modules", ".yarn/install-state.gz"], exclude: [] } });
   }
 });
