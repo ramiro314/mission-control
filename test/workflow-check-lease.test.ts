@@ -1104,6 +1104,36 @@ test("a returning Git check tree that lost .git is deleted, then settled, then p
   assert.deepEqual(manager.pinnedPaths(), []);
 });
 
+test("startup reconciliation pins every live tree before the first await while a slow delete runs", async () => {
+  const tree = gitCheckTree();
+  rmSync(join(tree.path, ".git"));
+  let finishDelete!: () => void;
+  const deleting = new Promise<void>((resolve) => (finishDelete = resolve));
+  let deleteStarted!: () => void;
+  const started = new Promise<void>((resolve) => (deleteStarted = resolve));
+  const { manager } = gitManager(tree.repo, {
+    removeTree: async (path) => {
+      deleteStarted();
+      await deleting;
+      rmSync(path, { recursive: true });
+    },
+  });
+
+  const startup = manager.reconcileOnStartup(empty);
+
+  assert.deepEqual(manager.pinnedPaths(), [tree.path], "pinned synchronously, before anything is awaited");
+  await started;
+  assert.equal(store.get(tree.attemptId)?.cleanupState, "returning", "the delete is still running");
+  assert.deepEqual(manager.pinnedPaths(), [tree.path]);
+
+  finishDelete();
+  await startup;
+
+  assert.equal(store.get(tree.attemptId)?.cleanupState, "returned");
+  assert.equal(existsSync(tree.path), false);
+  assert.deepEqual(manager.pinnedPaths(), []);
+});
+
 test("a tree whose .git names a Git directory belonging to another tree is deleted", async () => {
   const tree = gitCheckTree();
   const other = gitCheckTree();
