@@ -568,6 +568,44 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
   await shoot(dashboard, "09-quarantined-destroy-complete");
 });
 
+/** The executable name is all that names an IDE helper, so `argv0` is the whole fixture. */
+test("a slot card names a known occupant and still counts it", async ({ dashboard, daemon }) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "named occupant" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string };
+  const script = ["-e", "setInterval(() => {}, 1000)"];
+  const named = spawn(process.execPath, script, { cwd: lease.path, stdio: "ignore", argv0: "gopls" });
+  const plain = spawn(process.execPath, script, { cwd: lease.path, stdio: "ignore" });
+  await Promise.all([once(named, "spawn"), once(plain, "spawn")]);
+
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const slot = repo.locator(".wt-slot", { hasText: lease.path });
+
+    const processes = slot.getByRole("region", { name: /^Processes in slot \d+$/ });
+    await expect(processes.getByRole("listitem").filter({ hasText: `PID ${named.pid}` }))
+      .toContainText("IDE language server");
+    const unnamed = processes.getByRole("listitem").filter({ hasText: `PID ${plain.pid}` });
+    await expect(unnamed).toBeVisible();
+    await expect(unnamed).not.toContainText("IDE language server");
+    await unnamed.scrollIntoViewIfNeeded();
+    await shoot(dashboard, "16-named-occupant");
+
+    // The name changes nothing the daemon decides: both still count as occupancy.
+    const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+    const row = inventory.repositories.flatMap((repository) => repository.slots).find((one) => one.path === lease.path);
+    expect(row?.processes.count).toBe(2);
+  } finally {
+    named.kill("SIGKILL");
+    plain.kill("SIGKILL");
+  }
+});
+
 /**
  * The card says why a slot is stuck, one fact per line: the quarantine reason and Git's detail
  * (the detail used to be hidden whenever a reason existed), the last automatic-recovery refusal

@@ -218,6 +218,8 @@ export function useWorkflowDraft(
   const savedFingerprintRef = useRef(savedFingerprint);
   const conflictRef = useRef(currentConflict);
   const versionRefreshRef = useRef<string | null>(null);
+  /** The load generation a version refresh last failed under. Only a later load disproves it. */
+  const versionsStaleGeneration = useRef(0);
   const inFlight = useRef<Promise<boolean> | null>(null);
   // History contains editable fields only. The CAS revision is server metadata and must
   // stay current after autosave, otherwise the first Undo after a successful save would
@@ -267,7 +269,9 @@ export function useWorkflowDraft(
       setWorkflow(detail.workflow);
       workflowRef.current = detail.workflow;
       setVersions(detail.versions);
-      setVersionsStale(false);
+      // A save's server event starts this load while its version refresh runs. If the refresh
+      // failed meanwhile, its message is still up, and clearing the flag would take its Retry.
+      if (versionsStaleGeneration.current !== generation) setVersionsStale(false);
       const loadedFingerprint = editableFingerprint(detail.workflow);
       setSavedFingerprint(loadedFingerprint);
       savedFingerprintRef.current = loadedFingerprint;
@@ -496,6 +500,7 @@ export function useWorkflowDraft(
         }
       } catch {
         if (workflowIdRef.current === current.id) {
+          versionsStaleGeneration.current = loadGeneration.current;
           setVersionsStale(true);
           setError(VERSIONS_STALE_MESSAGE);
         }

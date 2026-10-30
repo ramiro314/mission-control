@@ -30,7 +30,7 @@ export interface WorktreeOccupant {
   startMs: number;
   command: string;
   cwd: string;
-  /** Which existing Mission Control runtime owns it, or null when it is unknown to us. */
+  /** What this process is, for a person reading the slot card; null when nothing names it. */
   knownOwner: string | null;
 }
 
@@ -41,7 +41,11 @@ export type WorktreeOccupancy =
 export interface WorktreeOccupancyDeps {
   listProcesses: (options?: ReadOptions) => Promise<ProcessSnapshot>;
   readCwds: (pids: number[], options?: ReadOptions) => Promise<ProcCwdSnapshot>;
-  knownOwner: (process: Proc) => string | null;
+  /**
+   * Labels one inspection's occupants against its whole process table, which an ancestor outside
+   * the cwd scope is still part of. Never decides occupancy: a process counts, named or not.
+   */
+  knownOwner: (table: readonly Proc[]) => (process: Proc) => string | null;
   /** This daemon's running worktree Git commands; never occupants of the slot they read. */
   ownProcesses: () => ReadonlySet<number>;
   /** The wait before the one retry of a failed inspection. */
@@ -51,7 +55,7 @@ export interface WorktreeOccupancyDeps {
 const DEFAULT_DEPS: WorktreeOccupancyDeps = {
   listProcesses: listProcessesSnapshot,
   readCwds: readProcCwdsSnapshot,
-  knownOwner: () => null,
+  knownOwner: () => () => null,
   ownProcesses: ownWorktreeProcesses,
   pause: pauseFor,
 };
@@ -62,7 +66,7 @@ const DEFAULT_DEPS: WorktreeOccupancyDeps = {
  * buffer, so asking again would only report the same overflow 2 s later.
  */
 type Observation =
-  | { ok: true; processes: Proc[]; cwds: ReadonlyMap<number, string> }
+  | { ok: true; table: Proc[]; processes: Proc[]; cwds: ReadonlyMap<number, string> }
   | { ok: false; reason: string; overflowed?: boolean };
 
 async function physical(path: string): Promise<string> {
@@ -131,7 +135,8 @@ export async function inspectWorktreeOccupancy(
     for (const target of targets) result.set(target, { status: "unknown", reason: observed.reason });
     return result;
   }
-  const { processes, cwds } = observed;
+  const { table, processes, cwds } = observed;
+  const ownerOf = occupantLabels(d, table);
 
   const canonicalTargets = new Map<string, string>();
   await Promise.all(targets.map(async (target) => canonicalTargets.set(target, await physical(target))));
@@ -151,7 +156,7 @@ export async function inspectWorktreeOccupancy(
         startMs: process.startMs,
         command: process.command.slice(0, MAX_COMMAND_BYTES),
         cwd,
-        knownOwner: d.knownOwner(process),
+        knownOwner: ownerOf(process),
       });
     }
   }
@@ -163,6 +168,16 @@ export async function inspectWorktreeOccupancy(
     });
   }
   return result;
+}
+
+/** A label is a courtesy, so one that cannot be read leaves the occupant counted and unnamed. */
+function occupantLabels(d: WorktreeOccupancyDeps, table: readonly Proc[]): (process: Proc) => string | null {
+  try {
+    return d.knownOwner(table);
+  } catch (error) {
+    console.warn(`[worktrees] occupant names are unavailable: ${String(error)}`);
+    return () => null;
+  }
 }
 
 /** One attempt at resolving every in-scope process's cwd. */
@@ -267,6 +282,6 @@ async function observe(d: WorktreeOccupancyDeps, options: ReadOptions): Promise<
       `cwd listing omitted ${unresolvedPids.length} ps-listed PID${unresolvedPids.length === 1 ? "" : "s"}: ${shown}${remainder}`;
     return { ok: false, reason };
   }
-  return { ok: true, processes, cwds };
+  return { ok: true, table: snapshot.processes, processes, cwds };
 }
 
