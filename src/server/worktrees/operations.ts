@@ -55,6 +55,7 @@ import {
   type WorktreeGit,
 } from "./git.ts";
 import {
+  SLOT_SETTLE_MS,
   WorktreeManager,
   observedIdleRefusal,
   type NativePoolStatus,
@@ -70,12 +71,6 @@ import {
 } from "./occupancy.ts";
 
 const TOKEN_TTL_MS = 2 * 60_000;
-
-/**
- * How long Execute's safety rebuild waits for its slots' current lock holders. A maintenance
- * pass holds each slot only briefly; a holder still there after this is a real change.
- */
-const SLOT_SETTLE_MS = 10_000;
 
 /** The most often a running Warm's output tail bumps the worktrees revision. */
 const WARM_TAIL_INTERVAL_MS = 1_000;

@@ -614,9 +614,10 @@ this order:
   slot lock. The inventory runs no Git in a busy slot, so it never races that operation for the
   index: the card shows the slot's last recorded state, owner and HEAD, and its cleanliness and
   default relationship read unknown until the slot is free. A preview that names a busy slot is
-  blocked until it is free. Execute's own recheck waits up to 10 seconds for a slot's current
-  holder to let go first, so a maintenance pass passing over the slot is not read as a change;
-  a running claim is not waited for. **Open terminal** still works on a busy slot, from its
+  blocked until it is free. Execute's own recheck, and a manual lease's return, wait up to 10
+  seconds for a slot's current holder to let go first, so a maintenance pass passing over the
+  slot is not read as a change or as unknown cleanliness; a running claim is not waited for, and
+  a return refused for a holder that stays names it. **Open terminal** still works on a busy slot, from its
   exact pool path and Git registration, because opening a shell writes nothing.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
   manager-known path.

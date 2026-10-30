@@ -177,6 +177,12 @@ export type NativeLeaseLookup =
   | { state: "missing" }
   | { state: "mismatch"; reason: string };
 
+/**
+ * How long a caller about to judge a slot waits for its current lock holders (`slotsSettled`). A
+ * maintenance pass holds each slot only briefly; a holder still there after this is a real one.
+ */
+export const SLOT_SETTLE_MS = 10_000;
+
 /** The operation holding a slot lock, as the slot card names it. */
 type SlotLockHolder =
   | "lease acquisition"
@@ -3301,7 +3307,8 @@ export class WorktreeManager {
       );
       for (const entry of poolStatus.slots) {
         let reason: string | null = null;
-        if (!poolStatus.identityValid) reason = "pool repository identity is not proven";
+        if (entry.busy) reason = `slot is busy with ${entry.busy}`;
+        else if (!poolStatus.identityValid) reason = "pool repository identity is not proven";
         else if (!poolStatus.markerValid) reason = "native pool marker is not proven";
         else if (!entry.nativePath) reason = "slot path is outside its exact native pool location";
         else if (entry.repositoryMatches !== true) reason = "slot repository ownership is not proven";
