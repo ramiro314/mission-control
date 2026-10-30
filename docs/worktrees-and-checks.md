@@ -925,8 +925,9 @@ The operations have deliberately narrow meanings:
   requires the discard acknowledgement, even with nothing listed, because a tree Git cannot read
   cannot be proven empty and the row does not come back.
 
-  It refuses a slot with an occupant, a live or unknown owner or a running claim, and a Git listing
-  that fails refuses too, because a registration may name the path. Execute refuses a changed
+  It refuses a slot with an occupant, a live or unknown owner or a running claim. A Git listing
+  that fails refuses too, because a registration may name the path, and so does a folder whose
+  contents cannot be read, because its work cannot be named. Execute refuses a changed
   preview: the preview binds a signature of the folder's entries, as Unowned trees does, so a write
   the list does not show still stops it. Execute then takes the owner, pool, occupancy and claim
   proofs again under the slot lock, deletes the folder without following a symlink, in the tree or

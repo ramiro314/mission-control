@@ -326,6 +326,16 @@ test("a worktree whose git status fails is previewed by its files, not as an emp
   await sweep.sweep();
 
   assert.ok(names(await filesLine(tree)).includes("left-behind.txt"));
+  const shown = (await preview(tree)).body;
+  assert.equal(shown.allowed, true, shown.blockers.join("; "));
+  assert.deepEqual(shown.requiredAcknowledgements, ["dirty"], "a tree Git cannot read still takes the acknowledgement");
+  assert.ok(shown.consequences.some((line) => line.startsWith(`Discards the work in ${tree}: `)), shown.consequences.join("\n"));
+  assert.ok(shown.consequences.some((line) => line.startsWith("Removes the worktree with git worktree remove --force.")), shown.consequences.join("\n"));
+
+  // Its marker names a worktree, so it goes through Git, which cannot read it: nothing is lost.
+  const { failed } = await execute(shown.token, ["dirty"]);
+  assert.match(failed?.error ?? "", /its repository could not be read/);
+  assert.equal(existsSync(join(tree, "left-behind.txt")), true);
   rmSync(tree, { recursive: true });
   await sweep.sweep();
 });

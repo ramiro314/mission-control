@@ -154,6 +154,8 @@ export interface WorktreeOperationsDeps {
   discardedWork: typeof worktreeDiscardedWork;
   /** The kept unowned trees behind Worktrees > Unowned trees, and their guarded removal. */
   unownedTrees: UnownedTreeDiscards;
+  /** What deleting a folder loses, for Forget's preview. */
+  describeTree: typeof describeTreeDiscard;
 }
 
 interface Observation {
@@ -507,6 +509,7 @@ export class WorktreeOperationsService {
       warmTailIntervalMs: WARM_TAIL_INTERVAL_MS,
       staleLeases: () => new Map(),
       discardedWork: worktreeDiscardedWork,
+      describeTree: describeTreeDiscard,
       unownedTrees: {
         describe: async () => null,
         discard: async () => "unowned trees are unavailable",
@@ -1543,8 +1546,15 @@ export class WorktreeOperationsService {
     const facts = read?.ok ? read.value : null;
     const seed = pool.policy.claim?.seed ?? NO_SEED;
     let tree: TreeDiscard | null = null;
-    // Only with the path proven, so nothing here ever reads a folder a row merely names.
-    if (facts?.directory && slot.nativePath) tree = await describeTreeDiscard(path, seed).catch(() => null);
+    // Only with the path proven, so nothing here ever reads a folder a row merely names. A folder
+    // that cannot be described has no work to name and no signature to bind, so it is refused.
+    if (facts?.directory && slot.nativePath) {
+      try {
+        tree = await this.deps.describeTree(path, seed);
+      } catch (error) {
+        blockers.push(`What the folder holds could not be read, so its work cannot be named; try again: ${compact(String(error))}.`);
+      }
+    }
     affected.push({
       provider: "mission",
       id: slot.slot.id,

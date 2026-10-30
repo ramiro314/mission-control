@@ -270,8 +270,8 @@ export type TreeDiscard = Pick<UnownedTreeDescription, "worktree" | "work" | "fi
  * `DESCRIBED_FILES` of its files. `seed` is the owning pool's; a tree with no pool gets `NO_SEED`.
  */
 export async function describeTreeDiscard(path: string, seed: RegenerableSeed, execute: typeof run = run): Promise<TreeDiscard> {
-  const status = (await gitMarker(path)).kind === "worktree" ? await statusFiles(path, seed, execute) : null;
-  const worktree = status !== null;
+  const worktree = (await gitMarker(path)).kind === "worktree";
+  const status = worktree ? await statusFiles(path, seed, execute) : null;
   const work = worktree ? await worktreeDiscardedWork(path, { regenerableIgnored: true, seed, execute }) : [];
   const { files, moreFiles } = status ?? await listedFiles(path);
   return { worktree, work, files, moreFiles, signature: await treeSignature(path, seed) };
@@ -345,7 +345,7 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     const worktree = (await gitMarker(tree.path)).kind === "worktree";
     // The delete rule: a folder with no repository has no pool, so only the built-in list applies.
     const seed = worktree ? this.deps.seed(tree.path) : NO_SEED;
-    return { ...tree, ...await describeTreeDiscard(tree.path, seed, this.deps.execute), worktree };
+    return { ...tree, ...await describeTreeDiscard(tree.path, seed, this.deps.execute) };
   }
 
   discard(path: string): Promise<string | null> {

@@ -9,7 +9,7 @@ import { slotGitDirectory } from "../src/server/worktrees/index-lock.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
-import { WorktreeOperationError, WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
+import { WorktreeOperationError, WorktreeOperationsService, type WorktreeOperationsDeps } from "../src/server/worktrees/operations.ts";
 import {
   INTERRUPTED_PRUNE,
   REGISTRATION_OR_IDENTITY,
@@ -522,8 +522,9 @@ test("only the reasons about Git's registration are Repair's", () => {
   assert.equal(registrationRepairQuarantine(null), false);
 });
 
-function operationsFor(owner: WorktreeManager): WorktreeOperationsService {
+function operationsFor(owner: WorktreeManager, overrides: Partial<WorktreeOperationsDeps> = {}): WorktreeOperationsService {
   return new WorktreeOperationsService(owner, {
+    ...overrides,
     legacy: new LegacyTreehouseService(db),
     tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
     checks: new CheckLeaseManager(db, { manager: owner, legacy: new LegacyTreehouseService(db) }),
@@ -1482,7 +1483,7 @@ test("a tree whose git status fails is described by its files", async () => {
   const execute = (async () => ({ code: 128, stdout: "", stderr: "fatal: not a git repository", outcomeUnknown: false, overflowed: false })) as unknown as typeof run;
 
   const described = await describeTreeDiscard(tree, NO_SEED, execute);
-  assert.equal(described.worktree, false);
+  assert.equal(described.worktree, true, "its marker still names a worktree");
   assert.deepEqual(described.work, []);
   assert.equal(described.files.length, 10);
   assert.equal(described.moreFiles, true);
@@ -1715,4 +1716,19 @@ test("a row naming a path outside its pool never offers Forget, is not read, and
     outcome: "refused", reason: "pool repository identity can no longer be proven",
   });
   assert.equal(readFileSync(join(outside, "precious.txt"), "utf8"), "not the pool's\n");
+});
+
+test("a folder that cannot be described blocks Forget, because its work cannot be named or bound", async () => {
+  const { clone, sha } = repository("mission-forget-undescribed-");
+  const execute = (async () => { throw new Error("spawn git EAGAIN"); }) as unknown as typeof run;
+  const m = managerWith();
+  const service = operationsFor(m, { describeTree: (path, seed) => describeTreeDiscard(path, seed, execute) });
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-undescribed", INTERRUPTED_PRUNE);
+
+  const preview = await service.preview({ action: "forget", slotId: slot.slotId });
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.some((line) => line.startsWith("What the folder holds could not be read") && line.includes("spawn git EAGAIN")), preview.blockers.join("; "));
+  await assert.rejects(service.execute(preview.token, [...FORGET_ACK]), /could not be read/);
+  assert.equal(readFileSync(slot.install, "utf8"), "warm\n");
+  assert.ok(m.store.slot(slot.slotId));
 });
