@@ -201,7 +201,9 @@ export interface NativeWorktreeSlotView {
   recoveryRefusal: WorktreeRecoveryRefusalView | null;
   /**
    * `recover` is offered on a quarantined slot no live owner references: it removes a stale
-   * `index.lock` when no Git process uses the slot, then resets it to available.
+   * `index.lock` when no Git process uses the slot, then resets it to available. `return` is
+   * offered on a leased slot, and on a quarantined one whose active owner is still referenced:
+   * that owner's ordinary return brings it back.
    */
   actions: Array<"return" | "destroy" | "warm" | "recover">;
   /** Null when the pool has no dependency claim configured. */

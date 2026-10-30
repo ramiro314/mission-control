@@ -480,6 +480,142 @@ function alive(pid: number): boolean {
   }
 }
 
+test("a quarantined slot whose owner is referenced names it, and Return opens the owner's preview, refused while a process is inside", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "owned quarantine" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+
+  // A reset that failed under a lease its owner still holds: the slot is quarantined, and the
+  // manual lease that owns it is live.
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+              quarantine_reason = 'worktree reset failed',
+              last_error = 'git checkout --detach failed: exit 128'
+        WHERE path = ? AND state = 'leased'`,
+    ).run(Date.now(), lease.path);
+    expect(Number(changed.changes)).toBe(1);
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const disclosure = dashboard.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const ordinal = inventory.repositories.flatMap((pool) => pool.slots).find((slot) => slot.path === lease.path)!.ordinal;
+  const card = dashboard.getByRole("article", { name: `Slot ${ordinal}` });
+  await expect(card.getByText("quarantined", { exact: true })).toBeVisible();
+  // The owner is named, and so is the way back. Recover is for an owner that is gone.
+  await expect(card.getByText(/Manual lease [0-9a-f]{8}: owned quarantine$/)).toBeVisible();
+  await expect(card.getByText("Its owner's return brings this slot back.")).toBeVisible();
+  await expect(card.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "Destroy", exact: true })).toBeVisible();
+  await card.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "owned-01-card-names-owner");
+
+  let occupant: ChildProcess | null = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: lease.path, stdio: "ignore",
+  });
+  await once(occupant, "spawn");
+  const pid = occupant.pid!;
+  const exited = once(occupant, "exit");
+  occupant.once("exit", () => { occupant = null; });
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  try {
+    // Return opens the owner's ordinary preview, refused while the process is inside.
+    await card.getByRole("button", { name: "Return", exact: true }).click();
+    await expect(preview.getByRole("heading", { name: "Return worktree" })).toBeVisible();
+    await expect(preview.getByText("Returns the exact durable manual lease before any slot removal.")).toBeVisible();
+    await expect(preview.getByText(
+      `Slot ${ordinal} is quarantined with 1 process(es) inside; they must exit before its owner can return it.`,
+    )).toBeVisible();
+    await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+    await expectContentClearsBorder(preview);
+    await shoot(dashboard, "owned-02-return-refused-while-occupied");
+    await preview.getByRole("button", { name: "Cancel" }).click();
+    await expect(preview).toHaveCount(0);
+    expect(alive(pid)).toBe(true);
+  } finally {
+    occupant?.kill("SIGKILL");
+  }
+  await exited;
+
+  // With the slot empty, the same Return runs the owner's return and the slot comes back.
+  await card.getByRole("button", { name: "Return", exact: true }).click();
+  await expect(preview.getByText("Returns the exact durable manual lease before any slot removal.")).toBeVisible();
+  await expect(preview.getByRole("heading", { name: "Cannot execute" })).toHaveCount(0);
+  await shoot(dashboard, "owned-03-return-preview");
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(card.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(card.getByText("Its owner's return brings this slot back.")).toHaveCount(0);
+  await expect(card.getByText(/owned quarantine/)).toHaveCount(0);
+  expect(existsSync(lease.path), "Return keeps the slot as warm capacity").toBe(true);
+  await card.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "owned-04-returned");
+});
+
+test("a slot a dead seed left quarantined refuses Destroy, points at Recover, and Recover brings it back", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "dead seed" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+
+  // What a restart leaves when it interrupts a seed and reconcile cannot return its lease: the
+  // `warm` owner stays on the row, and no seed by that key is running in this daemon.
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+              active_owner_kind = 'warm', active_owner_key = 'seed-interrupted-by-restart',
+              quarantine_reason = 'an interrupted warm lease could not be returned',
+              last_error = 'a process still uses the slot'
+        WHERE path = ? AND state = 'leased'`,
+    ).run(Date.now(), lease.path);
+    expect(Number(changed.changes)).toBe(1);
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const disclosure = dashboard.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const ordinal = inventory.repositories.flatMap((pool) => pool.slots).find((slot) => slot.path === lease.path)!.ordinal;
+  const card = dashboard.getByRole("article", { name: `Slot ${ordinal}` });
+  await expect(card.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Return", exact: true })).toHaveCount(0);
+
+  // Destroy says what works, rather than telling the operator to wait for a seed that is gone.
+  await card.getByRole("button", { name: "Destroy", exact: true }).click();
+  const destroy = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(destroy.getByText(`Slot ${ordinal}'s owner no longer references it; Recover it instead.`)).toBeVisible();
+  await expect(destroy.getByText("A dependency seed holds this slot")).toHaveCount(0);
+  await expect(destroy.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await expectContentClearsBorder(destroy);
+  await card.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "dead-seed-01-destroy-points-at-recover");
+  await destroy.getByRole("button", { name: "Cancel" }).click();
+  await expect(destroy).toHaveCount(0);
+
+  await card.getByRole("button", { name: "Recover", exact: true }).click();
+  const recover = dashboard.getByRole("dialog", { name: "recover worktree preview" });
+  await expect(recover.getByRole("heading", { name: "Recover worktree" })).toBeVisible();
+  await recover.getByRole("button", { name: "Execute" }).click();
+  await expect(recover).toHaveCount(0);
+  await expect(card.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await shoot(dashboard, "dead-seed-02-recovered");
+});
+
 test("Kill, from a Storage problem link, stops an orphan process in a quarantined slot through its confirmation", async ({
   dashboard,
   daemon,
