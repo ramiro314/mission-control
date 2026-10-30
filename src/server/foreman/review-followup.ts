@@ -218,9 +218,10 @@ export interface FollowupMark {
   /** Whether we have nudged for the CURRENT CI-failing episode; re-armed on recovery. */
   ciNudged: boolean;
   /**
-   * Fork (ci-strictness): the head a Required-checks CI nudge was decided on, or null. In
-   * Required mode a push is held until the Inspector reads the new head, so the PR poller's
-   * recovery on it is never seen; a decided pass for another head re-arms the episode instead.
+   * Fork (ci-strictness): the PR head the CI episode was last nudged on, or null. In Required
+   * mode a push is held until the Inspector reads the new head, so the PR poller's recovery on
+   * it is never seen, whichever row decided the episode; a decided pass for another head
+   * re-arms it instead. All mode never reads it, so its re-arm rule is unchanged.
    */
   ciHead: string | null;
   /** The conflicting head SHA last nudged about, or null. */
@@ -336,11 +337,11 @@ export function advanceFollowupMark(
   ciStrictness: CiStrictness = "all",
 ): FollowupMark {
   let mark: FollowupMark = prev && prev.prKey === pr.prKey ? prev : freshMark(pr.prKey);
-  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it. So is a
-  // required-checks episode once a decided pass is for another head: the push that made it
-  // was held, so its recovery was never observed. A held observation re-arms nothing.
+  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it. In
+  // Required mode so is any episode once a decided pass is for another head: the push that
+  // made it may have been held, so its recovery was never observed. A held pass re-arms nothing.
   const ci = ciFollowup(pr, ciStrictness);
-  const newHead = ci !== "held" && ci.required && mark.ciHead !== null && pr.headSha !== mark.ciHead;
+  const newHead = ciStrictness === "required" && mark.ciHead !== null && pr.headSha !== mark.ciHead;
   if (mark.ciNudged && ci !== "held" && (!ci.failing || newHead)) {
     mark = { ...mark, ciNudged: false, ciHead: null };
   }
@@ -635,7 +636,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
     ...cur,
     findingsRound: open.findings ? round : cur.findingsRound,
     ciNudged: cur.ciNudged || open.ciFailing,
-    ciHead: open.ciFailing && open.ciRequired ? pr.headSha : cur.ciHead,
+    ciHead: open.ciFailing ? pr.headSha : cur.ciHead,
     ...(conflictNew
       ? { conflictHead: pr.headSha, conflictNudges: cur.conflictNudges + 1, conflictNudgedAt: now }
       : {}),

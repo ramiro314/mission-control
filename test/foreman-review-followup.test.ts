@@ -1430,19 +1430,55 @@ test("a held pass neither nudges nor re-arms", () => {
   );
 });
 
-test("an All-mode or fallback CI nudge keys nothing to a head", () => {
-  for (const [name, session, cfg] of [
-    ["all", ciSession("failing", ciProjection({ required: "failing" })), { ...REQUIRED_CFG, ciStrictness: "all" }],
-    ["fallback", ciSession("failing", ciProjection({ required: null })), REQUIRED_CFG],
-  ] as const) {
-    const d = decide({ session, cfg });
-    assert.equal(d.kind, "nudge", name);
-    if (d.kind !== "nudge") continue;
-    assert.equal(d.mark.ciHead, null, name);
-    // So a new, still-failing head does not re-arm it: only an observed recovery does.
-    const pushed = mkSession({ ...session, prHeadSha: "head-9" });
-    assert.equal(advanceFollowupMark(d.mark, onlyPr(pushed), cfg.ciStrictness).ciNudged, true, name);
+test("every Required-mode episode re-arms on the first decided pass for a new head", () => {
+  // The hold swallows the PR poller's recovery whichever row decided the episode, so each of
+  // these re-arms once the Inspector's snapshot catches up with the push - still failing.
+  const pushedTo = (session: Session, ci: InspectorCiSummary): Session =>
+    mkSession({ ...session, prHeadSha: "head-9", inspector: inspector({ ci }) });
+  const cases: Array<[string, Session, ReviewFollowupInput["cfg"], InspectorCiSummary]> = [
+    ["nothing marked, then nothing marked",
+      ciSession("failing", ciProjection({ required: null })), REQUIRED_CFG,
+      ciProjection({ headSha: "head-9", required: null })],
+    ["required decided, then a fallback",
+      ciSession("failing", ciProjection({ required: "failing" })), REQUIRED_CFG,
+      ciProjection({ headSha: "head-9", required: null })],
+    ["an All-mode nudge, then Required chosen",
+      ciSession("failing", ciProjection({ required: "failing" })), { ...REQUIRED_CFG, ciStrictness: "all" },
+      ciProjection({ headSha: "head-9", required: "failing" })],
+  ];
+  for (const [name, session, cfg, nextCi] of cases) {
+    const first = decide({ session, cfg });
+    assert.equal(first.kind, "nudge", name);
+    if (first.kind !== "nudge") continue;
+    assert.equal(first.mark.ciHead, HEAD, name);
+    // Pushed: the poller sees the new head red, but the snapshot is still for the old one.
+    const heldPush = mkSession({ ...session, prHeadSha: "head-9" });
+    const held = advanceFollowupMark(first.mark, onlyPr(heldPush), "required");
+    assert.equal(held.ciNudged, true, `${name}: held`);
+    // The snapshot catches up, still failing: a new episode, nudged once.
+    const caughtUp = pushedTo(session, nextCi);
+    const rearmed = advanceFollowupMark(held, onlyPr(caughtUp), "required");
+    assert.equal(rearmed.ciNudged, false, `${name}: re-armed`);
+    const second = decide({ session: caughtUp, cfg: REQUIRED_CFG, mark: rearmed });
+    assert.equal(second.kind, "nudge", name);
+    if (second.kind !== "nudge") continue;
+    assert.equal(
+      decide({ session: caughtUp, cfg: REQUIRED_CFG, mark: advanceFollowupMark(second.mark, onlyPr(caughtUp), "required") }).kind,
+      "skip",
+      `${name}: the same head is not nudged twice`,
+    );
   }
+});
+
+test("All mode keeps today's re-arm rule: only an observed recovery re-arms", () => {
+  const session = ciSession("failing", null);
+  const first = decide({ session, cfg: { ...REQUIRED_CFG, ciStrictness: "all" } });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+  const pushedStillRed = mkSession({ ...session, prHeadSha: "head-9" });
+  assert.equal(advanceFollowupMark(first.mark, onlyPr(pushedStillRed), "all").ciNudged, true);
+  const recovered = mkSession({ ...session, prHeadSha: "head-9", prChecks: "pending" });
+  assert.equal(advanceFollowupMark(first.mark, onlyPr(recovered), "all").ciNudged, false);
 });
 
 test("Required mode re-arms on the required rollup, not the whole one", () => {
