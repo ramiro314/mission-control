@@ -192,11 +192,18 @@ export interface NativeWorktreeSlotView {
   diskBytes: number | null;
   quarantineReason: string | null;
   diagnostic: string | null;
+  /**
+   * Why the last observation of this slot failed, even after its retry, until a read
+   * succeeds. A failed read leaves the slot in its state, whatever that is.
+   */
+  observationFailure: string | null;
   /** Only on a quarantined slot, and only for the quarantine it is in now. */
   recoveryRefusal: WorktreeRecoveryRefusalView | null;
   /**
    * `recover` is offered on a quarantined slot no live owner references: it removes a stale
-   * `index.lock` when no Git process uses the slot, then resets it to available.
+   * `index.lock` when no Git process uses the slot, then resets it to available. `return` is
+   * offered on a leased slot, and on a quarantined one whose active owner is still referenced:
+   * that owner's ordinary return brings it back.
    */
   actions: Array<"return" | "destroy" | "warm" | "recover">;
   /** Null when the pool has no dependency claim configured. */

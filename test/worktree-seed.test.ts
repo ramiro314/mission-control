@@ -30,6 +30,7 @@ import {
   type CloneTree,
 } from "../src/server/worktrees/seed.ts";
 import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
+import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 // Seeding through the real manager, real Git and real files. Only the clone itself is faked:
@@ -609,6 +610,43 @@ test("with no idle sibling, or where the disk cannot clone, there is no seed and
   assert.equal(readFileSync(join(slotAt(m, 1).path, "deps", "marker"), "utf8"), slotAt(m, 1).path, "nothing came from the sibling");
   assert.equal(slotAt(m, 2).state, "available", "the source went back to the pool");
   assert.deepEqual(readdirSync(seedStagingRoot(m.store.pools()[0]!.poolPath)), []);
+  await m.release(result.lease);
+});
+
+/** Real Git, except that inspecting a listed slot times out on both attempts. */
+class UnreadableSlotsGit extends NativeWorktreeGit {
+  readonly unreadable = new Set<string>();
+  override async inspect(path: string) {
+    return this.unreadable.has(path)
+      ? { ok: false as const, reason: "git status timed out after 15 s, and after 30 s on retry", outcomeUnknown: true }
+      : super.inspect(path);
+  }
+}
+
+test("seed-source selection with a failed read quarantines no sibling, and the steps run instead", async () => {
+  const fixture = repository("mission-seed-unreadable-");
+  const claim = claimWith(SEED);
+  const sources: string[] = [];
+  const git = new UnreadableSlotsGit();
+  const m = manager(claim, { cloneTree: recordingClone(sources), git }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, "unreadable");
+  makeCold(slotAt(m, 1).id);
+  const sibling = slotAt(m, 2);
+  git.unreadable.add(sibling.path);
+  const runsBefore = runCount(slotAt(m, 1).path);
+
+  const result = leased(await acquire(m, fixture.clone, fixture.sha, "unreadable:target"));
+  assert.equal(result.lease.path, slotAt(m, 1).path);
+  assert.deepEqual(sources, [], "a sibling that could not be read is never a source");
+  assert.equal(runCount(slotAt(m, 1).path), runsBefore + 1, "the steps ran instead");
+  const after = slotAt(m, 2);
+  assert.equal(after.state, "available", "the sibling is not quarantined");
+  assert.equal(after.quarantineReason, null);
+  assert.equal(after.version, sibling.version);
+  assert.equal(
+    after.lastError,
+    "Last observation failed: slot Git state is unknown (git status timed out after 15 s, and after 30 s on retry)",
+  );
   await m.release(result.lease);
 });
 

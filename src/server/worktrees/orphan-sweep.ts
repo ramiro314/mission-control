@@ -11,7 +11,7 @@ import {
   worktreeReturnBlocker,
 } from "../git/worktree-return-safety.ts";
 import type { StorageProblemObservation } from "../storage-health.ts";
-import { run } from "../util/exec.ts";
+import { commandFailureText, run } from "../util/exec.ts";
 import { inFlightTrees, type InFlightTrees } from "./in-flight.ts";
 import { inspectWorktreeOccupancy, pathContains, type WorktreeOccupancy } from "./occupancy.ts";
 import { canonicalWorktreePath } from "./path.ts";
@@ -298,6 +298,24 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     return this.exclusive(() => this.discardNow(path));
   }
 
+  /**
+   * The scoped prune alone, outside a pass. A check lease that deleted a tree Git no longer
+   * recognized calls this once the lease has settled, so its registration goes in the same pass.
+   */
+  pruneRegistrations(): Promise<string[]> {
+    return this.exclusive(() => this.prune(this.referencedSet()));
+  }
+
+  /** Every path a row names, in both its resolved and canonical spellings. */
+  private referencedSet(): Set<string> {
+    const referenced = new Set<string>();
+    for (const path of this.deps.referencedPaths()) {
+      referenced.add(resolve(path));
+      referenced.add(canonicalWorktreePath(path));
+    }
+    return referenced;
+  }
+
   private exclusive<T>(work: () => Promise<T>): Promise<T> {
     const next = this.queue.then(work);
     this.queue = next.catch(() => {});
@@ -380,11 +398,7 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
 
   private async pass(): Promise<OrphanSweepResult> {
     const result: OrphanSweepResult = { removed: [], kept: [], skipped: [], pruned: [] };
-    const referenced = new Set<string>();
-    for (const path of this.deps.referencedPaths()) {
-      referenced.add(resolve(path));
-      referenced.add(canonicalWorktreePath(path));
-    }
+    const referenced = this.referencedSet();
     const isReferenced = (path: string) => [...referenced].some((named) => pathContains(path, named));
 
     const candidates: Array<{ path: string; inode: number }> = [];
@@ -514,7 +528,7 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     const branch = head.code === 0 ? head.stdout.trim() : "";
     if (this.deps.inFlight.has(path)) return "it is being created";
     const removed = await git(["--git-dir", commonDir, "worktree", "remove", "--force", path]);
-    if (!ok(removed)) return `it could not be removed: ${removed.stderr.trim() || `exit ${removed.code}`}`;
+    if (!ok(removed)) return `it could not be removed: ${commandFailureText(removed)}`;
     if (branch.startsWith("harness/")) {
       const contained = await git([
         "--git-dir", commonDir, "for-each-ref", "--contains", `refs/heads/${branch}`, "--format=%(refname)", "refs/remotes",
@@ -559,7 +573,7 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
         if (await lstat(path).then(() => true, () => false)) continue;
         const removed = await git(["--git-dir", commonDir, "worktree", "remove", "--force", path]);
         if (ok(removed)) pruned.push(path);
-        else console.warn(`[worktrees] could not prune the registration of ${path}: ${removed.stderr.trim()}`);
+        else console.warn(`[worktrees] could not prune the registration of ${path}: ${commandFailureText(removed)}`);
       }
     }
     return pruned;

@@ -28,6 +28,7 @@ import {
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit, type GitResult } from "../src/server/worktrees/git.ts";
+import { isObservationFailure, RESERVATION_NOT_HANDED_BACK } from "../src/server/worktrees/quarantine-reasons.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { nativeWorktreeOwnerReferenced } from "../src/server/worktrees/owners.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
@@ -201,8 +202,10 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
     }
   };
 
+  // Each observation read retries once; this proves where a twice-unknown read lands.
+  const noPause = async () => {};
   const listed = await new NativeWorktreeGit(async () =>
-    unknown(`worktree ${clone}\nHEAD ${sha}\ndetached\n`)
+    unknown(`worktree ${clone}\nHEAD ${sha}\ndetached\n`), noPause,
   ).list(identity);
   assertUnknown(listed, /git worktree list/);
 
@@ -217,7 +220,7 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
     const inspected = await new NativeWorktreeGit(async (_bin, args) => {
       if (args.includes(unknownProbe)) return unknown(unknownProbe === "rev-parse" ? `${sha}\n` : "");
       return known(unknownProbe === "rev-parse" ? "" : `${sha}\n`);
-    }).inspect(clone);
+    }, noPause).inspect(clone);
     assertUnknown(inspected, step);
   }
 
@@ -883,12 +886,13 @@ test("exceptions after reservation return outcomeUnknown and leave a reconcilabl
   assert.equal(reserveManager.store.slots().some((slot) => slot.state === "provisioning"), true);
 });
 
-test("a reused slot that becomes unknown or occupied before reset is quarantined without an owner", async () => {
-  const cases: Array<{ name: string; observed: WorktreeOccupancy; reason: string }> = [
+test("a reused slot refused before its reset goes back to available, not acquired; an unknown reset outcome is quarantined", async () => {
+  const cases: Array<{ name: string; observed: WorktreeOccupancy; reason: string; lastError: string | null }> = [
     {
       name: "unknown",
       observed: { status: "unknown", reason: "lsof timed out" },
       reason: "lsof timed out",
+      lastError: "Last observation failed: slot process occupancy is unknown (lsof timed out)",
     },
     {
       name: "occupied",
@@ -905,6 +909,7 @@ test("a reused slot that becomes unknown or occupied before reset is quarantined
         }],
       },
       reason: "a process entered the available slot before reset",
+      lastError: null,
     },
   ];
   for (const entry of cases) {
@@ -923,16 +928,75 @@ test("a reused slot that becomes unknown or occupied before reset is quarantined
     });
     const first = lease(await acquire(m, clone, sha, `task-fresh-${entry.name}-1`));
     assert.equal((await m.release(first)).outcome, "released");
+    const before = m.store.slot(first.slotId)!;
     reads = 0;
+    // Not `outcomeUnknown`: nothing was acquired, so a task falls back as for any refusal.
     assert.deepEqual(await acquire(m, clone, sha, `task-fresh-${entry.name}-2`), {
-      outcome: "outcomeUnknown",
+      outcome: "notAcquired",
       reason: entry.reason,
     });
     assert.equal(reads, 2, `${entry.name}: the fresh pre-reset occupancy read was reached`);
+    // Nothing in the slot changed, so the reservation is undone rather than quarantined.
+    const after = m.store.slot(first.slotId)!;
+    assert.equal(after.state, "available", `${entry.name}: back to available`);
+    assert.equal(after.quarantineReason, null);
+    assert.equal(after.lastError, entry.lastError);
+    assert.equal(after.activeLeaseId, null);
+    assert.equal(after.activeOwnerKey, null);
+    assert.equal(after.requestedHeadSha, before.requestedHeadSha);
+    assert.equal(after.lastReleasedLeaseId, first.leaseId, `${entry.name}: the last owner is kept`);
+    db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;");
+  }
+
+  // A reservation that cannot be handed back is quarantined, and only then is the outcome unknown.
+  {
+    const { clone, sha } = repository("mission-native-fresh-unreturned-");
+    let reads: number | null = null;
+    const m = manager({
+      resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+      occupancy: async (paths) => reads !== null && ++reads === 2
+        ? new Map(paths.map((path) => [path, { status: "unknown" as const, reason: "lsof timed out" }]))
+        : emptyOccupancy(paths),
+    });
+    const first = lease(await acquire(m, clone, sha, "task-fresh-unreturned-1"));
+    assert.equal((await m.release(first)).outcome, "released");
+    m.store.releaseReservation = () => null;
+    reads = 0;
+    assert.deepEqual(await acquire(m, clone, sha, "task-fresh-unreturned-2"), {
+      outcome: "outcomeUnknown",
+      reason: "lsof timed out",
+    });
     assert.equal(m.store.slot(first.slotId)?.state, "quarantined");
+    // Its own reason, never one the failed-read set matches: the hand-back's outcome is unknown.
+    assert.equal(m.store.slot(first.slotId)?.quarantineReason, RESERVATION_NOT_HANDED_BACK);
+    assert.equal(isObservationFailure(m.store.slot(first.slotId)!.quarantineReason), false);
+    assert.equal(m.store.slot(first.slotId)?.lastError, "slot occupancy became unknown before reset: lsof timed out");
     assertNoUngrantedOwner(m);
     db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;");
   }
+
+  // Once the reset has run, its outcome is what is unknown, and that still quarantines.
+  class ResetUnknownGit extends NativeWorktreeGit {
+    failReset = false;
+    override async reset(path: string, commit: string) {
+      return this.failReset
+        ? { ok: false as const, reason: "git reset timed out after 15 s", outcomeUnknown: true }
+        : super.reset(path, commit);
+    }
+  }
+  const { clone, sha } = repository("mission-native-fresh-reset-unknown-");
+  const git = new ResetUnknownGit();
+  const m = manager({ git, resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }) });
+  const first = lease(await acquire(m, clone, sha, "task-fresh-reset-1"));
+  assert.equal((await m.release(first)).outcome, "released");
+  git.failReset = true;
+  assert.deepEqual(await acquire(m, clone, sha, "task-fresh-reset-2"), {
+    outcome: "outcomeUnknown",
+    reason: "git reset timed out after 15 s",
+  });
+  assert.equal(m.store.slot(first.slotId)?.state, "quarantined");
+  assert.equal(m.store.slot(first.slotId)?.quarantineReason, "worktree reset failed");
+  assertNoUngrantedOwner(m);
 });
 
 test("a release refused because the slot is occupied names the processes occupying it", async () => {

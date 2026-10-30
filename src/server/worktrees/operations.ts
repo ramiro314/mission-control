@@ -33,7 +33,13 @@ import { clipUtf8Bytes } from "../util/utf8.ts";
 import { unref } from "../util/timers.ts";
 import { TailRing } from "../workflows/check-spawn.ts";
 import { worktreeRepositoryIdentity } from "../util/git.ts";
-import { UNCOMMITTED_WORK, UNPUBLISHED_COMMITS, worktreeDiscardedWork } from "../git/worktree-return-safety.ts";
+import {
+  UNCOMMITTED_WORK,
+  UNPUBLISHED_COMMITS,
+  describeWorktreeResetWork,
+  worktreeDiscardedWork,
+  worktreeResetWorkKey,
+} from "../git/worktree-return-safety.ts";
 import type {
   CheckGroupRecovery,
   CheckLeaseManager,
@@ -64,6 +70,7 @@ import {
 } from "./manager.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
+import { splitObservationFailure } from "./quarantine-reasons.ts";
 import type { UnownedTreeDiscards } from "./orphan-sweep.ts";
 import {
   inspectWorktreeOccupancy,
@@ -312,8 +319,46 @@ function ownerView(
       ? `Check ${key}`
       : kind === "warm"
         ? isWarmOperation(key) ? "Warming this slot ahead of time" : "Seeding another slot's dependencies"
-        : `Manual lease ${key.slice(0, 8)}`,
+        : manualLabel(key),
   };
+}
+
+/** A manual lease named by `make session --label`, or by its key alone. */
+function manualLabel(key: string): string {
+  const separator = key.indexOf(":");
+  const label = separator === -1 ? "" : key.slice(separator + 1);
+  return label ? `Manual lease ${key.slice(0, 8)}: ${label}` : `Manual lease ${key.slice(0, 8)}`;
+}
+
+/**
+ * A quarantined slot its active owner still references. That owner's ordinary Return brings it
+ * back, so the card names the owner and offers Return. A `warm` lease is the seed's own, and the
+ * seed returns it when its copy ends.
+ */
+function ownerReturns(status: NativeSlotStatus, owner: WorktreeOwnerView | null): boolean {
+  return status.slot.state === "quarantined" && status.ownerReferenced === true &&
+    owner !== null && owner.kind !== "warm";
+}
+
+function ownerGoneBlocker(status: NativeSlotStatus): string {
+  return `Slot ${status.slot.ordinal}'s owner no longer references it; Recover it instead.`;
+}
+
+function ownerUnknownBlocker(status: NativeSlotStatus): string {
+  return `Whether slot ${status.slot.ordinal}'s owner still references it is unknown.`;
+}
+
+/**
+ * Why a slot under a `warm` lease cannot be acted on, and what gets it back. A seed interrupted
+ * by a restart is not coming back: reconcile returns its lease, and when it cannot, the slot is
+ * quarantined with the dead owner still on it, which Recover clears.
+ */
+function warmOwnerBlocker(status: NativeSlotStatus): string {
+  if (status.ownerReferenced === true) return "A dependency seed holds this slot and returns it when its copy ends.";
+  if (status.ownerReferenced === null) return ownerUnknownBlocker(status);
+  return status.slot.state === "quarantined"
+    ? ownerGoneBlocker(status)
+    : `The seed that held slot ${status.slot.ordinal} is gone; Reconcile returns its lease.`;
 }
 
 /**
@@ -421,6 +466,8 @@ export function slotDependencies(input: {
 export class WorktreeOperationsService {
   private readonly deps: WorktreeOperationsDeps;
   private readonly tokens = new Map<string, HeldPreview>();
+  /** Each built Recover preview's work set (`worktreeResetWorkKey`), for execute to hold the reset to. */
+  private readonly recoverWork = new WeakMap<object, string>();
   private legacyVisibleRevision: string | null = null;
   private observing: Promise<Observation> | null = null;
   private nextObservation: Promise<Observation> | null = null;
@@ -557,6 +604,10 @@ export class WorktreeOperationsService {
             if (entry.slot.activeOwnerKind !== "warm") actions.push("return", "destroy");
           }
           else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
+            // A quarantine whose owner is still referenced comes back through that owner's own
+            // return, which accepts a quarantined lease. The preview refuses it while a process
+            // is inside.
+            if (ownerReturns(entry, owner)) actions.push("return");
             actions.push("destroy");
           }
           // Recover is for a quarantine nobody is still working in: its owner, if it had one,
@@ -601,7 +652,8 @@ export class WorktreeOperationsService {
             // measures only the fixed paths it is about to show.
             diskBytes: null,
             quarantineReason: compact(entry.slot.quarantineReason),
-            diagnostic: compact(entry.slot.lastError),
+            diagnostic: compact(splitObservationFailure(entry.slot.lastError).rest),
+            observationFailure: compact(splitObservationFailure(entry.slot.lastError).failure),
             recoveryRefusal: entry.recoveryRefusal && {
               at: entry.recoveryRefusal.at,
               reason: compact(entry.recoveryRefusal.reason)!,
@@ -1000,7 +1052,11 @@ export class WorktreeOperationsService {
       blockers.push(slot.occupancy.reason);
     } else if (slot.occupancy.occupants.length > 0) {
       risks.push(risk("occupied", `${slot.occupancy.occupants.length} process(es) occupy a target path`, false));
-      if (owner?.kind !== "task") {
+      if (action === "return" && slot.slot.state === "quarantined") {
+        // Stopping its agent is how a task returns a live lease. A quarantined slot's process
+        // may be anything, so its owner's return waits for it to leave.
+        blockers.push(`Slot ${slot.slot.ordinal} is quarantined with ${slot.occupancy.occupants.length} process(es) inside; they must exit before its owner can return it.`);
+      } else if (owner?.kind !== "task") {
         blockers.push("Known processes must exit before this action can run.");
       } else {
         consequences.push(
@@ -1016,7 +1072,12 @@ export class WorktreeOperationsService {
       blockers.push(`Slot ${slot.slot.ordinal} already has a cleanup queued; wait for it to finish or leave it out of this action.`);
     }
     if (slot.slot.state === "quarantined") risks.push(risk("quarantined", "A target slot is quarantined", false));
-    if (action === "return" && slot.slot.state !== "leased") {
+    if (action === "return" && slot.slot.state === "quarantined") {
+      // An owned quarantine returns through its owner. With no active owner at all, the
+      // blocker below already says so.
+      if (owner && slot.ownerReferenced === false) blockers.push(ownerGoneBlocker(slot));
+      else if (owner && slot.ownerReferenced === null) blockers.push(ownerUnknownBlocker(slot));
+    } else if (action === "return" && slot.slot.state !== "leased") {
       blockers.push(`Slot ${slot.slot.ordinal} is ${slot.slot.state}, not leased.`);
     }
     if (action === "destroy" && !["leased", "available", "quarantined"].includes(slot.slot.state)) {
@@ -1034,6 +1095,10 @@ export class WorktreeOperationsService {
         const check = await this.deps.checks.previewOperatorRecovery(owner.key, this.deps.checkRecovery);
         if (!check.allowed) blockers.push(check.reason ?? "Check cleanup is not currently safe.");
         consequences.push("Uses check process-group recovery and the recorded provider before releasing the lease.");
+      } else if (owner.kind === "warm") {
+        // Execute refuses every `warm` owner; saying so here keeps a preview from promising a
+        // manual return. Only a live seed comes back for its slot, so the way out depends on it.
+        blockers.push(warmOwnerBlocker(slot));
       } else {
         consequences.push("Returns the exact durable manual lease before any slot removal.");
       }
@@ -1145,7 +1210,7 @@ export class WorktreeOperationsService {
     if (!pool) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
 
     if (request.action === "reconcile") {
-      consequences.push("Re-observes durable rows, Git registration, ownership, and processes. Uncertainty remains quarantined.");
+      consequences.push("Re-observes durable rows, Git registration, ownership, and processes. A proven fault quarantines its slot; a read that fails leaves each slot as it was and says so on its card.");
       return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
     }
 
@@ -1262,9 +1327,12 @@ export class WorktreeOperationsService {
 
   /**
    * Recover one quarantined slot. The preview names the `index.lock` it would remove, any Git
-   * process using the worktree (which blocks it), and the work the reset would discard, which
-   * is the one acknowledgeable risk. Everything it read is bound into the token, so a lock
-   * that appears or a file written after the preview makes Execute refuse as stale.
+   * process using the worktree (which blocks it), and each entry the reset would discard by the
+   * reset rule against origin's freshly fetched default, which is the one acknowledgeable risk.
+   * An ignored file that default keeps ignored and untracked is kept, so it asks nothing.
+   * Everything it read is bound into the token, so a lock that appears or a file written after
+   * the preview makes Execute refuse as stale, and the reset itself refuses a work set that
+   * differs from the preview's once it has fetched its own target.
    */
   private async buildRecoverPreview(
     request: Extract<WorktreeActionRequest, { action: "recover" }>,
@@ -1279,7 +1347,8 @@ export class WorktreeOperationsService {
     const { pool, slot } = target;
     const ordinal = slot.slot.ordinal;
     const lock = await this.manager.slotIndexLock(slot.slot, pool.pool.gitCommonDirectory, slot.occupancy);
-    const work = slot.slot.state === "quarantined" && slot.nativePath ? await this.manager.slotWork(slot.slot.path) : null;
+    const work = slot.slot.state === "quarantined" && slot.nativePath ? await this.manager.slotResetWork(slot.slot) : null;
+    const workKey = work ? worktreeResetWorkKey(work) : null;
     affected.push({
       provider: "mission",
       id: slot.slot.id,
@@ -1293,7 +1362,7 @@ export class WorktreeOperationsService {
         occupancy: slot.occupancy,
         ownerReferenced: slot.ownerReferenced,
         lock: { ...lock, ageMs: null },
-        work,
+        work: workKey,
       }),
       diskBytes: null,
     });
@@ -1323,9 +1392,16 @@ export class WorktreeOperationsService {
       blockers.push("Known processes must exit before Recover can reset the slot.");
     }
     risks.push(risk("quarantined", "The slot is quarantined", false));
-    if (work) {
+    if (work?.status === "work") {
       risks.push(risk("dirty", "Uncommitted, untracked, unpushed or ignored work will be discarded", true));
-      consequences.push(`Discards the slot's work: ${work}. Regenerable ignored directories such as node_modules/ are kept.`);
+      const named = work.entries.map(describeWorktreeResetWork).join("; ");
+      consequences.push(`Discards the slot's work: ${named}${work.more ? "; and more" : ""}.`);
+    } else if (work?.status === "unknown") {
+      risks.push(risk("dirty", "The slot's work could not be read, and whatever it holds will be discarded", true));
+      consequences.push(`Discards whatever the slot holds: its work could not be read (${work.reason}).`);
+    }
+    if (work) {
+      consequences.push("Keeps every ignored file the remote default still ignores and does not track, such as node_modules/ and .yarn/install-state.gz.");
     }
     if (lock.exists && lock.path) {
       consequences.push(`Removes the stale lock ${lock.path}.`);
@@ -1333,7 +1409,9 @@ export class WorktreeOperationsService {
       consequences.push(`No index.lock is present at ${lock.path}.`);
     }
     consequences.push("Resets the slot to the fetched remote default and returns it to the pool as available.");
-    return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+    const built = this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+    if (workKey !== null) this.recoverWork.set(built, workKey);
+    return built;
   }
 
   /**
@@ -1864,11 +1942,13 @@ export class WorktreeOperationsService {
     if (currentFingerprint !== held.fingerprint) {
       throw new WorktreeOperationError(409, "worktree state changed after preview; refresh before executing", "changed");
     }
+    // The rebuild matched the preview, so its work set is the preview's.
+    const expectedWork = this.recoverWork.get(rebuilt);
     // publishOnSuccess covers legacy-only actions where no native manager method calls
     // publish(). Supplying the service publisher also coalesces native mutations through the
     // same content-free invalidation path instead of emitting once from each dependency.
     await this.manager.runChangeBatch(
-      () => this.dispatch(held.preview, acknowledgementSet, removed),
+      () => this.dispatch(held.preview, acknowledgementSet, removed, expectedWork),
       true,
       this.deps.notifyChanged,
     );
@@ -1881,6 +1961,7 @@ export class WorktreeOperationsService {
     preview: WorktreeActionPreview,
     acknowledgements: Set<WorktreeRiskKey>,
     removed: (target: WorktreeActionAffected) => void,
+    expectedWork?: string,
   ): Promise<void> {
     const request = preview.request;
     if (request.action === "reconcile") {
@@ -1896,6 +1977,7 @@ export class WorktreeOperationsService {
         expectedVersion: target.version ?? undefined,
         allowDirty: acknowledgements.has("dirty"),
         automatic: false,
+        expectedWork,
       });
       if (result.outcome === "recovered") return;
       throw new WorktreeOperationError(
@@ -2036,7 +2118,7 @@ export class WorktreeOperationsService {
       case "recover": return "Quarantined worktree recovered to warm capacity.";
       case "removeUnowned": return "Unowned tree discarded and removed.";
       case "prune": return "Safe candidate set pruned.";
-      case "reconcile": return "Pool re-observed; uncertainty remains quarantined.";
+      case "reconcile": return "Pool re-observed; a slot whose read failed was left as it was.";
       case "destroy": return "Fixed worktree target destroyed.";
       case "legacyReturn": return "Exact legacy lease returned through its domain owner.";
       case "warm": return "Warm finished.";

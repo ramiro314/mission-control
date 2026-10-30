@@ -488,11 +488,47 @@ test("a work check that cannot read the slot refuses Recover as unreadable, neve
   assert.equal(gitIn(held.path, "rev-parse", "--show-toplevel"), held.path);
 
   const reason = "the slot's work could not be read: working tree could not be read";
-  assert.deepEqual(
-    await m.recoverSlot({ slotId: slot.id, allowDirty: false, automatic: false }),
-    { outcome: "refused", reason },
-  );
+  // An operator's Recover reads its work once the reset has fetched and validated its target,
+  // and that validation is the first read to find the index unreadable.
+  const manual = await m.recoverSlot({ slotId: slot.id, allowDirty: false, automatic: false });
+  assert.equal(manual.outcome, "refused");
+  assert.match((manual as { reason: string }).reason, /git status failed: .*index/);
+  assert.equal("blocking" in manual, false);
   await m.recoverLockQuarantines();
   assert.deepEqual(m.recoveryRefusal(m.store.slot(slot.id)!), { at: m.recoveryRefusal(m.store.slot(slot.id)!)!.at, reason, blocking: null });
   assert.equal(m.store.slot(slot.id)?.state, "quarantined");
+});
+
+test("each quarantine, recovery and automatic-recovery refusal logs one line, and a repeated refusal none", async (t) => {
+  const { clone, sha } = repository("mission-recover-log-");
+  let now = Date.now();
+  const m = manager({ now: () => now });
+  const warned = t.mock.method(console, "warn", () => {});
+  const logged = t.mock.method(console, "log", () => {});
+  const lines = () => [...warned.mock.calls, ...logged.mock.calls]
+    .map((call) => String(call.arguments[0]))
+    .filter((line) => line.startsWith("[worktrees] "));
+
+  const { slot, lock } = await lockQuarantined(m, clone, sha, "task-log");
+  assert.equal(lines().length, 1);
+  assert.match(lines()[0]!, /^\[worktrees\] quarantined clone slot 1: return reset failed \(git checkout --force --detach failed: fatal: Unable to create .*index\.lock.: File exists\. Another git process .*\)$/);
+
+  await m.recoverLockQuarantines();
+  assert.equal(lines().length, 2);
+  assert.equal(
+    lines()[1],
+    `[worktrees] automatic recovery of clone slot 1 refused: index.lock is younger than 10 minutes (blocked by ${lock})`,
+  );
+  await m.recoverLockQuarantines();
+  await m.recoverLockQuarantines();
+  assert.equal(lines().length, 2, "the same refusal on later passes is not logged again");
+
+  now += INDEX_LOCK_STALE_MS + 1_000;
+  await m.recoverLockQuarantines();
+  assert.equal(m.store.slot(slot.id)?.state, "available");
+  assert.equal(lines().length, 3);
+  assert.equal(
+    lines()[2],
+    `[worktrees] recovered clone slot 1 automatically from its quarantine (return reset failed), removing a stale ${lock}`,
+  );
 });

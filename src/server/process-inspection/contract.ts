@@ -14,13 +14,13 @@ import type { RunResult } from "../util/exec.ts";
  */
 export interface ProcessInspector {
   /** Every process on the system: identity, parentage, state, terminal, start and argv. */
-  listProcesses(): Promise<ProcessTable>;
+  listProcesses(options?: ReadOptions): Promise<ProcessTable>;
   /**
    * The working directory of each pid. Omission is not proof a pid exited. `unreadable` holds
    * the pids whose cwd the system refused to this user (a same-user process that is not
    * dumpable, on Linux): a definite answer that no cwd can be observed, never a cwd.
    */
-  readCwds(pids: readonly number[]): Promise<{
+  readCwds(pids: readonly number[], options?: ReadOptions): Promise<{
     cwds: Map<number, string>;
     unreadable: Set<number>;
     result: RunResult;
@@ -41,6 +41,11 @@ export interface ProcessInspector {
    * null means the read could not tell, which a destructive caller must treat as held.
    */
   findFileHolders(path: string): Promise<{ pids: number[] | null; result: RunResult }>;
+}
+
+/** How a read runs. `timeoutScale` multiplies its usual timeout, for a caller's retry. */
+export interface ReadOptions {
+  timeoutScale?: number;
 }
 
 export interface ProcessRow {

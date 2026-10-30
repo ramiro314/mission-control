@@ -146,7 +146,7 @@ Registry, workflow and review owners. A cwd waiter is only a response budget. St
 guards precede TaskManager startup and SDK restore; restart never repeats an uncertain launch.
 See [session lifecycle](../session-lifecycle.md#continuing-the-same-conversation-in-terminal).
 
-Worktree snapshots use a temporary Git index. Never capture through the real index. Reset helpers use `clean -fd`, never `-fdx`, so ignored warm dependencies survive.
+Worktree snapshots use a temporary Git index. Never capture through the real index. Reset helpers use `clean -fd`, never `-fdx`, so ignored warm dependencies survive. A pool reset therefore keeps an ignored file while the target still ignores and does not track it, and manual Recover counts work by that reset rule (`worktreeWork` with `rule: "reset"`), not by the return rule safe Kill uses, which counts every ignored file outside the regenerable list.
 
 The daemon constructs one `WorktreeManager` and injects it into task dispatch, Workflow checks,
 manual lease routes, and maintenance. New task and check acquisitions use native slots by default.
@@ -154,7 +154,9 @@ Only a disabled policy or a positive native refusal may degrade to a disposable 
 unknown native outcome fails closed. Cleanup follows the provider and exact lease identity stored
 on the owning row, never current configuration. Native release remains conditional and
 occupancy-gated, and clearing a task's worktree facts is atomic with recording the successful
-release. Historical rows that name Treehouse retain their provider-specific cleanup path.
+release. A failed observation never quarantines a slot: reconcile and idle screening leave it in
+its state with "Last observation failed" as its last error, and only a proven fault quarantines.
+Match failed-read reasons through `src/server/worktrees/quarantine-reasons.ts`, never a copy. Historical rows that name Treehouse retain their provider-specific cleanup path.
 
 Final task completion records done and any session-closure obligation atomically, then uses the
 existing closure sweep and repository cleanup queue to stop, archive, reset and return owned

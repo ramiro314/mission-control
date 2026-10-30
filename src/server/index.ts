@@ -354,9 +354,15 @@ const checkScheduler = createCheckScheduler();
 // Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
 // daemon that refused to start over one unreconcilable lease would be worse than one
 // running without it.
+// Unreferenced folders under the overflow and check-fallback directories. Husks and clean trees
+// are removed on each maintenance pass; a dirty one is kept and listed as `dirty-orphan-folder`,
+// and Worktrees > Unowned trees discards it through the preview below. Created before the check
+// leases, whose startup reconciliation may already prune a deleted check tree's registration.
+const orphanTrees = new OrphanTreeSweep();
 const checkLeases = new CheckLeaseManager(undefined, {
   manager: worktrees,
   legacy: legacyWorktrees,
+  pruneRegistrations: () => orphanTrees.pruneRegistrations(),
 });
 // The operator's test lease and concurrency settings reach the executor here and nowhere
 // else, so every test-running check in this daemon reads them per check.
@@ -369,10 +375,6 @@ try {
 } catch (err) {
   console.error("[mission-control] could not reconcile check leases:", err);
 }
-// Unreferenced folders under the overflow and check-fallback directories. Husks and clean trees
-// are removed on each maintenance pass; a dirty one is kept and listed as `dirty-orphan-folder`,
-// and Worktrees > Unowned trees discards it through the preview below.
-const orphanTrees = new OrphanTreeSweep();
 const worktreeOperations = new WorktreeOperationsService(worktrees, {
   legacy: legacyWorktrees,
   tasks: {
@@ -482,7 +484,7 @@ const orphanProcesses = new OrphanProcessMonitor({
   }),
   retryReturn: (owner) => {
     if (owner.kind === "task") return tasks.retryWorktreeReturn(owner.taskId);
-    if (owner.kind === "check") return checkLeases.retryReturning(owner.attemptId);
+    if (owner.kind === "check") return checkLeases.retryReturning(owner.attemptId, checkRuntime.groupRecovery);
     // A fresh pass: one already running may have read occupancy before the kill.
     if (owner.kind === "unowned") return orphanTrees.sweepFresh().then((): void => recomputeStorageHealth());
   },

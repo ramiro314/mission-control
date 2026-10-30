@@ -5,7 +5,7 @@ import { basename, dirname, join, matchesGlob } from "node:path";
 import type { WorktreeClaimSeed } from "@shared/protocol.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
-import { run } from "../util/exec.ts";
+import { describeCommandFailure, run } from "../util/exec.ts";
 import { trackOwnWorktreeProcess } from "./own-processes.ts";
 
 // Seeding: a cold slot clones the pool's `seed.paths` copy-on-write from an idle sibling, so it
@@ -197,7 +197,7 @@ export async function proveIgnored(
     budget,
   );
   if (tracked.code !== 0 || tracked.outcomeUnknown || tracked.overflowed) {
-    return { ok: false, reason: `git ls-files failed: ${tracked.stderr.trim() || `exit ${tracked.code}`}` };
+    return { ok: false, reason: describeCommandFailure("git ls-files", tracked) };
   }
   const trackedFiles = tracked.stdout.split("\0").filter(Boolean);
   const trackedEntry = entries.find((entry) =>
@@ -207,7 +207,7 @@ export async function proveIgnored(
   const ignored = await git(root, ["check-ignore", "-z", "--stdin"], `${asked.join("\0")}\0`, budget);
   // 0: some are ignored, 1: none are. Anything else is Git refusing to answer.
   if ((ignored.code !== 0 && ignored.code !== 1) || ignored.outcomeUnknown || ignored.overflowed) {
-    return { ok: false, reason: `git check-ignore failed: ${ignored.stderr.trim() || `exit ${ignored.code}`}` };
+    return { ok: false, reason: describeCommandFailure("git check-ignore", ignored) };
   }
   const confirmed = new Set(ignored.stdout.split("\0").filter(Boolean));
   const notIgnored = entries.find((_, index) => !confirmed.has(asked[index]!));
