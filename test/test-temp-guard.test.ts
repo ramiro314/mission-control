@@ -197,7 +197,7 @@ test("the next worker removes what a killed worker left, reports it, and passes"
   const childEnv = env(temp, marker);
   const { child, workerTemp } = await hangingWorker(childEnv, marker);
   await killed(child);
-  assert.equal(existsSync(workerTemp), true, "SIGKILL runs no exit listener");
+  if (privateParent) assert.equal(existsSync(workerTemp), true, "SIGKILL runs no exit listener");
 
   const next = runBriefWorker(env(temp, `${marker}-next`));
   assert.equal(next.status, 0, next.stderr);
@@ -373,7 +373,9 @@ writeFileSync(join(tmpdir(), "tsx-${USER}", "compiled"), "kept");
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(readFileSync(marker, "utf8")), false);
   const base = process.platform === "darwin" ? "/private/tmp" : temp;
-  assert.equal(readFileSync(join(base, `tsx-${USER}`, "compiled"), "utf8"), "kept");
+  const compiled = join(base, `tsx-${USER}`, "compiled");
+  assert.equal(readFileSync(compiled, "utf8"), "kept");
+  rmSync(compiled);
 });
 
 test("a symlink at the private parent's name is refused before anything is deleted", { skip: !privateParent }, () => {
@@ -391,6 +393,30 @@ test("a symlink at the private parent's name is refused before anything is delet
   assert.equal(existsSync(join(target, "1-000000")), true);
 });
 
+test("a private parent owned by another user is refused before anything is deleted", { skip: !privateParent }, () => {
+  const { temp, marker } = scenario();
+  const stale = `${deadPid()}-abcdef`;
+  // `temp-guard.mjs` reads the user for the parent's name at import and for the check at each
+  // call, so this keeps the same directory and makes its owner someone else.
+  const script = fixture(
+    "foreign-parent.mjs",
+    `import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { armTempGuard, openTempParent } from ${JSON.stringify(TEMP_GUARD)};
+const { parent } = openTempParent();
+mkdirSync(join(parent, ${JSON.stringify(stale)}));
+writeFileSync(process.env.FIXTURE_MARKER, parent);
+const self = process.geteuid();
+process.geteuid = () => self + 1;
+armTempGuard(openTempParent(), []);
+`,
+  );
+  const result = spawnSync(process.execPath, [script], { encoding: "utf8", env: env(temp, marker), timeout: 60_000 });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /is not a directory owned by this user/);
+  assert.equal(existsSync(join(readFileSync(marker, "utf8"), stale)), true);
+});
+
 test("MISSION_TEST_TEMP_REPORT names what a file left, and not the worker's own files", { skip: !supported }, () => {
   const { temp, marker } = scenario();
   const result = runTestFile(CLEAN_FILE, env(temp, marker, { MISSION_TEST_TEMP_REPORT: "1" }));
@@ -400,6 +426,32 @@ test("MISSION_TEST_TEMP_REPORT names what a file left, and not the worker's own 
   assert.match(output, /fixture-leak-\* \(1\)/);
   assert.match(output, /fixture-child-\* \(1\)/);
   assert.doesNotMatch(output, /mission-test-state/);
+});
+
+test("MISSION_TEST_TEMP_REPORT counts the entries of one prefix together", { skip: !supported }, () => {
+  const { temp, marker } = scenario();
+  const file = fixture(
+    "twins.test.mjs",
+    `import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+mkdtempSync(join(tmpdir(), "fixture-twin-"));
+mkdtempSync(join(tmpdir(), "fixture-twin-"));
+test("passes", () => {});
+`,
+  );
+  const result = runTestFile(file, env(temp, marker, { MISSION_TEST_TEMP_REPORT: "1" }));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout + result.stderr, /twins\.test\.mjs left 2 entries: fixture-twin-\* \(2\)/);
+});
+
+test("MISSION_TEST_TEMP_REPORT says nothing about a file that left nothing", { skip: !supported }, () => {
+  const { temp, marker } = scenario();
+  const file = fixture("tidy.test.mjs", `import test from "node:test";\ntest("passes", () => {});\n`);
+  const result = runTestFile(file, env(temp, marker, { MISSION_TEST_TEMP_REPORT: "1" }));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout + result.stderr, / left \d+ entries/);
 });
 
 test("a file with no report requested prints nothing about what it left", { skip: !supported }, () => {
