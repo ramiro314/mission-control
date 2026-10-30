@@ -546,6 +546,7 @@ test("Forget runs from the slot card through its preview when Repair has no answ
 
   await slot.getByRole("button", { name: "Forget", exact: true }).click();
   const execute = preview.getByRole("button", { name: "Execute" });
+  await expect(preview.getByText("I understand: The slot's row is deleted for good, and nothing can bring it back")).toBeVisible();
   await expect(execute).toBeDisabled();
   await preview.getByRole("checkbox").check();
   await execute.click();
@@ -563,6 +564,7 @@ test("Forget runs from the slot card through its preview when Repair has no answ
   await expect(preview.getByText("Discards the slot's work: checkout has uncommitted, untracked or ignored work.")).toBeVisible();
   await expectContentClearsBorder(preview);
   await shoot(dashboard, "16-forget-preview-work");
+  await expect(preview.getByText("I understand: Every file in the folder will be discarded, including uncommitted, untracked, unpushed or ignored work")).toBeVisible();
   await expect(execute).toBeDisabled();
   await preview.getByRole("checkbox").check();
   await execute.click();

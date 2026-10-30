@@ -2198,10 +2198,7 @@ export class WorktreeOperationsService {
     if (request.action === "forget") {
       const target = preview.affected[0]!;
       const result = await this.manager.forgetSlot({ slotId: target.id, expectedVersion: target.version ?? undefined });
-      if (result.outcome === "forgotten") {
-        removed(target);
-        return;
-      }
+      if (result.outcome === "forgotten") return;
       throw new WorktreeOperationError(
         result.outcome === "outcomeUnknown" ? 503 : 409,
         result.reason,
