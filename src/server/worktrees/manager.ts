@@ -221,7 +221,13 @@ export type WorktreeRecoverResult =
   | { outcome: "outcomeUnknown"; reason: string };
 
 export type WorktreeRepairResult =
-  | WorktreeRecoverResult
+  | Extract<WorktreeRecoverResult, { outcome: "recovered" }>
+  /**
+   * `repair` says how far Git's fixes got before this ended, which no slot version can show,
+   * because they change the registration and not the row: `attempted` when one ran and the
+   * registration was not proven healthy after it, `proven` when it was.
+   */
+  | (Extract<WorktreeRecoverResult, { outcome: "refused" | "outcomeUnknown" }> & { repair?: "attempted" | "proven" })
   /** The registration is repaired, and the slot stays quarantined for the work it holds. */
   | { outcome: "heldWork"; reason: string };
 
@@ -3153,17 +3159,19 @@ export class WorktreeManager {
     if (diagnosis.value.status === "refused") return { outcome: "refused", reason: diagnosis.value.reason };
     if (diagnosis.value.status === "fixable") {
       const { fixes } = diagnosis.value;
-      for (const fix of fixes) {
+      for (const [index, fix] of fixes.entries()) {
         const fixed = await this.applyRegistrationFix(identity, slot.path, fix);
-        if (fixed) return fixed;
+        // Git's own refusal of the first fix is the one failure that changed nothing.
+        if (fixed) return fixed.outcome === "refused" && index === 0 ? fixed : { ...fixed, repair: "attempted" };
       }
       const repaired = await this.readRegistration(pool, identity, slot);
-      if (!repaired.ok) return { outcome: "outcomeUnknown", reason: repaired.reason };
+      if (!repaired.ok) return { outcome: "outcomeUnknown", reason: repaired.reason, repair: "attempted" };
       if (repaired.value.status !== "healthy") {
-        return { outcome: "refused", reason: "Git's repair did not leave the registration healthy" };
+        return { outcome: "refused", reason: "Git's repair did not leave the registration healthy", repair: "attempted" };
       }
       console.log(oneLine(`[worktrees] repaired ${this.slotLabel(slot)}: ${fixes.map(describeRegistrationFix).join("; ")}`));
     }
+    const fixedRegistration = diagnosis.value.status === "fixable";
     const recovered = await this.recoverLocked({
       slotId: slot.id,
       expectedVersion: slot.version,
@@ -3171,7 +3179,10 @@ export class WorktreeManager {
       automatic: true,
       repaired: true,
     });
-    if (recovered.outcome !== "refused" || !recovered.blocking || recovered.blocking.kind === "lock") return recovered;
+    if (recovered.outcome === "recovered") return recovered;
+    if (recovered.outcome !== "refused" || !recovered.blocking || recovered.blocking.kind === "lock") {
+      return fixedRegistration ? { ...recovered, repair: "proven" } : recovered;
+    }
     const current = this.store.slot(slot.id);
     if (current?.version === slot.version) {
       this.quarantine(current, REGISTRATION_OR_IDENTITY.repairedHoldsWork, recovered.reason);
@@ -3207,7 +3218,7 @@ export class WorktreeManager {
     identity: WorktreeRepositoryIdentity,
     path: string,
     fix: RegistrationFix,
-  ): Promise<WorktreeRepairResult | null> {
+  ): Promise<Extract<WorktreeRepairResult, { outcome: "refused" | "outcomeUnknown" }> | null> {
     let result: Awaited<ReturnType<WorktreeGit["repair"]>>;
     try {
       result = fix === "unlock"
@@ -3368,11 +3379,13 @@ export class WorktreeManager {
       const priorFailure = this.recoveryFailures.get(slot.id);
       this.recoveryFailures.delete(slot.id);
       const settled = this.recoverySettled(slot.id, slot.version, result);
-      if (settled.outcome === "refused") {
+      // An unknown outcome that moved no version is the card's refusal, whatever History calls it.
+      const untouched = result.outcome === "outcomeUnknown" && this.store.slot(slot.id)?.version === slot.version;
+      if (result.outcome === "refused" || untouched) {
         const prior = this.recoveryRefusals.get(slot.id);
         const refusal = {
           at: this.deps.now(),
-          reason: settled.reason,
+          reason: result.reason,
           blocking: result.outcome === "refused" ? result.blocking ?? null : null,
         };
         this.recoveryRefusals.set(slot.id, { version: slot.version, refusal });
@@ -3403,7 +3416,8 @@ export class WorktreeManager {
   /**
    * What a Recover or Repair of a slot at `version` came to, whoever ran it. An unknown outcome
    * that moved no version never reached the reset: its read failed and the slot is as it was,
-   * so it reads as a refusal.
+   * so it reads as a refusal. Git's fixes change the registration and no version, so a Repair
+   * that ran one says so itself, and never reads as a refusal.
    */
   recoverySettled(slotId: string, version: number | null, result: WorktreeRepairResult): WorktreeOperationSettled {
     switch (result.outcome) {
@@ -3415,10 +3429,16 @@ export class WorktreeManager {
           reason: `The registration is repaired, and the slot stays quarantined for its work: ${result.reason}`,
         };
       case "refused":
-        return { outcome: "refused", reason: result.reason };
       case "outcomeUnknown":
+        if (result.repair === "proven") {
+          return {
+            outcome: "partial",
+            reason: `The registration is repaired, and the slot's recovery did not finish: ${result.reason}`,
+          };
+        }
+        if (result.repair === "attempted") return { outcome: "failed", reason: result.reason };
         return {
-          outcome: this.store.slot(slotId)?.version === version ? "refused" : "failed",
+          outcome: result.outcome === "refused" || this.store.slot(slotId)?.version === version ? "refused" : "failed",
           reason: result.reason,
         };
     }

@@ -27,7 +27,10 @@ import {
   WORKTREE_HISTORY_OPERATIONS,
   WORKTREE_OPERATION_OUTCOMES,
 } from "../src/shared/worktrees.ts";
+import { MULTIPLEXERS } from "../src/server/terminal/registry.ts";
+import type { Task } from "../src/shared/types.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { FAIL, OK, fakeMultiplexer } from "./helpers/terminal-fakes.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 const db = openDb();
@@ -1049,7 +1052,12 @@ test("an unexpected error records failed, never a refusal that left the slot as 
 });
 
 /** A failed task holding one mission slot per clone, through the real TaskManager's reclaim. */
-async function taskHolding(m: WorktreeManager, clones: Array<{ clone: string; sha: string }>, id: string) {
+async function taskHolding(
+  m: WorktreeManager,
+  clones: Array<{ clone: string; sha: string }>,
+  id: string,
+  home: Partial<Pick<Task, "homeName" | "homeBackend" | "terminalResourceId">> = {},
+) {
   const registry = new Registry();
   const tasks = new TaskManager(registry, undefined, undefined, undefined, undefined, undefined, m);
   const leases: NativeWorktreeLease[] = [];
@@ -1067,6 +1075,7 @@ async function taskHolding(m: WorktreeManager, clones: Array<{ clone: string; sh
     worktreePath: first!.path,
     provider: "mission",
     worktreeLeaseId: first!.leaseId,
+    ...home,
     extraRepos: others.map((lease, index) => ({
       repoRoot: clones[index + 1]!.clone,
       worktreePath: lease.path,
@@ -1145,6 +1154,42 @@ test("a task Return that tried and brought nothing back reads failed, and one re
   await clean.idle();
   assert.deepEqual(operationRows(lease!.slotId).at(-1)?.outcome, "refused");
   assert.equal(operationRows(lease!.slotId).at(-1)?.reason, "this task's resources are already being cleaned up");
+});
+
+test("a terminal that would not close stops the reclaim before any tree, so the Return reads refused", async () => {
+  const original = MULTIPLEXERS.tmux;
+  // The first close is the agent's stop, which the reclaim survives. The second is teardown's own.
+  let closes = 0;
+  MULTIPLEXERS.tmux = fakeMultiplexer({
+    bin: { env: null, candidates: [process.execPath], dropEnv: [] },
+    sessions: {
+      ...original.sessions!,
+      alive: async () => true,
+      kill: async () => (closes++ === 0 ? OK : FAIL("the terminal refused")),
+    },
+  });
+  try {
+    const m = realManager();
+    const { clone, sha } = repository("mission-history-op-live-home-");
+    const { leases: [lease], operations } = await taskHolding(m, [{ clone, sha }], "task-live-home", {
+      homeName: "task",
+      homeBackend: "tmux",
+      terminalResourceId: "multiplexer:tmux:live-terminal",
+    });
+    const { version } = m.store.slot(lease!.slotId)!;
+    const preview = await operations.preview({ action: "return", slotId: lease!.slotId });
+    assert.equal(preview.allowed, true, preview.blockers.join("; "));
+    operations.submit(preview.token, []);
+    await operations.idle();
+
+    assert.equal(m.store.slot(lease!.slotId)?.version, version, "no tree was touched");
+    assert.equal(m.store.slot(lease!.slotId)?.state, "leased");
+    const [row] = operationRows(lease!.slotId);
+    assert.equal(row?.outcome, "refused");
+    assert.match(row?.reason ?? "", /worktree preserved/);
+  } finally {
+    MULTIPLEXERS.tmux = original;
+  }
 });
 
 test("a check return that began and failed reads failed, and one blocked before it began reads refused", async () => {

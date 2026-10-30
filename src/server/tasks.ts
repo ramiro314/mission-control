@@ -82,6 +82,7 @@ import {
   Dispatcher,
   deriveTitle,
   reclaimedFrom,
+  WorktreeTeardownError,
   releasedTaskResources,
   teardownWorktree,
   type TaskDispatchOptions,
@@ -378,7 +379,7 @@ export class TaskIdCollisionError extends Error {}
 export interface Ok {
   ok: boolean;
   error?: string;
-  /** On a teardown that failed: the paths that came back. Absent when none was attempted. */
+  /** On a teardown that reached its trees and failed: those that came back. Else absent. */
   reclaimed?: readonly string[];
 }
 
@@ -6685,7 +6686,7 @@ export class TaskManager {
       return {
         ok: false,
         error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
-        reclaimed: reclaimedFrom(error),
+        ...(error instanceof WorktreeTeardownError ? { reclaimed: error.reclaimed } : {}),
       };
     }
     const cur = this.registry.getTask(id) ?? t;

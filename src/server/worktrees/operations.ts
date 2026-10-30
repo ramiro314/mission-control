@@ -104,7 +104,7 @@ export class WorktreeOperationError extends Error {
 
 export interface WorktreeTaskOwner {
   get(id: string): WorktreeTaskView | null;
-  /** `reclaimed` is present once teardown was attempted: the paths that came back from it. */
+  /** `reclaimed` is present once teardown reached a tree: the paths that came back from it. */
   reclaim(id: string): Promise<{ ok: boolean; error?: string; reclaimed?: readonly string[] }>;
 }
 
