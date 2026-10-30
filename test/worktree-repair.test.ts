@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { after, afterEach, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
 import { WorktreeManager, type NativeWorktreeLease } from "../src/server/worktrees/manager.ts";
-import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
+import { NativeWorktreeGit, type WorktreeRegistration } from "../src/server/worktrees/git.ts";
 import { slotGitDirectory } from "../src/server/worktrees/index-lock.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
-import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
+import { WorktreeOperationError, WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import {
   REGISTRATION_OR_IDENTITY,
   registrationRepairQuarantine,
 } from "../src/server/worktrees/quarantine-reasons.ts";
+import { diagnoseRegistration } from "../src/server/worktrees/registration-repair.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -355,6 +356,147 @@ test("a killed repair reports an unknown outcome and the slot stays as it was", 
   assert.equal(m.recoveryRefusal(row)?.reason, "git worktree unlock timed out after 30 s");
 });
 
+test("a repair blocked by index.lock keeps its fix and its reason, and a later pass finishes it", async () => {
+  const { clone, sha } = repository("mission-repair-lock-");
+  const m = managerWith();
+  const slot = await quarantinedSlot(m, clone, sha, "task-repair-lock");
+  const lock = join(slot.administrative, "index.lock");
+  writeFileSync(lock, "");
+  const lockText = `git checkout failed: fatal: Unable to create '${lock}': File exists.`;
+  assert.ok(m.store.quarantine(slot.slotId, REGISTRATION_OR_IDENTITY.unsafeRegistration, lockText, Date.now()));
+  rmSync(join(slot.path, ".git"));
+  const row = m.store.slot(slot.slotId)!;
+
+  await m.recoverQuarantines();
+
+  // A lock says nothing about work, so the slot is not relabelled and later passes still judge it.
+  assert.deepEqual(m.store.slot(slot.slotId), row);
+  assert.equal(existsSync(join(slot.path, ".git")), true, "the fix stands");
+  assert.equal(existsSync(lock), true, "a young lock is left where it was");
+  assert.deepEqual(m.recoveryRefusal(row)?.blocking, { kind: "lock", path: lock });
+  assert.equal(m.recoveryRefusal(row)?.reason, "index.lock is younger than 10 minutes");
+
+  rmSync(lock);
+  await m.recoverQuarantines();
+  assertRecovered(m, slot);
+});
+
+test("a repair removes a stale index.lock when the slot's quarantine was caused by one", async () => {
+  const { clone, sha } = repository("mission-repair-stale-lock-");
+  const m = managerWith();
+  const slot = await quarantinedSlot(m, clone, sha, "task-repair-stale-lock");
+  const lock = join(slot.administrative, "index.lock");
+  writeFileSync(lock, "");
+  const longAgo = new Date(Date.now() - 60 * 60_000);
+  utimesSync(lock, longAgo, longAgo);
+  const lockText = `git checkout failed: fatal: Unable to create '${lock}': File exists.`;
+  assert.ok(m.store.quarantine(slot.slotId, REGISTRATION_OR_IDENTITY.unsafeRegistration, lockText, Date.now()));
+  lockInitializing(slot.administrative);
+
+  await m.recoverQuarantines();
+
+  assert.equal(existsSync(lock), false);
+  assertRecovered(m, slot);
+});
+
+function registration(path: string, facts: Partial<WorktreeRegistration> = {}): WorktreeRegistration {
+  return { path, head: null, bare: false, detached: true, locked: false, prunable: false, ...facts };
+}
+
+test("a bare registration is refused before any of Git's fixes", async () => {
+  const { clone, sha } = repository("mission-repair-bare-");
+  class BareListing extends NativeWorktreeGit {
+    override async list(identity: Parameters<NativeWorktreeGit["list"]>[0]) {
+      const listed = await super.list(identity);
+      return listed.ok
+        ? { ...listed, value: listed.value.map((entry) => ({ ...entry, bare: entry.path === bareSlot })) }
+        : listed;
+    }
+  }
+  let bareSlot = "";
+  const m = managerWith(new BareListing());
+  const slot = await quarantinedSlot(m, clone, sha, "task-repair-bare");
+  bareSlot = slot.path;
+  lockInitializing(slot.administrative);
+  const row = m.store.slot(slot.slotId)!;
+
+  assert.deepEqual(await m.repairSlot({ slotId: slot.slotId }), {
+    outcome: "refused", reason: "Git lists this path as a bare repository",
+  });
+  assert.deepEqual(m.store.slot(slot.slotId), row);
+  assert.equal(existsSync(join(slot.administrative, "locked")), true);
+});
+
+test("a registration Git calls unsafe is never read as healthy from its files alone", async () => {
+  const { clone, sha } = repository("mission-repair-unsafe-");
+  const slot = await quarantinedSlot(managerWith(), clone, sha, "task-repair-unsafe");
+  const diagnose = (entry: WorktreeRegistration | null) =>
+    diagnoseRegistration({ slotPath: slot.path, commonDirectory: slot.common, registration: entry });
+  const unsafe = {
+    status: "refused",
+    reason: "Git lists the registration as unsafe, and none of its own fixes applies",
+  };
+
+  assert.deepEqual(await diagnose(registration(slot.path)), { status: "healthy" });
+  assert.deepEqual(await diagnose(registration(slot.path, { prunable: true })), unsafe);
+  assert.deepEqual(await diagnose(registration(slot.path, { locked: true })), unsafe);
+  assert.deepEqual(await diagnose(null), unsafe);
+});
+
+test("what cannot be traced to one registration, or is not Git's own to fix, is refused by name", async () => {
+  const { clone, sha } = repository("mission-repair-refusals-");
+  const slot = await quarantinedSlot(managerWith(), clone, sha, "task-repair-refusals");
+  const entry = registration(slot.path);
+  const diagnose = (slotPath = slot.path) =>
+    diagnoseRegistration({ slotPath, commonDirectory: slot.common, registration: entry });
+
+  const twin = join(slot.common, "worktrees", "twin");
+  mkdirSync(twin);
+  writeFileSync(join(twin, "gitdir"), `${join(slot.path, ".git")}\n`);
+  assert.deepEqual(await diagnose(), { status: "refused", reason: "more than one Git registration names this path" });
+  rmSync(twin, { recursive: true });
+
+  const locked = join(slot.administrative, "locked");
+  mkdirSync(locked);
+  const unreadable = await diagnose();
+  assert.equal(unreadable.status, "refused");
+  assert.match((unreadable as { reason: string }).reason, /^the registration's lock could not be read: .*EISDIR/);
+  rmSync(locked, { recursive: true });
+
+  writeFileSync(locked, "");
+  assert.deepEqual(await diagnose(), { status: "refused", reason: "the registration was locked on purpose" });
+  rmSync(locked);
+
+  const dotGit = join(slot.path, ".git");
+  renameSync(dotGit, `${dotGit}.real`);
+  symlinkSync(`${dotGit}.real`, dotGit);
+  assert.deepEqual(await diagnose(), {
+    status: "refused", reason: "the slot's .git is not a file, and Git repairs only a .git file",
+  });
+  rmSync(dotGit);
+  renameSync(`${dotGit}.real`, dotGit);
+
+  const link = join(slot.path, "..", "linked-slot");
+  symlinkSync(slot.path, link);
+  assert.deepEqual(await diagnose(link), {
+    status: "refused", reason: "the slot's folder is gone, so Git has nothing to repair",
+  });
+  rmSync(link);
+
+  assert.deepEqual(await diagnose(), { status: "healthy" }, "each case above was the only fault");
+});
+
+test("a gitdir written relative to its administrative directory still names the slot", async () => {
+  const { clone, sha } = repository("mission-repair-relative-");
+  const slot = await quarantinedSlot(managerWith(), clone, sha, "task-repair-relative");
+  writeFileSync(join(slot.administrative, "gitdir"), `${relative(slot.administrative, join(slot.path, ".git"))}\n`);
+
+  assert.deepEqual(
+    await diagnoseRegistration({ slotPath: slot.path, commonDirectory: slot.common, registration: registration(slot.path) }),
+    { status: "healthy" },
+  );
+});
+
 test("only the reasons about Git's registration are Repair's", () => {
   assert.equal(registrationRepairQuarantine(REGISTRATION_OR_IDENTITY.unsafeRegistration), true);
   assert.equal(registrationRepairQuarantine(REGISTRATION_OR_IDENTITY.noSafeRegistration), true);
@@ -365,15 +507,19 @@ test("only the reasons about Git's registration are Repair's", () => {
   assert.equal(registrationRepairQuarantine(null), false);
 });
 
+function operationsFor(owner: WorktreeManager): WorktreeOperationsService {
+  return new WorktreeOperationsService(owner, {
+    legacy: new LegacyTreehouseService(db),
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks: new CheckLeaseManager(db, { manager: owner, legacy: new LegacyTreehouseService(db) }),
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async () => 1024,
+  });
+}
+
 const manager = managerWith();
-const operations = new WorktreeOperationsService(manager, {
-  legacy: new LegacyTreehouseService(db),
-  tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
-  checks: new CheckLeaseManager(db, { manager, legacy: new LegacyTreehouseService(db) }),
-  checkRecovery: async () => "unknown",
-  notifyChanged: () => {},
-  diskBytes: async () => 1024,
-});
+const operations = operationsFor(manager);
 
 async function slotActions(slotId: string) {
   const inventory = await operations.inventory();
@@ -437,3 +583,35 @@ test("execute refuses a registration that changed after its preview", async () =
   assert.equal(manager.store.slot(slot.slotId)?.state, "quarantined");
   assert.equal(readdirSync(slot.path).includes(".git"), false, "nothing ran");
 });
+
+for (const failure of [
+  { name: "refused", outcomeUnknown: false, reason: "git worktree unlock failed: fatal: not a working tree", status: 409, code: "changed" },
+  { name: "of unknown outcome", outcomeUnknown: true, reason: "git worktree unlock timed out after 30 s", status: 503, code: "unavailable" },
+]) {
+  test(`execute reports a Git fix ${failure.name} after an allowed preview, and the slot stays as it was`, async () => {
+    const { clone, sha } = repository("mission-repair-execute-");
+    class FailingUnlock extends NativeWorktreeGit {
+      override async unlock() {
+        return { ok: false as const, reason: failure.reason, outcomeUnknown: failure.outcomeUnknown };
+      }
+    }
+    const m = managerWith(new FailingUnlock());
+    const service = operationsFor(m);
+    const slot = await quarantinedSlot(m, clone, sha, `task-repair-execute-${failure.code}`);
+    lockInitializing(slot.administrative);
+    const preview = await service.preview({ action: "repair", slotId: slot.slotId });
+    assert.equal(preview.allowed, true, preview.blockers.join("; "));
+    const row = m.store.slot(slot.slotId)!;
+
+    await assert.rejects(service.execute(preview.token, []), (error: unknown) => {
+      assert.ok(error instanceof WorktreeOperationError);
+      assert.equal(error.status, failure.status);
+      assert.equal(error.code, failure.code);
+      assert.equal(error.message, failure.reason);
+      return true;
+    });
+
+    assert.deepEqual(m.store.slot(slot.slotId), row);
+    assert.equal(existsSync(join(slot.administrative, "locked")), true);
+  });
+}
