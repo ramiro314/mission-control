@@ -43,9 +43,11 @@ const overCapacityPool: WorktreeRepositoryView = {
     defaultRelation: "unmerged",
     dirty: true,
     processes: { state: "known", count: 1, reason: null },
+    occupants: [{ pid: 4242, command: "node server.js", startedAt: 0 }],
     diskBytes: 4096,
     quarantineReason: null,
     diagnostic: null,
+    recoveryRefusal: null,
     actions: ["return", "destroy"],
     dependencies: null,
     warmLog: null,
@@ -634,4 +636,74 @@ test("Warm is offered on an idle slot and a pool with a claim, and a Warm shows 
   assert.match(finished, />finished</);
   assert.match(finished, />Dismiss</);
   assert.doesNotMatch(finished, />Cancel</);
+});
+
+test("a quarantined slot card shows its reason, detail, last automatic-recovery refusal and occupants each on its own line", () => {
+  const base = overCapacityPool.slots[0]!;
+  const started = Date.UTC(2026, 9, 28, 9, 30);
+  const html = render({
+    inventory: {
+      ...inventory,
+      repositories: [{
+        ...overCapacityPool,
+        slots: [{
+          ...base,
+          state: "quarantined",
+          owner: null,
+          quarantineReason: "worktree reset failed",
+          diagnostic: "git checkout failed: fatal: Unable to create index.lock: File exists",
+          processes: { state: "known", count: 18, reason: null },
+          occupants: [
+            { pid: 4242, command: "node /pool/1/repo/node_modules/.bin/tsserver", startedAt: started },
+            ...Array.from({ length: 15 }, (_, index) => ({ pid: 5000 + index, command: "sleep 600", startedAt: started })),
+          ],
+          recoveryRefusal: {
+            at: started,
+            reason: "the slot holds work Recover would discard: ignored .idea/workspace.xml",
+            blocking: { kind: "ignored", path: ".idea/workspace.xml" },
+          },
+        }],
+      }],
+    },
+  });
+  // The detail used to be hidden whenever a reason existed. Now each is its own definition.
+  assert.match(html, /<section class="wt-why" aria-label="Why slot 1 is quarantined"><dl>/);
+  assert.match(html, /<dt>Reason<\/dt><dd>worktree reset failed<\/dd>/);
+  assert.match(html, /<dt>Detail<\/dt><dd>git checkout failed: fatal: Unable to create index.lock: File exists<\/dd>/);
+  assert.match(html, /<dt>Last automatic recovery<\/dt><dd>Refused [^<]+: the slot holds work Recover would discard: ignored .idea\/workspace.xml<\/dd>/);
+  assert.match(html, /<dd>Blocked by ignored file <code>.idea\/workspace.xml<\/code><\/dd>/);
+  // Occupants name PID, command and start time; past the inventory's bound, the rest are counted.
+  assert.match(html, /<section class="wt-occupants" aria-label="Processes in slot 1">/);
+  assert.match(html, /<code>node \/pool\/1\/repo\/node_modules\/.bin\/tsserver<\/code><span>PID 4242 · started [^<]+<\/span>/);
+  assert.match(html, /and 2 more not listed/);
+});
+
+test("a lock refusal names the lock path, and a detail equal to the reason is not repeated", () => {
+  const base = overCapacityPool.slots[0]!;
+  const html = render({
+    inventory: {
+      ...inventory,
+      repositories: [{
+        ...overCapacityPool,
+        slots: [{
+          ...base,
+          state: "quarantined",
+          quarantineReason: "slot Git state is unknown",
+          diagnostic: "slot Git state is unknown",
+          processes: { state: "unknown", count: null, reason: "process listing timed out" },
+          occupants: [],
+          recoveryRefusal: {
+            at: 0,
+            reason: "index.lock is younger than 10 minutes",
+            blocking: { kind: "lock", path: "/repo/.git/worktrees/repo1/index.lock" },
+          },
+        }],
+      }],
+    },
+  });
+  assert.equal(html.match(/slot Git state is unknown/g)?.length, 1);
+  assert.doesNotMatch(html, /<dt>Detail<\/dt>/);
+  assert.match(html, /<dt>Processes<\/dt><dd>process listing timed out<\/dd>/);
+  assert.match(html, /<dd>Blocked by lock file <code>\/repo\/.git\/worktrees\/repo1\/index.lock<\/code><\/dd>/);
+  assert.doesNotMatch(html, /Processes in slot 1/);
 });

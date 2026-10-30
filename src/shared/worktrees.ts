@@ -6,6 +6,10 @@ export const WORKTREE_INVENTORY_LIMITS = {
   slotsPerRepository: 128,
   legacyItems: 256,
   textBytes: 2048,
+  /** Occupants listed on one slot card; `processes.count` still counts every one. */
+  occupantsPerSlot: 16,
+  /** One occupant's command line, in UTF-8 bytes. */
+  occupantCommandBytes: 512,
   previewTokens: 128,
   /** One bulk destroy selection. Matches one pool's slot bound; a selection may span pools. */
   bulkSlots: 128,
@@ -50,6 +54,27 @@ export interface WorktreeProcessSummary {
   state: "known" | "unknown";
   count: number | null;
   reason: string | null;
+}
+
+/** A process whose working directory is inside a slot, as the occupancy inspection saw it. */
+export interface WorktreeOccupantView {
+  pid: number;
+  /** Bounded to `WORKTREE_INVENTORY_LIMITS.occupantCommandBytes`. */
+  command: string;
+  /** Epoch milliseconds of the process's start, as `ps` reports it. */
+  startedAt: number;
+}
+
+/**
+ * The last time automatic recovery refused this quarantined slot, and the exact path that
+ * blocked it: the first work entry the reset would discard, relative to the slot, or the slot's
+ * absolute `index.lock` path. `blocking` is null for a refusal no single path explains, such as
+ * a live owner.
+ */
+export interface WorktreeRecoveryRefusalView {
+  at: number;
+  reason: string;
+  blocking: { kind: "tracked" | "untracked" | "ignored" | "unpushed" | "lock"; path: string } | null;
 }
 
 export type WorktreeDefaultRelation = "merged" | "unmerged" | "unknown";
@@ -162,9 +187,13 @@ export interface NativeWorktreeSlotView {
   defaultRelation: WorktreeDefaultRelation;
   dirty: boolean | null;
   processes: WorktreeProcessSummary;
+  /** Empty when occupancy is unknown; at most `WORKTREE_INVENTORY_LIMITS.occupantsPerSlot`. */
+  occupants: WorktreeOccupantView[];
   diskBytes: number | null;
   quarantineReason: string | null;
   diagnostic: string | null;
+  /** Only on a quarantined slot, and only for the quarantine it is in now. */
+  recoveryRefusal: WorktreeRecoveryRefusalView | null;
   /**
    * `recover` is offered on a quarantined slot no live owner references: it removes a stale
    * `index.lock` when no Git process uses the slot, then resets it to available.

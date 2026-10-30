@@ -461,6 +461,86 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
 });
 
 /**
+ * The card says why a slot is stuck, one fact per line: the quarantine reason and Git's detail
+ * (the detail used to be hidden whenever a reason existed), the last automatic-recovery refusal
+ * with the exact path that blocked it, and the processes inside the slot with PID, command and
+ * start time.
+ *
+ * The slot, its reason, its detail and its occupant are real: a live manual lease quarantined in
+ * the row, and a process started with its working directory in the slot. The refusal is spliced
+ * into the daemon's own inventory response, because the e2e daemon runs no maintenance pass and
+ * automatic recovery runs nowhere else; `test/worktree-recover.test.ts` proves the pass records
+ * it and that inventory carries it.
+ */
+test("a quarantined slot card shows its reason, detail, last automatic-recovery refusal and occupants on separate lines", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "quarantine diagnosis" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1,
+              quarantine_reason = 'worktree reset failed',
+              last_error = 'git checkout failed: fatal: Unable to create index.lock: File exists'
+        WHERE active_lease_id = ? AND state = 'leased'`,
+    ).run(lease.leaseId);
+    expect(Number(changed.changes)).toBe(1);
+  });
+  const occupant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: lease.path, stdio: "ignore" });
+  await once(occupant, "spawn");
+  const pid = occupant.pid!;
+
+  try {
+    await dashboard.route("**/api/worktrees", async (route) => {
+      const response = await route.fetch();
+      const inventory = await response.json() as WorktreeInventory;
+      for (const repository of inventory.repositories) {
+        for (const slot of repository.slots) {
+          if (slot.path !== lease.path) continue;
+          slot.recoveryRefusal = {
+            at: Date.now(),
+            reason: "the slot holds work Recover would discard: untracked notes/draft.md",
+            blocking: { kind: "untracked", path: "notes/draft.md" },
+          };
+        }
+      }
+      await route.fulfill({ response, json: inventory });
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const slot = repo.locator(".wt-slot", { hasText: lease.path });
+    await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
+
+    const why = slot.getByRole("region", { name: /^Why slot \d+ is quarantined$/ });
+    const lines = why.getByRole("definition");
+    await expect(lines.filter({ hasText: "worktree reset failed" })).toHaveText("worktree reset failed");
+    await expect(lines.filter({ hasText: "git checkout failed" }))
+      .toHaveText("git checkout failed: fatal: Unable to create index.lock: File exists");
+    await expect(lines.filter({ hasText: /^Refused / }))
+      .toContainText("the slot holds work Recover would discard: untracked notes/draft.md");
+    await expect(lines.filter({ hasText: /^Blocked by / })).toHaveText("Blocked by untracked file notes/draft.md");
+    await expect(why.getByRole("term")).toHaveText(["Reason", "Detail", "Last automatic recovery"]);
+
+    const processes = slot.getByRole("region", { name: /^Processes in slot \d+$/ });
+    const row = processes.getByRole("listitem").filter({ hasText: `PID ${pid}` });
+    await expect(row).toContainText("setInterval");
+    await expect(row).toContainText(`PID ${pid} · started `);
+    await row.scrollIntoViewIfNeeded();
+    await shoot(dashboard, "15-quarantined-slot-diagnosis");
+  } finally {
+    occupant.kill("SIGKILL");
+    await dashboard.unroute("**/api/worktrees");
+  }
+});
+
+/**
  * The three states the pane used to render as a heading over nothing, plus the one state
  * a number input cannot express.
  *
