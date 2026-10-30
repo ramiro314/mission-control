@@ -580,11 +580,19 @@ function resetWorkRefusal(
   };
 }
 
+/** Every registration that names this path. Git can hold more than one. */
+function registrationsFor(
+  registrations: readonly WorktreeRegistration[],
+  path: string,
+): WorktreeRegistration[] {
+  return registrations.filter((registration) => registration.path === path);
+}
+
 function registrationFor(
   registrations: readonly WorktreeRegistration[],
   path: string,
 ): WorktreeRegistration | null {
-  return registrations.find((registration) => registration.path === path) ?? null;
+  return registrationsFor(registrations, path)[0] ?? null;
 }
 
 function referenceFrom(
@@ -3135,7 +3143,7 @@ export class WorktreeManager {
     // checkout's, and stays.
     const naming = await this.registrationsNaming(identity, slot.path);
     if (!naming.ok) return { outcome: "outcomeUnknown", reason: naming.reason };
-    for (let index = 0; index < naming.value; index += 1) {
+    for (let index = 0; index < naming.value.length; index += 1) {
       let removed: Awaited<ReturnType<WorktreeGit["remove"]>>;
       try {
         removed = await this.deps.git.remove(identity, slot.path, "locked");
@@ -3146,7 +3154,7 @@ export class WorktreeManager {
     }
     const after = await this.registrationsNaming(identity, slot.path);
     if (!after.ok) return { outcome: "outcomeUnknown", reason: after.reason };
-    if (after.value > 0) return { outcome: "outcomeUnknown", reason: "Git still lists a registration for the slot's path" };
+    if (after.value.length > 0) return { outcome: "outcomeUnknown", reason: "Git still lists a registration for the slot's path" };
     if (!this.store.forget(intent.id, intent.version)) {
       return { outcome: "outcomeUnknown", reason: "the forgotten slot's row could not be settled" };
     }
@@ -3155,8 +3163,8 @@ export class WorktreeManager {
     return { outcome: "forgotten" };
   }
 
-  /** How many Git registrations name this path, from a fresh listing. */
-  private async registrationsNaming(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<number>> {
+  /** The Git registrations that name this path, from a fresh listing. */
+  private async registrationsNaming(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<WorktreeRegistration[]>> {
     let listed: Awaited<ReturnType<WorktreeGit["list"]>>;
     try {
       listed = await this.deps.git.list(identity);
@@ -3164,7 +3172,7 @@ export class WorktreeManager {
       return { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
     }
     if (!listed.ok) return listed;
-    return { ok: true, value: listed.value.filter((registration) => registration.path === path).length };
+    return { ok: true, value: registrationsFor(listed.value, path) };
   }
 
   /** The facts Forget judges, the occupancy first, because its own Git reads have this cwd. */
@@ -3175,14 +3183,8 @@ export class WorktreeManager {
   ): Promise<GitResult<SlotForgetFacts>> {
     const occupancy = (await this.withObservation(() => this.occupancy([slot.path]))).get(slot.path) ??
       { status: "unknown" as const, reason: "slot occupancy is unknown" };
-    let listed: Awaited<ReturnType<WorktreeGit["list"]>>;
-    try {
-      listed = await this.deps.git.list(identity);
-    } catch (error) {
-      return { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
-    }
-    if (!listed.ok) return listed;
-    const naming = listed.value.filter((registration) => registration.path === slot.path);
+    const naming = await this.registrationsNaming(identity, slot.path);
+    if (!naming.ok) return naming;
     const stat = await lstat(slot.path).catch(() => null);
     const directory = Boolean(stat?.isDirectory());
     let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>> | null = null;
@@ -3200,13 +3202,13 @@ export class WorktreeManager {
           slotPath: slot.path,
           quarantineReason: slot.quarantineReason,
           commonDirectory: pool.gitCommonDirectory,
-          registration: naming[0] ?? null,
+          registration: naming.value[0] ?? null,
           inspection: inspection?.ok === true ? inspection.value : null,
         }),
         present: stat !== null,
         directory,
-        registrations: naming.length,
-        locked: naming.some((registration) => registration.locked),
+        registrations: naming.value.length,
+        locked: naming.value.some((registration) => registration.locked),
         occupancy,
       },
     };
