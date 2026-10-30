@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { lockCausedQuarantine } from "../src/server/worktrees/index-lock.ts";
 import {
+  clearableQuarantineReason,
   isObservationFailure,
   OBSERVATION_FAILURE,
   OBSERVATION_FAILURE_REASONS,
+  REGISTRATION_OR_IDENTITY_REASONS,
+  registrationOrIdentityQuarantine,
   RESERVATION_NOT_HANDED_BACK,
   splitObservationFailure,
   withObservationFailure,
@@ -61,4 +64,15 @@ test("the failed-read note sits in front of a quarantine's detail, is replaced i
   assert.equal(withoutObservationFailure(withObservationFailure(null, "x")), null);
   assert.equal(withoutObservationFailure(detail), detail);
   assert.deepEqual(splitObservationFailure(null), { failure: null, rest: null });
+});
+
+test("a registration or identity reason is never one automatic recovery may clear, suffixed or not", () => {
+  for (const reason of REGISTRATION_OR_IDENTITY_REASONS) {
+    assert.equal(clearableQuarantineReason(reason), false, reason);
+    assert.equal(registrationOrIdentityQuarantine(reason), true, reason);
+    assert.equal(registrationOrIdentityQuarantine(`${reason}: cause`), true, reason);
+  }
+  assert.equal(registrationOrIdentityQuarantine("slot Git state is unknown"), false);
+  assert.equal(registrationOrIdentityQuarantine("return reset failed"), false);
+  assert.equal(registrationOrIdentityQuarantine(null), false);
 });

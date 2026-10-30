@@ -43,10 +43,39 @@ export const OBSERVATION_FAILURE_REASONS: ReadonlySet<string> = new Set([
  * listing failure with its cause ("Git worktree registrations are unknown: <cause>").
  */
 export function isObservationFailure(reason: string | null): boolean {
+  return reasonIn(OBSERVATION_FAILURE_REASONS, reason);
+}
+
+/** Whether a reason is in this set, on its own or suffixed with its cause. */
+function reasonIn(reasons: ReadonlySet<string>, reason: string | null): boolean {
   if (reason === null) return false;
-  if (OBSERVATION_FAILURE_REASONS.has(reason)) return true;
+  if (reasons.has(reason)) return true;
   const colon = reason.indexOf(": ");
-  return colon > 0 && OBSERVATION_FAILURE_REASONS.has(reason.slice(0, colon));
+  return colon > 0 && reasons.has(reason.slice(0, colon));
+}
+
+/**
+ * Every reason that says the slot's registration, its path, its pool or its lease identity is
+ * wrong, including the marker wording older builds used. A later read that succeeds repairs
+ * none of these, so automatic recovery never judges one, whatever else `last_error` holds.
+ */
+export const REGISTRATION_OR_IDENTITY_REASONS: ReadonlySet<string> = new Set([
+  "slot path is not the exact path owned by its native pool",
+  "slot path or Git registration is missing",
+  "slot Git registration is bare, locked, or prunable",
+  "slot belongs to a different Git common directory",
+  "pool repository identity no longer matches its durable row",
+  "pool marker is missing, malformed, or belongs to another pool",
+  "pool marker is missing, unreadable, or belongs to another pool",
+  "available slot has incomplete active lease identity",
+  "available slot still carries active lease identity",
+  "last-released lease identity is incomplete",
+  "leased slot has incomplete active identity",
+  "interrupted return has incomplete active lease identity",
+]);
+
+export function registrationOrIdentityQuarantine(reason: string | null): boolean {
+  return reasonIn(REGISTRATION_OR_IDENTITY_REASONS, reason);
 }
 
 /** A dirty available slot, and the reason older builds gave it before occupied was split off. */
@@ -56,8 +85,7 @@ const AVAILABLE_SLOT_OCCUPIED_OR_DIRTY = "available slot is occupied or dirty";
 /**
  * Whether automatic recovery may judge a slot quarantined for this reason: a failed read, or a
  * dirty available slot, each of which a fresh read can disprove. An `index.lock` quarantine is
- * recognized by its error instead (`lockCausedQuarantine`). A registration or identity reason
- * is never here: a read that happens to succeed does not repair one.
+ * recognized by its error instead (`lockCausedQuarantine`).
  */
 export function clearableQuarantineReason(reason: string | null): boolean {
   return isObservationFailure(reason) || reason === AVAILABLE_SLOT_DIRTY || reason === AVAILABLE_SLOT_OCCUPIED_OR_DIRTY;

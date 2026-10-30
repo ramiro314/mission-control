@@ -789,7 +789,8 @@ The operations have deliberately narrow meanings:
   failed read (the set in `src/server/worktrees/quarantine-reasons.ts`, older builds' reasons
   included), and "available slot is dirty" or the "available slot is occupied or dirty" that older
   builds wrote. A slot quarantined for its registration or identity is never cleared here, however
-  healthy it reads, because a read that happens to succeed repairs nothing.
+  healthy it reads and whatever its last error says, because a read that happens to succeed
+  repairs nothing.
 
   The safety line is the same for all of them. The slot's active and last-released owners must be
   positively gone, its occupancy known and empty, its registration exact, a fresh Git read must

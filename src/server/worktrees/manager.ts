@@ -57,6 +57,7 @@ import {
   clearableQuarantineReason,
   OBSERVATION_FAILURE,
   observationFailureText,
+  registrationOrIdentityQuarantine,
   RESERVATION_NOT_HANDED_BACK,
   sameObservationFailure,
   splitObservationFailure,
@@ -515,6 +516,7 @@ function validOwner(owner: WorktreeOwner): boolean {
 
 /** Whether the automatic pass may judge this quarantined slot at all. */
 function automaticRecoveryCandidate(slot: WorktreeSlotRow): boolean {
+  if (registrationOrIdentityQuarantine(slot.quarantineReason)) return false;
   return lockCausedQuarantine(slot.lastError) || clearableQuarantineReason(slot.quarantineReason);
 }
 

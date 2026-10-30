@@ -1231,3 +1231,49 @@ test("a default that moves between a settled slot's check and its reset is caugh
   assert.equal(readFileSync(join(slot.path, ".env"), "utf8"), "TOKEN=1\n");
   assert.equal(gitIn(slot.path, "rev-parse", "HEAD"), slot.sha);
 });
+
+test("a settled pool slot whose reset-rule read fails keeps its window and is listed, with the failure", async () => {
+  const id = uid("settled-unreadable");
+  let unreachable = false;
+  class UnreachableGit extends NativeWorktreeGit {
+    override async fetchDefaultSha(identity: Parameters<WorktreeGit["fetchDefaultSha"]>[0]) {
+      return unreachable
+        ? { ok: false as const, reason: "git fetch timed out after 60 s", outcomeUnknown: true }
+        : super.fetchDefaultSha(identity);
+    }
+  }
+  const slot = await settledPoolSlot(id, new UnreachableGit());
+  unreachable = true;
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the unreadable slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, /origin's default could not be fetched: git fetch timed out after 60 s/);
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+});
+
+test("a settled pool slot whose read fails only at the reset's repeated check is kept and listed", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const id = uid("settled-unreadable-late");
+  let armed = false;
+  class FailsAfterValidation extends NativeWorktreeGit {
+    override async inspect(path: string) {
+      const inspected = await super.inspect(path);
+      // The reset's validation is the last read before its hook, so the check that follows
+      // is the first to find the index unreadable.
+      if (armed) writeFileSync(gitIn(path, "rev-parse", "--path-format=absolute", "--git-path", "index"), "not an index");
+      return inspected;
+    }
+  }
+  const slot = await settledPoolSlot(id, new FailsAfterValidation());
+  writeIn(slot.path, ".env", "TOKEN=1\n");
+  armed = true;
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, /working tree could not be read/);
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased", "the refusal came before the reset's intent");
+  assert.equal(readFileSync(join(slot.path, ".env"), "utf8"), "TOKEN=1\n");
+  assert.equal(gitIn(slot.path, "rev-parse", "HEAD"), slot.sha);
+});

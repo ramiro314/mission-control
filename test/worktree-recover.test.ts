@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
@@ -15,6 +15,7 @@ import {
   slotGitDirectory,
 } from "../src/server/worktrees/index-lock.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
+import { REGISTRATION_OR_IDENTITY_REASONS } from "../src/server/worktrees/quarantine-reasons.ts";
 import { quarantinedSlotProblems } from "../src/server/worktrees/storage-problems.ts";
 import { describeWorktreeWork } from "../src/server/git/worktree-return-safety.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
@@ -714,6 +715,113 @@ test("a registration or identity quarantine is never a candidate, even once ever
     );
   }
 });
+
+test("a registration or identity quarantine carrying Git's lock text is still never a candidate", async () => {
+  const { clone, sha } = repository("mission-recover-never-lock-");
+  const m = manager();
+  const { path, slotId } = await quarantinedSlot(m, clone, sha, "task-never-lock", "slot Git state is unknown");
+  const lockText = `git checkout failed: fatal: Unable to create '${await lockPath(path)}': File exists.`;
+  for (const reason of [...REGISTRATION_OR_IDENTITY_REASONS, "slot path or Git registration is missing: cause"]) {
+    assert.ok(m.store.quarantine(slotId, reason, lockText, Date.now()));
+    const row = m.store.slot(slotId)!;
+    assert.equal(lockCausedQuarantine(row.lastError), true, "the error alone reads as lock-caused");
+    await m.recoverQuarantines();
+    assert.deepEqual(m.store.slot(slotId), row, reason);
+    assert.equal(m.recoveryRefusal(row), null, `${reason}: not judged, so nothing to refuse`);
+    assert.deepEqual(
+      await m.recoverSlot({ slotId, allowDirty: false, automatic: true }),
+      { outcome: "refused", reason: "automatic recovery does not clear this quarantine" },
+      reason,
+    );
+  }
+});
+
+const LAST_RELEASED_OWNERS: Array<{
+  name: string;
+  reason: string;
+  ownerReferenced: () => Promise<boolean>;
+  refusal: RegExp;
+}> = [
+  {
+    name: "a live last-released owner",
+    reason: "available slot is dirty",
+    ownerReferenced: async () => true,
+    refusal: /^a live task owner references this slot$/,
+  },
+  {
+    name: "a live last-released owner",
+    reason: "last-released domain ownership is unknown",
+    ownerReferenced: async () => true,
+    refusal: /^a live task owner references this slot$/,
+  },
+  {
+    name: "a last-released owner that cannot be read",
+    reason: "available slot is dirty",
+    ownerReferenced: async () => { throw new Error("registry unreadable"); },
+    refusal: /^domain ownership is unknown: /,
+  },
+  {
+    name: "a last-released owner that cannot be read",
+    reason: "last-released domain ownership is unknown",
+    ownerReferenced: async () => { throw new Error("registry unreadable"); },
+    refusal: /^domain ownership is unknown: /,
+  },
+];
+
+for (const { name, reason, ownerReferenced, refusal } of LAST_RELEASED_OWNERS) {
+  test(`the automatic pass leaves a slot quarantined as "${reason}" with ${name} exactly as it was`, async () => {
+    const { clone, sha } = repository("mission-recover-last-owner-");
+    let judge: () => Promise<boolean> = async () => false;
+    const m = manager({ ownerReferenced: () => judge(), pause: async () => {} });
+    const { path, slotId } = await quarantinedSlot(m, clone, sha, "task-last-owner", reason);
+    write(path, ".env", "TOKEN=1\n");
+    const before = snapshot(path, [".env", "keep.txt"]);
+    const row = m.store.slot(slotId)!;
+    assert.equal(row.activeLeaseId, null, "only the last-released identity names the owner");
+    assert.ok(row.lastReleasedLeaseId);
+
+    judge = ownerReferenced;
+    await m.recoverQuarantines();
+    assert.deepEqual(m.store.slot(slotId), row);
+    assert.deepEqual(snapshot(path, [".env", "keep.txt"]), before);
+    assert.match(m.recoveryRefusal(row)?.reason ?? "", refusal);
+    assert.equal(m.recoveryRefusal(row)?.blocking, null);
+  });
+}
+
+const INEXACT_REGISTRATIONS: Array<{
+  name: string;
+  arrange: (clone: string, path: string) => Promise<void>;
+  refusal: RegExp;
+}> = [
+  {
+    name: "locked",
+    arrange: async (clone, path) => { gitIn(clone, "worktree", "lock", path); },
+    refusal: /^slot has no safe Git worktree registration$/,
+  },
+  {
+    name: "gone from Git's list",
+    arrange: async (_clone, path) => { rmSync(dirname(await lockPath(path)), { recursive: true }); },
+    refusal: /^the slot's work could not be read: /,
+  },
+];
+
+for (const { name, arrange, refusal } of INEXACT_REGISTRATIONS) {
+  test(`the automatic pass leaves a candidate whose registration is ${name} exactly as it was`, async () => {
+    const { clone, sha } = repository("mission-recover-registration-");
+    const m = manager();
+    const { path, slotId } = await quarantinedSlot(m, clone, sha, "task-registration", "slot Git state is unknown");
+    write(path, ".env", "TOKEN=1\n");
+    const before = snapshot(path, [".env", "keep.txt", ".git"]);
+    await arrange(clone, path);
+    const row = m.store.slot(slotId)!;
+
+    await m.recoverQuarantines();
+    assert.deepEqual(m.store.slot(slotId), row);
+    assert.deepEqual(snapshot(path, [".env", "keep.txt", ".git"]), before);
+    assert.match(m.recoveryRefusal(row)?.reason ?? "", refusal);
+  });
+}
 
 test("a quarantine index.lock did not cause leaves a lock alone, and a reset it refuses makes the slot lock-caused", async () => {
   const { clone, sha } = repository("mission-recover-other-lock-");
