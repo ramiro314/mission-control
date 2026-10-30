@@ -59,11 +59,15 @@ const { openDb, getInspectorCiObservation, getInspectorPr, recordInspectorCiObse
 const { fetchPr } = await import("../src/server/inspector/github.ts");
 const {
   CI_CHECK_SUMMARY_CHARS,
-  WAIT_FOR_CI_FLAKE_REPORT_GRACE_MS,
+  WAIT_FOR_CI_LEGACY_SETTINGS,
+  WAIT_FOR_CI_QUIET_GRACE_MS,
+  WaitForCiStateSchema,
   ciCheckRunsFromRollup,
   decideWaitForCi,
   initialWaitForCiState,
 } = await import("../src/shared/wait-for-ci.ts");
+const waitForCiModule = await import("../src/shared/wait-for-ci.ts");
+const { z } = await import("zod");
 const { FLAKY_TESTS_CHECK_NAME, parseFlakeSummary, renderFlakeSummary } = await import(
   "../src/shared/flake-report.ts"
 );
@@ -187,8 +191,20 @@ const run = (name: string, runState: CiCheckRun["state"]): CiCheckRun => ({
   title: null,
   summary: null,
 });
-const seen = (checkRuns: CiCheckRun[], headSha = HEAD, flakeReport: FlakeReport | null = null): CiObservation =>
-  ({ headSha, observedAt: T0 + 1, checkRuns, flakeReport });
+const seen = (
+  checkRuns: CiCheckRun[],
+  headSha = HEAD,
+  flakeReport: FlakeReport | null = null,
+  observedAt = T0 + 1,
+): CiObservation => ({ headSha, observedAt, checkRuns, flakeReport });
+const QUIET_MS = 3 * 60_000;
+const LIMIT = T0 + 45 * 60_000;
+/** Green CI seen once, then again one quiet period later: the shortest path to a pass. */
+function settle(checkRuns: CiCheckRun[], report: FlakeReport | null = null, from = state()) {
+  const first = decideWaitForCi(from, seen(checkRuns, HEAD, report, T0 + 1), T0 + 1);
+  assert.equal(first.kind, "wait");
+  return decideWaitForCi(first.state, seen(checkRuns, HEAD, report, T0 + 1 + QUIET_MS), T0 + 1 + QUIET_MS);
+}
 
 test("another head, no observation, and pending checks all wait", () => {
   assert.equal(decideWaitForCi(state(), null, T0 + 1).kind, "wait");
@@ -198,13 +214,14 @@ test("another head, no observation, and pending checks all wait", () => {
   const pending = decideWaitForCi(state(), seen([run("unit", "passing"), run("e2e", "pending")]), T0 + 1);
   assert.equal(pending.kind, "wait");
   assert.equal(pending.state.checkRuns.length, 2);
+  assert.equal(pending.state.quietSince, null);
   // Even a failure waits while anything is still running, so the packet names every failure.
   assert.equal(decideWaitForCi(state(), seen([run("unit", "failing"), run("e2e", "pending")]), T0 + 1).kind, "wait");
   // Heads compare case-insensitively: both spellings are the same full object id.
   assert.equal(decideWaitForCi(state(), seen([run("unit", "passing")], HEAD.toUpperCase()), T0 + 1).state.checkRuns.length, 1);
 });
 
-test("a failing check fails the node, naming every failing check except Flaky tests", () => {
+test("a failing check fails the node with no quiet period, naming every failing check, Flaky tests included", () => {
   const decision = decideWaitForCi(state(), seen([
     run("unit", "failing"),
     run("lint", "failing"),
@@ -213,44 +230,126 @@ test("a failing check fails the node, naming every failing check except Flaky te
   ]), T0 + 1);
   assert.equal(decision.kind, "fail");
   if (decision.kind !== "fail") return;
-  assert.deepEqual(decision.failing.map((check) => check.name), ["unit", "lint"]);
+  assert.deepEqual(decision.failing.map((check) => check.name), ["unit", "lint", FLAKY_TESTS_CHECK_NAME]);
   assert.equal(decision.state.outcome, "fail");
+  assert.equal(decision.state.quietSince, null);
 });
 
-test("all green with a Flaky tests check passes and records the report", () => {
-  const decision = decideWaitForCi(state(), seen([run("unit", "passing"), run(FLAKY_TESTS_CHECK_NAME, "passing")], HEAD, REPORT), T0 + 1);
-  assert.equal(decision.kind, "pass");
-  assert.equal(decision.state.outcome, "pass");
-  assert.deepEqual(decision.state.flakeReport, REPORT);
-  // Only Flaky tests failing is still green: it never fails the node.
-  assert.equal(decideWaitForCi(state(), seen([run("unit", "passing"), run(FLAKY_TESTS_CHECK_NAME, "failing")]), T0 + 1).kind, "pass");
-});
-
-test("green without a Flaky tests check waits out the grace period, then blocks", () => {
-  const green = seen([run("unit", "passing")]);
-  const first = decideWaitForCi(state(), green, T0 + 10);
+test("green CI passes only on an observation a quiet period after the one that first saw it settled", () => {
+  const green = [run("unit", "passing"), run("lint", "passing")];
+  const first = decideWaitForCi(state(), seen(green, HEAD, null, T0 + 10), T0 + 10);
   assert.equal(first.kind, "wait");
-  assert.equal(first.state.greenWithoutReportSince, T0 + 10);
-  const still = decideWaitForCi(first.state, green, T0 + 10 + WAIT_FOR_CI_FLAKE_REPORT_GRACE_MS - 1);
-  assert.equal(still.kind, "wait");
-  const blocked = decideWaitForCi(still.state, green, T0 + 10 + WAIT_FOR_CI_FLAKE_REPORT_GRACE_MS);
-  assert.equal(blocked.kind, "block");
-  if (blocked.kind === "block") assert.equal(blocked.code, "ci_flake_report_missing");
-  // A report arriving within the grace period passes normally.
-  const late = decideWaitForCi(first.state, seen([run("unit", "passing"), run(FLAKY_TESTS_CHECK_NAME, "passing")]), T0 + 20);
-  assert.equal(late.kind, "pass");
+  assert.equal(first.state.quietSince, T0 + 10, "the clock starts at the observation, not at now");
+  // One poll later, the same set: still quiet, not yet long enough.
+  const second = decideWaitForCi(first.state, seen(green, HEAD, null, T0 + 10 + 90_000), T0 + 10 + 90_000);
+  assert.equal(second.kind, "wait");
+  assert.equal(second.state.quietSince, T0 + 10);
+  const short = decideWaitForCi(second.state, seen(green, HEAD, null, T0 + 9 + QUIET_MS), T0 + 9 + QUIET_MS);
+  assert.equal(short.kind, "wait");
+  const passed = decideWaitForCi(short.state, seen(green, HEAD, null, T0 + 10 + QUIET_MS), T0 + 10 + QUIET_MS);
+  assert.equal(passed.kind, "pass");
+  assert.equal(passed.state.outcome, "pass");
+  // Order is not a change: GitHub may list the same checks differently between polls.
+  const reordered = decideWaitForCi(first.state, seen([...green].reverse(), HEAD, null, T0 + 10 + QUIET_MS), T0 + 10 + QUIET_MS);
+  assert.equal(reordered.kind, "pass");
 });
 
-test("the timeout blocks as missing CI when nothing appeared, and as a timeout otherwise", () => {
-  const limit = T0 + 45 * 60_000;
-  assert.equal(decideWaitForCi(state(), null, limit - 1).kind, "wait");
-  const missing = decideWaitForCi(state(), null, limit);
+test("the fifteen-second sweep re-deciding one observation never passes the node", () => {
+  const observation = seen([run("unit", "passing")], HEAD, null, T0 + 10);
+  let current = decideWaitForCi(state(), observation, T0 + 10);
+  // Twenty minutes of sweeps over the same observation: the clock reads observations, so it
+  // never advances, and the state is not even rewritten.
+  for (let at = T0 + 10 + 15_000; at < T0 + 20 * 60_000; at += 15_000) {
+    const next = decideWaitForCi(current.state, observation, at);
+    assert.equal(next.kind, "wait", `passed at +${at - T0} ms on a stale observation`);
+    assert.deepEqual(next.state, current.state);
+    current = next;
+  }
+});
+
+test("a change to the settled set restarts the quiet clock, and a pending check clears it", () => {
+  const first = decideWaitForCi(state(), seen([run("unit", "passing")], HEAD, null, T0 + 10), T0 + 10);
+  // A new check appears and has already passed: a different set, so the clock starts again.
+  const grown = decideWaitForCi(first.state, seen([run("unit", "passing"), run("e2e", "passing")], HEAD, null, T0 + 10 + 2 * 60_000), T0 + 10 + 2 * 60_000);
+  assert.equal(grown.kind, "wait");
+  assert.equal(grown.state.quietSince, T0 + 10 + 2 * 60_000);
+  const notYet = decideWaitForCi(grown.state, seen([run("unit", "passing"), run("e2e", "passing")], HEAD, null, T0 + 10 + QUIET_MS), T0 + 10 + QUIET_MS);
+  assert.equal(notYet.kind, "wait", "the first sighting's clock passed a set it never saw");
+  // A conclusion that changes is a change too.
+  const neutral = { ...run("e2e", "passing"), conclusion: "NEUTRAL" };
+  const relabelled = decideWaitForCi(notYet.state, seen([run("unit", "passing"), neutral], HEAD, null, T0 + 10 + 5 * 60_000), T0 + 10 + 5 * 60_000);
+  assert.equal(relabelled.state.quietSince, T0 + 10 + 5 * 60_000);
+  // A rerun puts a check back to pending: no quiet period while anything runs.
+  const rerun = decideWaitForCi(relabelled.state, seen([run("unit", "passing"), run("e2e", "pending")], HEAD, null, T0 + 10 + 6 * 60_000), T0 + 10 + 6 * 60_000);
+  assert.equal(rerun.kind, "wait");
+  assert.equal(rerun.state.quietSince, null);
+});
+
+test("a pass carries the flake report when CI published one, and needs no Flaky tests check", () => {
+  const decision = settle([run("unit", "passing"), run(FLAKY_TESTS_CHECK_NAME, "passing")], REPORT);
+  assert.equal(decision.kind, "pass");
+  assert.deepEqual(decision.state.flakeReport, REPORT);
+  const plain = settle([run("unit", "passing")]);
+  assert.equal(plain.kind, "pass", "green CI without a Flaky tests check must pass");
+  assert.equal(plain.state.flakeReport, null);
+  assert.equal(waitForCiModule.WAIT_FOR_CI_BLOCK_CODES.includes("ci_flake_report_missing"), true, "append-only");
+  assert.equal("WAIT_FOR_CI_FLAKE_REPORT_GRACE_MS" in waitForCiModule, false);
+});
+
+test("the timeout blocks as missing CI when nothing appeared, and names the checks still running otherwise", () => {
+  assert.equal(decideWaitForCi(state(), null, LIMIT - 1).kind, "wait");
+  const missing = decideWaitForCi(state(), null, LIMIT);
   assert.equal(missing.kind === "block" && missing.code, "ci_missing");
-  const otherHead = decideWaitForCi(state(), seen([run("unit", "pending")], "b".repeat(40)), limit);
+  const otherHead = decideWaitForCi(state(), seen([run("unit", "pending")], "b".repeat(40)), LIMIT);
   assert.equal(otherHead.kind === "block" && otherHead.code, "ci_missing");
-  const running = decideWaitForCi(state(), seen([run("unit", "pending")]), limit);
+  const running = decideWaitForCi(state(), seen([run("unit", "passing"), run("e2e", "pending"), run("build", "pending")]), LIMIT);
   assert.equal(running.kind === "block" && running.code, "ci_timeout");
-  assert.match(running.kind === "block" ? running.detail : "", /45 minutes/);
+  assert.equal(running.kind === "block" ? running.detail : "", 'Still running after 45 minutes: "e2e", "build".');
+  // A failure is decided before the timeout: it fails, it does not block.
+  assert.equal(decideWaitForCi(state(), seen([run("unit", "failing")]), LIMIT + 1).kind, "fail");
+});
+
+test("a quiet period running at the timeout finishes on its first new observation, unchanged", () => {
+  const green = [run("unit", "passing")];
+  // The clock starts within one poll of the timeout.
+  const start = LIMIT - 60_000;
+  const quiet = decideWaitForCi(state(), seen(green, HEAD, null, start), start);
+  // Sweeps past the timeout re-decide the same observation: the period is still running.
+  const swept = decideWaitForCi(quiet.state, seen(green, HEAD, null, start), LIMIT + 30_000);
+  assert.equal(swept.kind, "wait");
+  // A poll before the period ends, unchanged: still waiting, past the timeout.
+  const mid = decideWaitForCi(swept.state, seen(green, HEAD, null, start + 90_000), start + 90_000);
+  assert.equal(mid.kind, "wait");
+  // A review held the poll up for several minutes; the late observation still decides it.
+  const late = start + QUIET_MS + 8 * 60_000;
+  assert.equal(decideWaitForCi(mid.state, seen(green, HEAD, null, late), late).kind, "pass");
+  // A changed set past the timeout never restarts the period.
+  const changed = decideWaitForCi(mid.state, seen([run("unit", "passing"), run("e2e", "passing")], HEAD, null, late), late);
+  assert.equal(changed.kind === "block" && changed.code, "ci_timeout");
+  assert.match(changed.kind === "block" ? changed.detail : "", /had not stayed settled for the 3-minute quiet period/);
+  // And a new pending check past the timeout blocks at once.
+  const pending = decideWaitForCi(mid.state, seen([run("unit", "passing"), run("e2e", "pending")], HEAD, null, start + 2 * 60_000), start + 2 * 60_000);
+  assert.equal(pending.kind === "block" && pending.code, "ci_timeout");
+  assert.match(pending.kind === "block" ? pending.detail : "", /Still running after 45 minutes: "e2e"/);
+});
+
+test("a quiet period past the timeout that gets no new observation blocks once the grace runs out", () => {
+  const green = [run("unit", "passing")];
+  const start = LIMIT - 60_000;
+  const quiet = decideWaitForCi(state(), seen(green, HEAD, null, start), start);
+  const end = start + QUIET_MS;
+  assert.equal(decideWaitForCi(quiet.state, seen(green, HEAD, null, start), end + WAIT_FOR_CI_QUIET_GRACE_MS - 1).kind, "wait");
+  const stalled = decideWaitForCi(quiet.state, seen(green, HEAD, null, start), end + WAIT_FOR_CI_QUIET_GRACE_MS);
+  assert.equal(stalled.kind === "block" && stalled.code, "ci_timeout");
+  assert.match(stalled.kind === "block" ? stalled.detail : "", /No new CI observation arrived to finish the quiet period within 15 minutes/);
+  assert.equal(WAIT_FOR_CI_QUIET_GRACE_MS, 15 * 60_000);
+  // A period that started long before the timeout and then stalled is already out of grace.
+  const early = decideWaitForCi(state(), seen(green, HEAD, null, T0 + 10), T0 + 10);
+  const stale = decideWaitForCi(early.state, seen(green, HEAD, null, T0 + 10), LIMIT);
+  assert.equal(stale.kind === "block" && stale.code, "ci_timeout");
+  // A green set first seen after the timeout cannot start one: nothing was running to finish.
+  const fresh = decideWaitForCi(state(), seen(green, HEAD, null, LIMIT + 1), LIMIT + 1);
+  assert.equal(fresh.kind === "block" && fresh.code, "ci_timeout");
 });
 
 test("a node with no proven head blocks rather than guessing one", () => {
@@ -273,9 +372,93 @@ test("the verdicts cite the attempt and carry each failing check's own words", (
   assert.equal(verdict.requestedChanges[0]!.title, 'Fix the failing CI check "unit (node 24)"');
   assert.match(verdict.requestedChanges[0]!.rationale, /2 tests failed[\s\S]*failed twice[\s\S]*https:\/\/ci\/unit/);
   assert.deepEqual(verdict.requestedChanges[0]!.evidence, [{ kind: "check", path: "attempt-1", quote: "2 tests failed" }]);
-  const passing = decideWaitForCi(state(), seen([run("unit", "passing"), run(FLAKY_TESTS_CHECK_NAME, "passing")], HEAD, REPORT), T0 + 1);
+  const passing = settle([run("unit", "passing"), run(FLAKY_TESTS_CHECK_NAME, "passing")], REPORT);
   if (passing.kind !== "pass") return assert.fail("expected a pass");
   assert.match(waitForCiVerdict(passing, "attempt-2")?.summary ?? "", /1 flaky test that passed on rerun/);
+});
+
+// ---- legacy states and downgrade ---------------------------------------------------------
+
+/** `WaitForCiStateSchema` exactly as it shipped before the quiet period, kept as a fixture. */
+const PRE_QUIET_STATE_SCHEMA = z.object({
+  kind: z.literal("wait_for_ci"),
+  pullRequestKey: z.string().nullable(),
+  pullRequestUrl: z.string().nullable(),
+  pullRequestNumber: z.number().int().nullable(),
+  expectedHeadOid: z.string().nullable(),
+  reportedHeadOid: z.string().nullable().optional(),
+  waitingSince: z.number(),
+  timeoutMinutes: z.number().int(),
+  observedAt: z.number().nullable(),
+  checkRuns: z.array(z.object({
+    name: z.string().max(500),
+    state: z.enum(["pending", "passing", "failing"]),
+    conclusion: z.string().max(100).nullable(),
+    detailsUrl: z.string().max(2_000).nullable(),
+    title: z.string().max(300).nullable(),
+    summary: z.string().max(1_500).nullable(),
+  })).max(100),
+  greenWithoutReportSince: z.number().nullable(),
+  outcome: z.enum(["pass", "fail", "blocked"]).nullable(),
+  flakeReport: z.unknown().nullable(),
+  blocked: z.object({
+    code: z.enum(["ci_flake_report_missing", "ci_missing", "ci_timeout", "ci_pull_request_unknown"]),
+    detail: z.string(),
+  }).nullable(),
+  disabled: z.boolean().optional(),
+});
+
+test("every state the node writes carries a null greenWithoutReportSince and parses under the old schema", () => {
+  const green = [run("unit", "passing")];
+  // An attempt an older daemon left mid-grace: its stale field is dropped on the next decision.
+  const legacy = state({ greenWithoutReportSince: T0 + 5 });
+  const quiet = decideWaitForCi(legacy, seen(green), T0 + 2);
+  const states = [
+    initialWaitForCiState({ pullRequestKey: null, pullRequestUrl: null, pullRequestNumber: null, expectedHeadOid: HEAD, timeoutMinutes: 45, now: T0 }),
+    quiet.state,
+    decideWaitForCi(quiet.state, seen(green, HEAD, REPORT, T0 + 2 + QUIET_MS), T0 + 2 + QUIET_MS).state,
+    decideWaitForCi(legacy, seen([run("unit", "failing")]), T0 + 2).state,
+    decideWaitForCi(legacy, seen([run("unit", "pending")]), LIMIT).state,
+    decideWaitForCi(legacy, null, LIMIT).state,
+    decideWaitForCi(legacy, null, T0 + 2, conflict()).state,
+    decideWaitForCi(state({ expectedHeadOid: null, greenWithoutReportSince: T0 }), null, T0 + 2).state,
+  ];
+  assert.equal(quiet.state.quietSince, T0 + 1);
+  for (const written of states) {
+    assert.equal(written.greenWithoutReportSince, null, JSON.stringify(written));
+    assert.equal(WaitForCiStateSchema.safeParse(written).success, true);
+    const old = PRE_QUIET_STATE_SCHEMA.safeParse(JSON.parse(JSON.stringify(written)));
+    assert.equal(old.success, true, old.success ? "" : old.error.message);
+  }
+});
+
+test("legacy attempt states judge under the frozen legacy settings, and a re-judged flake-report block passes", () => {
+  assert.deepEqual(WAIT_FOR_CI_LEGACY_SETTINGS, { strictness: "all", quietMinutes: 3, expectedChecks: [] });
+  // Written before the quiet period existed: no `quietSince` at all, and it still parses.
+  const preQuiet: Record<string, unknown> = { ...state(), greenWithoutReportSince: T0 + 5 };
+  delete preQuiet.quietSince;
+  const legacy = WaitForCiStateSchema.parse(preQuiet);
+  assert.equal("quietSince" in legacy, false);
+  const green = [run("unit", "passing")];
+  assert.equal(settle(green, null, legacy).kind, "pass");
+  // A run an older daemon blocked as `ci_flake_report_missing`. "Wait for CI again" re-creates
+  // the attempt through `initialWaitForCiState` (store.ts), and the fresh wait passes green
+  // CI under the current rules.
+  const blocked = {
+    ...legacy,
+    outcome: "blocked" as const,
+    checkRuns: green,
+    observedAt: T0 + 5,
+    blocked: { code: "ci_flake_report_missing" as const, detail: 'Every check passed, but no "Flaky tests" check appeared on the head commit.' },
+  };
+  assert.equal(PRE_QUIET_STATE_SCHEMA.safeParse(blocked).success, true);
+  const rewait = initialWaitForCiState({ ...blocked, now: T0 + 60 * 60_000 });
+  assert.equal(rewait.quietSince, null);
+  assert.equal(rewait.blocked, null);
+  const at = T0 + 60 * 60_000;
+  const first = decideWaitForCi(rewait, seen(green, HEAD, null, at), at);
+  assert.equal(first.kind, "wait");
+  assert.equal(decideWaitForCi(first.state, seen(green, HEAD, null, at + QUIET_MS), at + QUIET_MS).kind, "pass");
 });
 
 // ---- merge conflicts -------------------------------------------------------------------------
@@ -321,12 +504,10 @@ test("push, then UNKNOWN, then resolved: the kept pre-repair conflict never fail
   assert.equal(kept.state.outcome, null);
   // GitHub answers for the repair head: mergeable, so the checks decide.
   const resolved = { mergeable: "mergeable", headSha: HEAD, baseRef: "main" } as const;
-  const passed = decideWaitForCi(
-    kept.state,
-    seen([run("unit", "passing"), run(FLAKY_TESTS_CHECK_NAME, "passing")], HEAD, REPORT),
-    T0 + 2,
-    resolved,
-  );
+  const green = [run("unit", "passing")];
+  const quiet = decideWaitForCi(kept.state, seen(green, HEAD, null, T0 + 2), T0 + 2, resolved);
+  assert.equal(quiet.kind, "wait");
+  const passed = decideWaitForCi(quiet.state, seen(green, HEAD, null, T0 + 2 + QUIET_MS), T0 + 2 + QUIET_MS, resolved);
   assert.equal(passed.kind, "pass");
 });
 

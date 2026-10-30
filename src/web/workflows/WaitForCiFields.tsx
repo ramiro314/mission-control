@@ -51,7 +51,7 @@ export function WaitForCiTimeoutField({
 
 /** What the node does, said once for both editors. */
 export const WAIT_FOR_CI_EXPLANATION =
-  "Waits for the pull request's CI on the head the Pull Request action proved. Green CI passes, "
-  + "including green with flaky tests that passed on rerun. A failing check returns to the session "
-  + "with each failing check named. It blocks the run when CI times out, never appears, or has no "
-  + "\"Flaky tests\" check. It reads CI through the GitHub Inspector, which must be on.";
+  "Waits for the pull request's CI on the head the Pull Request action proved. It passes once "
+  + "every check has passed and stayed settled for a 3-minute quiet period, and returns a "
+  + "failing check to the session by name. It blocks the run when CI times out or never "
+  + "appears. It reads CI through the GitHub Inspector, which must be on.";

@@ -144,7 +144,7 @@ approved in one commit: a `changes` job that decides whether a pull request touc
 docs patterns, the approved heavy jobs gated on it, an optional `docs checks` job, and one
 always-reporting `CI result` job. The two step scripts ship in the skill's `assets/` and are
 pasted verbatim, with every input passed through `env`. A testing-setup `flake report` job is
-never gated, because Wait for CI needs its "Flaky tests" check on every run; the form proposes
+never gated, so a docs-only run still publishes its (empty) flake report; the form proposes
 `!cancelled()` on it when it would not run after skipped test jobs. A job whose own `if:` can
 skip it on an ordinary pull request (draft, label or fork conditions) stays out of `CI result`,
 which would otherwise read that skip as a failure, and the report says `CI result` does not

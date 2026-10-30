@@ -509,7 +509,8 @@ test("the shipped testing-setup skill audits, asks once, applies only what was a
   // Both verification steps.
   assert.match(text, /\*\*One local `affected-tests` run\.\*\*/);
   assert.match(text, /\*\*The "Flaky tests" check on the setup pull request's own CI\.\*\*/);
-  assert.match(text, /`ci_flake_report_missing`/);
+  assert.match(text, /Without this check the Wait for CI node still passes green CI/);
+  assert.doesNotMatch(text, /`ci_flake_report_missing`/);
   // The agent commits; the workflow or Foreman opens the setup pull request.
   assert.match(text, /\*\*Commit all of it\*\* on the task branch\. Do not push or open a pull request yourself/);
   assert.doesNotMatch(text, /Open one pull request/);

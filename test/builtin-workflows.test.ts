@@ -1501,6 +1501,32 @@ test("No-Mistakes Review (Affected tests) is No-Mistakes Review with affected te
   }
 });
 
+test("No-Mistakes Review (Affected tests) froze its Wait for CI node, and dropping the Flaky tests gate did not touch it", async () => {
+  const { NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_ID } = await import("../src/shared/builtin-workflow.ts");
+  const builtin = BUILTIN_WORKFLOWS.find((candidate) =>
+    candidate.definition.id === NO_MISTAKES_REVIEW_AFFECTED_TESTS_WORKFLOW_ID)!;
+  // The graphs as they shipped, before the gate went: no new version, and no byte moved.
+  assert.equal(sha256(JSON.stringify(builtin.definition.draft)), "524bd1d020e115926fb1035b4ecaf6623aa0da0ed969e516422f65d35c913a9f");
+  assert.deepEqual(builtin.versions.map((version) => sha256(JSON.stringify(version.graph))), [
+    "a64e41bdde332095d2bf25f2af5f31c3db132fa3a7409865fd3da4b8b8f94d67",
+    "b1e16b5fb79f4f3d2cafb62f08c7f7af8522230a700d8552b37a2e8b2a275b55",
+    "41cf4a01ecffeeb5ea07fb51b21f3c73835f75bebb1e128eb7b2f110eb3e4d61",
+  ]);
+  // Every version omits the node's settings, so each judges under the legacy constant.
+  for (const version of builtin.versions) {
+    const ci = version.graph.nodes.find((node) => node.kind === "wait_for_ci")!;
+    assert.deepEqual(Object.keys(ci).sort(), ["id", "kind", "position", "timeoutMinutes"], version.id);
+  }
+  // The timeout is a literal, so a frozen version never follows the editor's live default.
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/server/workflows/builtin-workflows.ts", import.meta.url), "utf8");
+  const v1 = source.slice(source.indexOf("const NO_MISTAKES_REVIEW_AFFECTED_TESTS_V1"));
+  assert.match(v1.slice(0, v1.indexOf("\n};\n")), /kind: "wait_for_ci",\n\s+\/\/[^\n]*\n\s+timeoutMinutes: 45,/);
+  assert.doesNotMatch(source, /WAIT_FOR_CI_TIMEOUT_MINUTES/);
+  assert.doesNotMatch(builtin.definition.description, /flake|Flaky/);
+  assert.match(builtin.definition.description, /every check on the pull request's head has passed and stayed settled for three minutes/);
+});
+
 test("Local Plan Validation is append-only review work with no PR action or completion gate", () => {
   const local = BUILTIN_WORKFLOWS.find((workflow) => workflow.definition.id === "builtin-workflow:local-plan-validation")!;
   assert.ok(local);

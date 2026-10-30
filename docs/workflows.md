@@ -329,9 +329,9 @@ change touched, and a [Wait for CI](#wait-for-ci) stage follows the Pull Request
 full suite runs in GitHub CI before the run can end. Everything else - judges, routing,
 completion policy, delivery, resumption, and repair rounds - matches High Rigor. Version 1 is
 authored on GPT-5.6 routing and version 2 moves it to `gpt-6-sol`, like the others. It is not a
-kind default: bind it, or choose it under **Dispatch defaults**, in a repository whose CI
-publishes the ["Flaky tests" check](flaky-tests.md#the-flaky-tests-check). Without that check,
-Wait for CI blocks the run rather than passing it.
+kind default: bind it, or choose it under **Dispatch defaults**. It works on any repository whose
+CI runs on pull requests. When that CI also publishes the
+["Flaky tests" check](flaky-tests.md#the-flaky-tests-check), the run lists the flaky tests too.
 Their earlier versions remain available with their original review graphs and completion policies.
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
@@ -821,15 +821,34 @@ the pull request. The node is decided from that stored snapshot whenever the Ins
 on the workflow's fifteen-second sweep, so **the Inspector must be on** for it to see CI. Failure
 detail comes from each check's own title and summary; CI logs are not read.
 
+Every check on the head counts, and none is exempt or required by name. Skipped and neutral
+checks count as passing.
+
 | CI on the head | Outcome |
 | --- | --- |
 | The pull request conflicts with its base on this head | **Fail**, before anything else: a repair packet asks for one change, "Resolve merge conflicts with `<base>`". |
 | Any check still running, or nothing reported yet | Keeps waiting. |
-| Every check finished, one or more failing (other than "Flaky tests") | **Fail**: a repair packet asks for one change per failing check, with its conclusion, title, summary excerpt, and link. |
-| Every check passed, with a "Flaky tests" check | **Pass**, including green with flakes. The flake list is recorded on the attempt. |
-| Every check passed, no "Flaky tests" check for five minutes | **Blocks** the run: `ci_flake_report_missing`. |
+| Every check finished, one or more failing | **Fail** at once, with no quiet period: a repair packet asks for one change per failing check, with its conclusion, title, summary excerpt, and link. |
+| Every check passed | The **quiet period** starts. It **passes** once every check has stayed settled and unchanged for 3 minutes. The flake report is recorded on the attempt when CI published one. |
 | Nothing appeared on the head by the timeout | **Blocks**: `ci_missing`. |
-| Still running at the timeout | **Blocks**: `ci_timeout`. |
+| Still running at the timeout, or never settled for the quiet period | **Blocks**: `ci_timeout`, naming the checks still running. |
+| Blocked as `ci_flake_report_missing` by an earlier build | Stays blocked. That build required a "Flaky tests" check; nothing produces this block any more, and **Wait for CI again** judges the run under the current rules. |
+
+**The quiet period** stands in for a signal that CI has finished. CI has no such signal, and a
+check that every other job waits for can still appear after the rest have passed. The period
+is measured on Inspector observations, never assumed from the clock. It starts at the
+observation that first saw every check settled, and the node passes on an observation at
+least 3 minutes later that saw the same checks, each with the same state and conclusion. Any
+change starts it again, and a check that goes back to running stops it. The Inspector polls a
+pull request about every 90 seconds, so a quiet period spans two or three polls; the
+fifteen-second sweep re-decides the same observation and cannot pass the node on its own.
+
+**At the timeout**, a quiet period already running may still finish, but it never starts or
+restarts. It is decided on the first new observation at or after its end: the same checks
+pass, and changed checks block as `ci_timeout`. The Inspector reviews one pull request at a
+time, so that observation can arrive minutes late. If none arrives within 15 minutes of the
+period's end, the node blocks as `ci_timeout` anyway. A check that starts running again past
+the timeout blocks at once.
 
 **Merge conflicts.** GitHub runs no `pull_request` workflows on a pull request that conflicts with
 its base, so without this the node would wait out its timeout and block as `ci_missing`. It also
@@ -846,13 +865,18 @@ round and counts against the run's repair budget. A conflict in a run that can n
 Wait for CI node goes to the operator instead; see
 [Blocked pull requests](attention-and-alerts.md).
 
-The "Flaky tests" check never fails the node: its jobs already fail on real failures. A block
-spends no repair round. When CI can be fixed without a new commit - rerun a stuck job, turn on
-a missing workflow - use **Wait for CI again** on the run, which waits on the same head with a
-fresh timeout. When the fix needs a new commit, such as adding the [flake report](flaky-tests.md)
-to CI, start a new round instead, so the new head is reviewed and pushed. A block the retry
-cannot fix (`ci_pull_request_unknown`: no pull request or head to watch) offers only the new
-round. Disabling the node for a run passes it without reading CI.
+"Flaky tests" is an ordinary check: when it fails, the node fails like it would for any other
+check. When it is present, its [flake report](flaky-tests.md) adds the flake list to a pass. A
+block spends no repair round. When CI can be fixed without a new commit - rerun a stuck job,
+turn on a missing workflow - use **Wait for CI again** on the run, which waits on the same head
+with a fresh timeout and a fresh quiet period. When the fix needs a new commit, start a new
+round instead, so the new head is reviewed and pushed. A block the retry cannot fix
+(`ci_pull_request_unknown`: no pull request or head to watch) offers only the new round.
+Disabling the node for a run passes it without reading CI.
+
+A blocked Wait for CI can be judged again from the dashboard or by the session itself with
+trigger_workflow_action `retry`. Disabling the node passes it without checking CI; leave that to
+the operator.
 
 A fail is an ordinary repair round: the session fixes the change, the round runs the whole
 pipeline again, the Pull Request action pushes the new head, and the node waits on that head.
@@ -860,8 +884,11 @@ A path from a Pull Request action through Wait for CI to End still counts as a s
 continuation, so it keeps the evidence-readiness exemption and the **verified shipping** label.
 
 The run view shows what the node is waiting for - the pull request, the head, elapsed time
-against the limit - and the checks with their states. On a fail it lists the failing checks; on
-a pass it lists the flaky tests with their history issues; on a block it says why in plain words.
+against the limit - and the checks with their states. During the quiet period its headline says
+every check has settled and how much of the period the observations so far cover; the stage
+chip stays "Waiting for CI". On a fail it lists the failing checks; on a pass with a flake
+report it lists the flaky tests with their history issues; on a block it says why in plain
+words.
 
 ### Command nodes
 

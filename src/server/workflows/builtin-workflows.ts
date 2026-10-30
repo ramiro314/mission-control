@@ -42,7 +42,6 @@ import {
   type StagePipeline,
 } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
-import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "@shared/wait-for-ci.ts";
 import { LEGACY_PULL_REQUEST_PROMPT } from "./pull-request-guidance-snapshot.ts";
 import { LEGACY_DOCUMENTATION_GUIDANCE } from "./documentation-guidance-snapshots.ts";
 import {
@@ -922,7 +921,8 @@ const NO_MISTAKES_REVIEW_AFFECTED_TESTS_V1: StagePipeline = {
       members: [{
         nodeId: NO_MISTAKES_REVIEW_NODES.waitForCi,
         kind: "wait_for_ci",
-        timeoutMinutes: WAIT_FOR_CI_TIMEOUT_MINUTES.default,
+        // A literal: a published version never follows a later change to the editor's default.
+        timeoutMinutes: 45,
       }],
     },
   ],
@@ -1809,9 +1809,9 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     description:
       "No-Mistakes Review with local tests narrowed to the files a change affects: typecheck, "
       + "affected tests, and lint, then the same eight review roles and the verified pull request. "
-      + "Wait for CI then holds the run until the pull request's full CI suite is green, passing "
-      + "when the only failures were flakes that passed on rerun and returning real failures for "
-      + "repair, before the final GitHub Inspector gate.",
+      + "Wait for CI then holds the run until every check on the pull request's head has passed "
+      + "and stayed settled for three minutes, returning real failures for repair, before the "
+      + "final GitHub Inspector gate.",
     versions: appendIssueClosingLineVersion(appendGpt6Version([{
       pipeline: NO_MISTAKES_REVIEW_AFFECTED_TESTS_V1,
       personaExecution: {

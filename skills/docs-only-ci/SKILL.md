@@ -72,8 +72,8 @@ Read the repository; change nothing yet. Record a finding for each item, with th
    that apply to the default branch with `gh api "repos/$repo/rules/branches/{default}"`.
    A 403 or 404 means "could not read branch protection", never "no required checks".
 7. **The testing-setup `flake-report` job.** When the repository has one, it is **never gated**:
-   Mission Control's Wait for CI needs its "Flaky tests" check on every run, docs-only included,
-   and with zero reports it publishes "No flaky tests". Its `if:` must let it run after its test
+   with zero reports it publishes "No flaky tests", so a docs-only run still publishes its
+   (empty) flake report. Its `if:` must let it run after its test
    jobs were skipped - `!cancelled()` or `always()`. If it has no `if:`, or one without a status
    function (`success()` is then implied, and skipped needs skip it too), propose
    `if: ${{ !cancelled() }}`.
