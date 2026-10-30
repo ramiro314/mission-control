@@ -1029,7 +1029,7 @@ let gitTrees = 0;
  * A repository and one `returning` Git check lease on a tree it registered. `at` places the
  * tree somewhere other than `check-worktrees/<attempt>`; `leasePath` records another path.
  */
-function gitCheckTree(opts: { at?: (attemptId: string) => string } = {}) {
+function gitCheckTree(opts: { at?: (attemptId: string) => string; relativePaths?: boolean } = {}) {
   const repo = realpathSync(mkdtempSync(join(home, "git-repo-")));
   git(repo, "init", "-q", "-b", "main");
   git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
@@ -1037,7 +1037,7 @@ function gitCheckTree(opts: { at?: (attemptId: string) => string } = {}) {
   const attemptId = `git-check-${++gitTrees}`;
   const path = opts.at?.(attemptId) ?? join(realpathSync(CHECK_WORKTREES_DIR), attemptId);
   mkdirSync(join(path, ".."), { recursive: true });
-  git(repo, "worktree", "add", "-q", "--detach", path);
+  git(repo, ...(opts.relativePaths ? ["-c", "worktree.useRelativePaths=true"] : []), "worktree", "add", "-q", "--detach", path);
   store.insertHeld({
     attemptId, submissionId: `sub-${attemptId}`, nodeId: "gate", repoRoot: repo, leasePath: path,
     holderToken: `mission-control-check-${attemptId}`, provider: "git", now: Date.now(),
@@ -1300,6 +1300,29 @@ test("deletion is refused for a tree outside check-worktrees and for one reached
   assert.ok(existsSync(real.path));
   abandon(real.attemptId);
   abandon(`${real.attemptId}-linked`);
+});
+
+test("a tree registered with relative paths is still recognized, and keeps today's failed return", async () => {
+  // `worktree.useRelativePaths` writes both pointers relative to their own directory, so the
+  // back-pointer must be resolved against the Git directory, never the daemon's cwd.
+  const tree = gitCheckTree({ relativePaths: true });
+  const gitdir = join(tree.repo, ".git", "worktrees", tree.attemptId);
+  assert.ok(!readFileSync(join(gitdir, "gitdir"), "utf8").startsWith("/"), "the fixture wrote a relative back-pointer");
+  git(tree.repo, "worktree", "lock", tree.path);
+  let deleted = false;
+  const { manager } = gitManager(tree.repo, {
+    removeTree: async () => {
+      deleted = true;
+    },
+  });
+
+  const result = await manager.releaseForAttempt(tree.attemptId, empty);
+  const reason = result.outcome === "retry" ? result.reason : "";
+  assert.match(reason, /cannot remove a locked working tree/);
+  assert.doesNotMatch(reason, /not deleted|deleting/);
+  assert.equal(deleted, false);
+  assert.ok(existsSync(join(tree.path, ".git")));
+  abandon(tree.attemptId);
 });
 
 test("retryReturning deletes such a tree only with the group recovery it is handed", async () => {

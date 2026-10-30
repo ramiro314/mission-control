@@ -810,8 +810,10 @@ async function gitRecognition(tree: string): Promise<"recognized" | "unrecognize
     return `${marker} could not be read: ${errorMessage(err)}`;
   }
   try {
-    const back = await readFile(join(gitdir, "gitdir"), "utf8");
-    return canonicalWorktreePath(back.trim()) === canonicalWorktreePath(marker) ? "recognized" : "unrecognized";
+    // `worktree.useRelativePaths` writes this back-pointer relative to the Git directory, so it
+    // is resolved there, never against the daemon's cwd.
+    const back = resolve(gitdir, (await readFile(join(gitdir, "gitdir"), "utf8")).trim());
+    return canonicalWorktreePath(back) === canonicalWorktreePath(marker) ? "recognized" : "unrecognized";
   } catch (err) {
     if (errorCode(err) === "ENOENT" || errorCode(err) === "ENOTDIR") return "unrecognized";
     return `${join(gitdir, "gitdir")} could not be read: ${errorMessage(err)}`;
