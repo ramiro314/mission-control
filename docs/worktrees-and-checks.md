@@ -971,7 +971,9 @@ The operations have deliberately narrow meanings:
   reason keeps Forget on the card however far the delete got, a restart included, so the slot can
   always be finished. No maintenance pass clears it or repairs the slot, and the card stops offering
   Recover, which refuses it: a reset keeps ignored files and the slot's dependency state, so it could
-  hand a partly deleted install to the next lease as a warm one. Forget or Destroy finishes it.
+  hand a partly deleted install to the next lease as a warm one. Forget or Destroy finishes it. The
+  reason stays through any later quarantine, so a Destroy that is itself cut off does not bring
+  Recover back, and the card shows the newer reason as its detail.
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
   adapter. There is no force action for unverifiable or foreign resources.
 - **Warm** prepares idle slots ahead of time: it holds each under a `warm` lease, fetches, resets

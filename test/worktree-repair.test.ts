@@ -2000,3 +2000,82 @@ test("a Forget cut off with .git intact is never recovered: a partly deleted ins
   await service.execute((await service.preview({ action: "forget", slotId: slot.slotId })).token, [...FORGET_ACK]);
   assert.equal(m.store.slot(slot.slotId), null);
 });
+
+/** A slot a Forget was cut off in, with `.git` and its registration intact, as Destroy would find it. */
+async function cutOffForget(git?: NativeWorktreeGit) {
+  const { clone, sha } = repository("mission-forget-then-destroy-");
+  const m = new WorktreeManager(db, {
+    ...deps,
+    ...(git ? { git } : {}),
+    removeTree: async () => { throw new Error("EACCES: permission denied"); },
+  });
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-then-destroy", INTERRUPTED_PRUNE);
+  db.prepare("UPDATE worktree_slots SET deps_state = 'current' WHERE id = ?").run(slot.slotId);
+  assert.equal((await m.forgetSlot({ slotId: slot.slotId })).outcome, "outcomeUnknown");
+  assert.equal(m.store.slot(slot.slotId)?.quarantineReason, INTERRUPTED_FORGET);
+  return { m, slot, clone };
+}
+
+async function assertNeverRecovered(m: WorktreeManager, slotId: string) {
+  const row = m.store.slot(slotId)!;
+  assert.equal(row.state, "quarantined");
+  assert.equal(row.quarantineReason, INTERRUPTED_FORGET);
+  const actions = await forgetActions(operationsFor(m), slotId);
+  assert.equal(actions.includes("recover"), false);
+  assert.equal(actions.includes("repair"), false);
+  assert.equal(actions.includes("forget"), true);
+  assert.deepEqual(await m.recoverSlot({ slotId, allowDirty: true, automatic: false }), {
+    outcome: "refused", reason: RECOVER_REFUSES_INTERRUPTED_FORGET,
+  });
+}
+
+test("a Destroy cut off on a Forget's slot keeps the Forget's reason when reconcile finds it, so Recover stays away", async () => {
+  const { m, slot, clone } = await cutOffForget();
+  assert.ok(m.store.markPruning(slot.slotId, m.store.slot(slot.slotId)!.version, Date.now()));
+  assert.equal(registered(clone, slot.path), true);
+
+  await m.reconcile();
+  await assertNeverRecovered(m, slot.slotId);
+  assert.equal(m.store.slot(slot.slotId)?.lastError, INTERRUPTED_PRUNE, "what happened next stays on the card");
+});
+
+test("a Destroy that cannot verify its removal keeps the Forget's reason too", async () => {
+  class UnverifiedRemove extends NativeWorktreeGit {
+    override async remove() {
+      return { ok: true as const, value: undefined };
+    }
+  }
+  const { m, slot } = await cutOffForget(new UnverifiedRemove());
+  const result = await m.removeSlot({ slotId: slot.slotId, allowDirty: true, allowUnmerged: true });
+  assert.deepEqual(result, { outcome: "outcomeUnknown", reason: UNVERIFIED_REMOVAL });
+  await assertNeverRecovered(m, slot.slotId);
+});
+
+test("a Destroy cut off on a locked registration does not hand the slot back to automatic Repair", async () => {
+  const { m, slot } = await cutOffForget();
+  lockInitializing(slot.administrative);
+  assert.ok(m.store.markPruning(slot.slotId, m.store.slot(slot.slotId)!.version, Date.now()));
+
+  await m.reconcile();
+  await m.recoverQuarantines();
+  assert.equal(existsSync(join(slot.administrative, "locked")), true, "no pass ran Git's fix on it");
+  await assertNeverRecovered(m, slot.slotId);
+});
+
+test("the store keeps a cut-off Forget's reason and records the arriving one as detail, in the row and its history", async () => {
+  const { clone, sha } = repository("mission-forget-sticky-");
+  const m = managerWith();
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-sticky", INTERRUPTED_FORGET);
+
+  const kept = m.store.quarantine(slot.slotId, "worktree reset failed", "fatal: bad object", Date.now())!;
+  assert.equal(kept.quarantineReason, INTERRUPTED_FORGET);
+  assert.equal(kept.lastError, "fatal: bad object", "an arriving detail is kept as it is");
+  const newest = m.store.slotHistory(slot.slotId).entries[0]!;
+  assert.deepEqual([newest.reason, newest.detail], [INTERRUPTED_FORGET, "fatal: bad object"]);
+
+  const named = m.store.quarantine(slot.slotId, "worktree reset failed", null, Date.now())!;
+  assert.equal(named.lastError, "worktree reset failed", "with no detail, the arriving reason takes its place");
+
+  const other = await quarantinedSlot(m, clone, sha, "task-forget-sticky-other", INTERRUPTED_PRUNE);
+  assert.equal(m.store.quarantine(other.slotId, "worktree reset failed", null, Date.now())?.quarantineReason, "worktree reset failed", "any other reason is replaced as before");
+});

@@ -12,7 +12,7 @@ import {
   type WorktreeTimingView,
 } from "../../shared/worktrees.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
-import { splitObservationFailure } from "./quarantine-reasons.ts";
+import { INTERRUPTED_FORGET, splitObservationFailure } from "./quarantine-reasons.ts";
 
 export const WORKTREE_SLOT_STATES = [
   "provisioning",
@@ -830,6 +830,10 @@ export class WorktreeStore {
    * `withdrawGrant` is for a reservation quarantined before its lease was ever handed to the
    * owner: the owner cannot hold or release an identity it never received, so the slot keeps
    * its quarantine but drops the active identity in the same compare-and-swap.
+   *
+   * A slot a Forget was cut off in keeps that reason whatever quarantines it next, a cut-off Destroy
+   * included, because it is what keeps Recover and Repair away from a partly deleted install. The
+   * reason that arrived is kept as the detail.
    */
   quarantine(
     slotId: string,
@@ -840,10 +844,13 @@ export class WorktreeStore {
     withdrawGrant = false,
     actor: WorktreeHistoryActor = "automatic",
   ): WorktreeSlotRow | null {
+    const kept = this.slot(slotId)?.quarantineReason === INTERRUPTED_FORGET && reason !== INTERRUPTED_FORGET;
+    const recordedReason = kept ? INTERRUPTED_FORGET : reason;
+    const recordedError = kept ? error ?? reason : error;
     const where = expectedVersion === undefined ? "id = ?" : "id = ? AND version = ?";
     const args = expectedVersion === undefined
-      ? [now, reason, error, now, slotId]
-      : [now, reason, error, now, slotId, expectedVersion];
+      ? [now, recordedReason, recordedError, now, slotId]
+      : [now, recordedReason, recordedError, now, slotId, expectedVersion];
     const withdraw = withdrawGrant
       ? "active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL,"
       : "";
@@ -860,7 +867,7 @@ export class WorktreeStore {
              quarantine_reason = ?, last_error = ?, updated_at = ? WHERE ${where}`,
         )
         .run(...args),
-      () => ({ reason, detail: error, actor }),
+      () => ({ reason: recordedReason, detail: recordedError, actor }),
     );
   }
 
