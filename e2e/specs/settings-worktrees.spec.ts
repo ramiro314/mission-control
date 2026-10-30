@@ -460,18 +460,6 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
   await shoot(dashboard, "09-quarantined-destroy-complete");
 });
 
-/**
- * The card says why a slot is stuck, one fact per line: the quarantine reason and Git's detail
- * (the detail used to be hidden whenever a reason existed), the last automatic-recovery refusal
- * with the exact path that blocked it, and the processes inside the slot with PID, command and
- * start time.
- *
- * The slot, its reason, its detail and its occupant are real: a live manual lease quarantined in
- * the row, and a process started with its working directory in the slot. The refusal is spliced
- * into the daemon's own inventory response, because the e2e daemon runs no maintenance pass and
- * automatic recovery runs nowhere else; `test/worktree-recover.test.ts` proves the pass records
- * it and that inventory carries it.
- */
 /** The executable name is all that names an IDE helper, so `argv0` is the whole fixture. */
 test("a slot card names a known occupant and still counts it", async ({ dashboard, daemon }) => {
   const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
@@ -510,6 +498,18 @@ test("a slot card names a known occupant and still counts it", async ({ dashboar
   }
 });
 
+/**
+ * The card says why a slot is stuck, one fact per line: the quarantine reason and Git's detail
+ * (the detail used to be hidden whenever a reason existed), the last automatic-recovery refusal
+ * with the exact path that blocked it, and the processes inside the slot with PID, command and
+ * start time.
+ *
+ * The slot, its reason, its detail and its occupant are real: a live manual lease quarantined in
+ * the row, and a process started with its working directory in the slot. The refusal is spliced
+ * into the daemon's own inventory response, because the e2e daemon runs no maintenance pass and
+ * automatic recovery runs nowhere else; `test/worktree-recover.test.ts` proves the pass records
+ * it and that inventory carries it.
+ */
 test("a quarantined slot card shows its reason, detail, last automatic-recovery refusal and occupants on separate lines", async ({
   dashboard,
   daemon,
