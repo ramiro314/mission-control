@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { after, afterEach, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
 import { WorktreeManager, type NativeWorktreeLease } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit, type WorktreeRegistration } from "../src/server/worktrees/git.ts";
 import { slotGitDirectory } from "../src/server/worktrees/index-lock.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
+import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
 import { WorktreeOperationError, WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import {
@@ -45,14 +46,14 @@ afterEach(() => {
 after(() => db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;"));
 
 /** An origin that ignores a warm install, and a clone of it. */
-function repository(prefix: string): { clone: string; sha: string } {
+function repository(prefix: string, ignore = "node_modules/\n"): { origin: string; clone: string; sha: string } {
   const { origin, clone } = mkOriginAndClone(prefix);
-  writeFileSync(join(origin, ".gitignore"), "node_modules/\n");
+  writeFileSync(join(origin, ".gitignore"), ignore);
   gitIn(origin, "add", ".gitignore");
   gitIn(origin, "commit", "-qm", "ignore");
   gitIn(clone, "fetch", "-q", "origin");
   gitIn(clone, "reset", "-q", "--hard", "origin/main");
-  return { clone, sha: gitIn(clone, "rev-parse", "HEAD") };
+  return { origin, clone, sha: gitIn(clone, "rev-parse", "HEAD") };
 }
 
 /** A slot quarantined for its registration, with a warm install and no owner left. */
@@ -724,4 +725,226 @@ test("execute reports a listing that failed after an allowed preview as unavaila
   });
   assert.deepEqual(m.store.slot(slot.slotId), row);
   assert.equal(existsSync(join(slot.administrative, "locked")), true);
+});
+
+for (const fix of ["unlock", "repair"] as const) {
+  test(`a git worktree ${fix} that throws is an unknown outcome, in a pass and through execute`, async () => {
+    const { clone, sha } = repository(`mission-repair-throws-${fix}-`);
+    class ThrowingFix extends NativeWorktreeGit {
+      override async unlock(): Promise<never> {
+        throw new Error("spawn git EAGAIN");
+      }
+
+      override async repair(): Promise<never> {
+        throw new Error("spawn git EAGAIN");
+      }
+    }
+    const m = managerWith(new ThrowingFix());
+    const service = operationsFor(m);
+    const slot = await quarantinedSlot(m, clone, sha, `task-repair-throws-${fix}`);
+    const broken = fix === "unlock" ? join(slot.administrative, "locked") : join(slot.path, ".git");
+    if (fix === "unlock") lockInitializing(slot.administrative);
+    else rmSync(broken);
+    const before = existsSync(broken);
+    const row = m.store.slot(slot.slotId)!;
+    const preview = await service.preview({ action: "repair", slotId: slot.slotId });
+    assert.equal(preview.allowed, true, preview.blockers.join("; "));
+
+    assert.deepEqual(await m.repairSlot({ slotId: slot.slotId }), {
+      outcome: "outcomeUnknown", reason: "Error: spawn git EAGAIN",
+    });
+    await m.recoverQuarantines();
+    assert.equal(m.recoveryRefusal(row)?.reason, "Error: spawn git EAGAIN");
+    await assert.rejects(service.execute(preview.token, []), (error: unknown) => {
+      assert.ok(error instanceof WorktreeOperationError);
+      assert.equal(error.status, 503);
+      assert.equal(error.code, "unavailable");
+      return true;
+    });
+
+    assert.deepEqual(m.store.slot(slot.slotId), row);
+    assert.equal(existsSync(broken), before);
+  });
+}
+
+test("a registration that already reads healthy runs no Git fix, and Execute still recovers the slot", async () => {
+  const { clone, sha } = repository("mission-repair-preview-healthy-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-repair-preview-healthy");
+
+  const preview = await operations.preview({ action: "repair", slotId: slot.slotId });
+
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  assert.ok(preview.consequences.includes("Git's registration of this slot already reads healthy, so no Git fix runs."));
+  assert.equal(preview.consequences.some((line) => line.includes("git worktree")), false, preview.consequences.join("; "));
+  assert.equal((await operations.execute(preview.token, [])).ok, true);
+  assertRecovered(manager, slot);
+});
+
+test("a preview blocks unknown occupancy, and names the reason", async () => {
+  const { clone, sha } = repository("mission-repair-preview-unknown-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-repair-preview-unknown");
+  occupancyUnknown = "process listing timed out after 15 s";
+
+  const preview = await operations.preview({ action: "repair", slotId: slot.slotId });
+
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes("process listing timed out after 15 s"), preview.blockers.join("; "));
+});
+
+test("a preview blocks a slot quarantined for something else, and one not quarantined at all", async () => {
+  const { clone, sha } = repository("mission-repair-preview-other-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-repair-preview-other", "available slot is dirty");
+  const ordinal = manager.store.slot(slot.slotId)!.ordinal;
+
+  assert.equal((await slotActions(slot.slotId))?.includes("repair"), false);
+  const elsewhere = await operations.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal(elsewhere.allowed, false);
+  assert.ok(elsewhere.blockers.includes(`Slot ${ordinal}'s quarantine is not about its Git registration.`), elsewhere.blockers.join("; "));
+
+  const recovered = await manager.recoverSlot({ slotId: slot.slotId, allowDirty: false, automatic: false });
+  assert.equal(recovered.outcome, "recovered");
+  const available = await operations.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal(available.allowed, false);
+  assert.ok(available.blockers.includes(`Slot ${ordinal} is available, not quarantined.`), available.blockers.join("; "));
+});
+
+test("a pool whose marker cannot be proven blocks the preview, and is not offered on the card", async () => {
+  const { clone, sha } = repository("mission-repair-preview-marker-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-repair-preview-marker");
+  rmSync(join(dirname(dirname(slot.path)), WORKTREE_POOL_MARKER));
+
+  assert.equal((await slotActions(slot.slotId))?.includes("repair"), false);
+  const preview = await operations.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes("Exact native pool, marker and slot path are not all proven."), preview.blockers.join("; "));
+  assert.deepEqual(await manager.repairSlot({ slotId: slot.slotId }), {
+    outcome: "refused", reason: "native pool marker is missing or does not match",
+  });
+});
+
+test("a preview waits for an operation already queued on the slot", async () => {
+  const { clone, sha } = repository("mission-repair-preview-queued-");
+  const m = managerWith();
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-repair-preview-queued");
+  const ordinal = m.store.slot(slot.slotId)!.ordinal;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const repairSlot = m.repairSlot.bind(m);
+  let started = () => {};
+  const running = new Promise<void>((resolve) => { started = resolve; });
+  m.repairSlot = async (input) => {
+    started();
+    await held;
+    return repairSlot(input);
+  };
+
+  service.submit((await service.preview({ action: "repair", slotId: slot.slotId })).token, []);
+  await running;
+  const preview = await service.preview({ action: "repair", slotId: slot.slotId });
+  release();
+  await service.idle();
+
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes(`Slot ${ordinal} already has an operation queued; wait for it to finish.`), preview.blockers.join("; "));
+  assertRecovered(m, slot);
+});
+
+test("Repair answers for the slot it was given: one that is gone, moved on, or changed since it was read", async () => {
+  const { clone, sha } = repository("mission-repair-guards-");
+  const m = managerWith();
+  const slot = await quarantinedSlot(m, clone, sha, "task-repair-guards");
+  const row = m.store.slot(slot.slotId)!;
+
+  assert.deepEqual(await m.repairSlot({ slotId: "no-such-slot" }), {
+    outcome: "refused", reason: "native slot no longer exists",
+  });
+  assert.deepEqual(await m.repairSlot({ slotId: slot.slotId, expectedVersion: row.version - 1 }), {
+    outcome: "refused", reason: "slot changed after it was observed",
+  });
+  assert.equal((await m.repairSlot({ slotId: slot.slotId, expectedVersion: row.version })).outcome, "recovered");
+  assert.deepEqual(await m.repairSlot({ slotId: slot.slotId }), {
+    outcome: "refused", reason: "slot is available, not quarantined",
+  });
+});
+
+test("a default that moves onto ignored work between the check and the reset leaves it in place", async () => {
+  const { origin, clone, sha } = repository("mission-repair-moved-", "node_modules/\n.idea/\n");
+  let fetches = 0;
+  let armed = false;
+  class MovingDefaultGit extends NativeWorktreeGit {
+    override async fetchDefaultSha(identity: Parameters<NativeWorktreeGit["fetchDefaultSha"]>[0]) {
+      // The first fetch is the check's. The second is the reset's own, after the check passed.
+      if (armed && (fetches += 1) === 2) {
+        mkdirSync(join(origin, ".idea"));
+        writeFileSync(join(origin, ".idea", "workspace.xml"), "<shared/>\n");
+        gitIn(origin, "add", "-f", ".idea/workspace.xml");
+        gitIn(origin, "commit", "-qm", "share the workspace");
+      }
+      return super.fetchDefaultSha(identity);
+    }
+  }
+  const m = managerWith(new MovingDefaultGit());
+  const slot = await quarantinedSlot(m, clone, sha, "task-repair-moved");
+  lockInitializing(slot.administrative);
+  const ignored = join(slot.path, ".idea", "workspace.xml");
+  mkdirSync(join(slot.path, ".idea"));
+  writeFileSync(ignored, "precious\n");
+
+  armed = true;
+  await m.recoverQuarantines();
+
+  assert.equal(fetches, 2, "the check passed, so the reset fetched");
+  const row = m.store.slot(slot.slotId)!;
+  assert.equal(row.state, "quarantined");
+  assert.equal(row.quarantineReason, "registration repaired; holds work");
+  assert.match(row.lastError ?? "", /\.idea\//);
+  assert.equal(readFileSync(ignored, "utf8"), "precious\n");
+  assert.equal(gitIn(slot.path, "rev-parse", "HEAD"), sha);
+});
+
+test("execute reports a repair that holds work as done, and the slot keeps it for Recover", async () => {
+  const { clone, sha } = repository("mission-repair-execute-work-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-repair-execute-work");
+  lockInitializing(slot.administrative);
+  writeFileSync(join(slot.path, "notes.txt"), "keep me\n");
+  const preview = await operations.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+
+  assert.deepEqual(await operations.execute(preview.token, []), {
+    ok: true,
+    action: "repair",
+    message: "Registration repaired. A slot that holds work stays quarantined for Recover.",
+  });
+
+  assert.equal(manager.store.slot(slot.slotId)?.quarantineReason, "registration repaired; holds work");
+  assert.equal(readFileSync(join(slot.path, "notes.txt"), "utf8"), "keep me\n");
+  assert.equal((await slotActions(slot.slotId))?.includes("recover"), true);
+  assert.equal((await slotActions(slot.slotId))?.includes("repair"), false);
+});
+
+test("execute refuses an occupant that arrived after the preview", async () => {
+  const { clone, sha } = repository("mission-repair-execute-occupied-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-repair-execute-occupied");
+  lockInitializing(slot.administrative);
+  const preview = await operations.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const row = manager.store.slot(slot.slotId)!;
+
+  occupants = [occupant(slot.path, "node dev-server.js")];
+  await assert.rejects(operations.execute(preview.token, []), /changed after preview/);
+
+  assert.deepEqual(manager.store.slot(slot.slotId), row);
+  assert.equal(existsSync(join(slot.administrative, "locked")), true);
+});
+
+test("a preview names a repository whose identity can no longer be proven", async () => {
+  const { clone, sha } = repository("mission-repair-preview-identity-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-repair-preview-identity");
+  renameSync(clone, `${clone}-moved`);
+
+  const preview = await operations.preview({ action: "repair", slotId: slot.slotId });
+
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes("The pool's repository identity cannot be proven."), preview.blockers.join("; "));
 });
