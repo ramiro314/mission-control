@@ -1,4 +1,4 @@
-import { test, after } from "node:test";
+import { test, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -86,6 +86,8 @@ function world(options: {
   sessions?: { id: string }[];
   /** The supervisor's answer for every task. Null means no embedded session at all. */
   liveness?: boolean | null;
+  /** Whether a session's runtime is still up, which can outlast its registry row. */
+  handleFor?: (sessionId: string) => unknown;
   /** Host evidence for the settled-tree reclaim, which reads processes and Git directly. */
   startupDeps?: Pick<TaskManagerStartupDeps, "occupancy" | "returnBlocker">;
 } ) {
@@ -115,7 +117,7 @@ function world(options: {
     options.killSession ? ({ kill: options.killSession } as never) : undefined,
     // Nothing is alive, and nothing needs to be: every fixture here is already terminal, so
     // startup reconciliation settles them where they stand and touches no resource.
-    { taskLiveness: () => options.liveness ?? null, handleFor: () => undefined } as never,
+    { taskLiveness: () => options.liveness ?? null, handleFor: options.handleFor ?? (() => undefined) } as never,
     undefined,
     undefined,
     {
@@ -1132,6 +1134,12 @@ async function leave(w: ReturnType<typeof world>, session: ReturnType<typeof mkS
   await w.tasks.settleWorktreeReturns();
 }
 
+/** Advance mock timers, then let a sweep's `finally`, which holds the retry, run. */
+async function fire(t: TestContext, ms: number): Promise<void> {
+  t.mock.timers.tick(ms);
+  for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
 for (const status of ["cancelled", "failed"] as const) {
   test(`the last session leaving a ${status} task's tree reclaims it at once`, async () => {
     const id = uid("left");
@@ -1153,7 +1161,7 @@ for (const status of ["cancelled", "failed"] as const) {
   });
 }
 
-test("an agent's own departure settles its task and reclaims the clean tree in the same event", async () => {
+test("an agent's own departure settles its task and keeps the tree until a later session leaves", async () => {
   const id = uid("bound");
   const sessionId = uid("session");
   const w = reclaimWorld([
@@ -1162,6 +1170,10 @@ test("an agent's own departure settles its task and reclaims the clean tree in t
   await w.ready();
   await leave(w, arrive(w, sessionId, "/pool/a"));
   assert.equal(w.registry.getTask(id)?.status, "failed");
+  assert.deepEqual(w.state.teardowns, [], "an unrequested disappearance authorizes no teardown");
+
+  // The operator opens a shell in the retained tree, and that session's leaving finds it settled.
+  await leave(w, arrive(w, uid("session"), "/pool/a"));
   assert.deepEqual(w.state.teardowns, [id]);
 });
 
@@ -1228,16 +1240,44 @@ test("a second session in the tree holds the reclaim until it leaves too", async
   assert.deepEqual(w.state.teardowns, [id]);
 });
 
-test("a task's bound session keeps its trees even from outside them", async () => {
+test("a task's bound session keeps its trees from outside them, and its leaving asks again", async () => {
   const id = uid("bound-outside");
   const bound = uid("session");
   const w = reclaimWorld([
     baseTask({ id, status: "failed", sessionId: bound, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 }),
   ]);
   await w.ready();
-  arrive(w, bound, "/elsewhere");
+  const agent = arrive(w, bound, "/elsewhere");
   await leave(w, arrive(w, uid("session"), "/pool/a"));
   assert.deepEqual(w.state.teardowns, [], "reclaiming would stop the agent the task is still bound to");
+  await leave(w, agent);
+  assert.deepEqual(w.state.teardowns, [id], "no tree contains /elsewhere, so only the binding can ask");
+});
+
+test("a runtime outliving its session's row is waited for by the armed sweep alone", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const id = uid("handle");
+  const bound = uid("session");
+  let running = true;
+  const w = world({
+    tasks: [baseTask({ id, status: "failed", sessionId: bound, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+    handleFor: () => (running ? {} : undefined),
+    startupDeps: { occupancy: occupancy(), returnBlocker: async () => null },
+  });
+  await w.ready();
+  w.registry.applyDiscovery([]);
+  await fire(t, 1);
+  await leave(w, arrive(w, bound, "/pool/a"));
+  assert.deepEqual(w.state.teardowns, [], "the runtime has not stopped");
+  await fire(t, 1);
+  await fire(t, MISSION_SESSION_CLOSURE_RETRY_MS);
+  await w.tasks.settleWorktreeReturns();
+  assert.deepEqual(w.state.teardowns, [], "and it still has not");
+
+  running = false;
+  await fire(t, MISSION_SESSION_CLOSURE_RETRY_MS);
+  await w.tasks.settleWorktreeReturns();
+  assert.deepEqual(w.state.teardowns, [id], "no session_remove is coming, so the sweep had to ask");
 });
 
 test("a tree with work is kept and listed, and only a tree the session was inside is considered", async () => {
@@ -1275,11 +1315,6 @@ test("only a cancelled or failed task is reclaimed by a session leaving", async 
 
 test("a session leaving while the task's cleanup is queued is retried by the armed sweep alone", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  /** Let a sweep's `finally`, which holds the retry, run after its timer fires. */
-  const fire = async (ms: number): Promise<void> => {
-    t.mock.timers.tick(ms);
-    for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
-  };
   const id = uid("queued");
   let hold: (() => void) | null = null;
   const reading = new Promise<void>((resolve) => { hold = resolve; });
@@ -1301,7 +1336,7 @@ test("a session leaving while the task's cleanup is queued is retried by the arm
   );
   await w.ready();
   w.registry.applyDiscovery([]);
-  await fire(1);
+  await fire(t, 1);
   const first = arrive(w, uid("session"), "/pool/a");
   eviction(w).beginEviction(first);
   eviction(w).remove(first.id);
@@ -1313,12 +1348,12 @@ test("a session leaving while the task's cleanup is queued is retried by the arm
   // `session_remove`'s own prompt sweep finds the job still running and is refused too. That
   // sweep has to return, because the job cannot finish until its synchronous retry gives the
   // event loop back, and it has to arm the next one, because its own re-arm counts no reclaim.
-  await fire(1);
+  await fire(t, 1);
   assert.equal(reads, 1, "the refused retry did not start a second job");
   hold!();
   await w.tasks.settleWorktreeReturns();
   assert.deepEqual(w.state.teardowns, [], "the first attempt saw the occupant");
-  await fire(MISSION_SESSION_CLOSURE_RETRY_MS);
+  await fire(t, MISSION_SESSION_CLOSURE_RETRY_MS);
   await w.tasks.settleWorktreeReturns();
   assert.deepEqual(w.state.teardowns, [id], "the refused event was retried");
 });

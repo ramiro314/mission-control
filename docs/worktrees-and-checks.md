@@ -971,7 +971,9 @@ task holds, Mission Control reclaims all of the task's trees at once if they hol
 session or process remains in any of them, the same check a restart runs. A tree with work stays
 for the 30 days and is listed in **Settings > Storage**. A process still inside keeps the trees
 too, and the session's exit does not ask again, so they then wait for **Clean up**, a restart or
-the 30 days. A managed Pipeline task is left out, because its provider owns the outcome.
+the 30 days. A task that was still running when its agent left is not reclaimed by that exit: it
+settles as failed and keeps its trees. A managed Pipeline task is left out, because its provider
+owns the outcome.
 
 A return that keeps being refused is recorded rather than silent. A completed task's owed
 return and a check's lease return each record when their return was first refused and the
