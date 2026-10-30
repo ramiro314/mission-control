@@ -58,6 +58,11 @@ export const CiCheckRunSchema = z.object({
   detailsUrl: z.string().max(2_000).nullable(),
   title: z.string().max(CI_CHECK_TITLE_CHARS).nullable(),
   summary: z.string().max(CI_CHECK_SUMMARY_CHARS).nullable(),
+  /**
+   * True when GitHub marks the check required on this pull request (`isRequired`). Absent
+   * means not marked, which is how every snapshot stored before the field existed reads.
+   */
+  required: z.boolean().optional(),
 });
 export type CiCheckRun = z.infer<typeof CiCheckRunSchema>;
 
@@ -72,6 +77,11 @@ export const CiObservationSchema = z.object({
   observedAt: z.number(),
   checkRuns: z.array(CiCheckRunSchema).max(CI_CHECK_RUNS_MAX),
   flakeReport: FlakeReportSchema.nullable(),
+  /**
+   * How many checks GitHub reports on the head (`contexts.totalCount`), which can exceed the
+   * `CI_CHECK_RUNS_MAX` stored. Null when GitHub did not say; absent on older snapshots.
+   */
+  totalCount: z.number().int().nullable().optional(),
 });
 export type CiObservation = z.infer<typeof CiObservationSchema>;
 
@@ -82,12 +92,15 @@ function text(value: unknown, max: number): string | null {
 
 /**
  * The head commit's `statusCheckRollup.contexts` nodes as stored check runs, plus the flake
- * report parsed from the "Flaky tests" check. Unknown node shapes are skipped.
+ * report parsed from the "Flaky tests" check and GitHub's `contexts.totalCount` (null unless it
+ * is a non-negative integer). Unknown node shapes are skipped. A node's `isRequired: true` is
+ * stored as `required`; anything else leaves it absent.
  */
 export function ciCheckRunsFromRollup(
   contexts: readonly unknown[],
   parseReport: (summary: string) => FlakeReport | null,
-): { checkRuns: CiCheckRun[]; flakeReport: FlakeReport | null } {
+  totalCount?: unknown,
+): { checkRuns: CiCheckRun[]; flakeReport: FlakeReport | null; totalCount: number | null } {
   const checkRuns: CiCheckRun[] = [];
   let flakeReport: FlakeReport | null = null;
   for (const raw of contexts) {
@@ -95,6 +108,7 @@ export function ciCheckRunsFromRollup(
     const node = raw as Record<string, unknown>;
     const state = classifyCheckEntry(node);
     if (state === null) continue;
+    const required = node.isRequired === true ? { required: true } : {};
     if (typeof node.status === "string" && typeof node.name === "string") {
       const conclusion = typeof node.conclusion === "string" ? node.conclusion.toUpperCase() : null;
       if (node.name === FLAKY_TESTS_CHECK_NAME && typeof node.summary === "string") {
@@ -107,6 +121,7 @@ export function ciCheckRunsFromRollup(
         detailsUrl: text(node.detailsUrl, 2_000),
         title: text(node.title, CI_CHECK_TITLE_CHARS),
         summary: text(node.summary, CI_CHECK_SUMMARY_CHARS),
+        ...required,
       });
       continue;
     }
@@ -119,10 +134,15 @@ export function ciCheckRunsFromRollup(
         detailsUrl: text(node.targetUrl, 2_000),
         title: null,
         summary: text(node.description, CI_CHECK_SUMMARY_CHARS),
+        ...required,
       });
     }
   }
-  return { checkRuns, flakeReport };
+  return {
+    checkRuns,
+    flakeReport,
+    totalCount: Number.isInteger(totalCount) && (totalCount as number) >= 0 ? (totalCount as number) : null,
+  };
 }
 
 /**

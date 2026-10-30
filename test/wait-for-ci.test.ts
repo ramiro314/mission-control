@@ -14,7 +14,7 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -71,6 +71,7 @@ const { z } = await import("zod");
 const { FLAKY_TESTS_CHECK_NAME, parseFlakeSummary, renderFlakeSummary } = await import(
   "../src/shared/flake-report.ts"
 );
+const { CI_STRICTNESS, requiredChecksRollup } = await import("../src/shared/ci-checks.ts");
 const { validateWorkflowGraph } = await import("../src/shared/workflow-graph.ts");
 const { sessionActionContinuationReachesOnlyEnd, waitForCiFollows } = await import(
   "../src/shared/workflow.ts"
@@ -102,16 +103,16 @@ test("the rollup maps check runs and legacy statuses, and parses the full Flaky 
   // Padded past the stored summary cap, so the marker at the END survives only because the
   // report is parsed before the summary is cut.
   const summary = `${"x".repeat(CI_CHECK_SUMMARY_CHARS * 2)}\n\n${renderFlakeSummary(REPORT)}`;
-  const { checkRuns, flakeReport } = ciCheckRunsFromRollup([
-    { name: "unit", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://ci/unit", title: "ok", summary: "fine" },
+  const { checkRuns, flakeReport, totalCount } = ciCheckRunsFromRollup([
+    { name: "unit", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://ci/unit", title: "ok", summary: "fine", isRequired: true },
     { name: "e2e", status: "IN_PROGRESS", conclusion: null, detailsUrl: null, title: null, summary: null },
     { name: "lint", status: "COMPLETED", conclusion: "TIMED_OUT", detailsUrl: "https://ci/lint", title: "slow", summary: null },
     { name: "docs", status: "COMPLETED", conclusion: "SKIPPED" },
     { name: FLAKY_TESTS_CHECK_NAME, status: "COMPLETED", conclusion: "NEUTRAL", title: "1 flaky test", summary },
-    { context: "legacy/ci", state: "ERROR", targetUrl: "https://legacy", description: "broke" },
-    { context: "legacy/pending", state: "EXPECTED" },
+    { context: "legacy/ci", state: "ERROR", targetUrl: "https://legacy", description: "broke", isRequired: true },
+    { context: "legacy/pending", state: "EXPECTED", isRequired: false },
     { unknown: true },
-  ], parseFlakeSummary);
+  ], parseFlakeSummary, 140);
   assert.deepEqual(checkRuns.map((run) => [run.name, run.state, run.conclusion]), [
     ["unit", "passing", "SUCCESS"],
     ["e2e", "pending", null],
@@ -122,9 +123,22 @@ test("the rollup maps check runs and legacy statuses, and parses the full Flaky 
     ["legacy/pending", "pending", null],
   ]);
   assert.deepEqual(flakeReport, REPORT);
+  assert.equal(totalCount, 140);
+  // Only `isRequired: true` is stored, on both shapes; false or absent leaves the key absent.
+  assert.deepEqual(checkRuns.filter((run) => "required" in run).map((run) => [run.name, run.required]), [
+    ["unit", true],
+    ["legacy/ci", true],
+  ]);
   const stored = checkRuns.find((run) => run.name === FLAKY_TESTS_CHECK_NAME)!;
   assert.equal(stored.summary!.length, CI_CHECK_SUMMARY_CHARS);
   assert.ok(stored.summary!.endsWith("..."));
+});
+
+test("a total count GitHub did not give, or gave malformed, reads as null", () => {
+  for (const total of [undefined, null, -1, 2.5, "140"]) {
+    assert.equal(ciCheckRunsFromRollup([], parseFlakeSummary, total).totalCount, null, String(total));
+  }
+  assert.equal(ciCheckRunsFromRollup([], parseFlakeSummary, 0).totalCount, 0);
 });
 
 test("fetchPr reads CI from the same query as the head, keyed to the head commit", async () => {
@@ -132,9 +146,9 @@ test("fetchPr reads CI from the same query as the head, keyed to the head commit
     data: { repository: { pullRequest: {
       state: "OPEN", headRefOid: HEAD, headRefName: "feature", isDraft: false, title: "t", body: "",
       createdAt: "2026-01-01T00:00:00Z", mergeable: "MERGEABLE", reviewDecision: null,
-      commits: { nodes: [{ commit: { oid: HEAD, statusCheckRollup: { state: "FAILURE", contexts: { nodes: [
-        { name: "unit", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "https://ci/unit", title: "2 failed", summary: "a.test.ts" },
-        { name: FLAKY_TESTS_CHECK_NAME, status: "COMPLETED", conclusion: "NEUTRAL", title: "1 flaky test", summary: renderFlakeSummary(REPORT) },
+      commits: { nodes: [{ commit: { oid: HEAD, statusCheckRollup: { state: "FAILURE", contexts: { totalCount: 2, nodes: [
+        { name: "unit", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "https://ci/unit", title: "2 failed", summary: "a.test.ts", isRequired: true },
+        { name: FLAKY_TESTS_CHECK_NAME, status: "COMPLETED", conclusion: "NEUTRAL", title: "1 flaky test", summary: renderFlakeSummary(REPORT), isRequired: false },
       ] } } } }] },
       reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
       reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
@@ -150,6 +164,21 @@ test("fetchPr reads CI from the same query as the head, keyed to the head commit
     [FLAKY_TESTS_CHECK_NAME, "passing"],
   ]);
   assert.equal(snapshot?.ci?.flakeReport?.flakes.length, 1);
+  assert.equal(snapshot?.ci?.totalCount, 2);
+  assert.deepEqual(snapshot?.ci?.checkRuns.map((run) => run.required), [true, undefined]);
+});
+
+test("the PR query asks for isRequired on both check shapes and the total count, in the one query", async () => {
+  // The fake gh records its argv; the query is the same one fetchPr sends for the head.
+  await fetchPr(null, "owner", "repo", 7);
+  const args = readFileSync(join(ghDir, "args"), "utf8");
+  const query = args.slice(args.indexOf("query="), args.indexOf("owner=owner"));
+  assert.match(query, /contexts\(first:100\)\{ totalCount nodes\{/);
+  assert.match(query, /\.\.\. on CheckRun\{[^}]*\bisRequired\(pullRequestNumber:\$number\)/);
+  assert.match(query, /\.\.\. on StatusContext\{[^}]*\bisRequired\(pullRequestNumber:\$number\)/);
+  // Still the one PR query: the head, CI, threads and reviews all come back together.
+  assert.match(query, /headRefOid/);
+  assert.match(query, /reviewThreads\(first:100\)/);
 });
 
 test("the observation survives an upgraded database and reads back only while it parses", () => {
@@ -162,11 +191,80 @@ test("the observation survives an upgraded database and reads back only while it
     checkRuns: [{ name: "unit", state: "passing", conclusion: "SUCCESS", detailsUrl: null, title: null, summary: null }],
     flakeReport: REPORT,
   };
+  // Written before `required` and `totalCount` existed: still parses, nothing marked.
   recordInspectorCiObservation("owner/repo#7", observation);
-  assert.deepEqual(getInspectorCiObservation("owner/repo#7"), observation);
+  const legacy = getInspectorCiObservation("owner/repo#7");
+  assert.deepEqual(legacy, observation);
+  assert.equal(legacy?.totalCount, undefined);
+  assert.equal(requiredChecksRollup(legacy!.checkRuns), null);
+  const current: CiObservation = {
+    ...observation,
+    checkRuns: [{ ...observation.checkRuns[0]!, required: true }],
+    totalCount: 1,
+  };
+  recordInspectorCiObservation("owner/repo#7", current);
+  assert.deepEqual(getInspectorCiObservation("owner/repo#7"), current);
+  // The total the rollup returns when GitHub gave no usable one: stored, not refused.
+  const unknownTotal: CiObservation = { ...current, totalCount: null };
+  recordInspectorCiObservation("owner/repo#7", unknownTotal);
+  assert.deepEqual(getInspectorCiObservation("owner/repo#7"), unknownTotal);
   assert.equal(getInspectorCiObservation("owner/repo#404"), null);
   openDb().prepare("UPDATE inspector_prs SET observed_ci_json = '{\"nope\":1}' WHERE key = 'owner/repo#7'").run();
   assert.equal(getInspectorCiObservation("owner/repo#7"), null);
+});
+
+test("a fetched snapshot's CI is stored with its total and required flags, or a null total", async () => {
+  const respond = (contexts: Record<string, unknown>) => writeFileSync(join(ghDir, "response.json"), JSON.stringify({
+    data: { repository: { pullRequest: {
+      state: "OPEN", headRefOid: HEAD, headRefName: "feature", isDraft: false, title: "t", body: "",
+      createdAt: "2026-01-01T00:00:00Z", mergeable: "MERGEABLE", reviewDecision: null,
+      commits: { nodes: [{ commit: { oid: HEAD, statusCheckRollup: { state: "PENDING", contexts } } }] },
+      reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
+    } } },
+  }));
+  const nodes = [
+    { name: "unit", status: "COMPLETED", conclusion: "SUCCESS", isRequired: true },
+    { context: "deploy", state: "PENDING", isRequired: true },
+    { name: "lint", status: "COMPLETED", conclusion: "FAILURE", isRequired: false },
+  ];
+  for (const [contexts, total] of [[{ totalCount: 140, nodes }, 140], [{ nodes }, null]] as const) {
+    respond(contexts);
+    const result = await fetchPr(null, "owner", "repo", 7);
+    assert.ok(result.ok && result.value?.ci, result.ok ? "no ci" : result.error);
+    // Recorded exactly as the Inspector worker records a poll: the snapshot's CI plus the instant.
+    recordInspectorCiObservation("owner/repo#7", { ...result.value.ci, observedAt: 9 });
+    const stored = getInspectorCiObservation("owner/repo#7");
+    assert.ok(stored, `total ${total}: the observation must parse back`);
+    assert.equal(stored.totalCount, total);
+    assert.deepEqual(stored.checkRuns.map((run) => [run.name, run.required]), [
+      ["unit", true],
+      ["deploy", true],
+      ["lint", undefined],
+    ]);
+    assert.equal(requiredChecksRollup(stored.checkRuns), "pending");
+  }
+});
+
+// ---- required checks -------------------------------------------------------------------------
+
+test("CI strictness is the append-only pair all, required", () => {
+  assert.deepEqual(CI_STRICTNESS, ["all", "required"]);
+});
+
+test("the required-checks rollup reads only checks marked required", () => {
+  const run = (state: CiCheckRun["state"], required?: boolean) =>
+    ({ state, ...(required === undefined ? {} : { required }) });
+  const cases: [string, ReturnType<typeof run>[], ReturnType<typeof requiredChecksRollup>][] = [
+    ["no checks", [], null],
+    ["nothing marked", [run("failing"), run("pending"), run("passing", false)], null],
+    ["a required failure", [run("passing", true), run("failing", true), run("pending", true)], "failing"],
+    ["a required pending check", [run("passing", true), run("pending", true)], "pending"],
+    ["every required check passed", [run("passing", true), run("passing", true)], "passing"],
+    ["an unrequired failure is ignored", [run("passing", true), run("failing"), run("failing", false)], "passing"],
+    ["an unrequired pending check is ignored", [run("passing", true), run("pending")], "passing"],
+  ];
+  for (const [label, runs, expected] of cases) assert.equal(requiredChecksRollup(runs), expected, label);
 });
 
 // ---- deciding ------------------------------------------------------------------------------
