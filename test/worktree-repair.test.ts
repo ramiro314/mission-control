@@ -615,3 +615,113 @@ for (const failure of [
     assert.equal(existsSync(join(slot.administrative, "locked")), true);
   });
 }
+
+/** A real Git whose `git worktree list` fails on one chosen call once armed, or on every call. */
+class FailingListing extends NativeWorktreeGit {
+  private calls = 0;
+  private failsOn: number | "every" | null = null;
+  constructor(private readonly shape: "killed" | "exited" | "threw") {
+    super();
+  }
+
+  arm(failsOn: number | "every" | null): void {
+    this.calls = 0;
+    this.failsOn = failsOn;
+  }
+
+  override async list(identity: Parameters<NativeWorktreeGit["list"]>[0]) {
+    this.calls += 1;
+    if (this.failsOn !== "every" && this.calls !== this.failsOn) return super.list(identity);
+    if (this.shape === "threw") throw new Error(LISTING_FAILED);
+    return { ok: false as const, reason: LISTING_FAILED, outcomeUnknown: this.shape === "killed" };
+  }
+}
+
+const LISTING_FAILED = "git worktree list timed out after 30 s";
+
+for (const shape of ["killed", "exited", "threw"] as const) {
+  test(`a listing that ${shape} before any fix runs none, and the outcome is unknown`, async () => {
+    const { clone, sha } = repository("mission-repair-list-first-");
+    const git = new FailingListing(shape);
+    const m = managerWith(git);
+    const slot = await quarantinedSlot(m, clone, sha, `task-repair-list-first-${shape}`);
+    lockInitializing(slot.administrative);
+    rmSync(join(slot.path, ".git"));
+    const row = m.store.slot(slot.slotId)!;
+
+    git.arm(1);
+    const result = await m.repairSlot({ slotId: slot.slotId });
+
+    assert.equal(result.outcome, "outcomeUnknown");
+    assert.match((result as { reason: string }).reason, /git worktree list timed out after 30 s/);
+    assert.deepEqual(m.store.slot(slot.slotId), row);
+    assert.equal(existsSync(join(slot.administrative, "locked")), true, "no fix runs on an unread registration");
+    assert.equal(existsSync(join(slot.path, ".git")), false, "no fix runs on an unread registration");
+  });
+
+  test(`a listing that ${shape} after a fix keeps the fix and the quarantine, and a later pass finishes`, async () => {
+    const { clone, sha } = repository("mission-repair-list-again-");
+    const git = new FailingListing(shape);
+    const m = managerWith(git);
+    const slot = await quarantinedSlot(m, clone, sha, `task-repair-list-again-${shape}`);
+    lockInitializing(slot.administrative);
+    const row = m.store.slot(slot.slotId)!;
+
+    git.arm(2);
+    const result = await m.repairSlot({ slotId: slot.slotId });
+
+    assert.equal(result.outcome, "outcomeUnknown");
+    assert.match((result as { reason: string }).reason, /git worktree list timed out after 30 s/);
+    assert.deepEqual(m.store.slot(slot.slotId), row, "the read proved nothing, so the reason stands");
+    assert.equal(existsSync(join(slot.administrative, "locked")), false, "the fix stands");
+
+    git.arm(null);
+    await m.recoverQuarantines();
+    assertRecovered(m, slot);
+  });
+}
+
+test("a preview taken while the listing fails is blocked and names the failed read", async () => {
+  const { clone, sha } = repository("mission-repair-list-preview-");
+  const git = new FailingListing("killed");
+  const m = managerWith(git);
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-repair-list-preview");
+  lockInitializing(slot.administrative);
+
+  git.arm("every");
+  const preview = await service.preview({ action: "repair", slotId: slot.slotId });
+
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes(`Git has no fix for this slot: ${LISTING_FAILED}.`), preview.blockers.join("; "));
+  assert.equal(existsSync(join(slot.administrative, "locked")), true);
+});
+
+test("execute reports a listing that failed after an allowed preview as unavailable, not changed", async () => {
+  const { clone, sha } = repository("mission-repair-list-execute-");
+  const git = new FailingListing("exited");
+  const m = managerWith(git);
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-repair-list-execute");
+  lockInitializing(slot.administrative);
+  const preview = await service.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const row = m.store.slot(slot.slotId)!;
+
+  // Execute's own rebuild of the preview reads the listing too, so it fails only once Repair runs.
+  const repairSlot = m.repairSlot.bind(m);
+  m.repairSlot = (input) => {
+    git.arm(1);
+    return repairSlot(input);
+  };
+
+  await assert.rejects(service.execute(preview.token, []), (error: unknown) => {
+    assert.ok(error instanceof WorktreeOperationError);
+    assert.equal(error.status, 503);
+    assert.equal(error.code, "unavailable");
+    assert.equal(error.message, LISTING_FAILED);
+    return true;
+  });
+  assert.deepEqual(m.store.slot(slot.slotId), row);
+  assert.equal(existsSync(join(slot.administrative, "locked")), true);
+});
