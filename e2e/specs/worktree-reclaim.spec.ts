@@ -560,6 +560,9 @@ test("a maintenance pass clears a slot whose quarantine no longer applies, and n
   );
   await expect(kept).toContainText("Blocked by");
   expect(readFileSync(idea, "utf8")).toBe("<project/>\n");
+  // The cards sit below the pool's settings, in a scrolling pane, so both are brought into frame.
+  await dashboard.setViewportSize({ width: 1280, height: 1100 });
+  await card(clearing.path).scrollIntoViewIfNeeded();
   await shoot(dashboard, "10-automatic-recovery");
 });
 
