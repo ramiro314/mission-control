@@ -802,6 +802,8 @@ export class WorktreeManager {
    * memory: the next maintenance pass, which runs at startup, records it again.
    */
   private readonly recoveryRefusals = new Map<string, { version: number; refusal: WorktreeRecoveryRefusalView }>();
+  /** Each slot's last unknown automatic outcome, so a pass repeating it writes no second entry. */
+  private readonly recoveryFailures = new Map<string, string>();
 
   /**
    * Manual acquires running in the background because their pool has a claim. `make session`
@@ -3251,6 +3253,7 @@ export class WorktreeManager {
     // A slot that is no longer a candidate keeps no refusal: it left that quarantine, or is gone.
     const ids = new Set(candidates.map((slot) => slot.id));
     for (const id of this.recoveryRefusals.keys()) if (!ids.has(id)) this.recoveryRefusals.delete(id);
+    for (const id of this.recoveryFailures.keys()) if (!ids.has(id)) this.recoveryFailures.delete(id);
     for (const slot of candidates) {
       if (this.stopped) return;
       const startedAt = this.deps.now();
@@ -3263,6 +3266,8 @@ export class WorktreeManager {
           allowDirty: false,
           automatic: true,
         });
+      const priorFailure = this.recoveryFailures.get(slot.id);
+      this.recoveryFailures.delete(slot.id);
       // An unknown outcome that moved no version never reached the reset: its read failed.
       const untouched = result.outcome === "outcomeUnknown" && this.store.slot(slot.id)?.version === slot.version;
       if (result.outcome === "refused" || untouched) {
@@ -3289,6 +3294,8 @@ export class WorktreeManager {
       this.recoveryRefusals.delete(slot.id);
       if (result.outcome === "outcomeUnknown") {
         console.warn(`[worktrees] automatic recover of slot ${slot.ordinal} did not finish: ${result.reason}`);
+        this.recoveryFailures.set(slot.id, result.reason);
+        if (priorFailure === result.reason) continue;
         this.recordAutomaticOperation(slot.id, repairing, "failed", result.reason, startedAt);
       } else if (result.outcome === "heldWork") {
         this.recordAutomaticOperation(slot.id, repairing, "partial", result.reason, startedAt);
@@ -3300,8 +3307,9 @@ export class WorktreeManager {
   }
 
   /**
-   * One slot's entry for an automatic Recover or Repair. A pass that repeats a refusal does not
-   * reach this, so retention keeps what happened instead of a 5-minute heartbeat.
+   * One slot's entry for an automatic Recover or Repair. A pass that repeats a refusal or an
+   * unknown outcome does not reach this, so retention keeps what happened instead of a 5-minute
+   * heartbeat.
    */
   private recordAutomaticOperation(
     slotId: string,

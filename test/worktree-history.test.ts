@@ -889,6 +889,19 @@ async function idleSlots(m: WorktreeManager, clone: string, sha: string, count: 
   return leases.map((lease) => lease.slotId);
 }
 
+/** A pool with a claim, so its slots are Warm targets. */
+function warmingManager(): WorktreeManager {
+  return realManager({
+    resolvePolicy: () => ({
+      enabled: true,
+      maxSlots: 4,
+      setupArgv: null,
+      claim: { steps: [{ argv: [process.execPath, "-e", ""], env: [] }], timeoutMinutes: 1, fingerprintPaths: [] },
+    }),
+    claimEnvironment: async (names) => claimEnvironment(names),
+  });
+}
+
 /** Oldest first, one `operation` row per entry. */
 function operationRows(slotId: string) {
   return historyOf(slotId).filter((entry) => entry.kind === "operation").reverse();
@@ -1004,6 +1017,31 @@ test("a partly done operation records its outcome and says which side of the sto
   assert.equal(operationRows(left!).length, 1);
 });
 
+test("a Prune that stops partway is partly done on both sides of the stop", async () => {
+  const { clone, sha } = repository("mission-history-op-partial-prune-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const slotIds = await idleSlots(m, clone, sha, 2);
+  const preview = await operations.preview({ action: "prune", poolId: m.store.slot(slotIds[0]!)!.poolId, mode: "safe" });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const [gone, left] = preview.affected.map((target) => target.id);
+  assert.ok(gone && left, "both slots are candidates");
+  const remove = m.removeSlot.bind(m);
+  m.removeSlot = async (input) => input.slotId === left
+    ? { outcome: "conflict", reason: "slot version changed after preview" }
+    : remove(input);
+
+  operations.submit(preview.token, []);
+  await operations.idle();
+  const stop = "slot version changed after preview";
+  assert.deepEqual(operationRows(gone).map((row) => [row.operation, row.outcome, row.reason]), [
+    ["prune", "partial", `This slot finished, and the operation stopped at a later step: ${stop}`],
+  ]);
+  assert.deepEqual(operationRows(left).map((row) => [row.operation, row.outcome, row.reason]), [
+    ["prune", "partial", `The operation stopped partway, before this slot finished: ${stop}`],
+  ]);
+});
+
 test("a Destroy that returned its owner's lease and then stopped is partly done, not refused", async () => {
   const { clone, sha } = repository("mission-history-op-owner-");
   const m = realManager();
@@ -1090,12 +1128,87 @@ test("automatic recovery records done as automatic, and one row for a refusal ho
   assert.match(refused[0]?.reason ?? "", /scratch\.txt/);
 
   rmSync(scratch);
+  const other = join(slot.path, "other.txt");
+  writeFileSync(other, "work\n");
+  await m.recoverQuarantines();
+  await m.recoverQuarantines();
+  const changed = operationRows(slot.id);
+  assert.equal(changed.length, 2, "a new reason is a new entry, once");
+  assert.match(changed[1]?.reason ?? "", /other\.txt/);
+
+  rmSync(other);
   await m.recoverQuarantines();
   assert.equal(m.store.slot(slot.id)?.state, "available");
   assert.deepEqual(operationRows(slot.id).map((row) => [row.operation, row.outcome, row.actor]), [
     ["recover", "refused", "automatic"],
+    ["recover", "refused", "automatic"],
     ["recover", "done", "automatic"],
   ]);
+});
+
+test("an automatic outcome left unknown records failed once per reason, and one that moved nothing reads refused", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-failed-");
+  const m = realManager();
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const quarantine = () => assert.ok(
+    m.store.quarantine(slotId!, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+  );
+  quarantine();
+  let reason = "git checkout timed out after 60 s";
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    m.recoverSlot = async () => {
+      quarantine();
+      return { outcome: "outcomeUnknown", reason };
+    };
+    await m.recoverQuarantines();
+    await m.recoverQuarantines();
+    assert.deepEqual(
+      operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason]),
+      [["recover", "failed", "automatic", reason]],
+      "the reset ran on both passes, and the second has nothing new to say",
+    );
+
+    reason = "git checkout was killed by SIGKILL";
+    await m.recoverQuarantines();
+    assert.deepEqual(operationRows(slotId!).slice(1).map((row) => [row.outcome, row.reason]), [["failed", reason]]);
+
+    // Never reached the reset: its read failed, so the slot stayed exactly as it was.
+    const version = m.store.slot(slotId!)!.version;
+    m.recoverSlot = async () => ({ outcome: "outcomeUnknown", reason: "git status timed out after 15 s" });
+    await m.recoverQuarantines();
+    await m.recoverQuarantines();
+    assert.equal(m.store.slot(slotId!)?.version, version);
+    assert.deepEqual(operationRows(slotId!).slice(2).map((row) => [row.outcome, row.reason]), [
+      ["refused", "git status timed out after 15 s"],
+    ]);
+  } finally {
+    warned.mock.restore();
+  }
+});
+
+test("an automatic Repair left unknown names Repair", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-repair-failed-");
+  const m = realManager();
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const slot = m.store.slot(slotId!)!;
+  assert.ok(m.store.quarantine(slot.id, REGISTRATION_OR_IDENTITY.missingRegistration, null, Date.now(), slot.version));
+  m.repairSlot = async () => {
+    const current = m.store.slot(slot.id)!;
+    m.store.quarantine(slot.id, REGISTRATION_OR_IDENTITY.missingRegistration, null, Date.now(), current.version);
+    return { outcome: "outcomeUnknown", reason: "git worktree repair timed out after 60 s" };
+  };
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    await m.recoverQuarantines();
+    await m.recoverQuarantines();
+  } finally {
+    warned.mock.restore();
+  }
+  assert.deepEqual(
+    operationRows(slot.id).map((row) => [row.operation, row.outcome, row.actor, row.reason]),
+    [["repair", "failed", "automatic", "git worktree repair timed out after 60 s"]],
+  );
 });
 
 test("automatic Repair names itself, and a repair that kept work records partly done once", async () => {
@@ -1119,15 +1232,7 @@ test("automatic Repair names itself, and a repair that kept work records partly 
 
 test("a Warm writes each slot's own result as its turn ends, and a slot never reached writes nothing", async () => {
   const { clone, sha } = repository("mission-history-op-warm-");
-  const m = realManager({
-    resolvePolicy: () => ({
-      enabled: true,
-      maxSlots: 4,
-      setupArgv: null,
-      claim: { steps: [{ argv: [process.execPath, "-e", ""], env: [] }], timeoutMinutes: 1, fingerprintPaths: [] },
-    }),
-    claimEnvironment: async (names) => claimEnvironment(names),
-  });
+  const m = warmingManager();
   const operations = operationsFor(m, {
     warmLogsDirectory: join(tmpdir(), "mission-history-warm-logs"),
     claimVariablePresence: async () => [],
@@ -1151,6 +1256,74 @@ test("a Warm writes each slot's own result as its turn ends, and a slot never re
   assert.match(refused?.reason ?? "", /Warm never touches/);
   assert.equal(refused?.meta?.operationId, operation.id);
   assert.deepEqual(operationRows(unreached!), [], "cancelled before its turn, it was never touched");
+});
+
+test("a Warm's failed and cancelled turns each read as that slot's result, and the slot after a Cancel writes nothing", async () => {
+  const { clone, sha } = repository("mission-history-op-warm-stops-");
+  const m = warmingManager();
+  const operations = operationsFor(m, {
+    warmLogsDirectory: join(tmpdir(), "mission-history-warm-stops-logs"),
+    claimVariablePresence: async () => [],
+  });
+  const slotIds = await idleSlots(m, clone, sha, 4);
+  const preview = await operations.preview({ action: "warm", target: { kind: "pool", poolId: m.store.slot(slotIds[0]!)!.poolId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const [failed, threw, cancelled, unreached] = preview.affected.map((target) => target.id);
+  m.warmSlot = async (input) => {
+    if (input.slotId === failed) return { outcome: "failed", reason: "the Warm lease could not be recorded" };
+    if (input.slotId === threw) throw new Error("the claim runner went away");
+    operations.cancel(input.operationId);
+    return { outcome: "cancelled", reason: "cancelled before the claim began" };
+  };
+  const quiet = mock.method(console, "error", () => {});
+  try {
+    operations.submit(preview.token, []);
+    await operations.idle();
+  } finally {
+    quiet.mock.restore();
+  }
+  const rows = (slotId: string | undefined) => operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason]);
+  assert.deepEqual(rows(failed), [["warm", "failed", "operator", "the Warm lease could not be recorded"]]);
+  assert.deepEqual(rows(threw), [["warm", "failed", "operator", "the claim runner went away"]]);
+  assert.deepEqual(rows(cancelled), [["warm", "partial", "operator", "cancelled before the claim began"]]);
+  assert.deepEqual(rows(unreached), []);
+});
+
+test("a Warm that throws records failed on the slot it left running, and on no slot past it", async () => {
+  const { clone, sha } = repository("mission-history-op-warm-throw-");
+  const m = warmingManager();
+  let armed = false;
+  const operations = operationsFor(m, {
+    warmLogsDirectory: join(tmpdir(), "mission-history-warm-throw-logs"),
+    warmTailIntervalMs: 3_600_000,
+    claimVariablePresence: async () => [],
+    notifyChanged: () => {
+      if (!armed) return;
+      armed = false;
+      throw new Error("the publisher went away");
+    },
+  });
+  const slotIds = await idleSlots(m, clone, sha, 3);
+  const preview = await operations.preview({ action: "warm", target: { kind: "pool", poolId: m.store.slot(slotIds[0]!)!.poolId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const [warmed, running, unreached] = preview.affected.map((target) => target.id);
+  m.warmSlot = async () => {
+    armed = true;
+    return { outcome: "warmed", stepsSkipped: true };
+  };
+  const quiet = mock.method(console, "error", () => {});
+  try {
+    const { operation } = operations.submit(preview.token, []);
+    await operations.idle();
+    assert.equal((await operations.inventory()).operations.find((entry) => entry.id === operation.id)?.state, "failed");
+  } finally {
+    quiet.mock.restore();
+  }
+  assert.deepEqual(operationRows(warmed!).map((row) => row.outcome), ["done"]);
+  assert.deepEqual(operationRows(running!).map((row) => [row.operation, row.outcome, row.actor, row.reason]), [
+    ["warm", "failed", "operator", "the publisher went away"],
+  ]);
+  assert.deepEqual(operationRows(unreached!), []);
 });
 
 test("a Warm whose claim fails is partly done, and neither the claim's value nor its output reaches the entry", async () => {

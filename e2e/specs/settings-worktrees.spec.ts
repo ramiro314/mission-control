@@ -980,6 +980,71 @@ test("History lists a refused operation's outcome and reason, and dismissing its
 });
 
 /**
+ * A Kill's outcome reaches History only through the daemon's own wiring between the orphan monitor
+ * and the operations service, which nothing below the built daemon composes. A stray process in an
+ * available slot is the real path: the refusal keeps it reported, and the Kill that lands drops
+ * the tree from the report before its entry is written, so that entry proves the slot was named
+ * ahead of the Kill. The list stays open, because neither one moves the slot.
+ */
+test("History lists a Kill's outcome, refused and done, by PID and never by command", async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history kill" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+
+  const marker = "history-kill-stray-marker";
+  const stray = spawn(process.execPath, ["-e", `setInterval(() => {}, 1000) // ${marker}`], {
+    cwd: lease.path,
+    stdio: "ignore",
+  });
+  await once(stray, "spawn");
+  const pid = stray.pid!;
+
+  try {
+    // Storage scans before it answers, which is what puts the process on the slot's card.
+    await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+    const problem = dashboard.getByRole("list", { name: "Storage problems" })
+      .getByRole("listitem").filter({ hasText: `Process ${pid}` });
+    await problem.getByRole("button", { name: "Open slot" }).click();
+    const slot = dashboard.locator(".wt-slot", { hasText: lease.path });
+    const orphans = slot.getByRole("region", { name: /Orphan processes in slot/ });
+    await expect(orphans).toContainText(`PID ${pid}`);
+    const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+    const entries = history.getByRole("listitem");
+    await history.getByRole("button", { name: "History" }).click();
+    await expect(entries).toHaveCount(4);
+
+    const refused = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/processes/kill`, {
+      data: { path: lease.path, pid, startedAt: 1, command: "not this process" },
+    });
+    expect(refused.status()).toBe(409);
+    await expect(entries.nth(0)).toContainText("Kill refused", { timeout: EXECUTES_MS });
+    await expect(entries.nth(0)).toContainText(`process ${pid} does not match the reported start time and command`);
+    await expect(entries.nth(0)).toContainText("by the operator");
+
+    await orphans.getByRole("button", { name: `Kill process ${pid}` }).click();
+    const confirm = dashboard.getByRole("dialog", { name: "Kill orphan process" });
+    const killed = dashboard.waitForResponse((response) => response.url().endsWith("/api/worktrees/processes/kill"));
+    await confirm.getByRole("button", { name: "Kill process" }).click();
+    expect((await killed).status()).toBe(200);
+    await expect(orphans).toHaveCount(0);
+    await expect(entries.nth(0)).toContainText("Kill done", { timeout: EXECUTES_MS });
+    await expect(entries.nth(0)).toContainText(`Stopped process ${pid} with SIGTERM.`);
+    await expect(entries.nth(0)).toContainText("by the operator");
+    await expect(entries.filter({ hasText: marker })).toHaveCount(0);
+    await expect(entries).toHaveCount(6);
+  } finally {
+    stray.kill("SIGKILL");
+  }
+});
+
+/**
  * History open at 60 written rows with its older page held in flight, for the two ways a refresh
  * can land under it. The refresh in each is real: a Return, whose two rows push the row at the
  * cursor off the end of the newest page. Only the rows that give the list more pages are written
