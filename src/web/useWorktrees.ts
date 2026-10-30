@@ -17,6 +17,12 @@ import {
 } from "./lib/api.ts";
 
 const BACKSTOP_MS = 60_000;
+/**
+ * How long one inventory read may take. A read never answered (a connection stalled across a
+ * machine sleep) would otherwise hold back every revision bump behind it, and the backstop is no
+ * rescue: each bump restarts its timer.
+ */
+const READ_DEADLINE_MS = 60_000;
 
 function mergeConfig(current: WorktreesConfig, patch: WorktreesConfigPatch): WorktreesConfig {
   const repositories = { ...current.repositories };
@@ -96,7 +102,9 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     const controller = new AbortController();
     reading.current = true;
     setLoading(true);
+    const deadline = window.setTimeout(() => controller.abort(), READ_DEADLINE_MS);
     const next = await fetchWorktrees(controller.signal);
+    window.clearTimeout(deadline);
     if (seq !== readSeq.current) return;
     setLoading(false);
     reading.current = false;
