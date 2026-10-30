@@ -47,11 +47,6 @@ export const StorageProblemLinkSchema = z.discriminatedUnion("target", [
 
 export type StorageProblemLink = z.output<typeof StorageProblemLinkSchema>;
 
-/**
- * The process an `orphan-process` problem names, exactly as the occupancy inspection saw it.
- * `startedAt` and `command` are what a Kill request must repeat, so a PID that was reused by
- * another program since the listing is never signalled.
- */
 /** The live Mission Control session a process belongs to. Such a process is never offered Kill. */
 export const ProcessSessionSchema = z.object({
   id: z.string(),
@@ -60,6 +55,11 @@ export const ProcessSessionSchema = z.object({
 
 export type ProcessSession = z.output<typeof ProcessSessionSchema>;
 
+/**
+ * The process an `orphan-process` problem names, exactly as the occupancy inspection saw it.
+ * `startedAt` and `command` are what a Kill request must repeat, so a PID that was reused by
+ * another program since the listing is never signalled.
+ */
 export const OrphanProcessSchema = z.object({
   /** The tree's real path, the same one a Kill request's `path` must resolve to. */
   tree: z.string().min(1),

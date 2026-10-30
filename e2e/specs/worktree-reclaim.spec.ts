@@ -3,13 +3,14 @@ import { once } from "node:events";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Page } from "@playwright/test";
-import type { StorageView } from "../../src/shared/storage-health.ts";
+import { storageProblem, type StorageView } from "../../src/shared/storage-health.ts";
 import type { WorktreeInventory } from "../../src/shared/worktrees.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { mkSession } from "../../test/helpers/session-fixture.ts";
 
 /**
  * Worktree reclaim, as the operator meets it: what Storage lists about a tree, and where its fix
@@ -1129,11 +1130,13 @@ test("a live session's process offers Open session, Kill refuses it, and Kill al
 
   // The session is named from the process table, so it appears once discovery and the driver's
   // lifetime are both in. While the slot is leased to it, the card's process list is the only row.
-  await expect.poll(async () => {
+  const sessionInSlot = async () => {
     const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
     return inventory.repositories.flatMap((repository) => repository.slots)
-      .find((one) => one.path === worktree)?.occupants.some((occupant) => occupant.session);
-  }, { timeout: 60_000 }).toBe(true);
+      .find((one) => one.path === worktree)?.occupants.find((occupant) => occupant.session)?.session ?? null;
+  };
+  await expect.poll(sessionInSlot, { timeout: 60_000 }).not.toBeNull();
+  const holder = (await sessionInSlot())!;
   await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
   const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
   const disclosure = repo.getByRole("button", { name: /demo-repo/ });
@@ -1144,6 +1147,11 @@ test("a live session's process offers Open session, Kill refuses it, and Kill al
   await expect(leased.getByRole("button", { name: /^Kill/ })).toHaveCount(0);
   await leased.scrollIntoViewIfNeeded();
   await shoot(dashboard, "session-01-leased-open-session");
+
+  // From a leased slot's process list, Open session leaves Settings for that session.
+  await leased.getByRole("button", { name: "Open session" }).click();
+  await expect(dashboard).not.toHaveURL(/#\/settings/);
+  await expect(dashboard.locator(".console-detail")).toContainText(holder.name);
 
   // The audited state (uwf 11 and 12): the quarantine outlives the lease, and the session is
   // still running inside. A session's process is then listed among the orphans.
@@ -1233,6 +1241,67 @@ test("a live session's process offers Open session, Kill refuses it, and Kill al
   } finally {
     for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }
+});
+
+/** The daemon's real connect-time snapshot, read once off its event stream. */
+async function connectSnapshot(daemon: DaemonHandle): Promise<Record<string, unknown>> {
+  const stream = await fetch(`${daemon.baseURL}/events`);
+  const reader = stream.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (!text.includes("\n\n")) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error("SSE closed before its snapshot");
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+  } finally {
+    await reader.cancel();
+  }
+  return JSON.parse(text.split("\n").find((line) => line.startsWith("data: "))!.slice(6)) as Record<string, unknown>;
+}
+
+/**
+ * A real unowned tree needs a restart for its sweep, and a restart ends the session this needs
+ * alive inside it, so the row comes from a fixture snapshot. Two sessions, with the other one
+ * selected first, so only the row's own session id can bring this one up.
+ */
+test("Open session on an unowned tree's row opens the session that holds it, with no Kill", async ({
+  dashboard,
+  daemon,
+}) => {
+  const tree = join(daemon.home, "worktrees", "left-behind");
+  const session = { id: "session-in-tree", name: "Holds the tree" };
+  const snapshot = await connectSnapshot(daemon);
+  const storageHealth = {
+    ...(snapshot.storageHealth as StorageView["health"]),
+    problems: [{
+      ...storageProblem("orphan-process", `${tree}:4242`, 1, `Process 4242 is still running in ${tree}`, { target: "unowned-tree", path: tree }),
+      process: { tree, pid: 4242, ppid: 1, command: "claude", startedAt: 1, knownOwner: `Session ${session.name}`, session },
+    }],
+  };
+  const sessions = [
+    mkSession({ id: "session-elsewhere", name: "Works elsewhere", cwd: daemon.repo, repoRoot: daemon.repo }),
+    mkSession({ ...session, cwd: tree, repoRoot: daemon.repo }),
+  ];
+  await dashboard.route("**/events", (route) => route.fulfill({
+    contentType: "text/event-stream",
+    body: `data: ${JSON.stringify({ ...snapshot, sessions, storageHealth })}\n\n`,
+  }));
+  await dashboard.reload();
+  const detail = dashboard.locator(".console-detail");
+  await dashboard.getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row", { hasText: "Works elsewhere" }).click();
+  await expect(detail).toContainText("Works elsewhere");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const row = dashboard.getByRole("article", { name: `Unowned tree ${tree}` });
+  await expect(row.getByText(`Session ${session.name}`, { exact: true })).toBeVisible();
+  await expect(row.getByRole("button", { name: /^Kill/ })).toHaveCount(0);
+  await row.getByRole("button", { name: "Open session" }).click();
+  await expect(dashboard).not.toHaveURL(/#\/settings/);
+  await expect(detail).toContainText(session.name);
+  await expect(detail).not.toContainText("Works elsewhere");
 });
 
 test("an unowned tree: Kill its process from its row, then Discard and remove it through the preview", async ({

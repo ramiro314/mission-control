@@ -419,11 +419,13 @@ test("the inventory lists at most 16 occupants per slot, clips each command to 5
   // "Session a" leaves an odd number of bytes, so the last two-byte character straddles the limit.
   const longName = `Session a${"é".repeat(2_000)}`;
   const exactName = "n".repeat(WORKTREE_INVENTORY_LIMITS.textBytes);
+  const session = { id: "sdk:occupant", name: `a${"é".repeat(2_000)}` };
   occupants = Array.from({ length: 17 }, (_, index) => ({
     ...occupant(held.path, index === 0 ? straddling : index === 1 ? exact : `node worker-${index}.js`),
     pid: 6000 + index,
     startMs: 1_000 + index,
     knownOwner: index === 3 ? longName : index === 4 ? exactName : null,
+    session: index === 5 ? session : null,
   }));
   const view = await inventorySlot(m, held.slotId);
   assert.equal(WORKTREE_INVENTORY_LIMITS.occupantsPerSlot, 16);
@@ -437,6 +439,11 @@ test("the inventory lists at most 16 occupants per slot, clips each command to 5
   assert.equal(WORKTREE_INVENTORY_LIMITS.textBytes, 2_048);
   assert.equal(view.occupants[3]!.knownOwner, `Session a${"é".repeat(1_019)}`, "the straddling character is dropped whole");
   assert.equal(view.occupants[4]!.knownOwner, exactName, "a name of exactly the limit is kept whole");
+  assert.deepEqual(
+    view.occupants[5]!.session,
+    { id: session.id, name: `a${"é".repeat(1_023)}` },
+    "a session's name is clipped like any other inventory text, and its id never is",
+  );
   for (const each of view.occupants) assert.ok(Buffer.byteLength(each.command, "utf8") <= 512);
 
   occupants = [];
