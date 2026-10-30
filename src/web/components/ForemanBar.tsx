@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { wrapupTriggerOn } from "@shared/queue.ts";
 import type { WrapupTrigger } from "@shared/queue.ts";
+import type { CiStrictness } from "@shared/ci-checks.ts";
 import type { ForemanState } from "../useForeman.ts";
 import { api } from "../lib/api.ts";
 import { ClockText } from "./ClockText.tsx";
@@ -686,6 +687,28 @@ export function ForemanPopover({
             Keep sessions on track with CI
           </label>
         </Tooltip>
+        {/*
+          Fork (ci-strictness). `?? "all"` for the same reason as the `!== false` above: a
+          daemon too old to know the key counts every check, so that is what this must show.
+        */}
+        <Tooltip label="Choose which failing checks Foreman sends back to a parked PR session, and which checks new workflow PR instructions ask it to follow">
+          <label className="alert-row">
+            Which failures count
+            <select
+              aria-label="Which failures count"
+              value={config.ciStrictness ?? "all"}
+              disabled={config.trackCiFailures === false}
+              onChange={(e) => void update({ ciStrictness: e.target.value as CiStrictness })}
+            >
+              <option value="all">All checks</option>
+              <option value="required">Required checks</option>
+            </select>
+          </label>
+        </Tooltip>
+        <p className="alert-hint dim">
+          Required checks: only checks GitHub marks required on the PR count, read through
+          GitHub Inspector. With none marked, or the Inspector off, every check counts.
+        </p>
         <Tooltip label="Keep parked PR sessions on track when their pull request conflicts with its base. Off, a conflict goes to the attention inbox instead">
           <label className="alert-row">
             <input

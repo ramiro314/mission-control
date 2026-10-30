@@ -139,6 +139,7 @@ import {
 } from "./task-resource-generation.ts";
 import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
 import { worktreeReturnBlocker } from "./git/worktree-return-safety.ts";
+import { treeSeed } from "./worktrees/config.ts";
 import { storageProblem, type StorageProblemLink } from "@shared/storage-health.ts";
 import type { StorageProblemObservation } from "./storage-health.ts";
 import { inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
@@ -509,6 +510,8 @@ export interface TaskManagerStartupDeps {
 interface TaskCleanupJob {
   taskId: string;
   repoKeys: readonly string[];
+  /** A startup reconcile, which `startupReconcile` lets a due cleanup wait for. */
+  startup?: boolean;
   run: () => Promise<void>;
 }
 
@@ -537,6 +540,7 @@ class TaskCleanupQueue {
   /** In-flight and queued jobs by task, so the same task cannot be enqueued twice. */
   private readonly enqueued = new Set<string>();
   private readonly idleWaiters: (() => void)[] = [];
+  private readonly startupJobs = new Map<string, { gone: Promise<void>; leave: () => void }>();
 
   async settled(): Promise<void> {
     if (this.size === 0) return;
@@ -554,9 +558,22 @@ class TaskCleanupQueue {
   enqueue(job: TaskCleanupJob): boolean {
     if (this.enqueued.has(job.taskId)) return false;
     this.enqueued.add(job.taskId);
+    if (job.startup) {
+      let leave = (): void => {};
+      const gone = new Promise<void>((resolve) => { leave = resolve; });
+      this.startupJobs.set(job.taskId, { gone, leave });
+    }
     this.pending.push(job);
     this.drain();
     return true;
+  }
+
+  /**
+   * Settles once this task's startup reconcile has left the queue, at once when it has none.
+   * The queue says when, because only it knows the task can be enqueued again.
+   */
+  startupReconcile(taskId: string): Promise<void> {
+    return this.startupJobs.get(taskId)?.gone ?? Promise.resolve();
   }
 
   /** How many jobs are queued or running. Retention bounds its own fan-in against this. */
@@ -583,6 +600,10 @@ class TaskCleanupQueue {
         .finally(() => {
           for (const key of job.repoKeys) this.activeRepoKeys.delete(key);
           this.enqueued.delete(job.taskId);
+          if (job.startup) {
+            this.startupJobs.get(job.taskId)?.leave();
+            this.startupJobs.delete(job.taskId);
+          }
           this.drain();
           if (this.size === 0) for (const resolve of this.idleWaiters.splice(0)) resolve();
         });
@@ -1036,7 +1057,8 @@ export class TaskManager {
    * kept it. Rebuilt by every startup reconciliation, which visits each one again, so it needs
    * no table. See `dirtySettledTreeProblems`.
    */
-  private readonly dirtySettledTrees = new Map<string, { path: string; reason: string }>();
+  /** `unreclaimed` is a tree whose reclaim failed for a reason other than work in it. */
+  private readonly dirtySettledTrees = new Map<string, { path: string; reason: string; unreclaimed?: boolean }>();
   private settledTreesChanged: () => void = () => {};
   /** One in-process launcher per durable retry reservation. SQLite owns cross-request CAS. */
   private readonly pipelineRecoveries = new Set<string>();
@@ -1154,6 +1176,7 @@ export class TaskManager {
       this.cleanupQueue.enqueue({
         taskId: t.id,
         repoKeys: taskCleanupRepoKeys(t),
+        startup: true,
         run: async () => {
           // A queued job can wait minutes. Re-read instead of resurrecting the startup
           // snapshot after an operator has already reclaimed, removed, or rescheduled it.
@@ -1585,7 +1608,9 @@ export class TaskManager {
           "dirty-settled-tree",
           id,
           firstSeenAt,
-          `${task.title} settled with work left in ${kept.path} (${kept.reason}); its worktrees are kept for the 30-day retention window`,
+          kept.unreclaimed
+            ? `${task.title} settled, but ${kept.path} could not be reclaimed (${kept.reason}); its worktrees are kept for the 30-day retention window`
+            : `${task.title} settled with work left in ${kept.path} (${kept.reason}); its worktrees are kept for the 30-day retention window`,
           link,
         ),
       });
@@ -6314,10 +6339,15 @@ export class TaskManager {
    * cleanup and startup reconciliation contend for a repository through ONE mechanism. The
    * refusal when the queue already holds this task is not an error: the ledger claim stays
    * exactly as it was and the next pass tries again.
+   *
+   * A startup reconcile is the exception, and is waited for. It is no cleanup attempt, and the
+   * first pass runs as soon as sessions are observed, so a refusal here would cost a due task
+   * the whole observation interval because it happened to be read at boot.
    */
   async enqueueRetentionCleanup(
     request: AutomaticReclaimRequest,
   ): Promise<AutomaticReclaimOutcome | { kind: "not-queued" }> {
+    await this.cleanupQueue.startupReconcile(request.taskId);
     const task = this.registry.getTask(request.taskId) ?? getDurableTask(request.taskId);
     if (!task) return { kind: "not-queued" };
     type Settled = AutomaticReclaimOutcome | { kind: "not-queued" };
@@ -6606,7 +6636,7 @@ export class TaskManager {
    * "reclaim" action) while KEEPING its status and outcome - unlike cancel, which
    * aborts an active task.
    */
-  async reclaim(id: string): Promise<Ok> {
+  async reclaim(id: string, beforeReturn?: Parameters<typeof teardownWorktree>[4]): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
     // Reserved for the same reason the automatic path is, and against the same set of
@@ -6616,12 +6646,12 @@ export class TaskManager {
     return this.withCleanupReservation<Ok>(
       id,
       { ok: false, error: "this task's resources are already being cleaned up" },
-      () => this.reclaimReserved(id, t),
+      () => this.reclaimReserved(id, t, beforeReturn),
     );
   }
 
   /** `reclaim`'s body, once the reservation is held. */
-  private async reclaimReserved(id: string, t: Task): Promise<Ok> {
+  private async reclaimReserved(id: string, t: Task, beforeReturn?: Parameters<typeof teardownWorktree>[4]): Promise<Ok> {
     try {
       await this.quiesceLaunchedAgentBeforeCapture(t);
     } catch (error) {
@@ -6638,7 +6668,7 @@ export class TaskManager {
     this.autoCompleted.delete(id);
     try {
       const current = this.registry.getTask(id) ?? t;
-      await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees);
+      await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees, beforeReturn);
     } catch (error) {
       // A partial reclaim still releases what came back. The refusal stands - the operator
       // is told the reclaim failed, and the trees still standing keep their record so a
@@ -6863,24 +6893,16 @@ export class TaskManager {
   /**
    * D20 of the disk-reclaim plan, amending settle-and-retain for clean trees only: a settled
    * task whose every tree is clean is reclaimed now, through the operator's own `reclaim`.
-   * "Clean" discounts regenerable ignored directories such as `node_modules/`, while any other
-   * ignored file - evidence, `.env` - is work. A tree with work, or one that cannot be read,
-   * keeps the 30-day window and is listed; one a process occupies is left to the orphan report.
+   * What "clean" means follows what the reclaim does to each tree (`settledTreeWork`). A tree
+   * with work, or one that cannot be read, keeps the 30-day window and is listed; one a process
+   * occupies is left to the orphan report.
    */
   private async reclaimSettledTreesIfClean(id: string): Promise<void> {
     const task = this.registry.getTask(id);
     if (!task || isActiveTask(task.status) || !taskHasWorktrees(task)) return;
     const generation = taskResourceGeneration(task);
     const paths = taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []);
-    const probe = this.startupDeps.returnBlocker ?? worktreeReturnBlocker;
-    let kept: { path: string; reason: string } | null = null;
-    for (const path of paths) {
-      const reason = await probe(path, { regenerableIgnored: true });
-      if (reason) {
-        kept = { path, reason };
-        break;
-      }
-    }
+    const kept = await this.settledTreeWork(task);
     const current = this.registry.getTask(id);
     if (!current || taskResourceGeneration(current) !== generation) return;
     if (kept) {
@@ -6893,8 +6915,49 @@ export class TaskManager {
       const state = occupancy.get(path);
       return !state || state.status === "unknown" || state.occupants.length > 0;
     })) return;
-    const result = await this.reclaim(id);
-    if (!result.ok) console.warn(`[tasks] could not reclaim settled task ${id}'s clean worktrees: ${result.error}`);
+    // The default may move between the check above and a pool slot's reset, so the reset
+    // judges its slot again against the commit it fetched, and refuses rather than discard.
+    const refused: Array<{ path: string; reason: string }> = [];
+    const result = await this.reclaim(id, async (path, target) => {
+      const reason = target === undefined ? null : await this.worktrees.slotResetBlocker(path, target);
+      if (reason) refused.push({ path, reason });
+      return reason;
+    });
+    if (result.ok) return;
+    console.warn(`[tasks] could not reclaim settled task ${id}'s clean worktrees: ${result.error}`);
+    // The reset's own refusal is what is listed; judging the slot again could answer otherwise.
+    // By path, not generation: a sibling tree that did come back changes the generation. A pool
+    // slot still held for any other reason is listed too, or it would sit out its 30 days
+    // unseen, but as a failed reclaim: its origin being down is no work left in it.
+    const remaining = this.registry.getTask(id);
+    const held = remaining ? taskRepoRefs(remaining) : [];
+    const refusal = refused.find(({ path }) => held.some((ref) => ref.worktreePath === path));
+    const stuck = held.find((ref) => ref.provider === "mission" && ref.worktreePath)?.worktreePath;
+    const listed = refusal ??
+      (stuck ? { path: stuck, reason: result.error ?? "its reclaim failed", unreclaimed: true } : null);
+    if (listed) {
+      this.dirtySettledTrees.set(id, listed);
+      this.settledTreesChanged();
+    }
+  }
+
+  /**
+   * The first of a settled task's trees holding work, by the rule of what reclaiming it does.
+   * A pool slot keeps its folder and takes a reset, so it is judged by the reset rule and only
+   * what that reset discards counts. Any other tree's folder is removed, so it takes the delete
+   * rule: every ignored file counts unless a regenerable directory or the owning pool claim's
+   * seed brings it back.
+   */
+  private async settledTreeWork(task: Task): Promise<{ path: string; reason: string } | null> {
+    const probe = this.startupDeps.returnBlocker ?? worktreeReturnBlocker;
+    for (const { worktreePath: path, provider } of taskRepoRefs(task)) {
+      if (!path) continue;
+      const reason = provider === "mission"
+        ? await this.worktrees.slotResetBlocker(path)
+        : await probe(path, { regenerableIgnored: true, seed: treeSeed(path) });
+      if (reason) return { path, reason };
+    }
+    return null;
   }
 
   /**

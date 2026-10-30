@@ -148,7 +148,7 @@ Registry, workflow and review owners. A cwd waiter is only a response budget. St
 guards precede TaskManager startup and SDK restore; restart never repeats an uncertain launch.
 See [session lifecycle](../session-lifecycle.md#continuing-the-same-conversation-in-terminal).
 
-Worktree snapshots use a temporary Git index. Never capture through the real index. Reset helpers use `clean -fd`, never `-fdx`, so ignored warm dependencies survive. A pool reset therefore keeps an ignored file while the target still ignores and does not track it, and manual Recover counts work by that reset rule (`worktreeWork` with `rule: "reset"`), not by the return rule safe Kill uses, which counts every ignored file outside the regenerable list.
+Worktree snapshots use a temporary Git index. Never capture through the real index. Reset helpers use `clean -fd`, never `-fdx`, so ignored warm dependencies survive. A pool reset therefore keeps an ignored file while the target still ignores and does not track it, and manual Recover, automatic recovery and the reclaim of a settled task's pool slot count work by that reset rule (`worktreeWork` with `rule: "reset"`), not by the return rule safe Kill uses, which counts every ignored file outside the regenerable list. Automatic recovery and that reclaim judge it again inside the reset, against the commit it fetched.
 
 The daemon constructs one `WorktreeManager` and injects it into task dispatch, Workflow checks,
 manual lease routes, and maintenance. New task and check acquisitions use native slots by default.

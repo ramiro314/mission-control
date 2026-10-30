@@ -9235,6 +9235,13 @@ export class Registry extends EventEmitter {
     const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
     return {
       codeRabbit: codeRabbitSummary(row.key, owner),
+      // Fork (ci-strictness): the compact projection only, never the check list. `enabled` is
+      // read here, not on the row, because turning the Inspector off changes no row (D5).
+      ci: {
+        headSha: row.ci?.headSha ?? null,
+        required: row.ci?.required ?? null,
+        inspectorEnabled: getInspectorConfig().enabled,
+      },
       prKey: row.key,
       url: row.url,
       mode: getInspectorConfig().mode,

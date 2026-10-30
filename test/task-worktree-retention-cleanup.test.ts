@@ -1,11 +1,13 @@
 import { test, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Task } from "../src/shared/types.ts";
 import type { ActivityFingerprint } from "../src/server/git/worktree-activity.ts";
 import type { TaskManagerStartupDeps } from "../src/server/tasks.ts";
+import type { GitResult, WorktreeGit } from "../src/server/worktrees/git.ts";
+import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 import { mkTask as baseTask, mkSession } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-retention-cleanup-"));
@@ -25,10 +27,13 @@ const {
   settleTaskWithRetentionAdoption,
   listTasks,
   getTask,
+  openDb,
 } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager, MISSION_SESSION_CLOSURE_RETRY_MS } = await import("./helpers/task-manager-fixture.ts");
 const { WorktreeTeardownError } = await import("../src/server/dispatcher.ts");
+const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
+const { NativeWorktreeGit } = await import("../src/server/worktrees/git.ts");
 const {
   TaskWorktreeRetentionObserver,
   defaultRetentionCleanupDeps,
@@ -170,10 +175,8 @@ function world(options: {
      * Wait for startup reconciliation to leave the shared cleanup queue.
      *
      * `TaskManager` enqueues a startup job per resource-holding task into the very queue
-     * retention uses, and the queue is one-deep per task - so a cleanup asked for while a
-     * task's startup job is still in flight is refused and retried on the next pass. That is
-     * correct backpressure in production, where the first retention pass runs long after boot
-     * settles, and it is only a test-timing artifact here.
+     * retention uses. A cleanup asked for meanwhile waits for that job rather than being
+     * refused; these tests settle first so a pass reads a task that has finished starting.
      */
     async ready(): Promise<void> {
       for (let attempt = 0; attempt < 500 && tasks.pendingCleanupJobs > 0; attempt += 1) {
@@ -1143,7 +1146,7 @@ async function fire(t: TestContext, ms: number): Promise<void> {
 for (const status of ["cancelled", "failed"] as const) {
   test(`the last session leaving a ${status} task's tree reclaims it at once`, async () => {
     const id = uid("left");
-    const w = reclaimWorld([baseTask({ id, status, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })]);
+    const w = reclaimWorld([baseTask({ id, status, worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 })]);
     await w.ready();
     await leave(w, arrive(w, uid("session"), "/pool/a/packages/app"));
     assert.deepEqual(w.state.teardowns, [id]);
@@ -1152,7 +1155,7 @@ for (const status of ["cancelled", "failed"] as const) {
   test(`startup reclaims a ${status} task's clean tree the event never saw leave`, async () => {
     const id = uid("startup");
     const w = world({
-      tasks: [baseTask({ id, status, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+      tasks: [baseTask({ id, status, worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 })],
       liveness: false,
       startupDeps: { occupancy: occupancy(), returnBlocker: async () => null },
     });
@@ -1165,7 +1168,7 @@ test("an agent's own departure settles its task and keeps the tree until a later
   const id = uid("bound");
   const sessionId = uid("session");
   const w = reclaimWorld([
-    baseTask({ id, status: "running", sessionId, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 }),
+    baseTask({ id, status: "running", sessionId, worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 }),
   ]);
   await w.ready();
   await leave(w, arrive(w, sessionId, "/pool/a"));
@@ -1182,7 +1185,7 @@ test("every tree of a multi-repository task is reclaimed when the last session l
   const inspected: string[][] = [];
   const w = reclaimWorld(
     [baseTask({
-      id, status: "cancelled", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1,
+      id, status: "cancelled", worktreePath: "/pool/a", provider: "git", dispatchedAt: 1,
       extraRepos: [attached("/pool/b")],
     })],
     { occupancy: async (paths) => { inspected.push([...paths]); return occupancy()(paths); } },
@@ -1197,7 +1200,7 @@ test("a process still inside any of the task's trees keeps them all", async () =
   const id = uid("occupied");
   const w = reclaimWorld(
     [baseTask({
-      id, status: "cancelled", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1,
+      id, status: "cancelled", worktreePath: "/pool/a", provider: "git", dispatchedAt: 1,
       extraRepos: [attached("/pool/b")],
     })],
     { occupancy: occupancy(["/pool/b"]) },
@@ -1211,7 +1214,7 @@ test("a process still inside any of the task's trees keeps them all", async () =
 test("unknown occupancy keeps the tree rather than reading it as empty", async () => {
   const id = uid("unknown");
   const w = reclaimWorld(
-    [baseTask({ id, status: "failed", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+    [baseTask({ id, status: "failed", worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 })],
     {
       occupancy: async (paths) => new Map(paths.map((path) => [path, {
         status: "unknown" as const, reason: "ps timed out",
@@ -1227,7 +1230,7 @@ test("a second session in the tree holds the reclaim until it leaves too", async
   const id = uid("second");
   let reads = 0;
   const w = reclaimWorld(
-    [baseTask({ id, status: "cancelled", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+    [baseTask({ id, status: "cancelled", worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 })],
     { occupancy: async (paths) => { reads += 1; return occupancy()(paths); } },
   );
   await w.ready();
@@ -1244,7 +1247,7 @@ test("a task's bound session keeps its trees from outside them, and its leaving 
   const id = uid("bound-outside");
   const bound = uid("session");
   const w = reclaimWorld([
-    baseTask({ id, status: "failed", sessionId: bound, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 }),
+    baseTask({ id, status: "failed", sessionId: bound, worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 }),
   ]);
   await w.ready();
   const agent = arrive(w, bound, "/elsewhere");
@@ -1260,7 +1263,7 @@ test("a runtime outliving its session's row is waited for by the armed sweep alo
   const bound = uid("session");
   let running = true;
   const w = world({
-    tasks: [baseTask({ id, status: "failed", sessionId: bound, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+    tasks: [baseTask({ id, status: "failed", sessionId: bound, worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 })],
     handleFor: () => (running ? {} : undefined),
     startupDeps: { occupancy: occupancy(), returnBlocker: async () => null },
   });
@@ -1285,8 +1288,8 @@ test("a tree with work is kept and listed, and only a tree the session was insid
   const sibling = uid("sibling");
   const w = reclaimWorld(
     [
-      baseTask({ id, status: "cancelled", worktreePath: "/pool/1", provider: "mission", dispatchedAt: 1 }),
-      baseTask({ id: sibling, status: "cancelled", worktreePath: "/pool/10", provider: "mission", dispatchedAt: 1 }),
+      baseTask({ id, status: "cancelled", worktreePath: "/pool/1", provider: "git", dispatchedAt: 1 }),
+      baseTask({ id: sibling, status: "cancelled", worktreePath: "/pool/10", provider: "git", dispatchedAt: 1 }),
     ],
     { returnBlocker: async () => "uncommitted changes" },
   );
@@ -1302,9 +1305,9 @@ test("only a cancelled or failed task is reclaimed by a session leaving", async 
   const done = uid("done");
   const pipeline = uid("pipeline");
   const w = reclaimWorld([
-    baseTask({ id: running, status: "running", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 }),
-    baseTask({ id: done, status: "done", worktreePath: "/pool/b", provider: "mission", dispatchedAt: 1 }),
-    baseTask({ id: pipeline, kind: "pipeline", status: "failed", worktreePath: "/pool/c", provider: "mission", dispatchedAt: 1 }),
+    baseTask({ id: running, status: "running", worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 }),
+    baseTask({ id: done, status: "done", worktreePath: "/pool/b", provider: "git", dispatchedAt: 1 }),
+    baseTask({ id: pipeline, kind: "pipeline", status: "failed", worktreePath: "/pool/c", provider: "git", dispatchedAt: 1 }),
   ]);
   await w.ready();
   await leave(w, arrive(w, uid("session"), "/pool/a"));
@@ -1322,7 +1325,7 @@ test("a session leaving while the task's cleanup is queued is retried by the arm
   const firstRead = new Promise<void>((resolve) => { started = resolve; });
   let reads = 0;
   const w = reclaimWorld(
-    [baseTask({ id, status: "cancelled", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+    [baseTask({ id, status: "cancelled", worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 })],
     {
       occupancy: async (paths) => {
         reads += 1;
@@ -1362,7 +1365,7 @@ for (const [work, blocker] of [["clean", null], ["dirty", "uncommitted changes"]
   test(`a session leaving /pool/10 leaves the ${work} tree at /pool/1 alone`, async () => {
     const id = uid("prefix");
     const w = reclaimWorld(
-      [baseTask({ id, status: "cancelled", worktreePath: "/pool/1", provider: "mission", dispatchedAt: 1 })],
+      [baseTask({ id, status: "cancelled", worktreePath: "/pool/1", provider: "git", dispatchedAt: 1 })],
       { returnBlocker: async () => blocker },
     );
     await w.ready();
@@ -1376,7 +1379,7 @@ test("a session exiting reclaims nothing until session_remove", async () => {
   const id = uid("exit-only");
   let reads = 0;
   const w = reclaimWorld(
-    [baseTask({ id, status: "cancelled", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+    [baseTask({ id, status: "cancelled", worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 })],
     { occupancy: async (paths) => { reads += 1; return occupancy()(paths); } },
   );
   await w.ready();
@@ -1420,8 +1423,8 @@ for (const [change, apply, reclaimed] of whileQueued) {
     const inspected: string[] = [];
     const w = reclaimWorld(
       [
-        baseTask({ id: blocking, status: "cancelled", repoRoot, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 }),
-        baseTask({ id, status: "cancelled", repoRoot, worktreePath: "/pool/b", provider: "mission", dispatchedAt: 1 }),
+        baseTask({ id: blocking, status: "cancelled", repoRoot, worktreePath: "/pool/a", provider: "git", dispatchedAt: 1 }),
+        baseTask({ id, status: "cancelled", repoRoot, worktreePath: "/pool/b", provider: "git", dispatchedAt: 1 }),
       ],
       {
         occupancy: async (paths) => {
@@ -1451,3 +1454,356 @@ for (const [change, apply, reclaimed] of whileQueued) {
     assert.equal(inspected.includes("/pool/b"), reclaimed, "a stale job reads no processes");
   });
 }
+
+// ---- a settled task's pool slot: the reset rule, against a real slot and a real reset ----
+
+const SLOT_IGNORE = ".yarn/install-state.gz\nnode_modules/\n.idea/\n.env\n.evidence/\n";
+
+const unoccupied = async (paths: readonly string[]) =>
+  new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }]));
+
+function writeIn(root: string, file: string, body = "kept\n"): void {
+  mkdirSync(dirname(join(root, file)), { recursive: true });
+  writeFileSync(join(root, file), body);
+}
+
+/** A task holding a real native slot, as a restart finds it once its agent is gone. */
+async function settledPoolSlot(id: string, git?: WorktreeGit) {
+  const { root, origin, clone } = mkOriginAndClone(`mission-settled-slot-${id}-`);
+  after(() => rmSync(root, { recursive: true, force: true }));
+  writeIn(origin, ".gitignore", SLOT_IGNORE);
+  gitIn(origin, "add", ".gitignore");
+  gitIn(origin, "commit", "-qm", "ignore");
+  gitIn(clone, "fetch", "-q", "origin");
+  gitIn(clone, "reset", "-q", "--hard", "origin/main");
+  const sha = gitIn(clone, "rev-parse", "HEAD");
+  const worktrees = new WorktreeManager(openDb(), {
+    occupancy: unoccupied,
+    resolvePolicy: () => ({ enabled: true, maxSlots: 4, setupArgv: null }),
+    ...(git ? { git } : {}),
+  });
+  const acquired = await worktrees.acquire({
+    repositoryPath: clone,
+    baseSha: sha,
+    owner: { kind: "task", key: `${id}:0` },
+  });
+  assert.equal(acquired.outcome, "acquired");
+  const lease = (acquired as Extract<typeof acquired, { outcome: "acquired" }>).lease;
+  const registry = new Registry();
+  for (const stale of registry.listTasks()) registry.removeTask(stale.id);
+  registry.upsertTask(baseTask({
+    id,
+    title: `Settled ${id}`,
+    status: "running",
+    dispatchedAt: 5_000,
+    repoRoot: clone,
+    worktreePath: lease.path,
+    branch: null,
+    provider: "mission",
+    worktreeLeaseId: lease.leaseId,
+    baseSha: sha,
+    sessionId: `proc:${id}`,
+  }));
+  const restart = () => new TaskManager(
+    registry,
+    undefined,
+    { taskLiveness: () => false } as never,
+    undefined,
+    undefined,
+    { occupancy: unoccupied },
+    worktrees,
+  );
+  return { origin, sha, path: lease.path, slotId: lease.slotId, registry, worktrees, restart };
+}
+
+async function eventually(predicate: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(message);
+}
+
+const keptTree = (manager: InstanceType<typeof TaskManager>, id: string) =>
+  (manager.dirtySettledTreeProblems().firstSeen ?? []).find((each) => each.subject === `dirty-settled-tree:${id}`);
+
+test("a settled task's pool slot holding only ignored files is reclaimed at once, and keeps them", async () => {
+  const id = uid("settled-ignored");
+  const slot = await settledPoolSlot(id);
+  const ignored = [".yarn/install-state.gz", "node_modules/pkg/index.js", ".idea/workspace.xml", ".env", ".evidence/report.md"];
+  for (const file of ignored) writeIn(slot.path, file);
+  const inodes = ignored.map((file) => statSync(join(slot.path, file)).ino);
+
+  const manager = slot.restart();
+  await eventually(() => slot.registry.getTask(id)?.worktreePath === null, "the slot was not reclaimed");
+  assert.equal(slot.registry.getTask(id)?.status, "failed", "reclaim keeps the settled outcome");
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "available");
+  assert.deepEqual(ignored.map((file) => statSync(join(slot.path, file)).ino), inodes, "the reset keeps every ignored file");
+  assert.equal(keptTree(manager, id), undefined);
+});
+
+test("a settled task's pool slot holding reset-rule work keeps its window and is listed, naming the entry", async () => {
+  const id = uid("settled-work");
+  const slot = await settledPoolSlot(id);
+  writeIn(slot.path, "notes.md", "draft\n");
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the kept slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, new RegExp(`work left in ${slot.path} \\(untracked notes\\.md\\)`));
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+  assert.equal(existsSync(join(slot.path, "notes.md")), true);
+});
+
+test("a settled task's pool slot whose ignored .env the default un-ignores is kept and listed", async () => {
+  const id = uid("settled-unignored");
+  const slot = await settledPoolSlot(id);
+  writeIn(slot.path, ".env", "TOKEN=1\n");
+  writeIn(slot.origin, ".gitignore", "node_modules/\n");
+  gitIn(slot.origin, "commit", "-qam", "stop ignoring .env");
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the kept slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, /ignored \.env \(the target's \.gitignore files no longer ignore it\)/);
+  assert.equal(readFileSync(join(slot.path, ".env"), "utf8"), "TOKEN=1\n");
+  assert.equal(gitIn(slot.path, "rev-parse", "HEAD"), slot.sha);
+});
+
+test("a default that moves between a settled slot's check and its reset is caught, and the slot is listed", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const id = uid("settled-moved");
+  let fetches = 0;
+  let origin = "";
+  class MovingDefaultGit extends NativeWorktreeGit {
+    override async fetchDefaultSha(identity: Parameters<WorktreeGit["fetchDefaultSha"]>[0]) {
+      // The startup check fetches nothing, so the first fetch is the reset's own.
+      if ((fetches += 1) === 1) {
+        writeIn(origin, ".gitignore", "node_modules/\n");
+        gitIn(origin, "commit", "-qam", "stop ignoring .env");
+      }
+      return super.fetchDefaultSha(identity);
+    }
+  }
+  const slot = await settledPoolSlot(id, new MovingDefaultGit());
+  origin = slot.origin;
+  fetches = 0;
+  writeIn(slot.path, ".env", "TOKEN=1\n");
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, /ignored \.env \(the target's \.gitignore files no longer ignore it\)/);
+  assert.equal(fetches, 1, "the reset's fetch is the only one: its refusal is listed, and nothing judges the slot again");
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased", "the refusal came before the reset's intent");
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+  assert.equal(readFileSync(join(slot.path, ".env"), "utf8"), "TOKEN=1\n");
+  assert.equal(gitIn(slot.path, "rev-parse", "HEAD"), slot.sha);
+});
+
+test("a read that fails once at the reset's repeated check is what is listed, though the next read is clean", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const id = uid("settled-transient");
+  let armed = false;
+  let fetches = 0;
+  let restore = () => {};
+  class FailsOnceAfterValidation extends NativeWorktreeGit {
+    override async inspect(path: string) {
+      const inspected = await super.inspect(path);
+      // The reset's validation is the last read before its hook, so the hook's status fails.
+      if (armed) {
+        armed = false;
+        const index = gitIn(path, "rev-parse", "--path-format=absolute", "--git-path", "index");
+        const intact = readFileSync(index);
+        writeFileSync(index, "not an index");
+        restore = () => writeFileSync(index, intact);
+      }
+      return inspected;
+    }
+
+    override async fetchDefaultSha(identity: Parameters<WorktreeGit["fetchDefaultSha"]>[0]) {
+      // The first fetch is the reset's. A second could only be a second opinion, which would
+      // read a clean slot and lose the refusal.
+      if ((fetches += 1) === 2) restore();
+      return super.fetchDefaultSha(identity);
+    }
+  }
+  const slot = await settledPoolSlot(id, new FailsOnceAfterValidation());
+  fetches = 0;
+  armed = true;
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, /working tree could not be read/);
+  assert.equal(fetches, 1, "nothing judged the slot a second time");
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+});
+
+test("a settled pool slot whose reset-rule read fails keeps its window and is listed, with the failure", async () => {
+  const id = uid("settled-unreadable");
+  let unreadable = false;
+  class UnreadableDefaultGit extends NativeWorktreeGit {
+    override async observedDefaultSha(identity: Parameters<WorktreeGit["observedDefaultSha"]>[0]) {
+      return unreadable
+        ? { ok: false as const, reason: "git rev-parse timed out after 15 s", outcomeUnknown: true }
+        : super.observedDefaultSha(identity);
+    }
+  }
+  const slot = await settledPoolSlot(id, new UnreadableDefaultGit());
+  unreadable = true;
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the unreadable slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, /origin's default could not be read: git rev-parse timed out after 15 s/);
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+});
+
+test("a settled pool slot's check never fetches, and an unreachable origin is listed as unreclaimed, not as work", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const id = uid("settled-unreachable");
+  let fetches = 0;
+  class UnreachableGit extends NativeWorktreeGit {
+    override async fetchDefaultSha(): Promise<GitResult<string>> {
+      fetches += 1;
+      return { ok: false, reason: "git fetch timed out after 60 s", outcomeUnknown: true };
+    }
+  }
+  const slot = await settledPoolSlot(id, new UnreachableGit());
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the held slot was never listed");
+  const { message } = keptTree(manager, id)!.problem(1);
+  assert.match(message, new RegExp(`${slot.path} could not be reclaimed \\(.*git fetch timed out after 60 s`));
+  assert.doesNotMatch(message, /work left/, "a clean slot behind an unreachable origin holds no work");
+  assert.equal(fetches, 1, "only the reset fetched");
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+});
+
+test("a settled pool slot whose reset refuses for its registration is listed, not left to the log", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const id = uid("settled-locked");
+  const slot = await settledPoolSlot(id);
+  gitIn(slot.path, "worktree", "lock", slot.path);
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
+  const { message } = keptTree(manager, id)!.problem(1);
+  assert.match(message, /could not be reclaimed \(.*slot has no safe Git worktree registration/);
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+});
+
+for (const { name, plant, listed } of [
+  { name: "a clean slot is reclaimed by the reset's own answer", plant: () => {}, listed: false },
+  { name: "work in the slot is still caught by the reset", plant: (path: string) => writeIn(path, "notes.md", "draft\n"), listed: true },
+]) {
+  test(`with no local default ref, ${name}`, async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const id = uid("settled-no-ref");
+    let missing = false;
+    class NoLocalDefaultGit extends NativeWorktreeGit {
+      override async observedDefaultSha(identity: Parameters<WorktreeGit["observedDefaultSha"]>[0]) {
+        return missing
+          ? { ok: false as const, reason: "no remote default branch is available", outcomeUnknown: false }
+          : super.observedDefaultSha(identity);
+      }
+    }
+    const slot = await settledPoolSlot(id, new NoLocalDefaultGit());
+    plant(slot.path);
+    missing = true;
+
+    const manager = slot.restart();
+    if (listed) {
+      await eventually(() => keptTree(manager, id) !== undefined, "the work was never listed");
+      assert.match(keptTree(manager, id)!.problem(1).message, /work left in .*\(untracked notes\.md\)/);
+      assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+      assert.equal(existsSync(join(slot.path, "notes.md")), true);
+    } else {
+      await eventually(() => slot.registry.getTask(id)?.worktreePath === null, "the clean slot was not reclaimed");
+      assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "available");
+      assert.equal(keptTree(manager, id), undefined);
+    }
+  });
+}
+
+test("a settled pool slot whose read fails only at the reset's repeated check is kept and listed", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const id = uid("settled-unreadable-late");
+  let armed = false;
+  class FailsAfterValidation extends NativeWorktreeGit {
+    override async inspect(path: string) {
+      const inspected = await super.inspect(path);
+      // The reset's validation is the last read before its hook, so the check that follows
+      // is the first to find the index unreadable.
+      if (armed) writeFileSync(gitIn(path, "rev-parse", "--path-format=absolute", "--git-path", "index"), "not an index");
+      return inspected;
+    }
+  }
+  const slot = await settledPoolSlot(id, new FailsAfterValidation());
+  writeIn(slot.path, ".env", "TOKEN=1\n");
+  armed = true;
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, /working tree could not be read/);
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased", "the refusal came before the reset's intent");
+  assert.equal(readFileSync(join(slot.path, ".env"), "utf8"), "TOKEN=1\n");
+  assert.equal(gitIn(slot.path, "rev-parse", "HEAD"), slot.sha);
+});
+
+test("a due cleanup that arrives during the task's startup reconcile waits for it, instead of losing six hours", async () => {
+  const id = uid("startup-race");
+  const registry = new Registry();
+  for (const stale of registry.listTasks()) registry.removeTask(stale.id);
+  registry.upsertTask(baseTask({
+    id,
+    status: "running",
+    dispatchedAt: 5_000,
+    repoRoot: "/repo/startup-race",
+    worktreePath: "/repo/startup-race/tree",
+    branch: "b",
+    provider: "git",
+    sessionId: `proc:${id}`,
+  }));
+  let checking = false;
+  let finishCheck = () => {};
+  const teardowns: string[] = [];
+  const tasks = new TaskManager(
+    registry,
+    undefined,
+    { taskLiveness: () => false } as never,
+    undefined,
+    undefined,
+    {
+      occupancy: unoccupied,
+      // The startup job's read-only check, held open so the race is not a matter of milliseconds.
+      returnBlocker: async () => {
+        checking = true;
+        await new Promise<void>((resolve) => { finishCheck = resolve; });
+        return "checkout has unpublished commits";
+      },
+      teardown: async (task) => { teardowns.push((task as Task).id); },
+    },
+  );
+  await eventually(() => checking, "the startup job never reached its check");
+
+  let settled = false;
+  const reclaim = tasks.enqueueRetentionCleanup({
+    taskId: id,
+    generation: taskResourceGeneration(registry.getTask(id)!),
+    fingerprint: "fp",
+    probe: async () => ({ kind: "known", digest: "fp" }),
+  }).finally(() => { settled = true; });
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  // Read first and released after: a failed assertion must not leave the job open behind it.
+  const waited = !settled;
+  const tornDown = [...teardowns];
+  finishCheck();
+  assert.equal(waited, true, "the cleanup waits for the startup job");
+  assert.deepEqual(tornDown, [], "and nothing is torn down under it");
+  assert.deepEqual(await reclaim, { kind: "reclaimed" });
+  assert.deepEqual(teardowns, [id]);
+});

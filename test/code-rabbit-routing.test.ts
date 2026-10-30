@@ -374,6 +374,42 @@ test("the CodeRabbit message leaves out findings and a conflict when there are n
   }
 });
 
+test("the CodeRabbit message's CI lines follow which failures count", (t) => {
+  // Fork (ci-strictness): this payload replaces Foreman's, so it counts CI failures the same way.
+  t.after(() => setForemanConfig({ trackCiFailures: false, ciStrictness: "all" }));
+  const payloadFor = (ciStrictness: "all" | "required", required: "passing" | "failing") => {
+    const f = fixture();
+    Object.assign(f.session, { prChecks: "failing", prHeadSha: "head" });
+    f.session.inspector!.ci = { headSha: "head", required, inspectorEnabled: true };
+    setForemanConfig({ trackCiFailures: true, ciStrictness });
+    const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
+    assert.equal(candidate.error, undefined);
+    return { payload: candidate.payload!, url: f.session.prUrl! };
+  };
+
+  const quiet = payloadFor("required", "passing").payload;
+  assert.match(quiet, /CodeRabbit has 1 unresolved review threads/);
+  assert.doesNotMatch(quiet, /CI checks are failing|gh pr checks/, "a non-required failure is not relayed");
+
+  const red = payloadFor("required", "failing");
+  assert.match(red.payload, /its required CI checks are failing/);
+  assert.ok(red.payload.includes(`gh pr checks ${red.url} --required`));
+
+  // Held: the snapshot is behind the PR's head, so CI is not relayed and every check is not asked for.
+  const held = fixture();
+  Object.assign(held.session, { prChecks: "failing", prHeadSha: "head" });
+  held.session.inspector!.ci = { headSha: "older", required: "passing", inspectorEnabled: true };
+  setForemanConfig({ trackCiFailures: true, ciStrictness: "required" });
+  const heldPayload = codeRabbitCandidate(held.registry, held.session.id, held.request).payload!;
+  assert.doesNotMatch(heldPayload, /CI checks are failing|gh pr checks/);
+  assert.match(heldPayload, /until the required checks are green/);
+
+  const all = payloadFor("all", "passing");
+  assert.match(all.payload, /, and its CI checks are failing/);
+  assert.ok(all.payload.includes(`gh pr checks ${all.url}\``));
+  assert.doesNotMatch(all.payload, /--required/);
+});
+
 test("an attached pull request whose snapshot has no mergeability fields reads as unknown, never throws", () => {
   const f = fixture();
   const task = mkTask({ repoRoot: "/tmp/main", worktreePath: "/tmp/main-tree", branch: "main-fix", extraRepos: [{

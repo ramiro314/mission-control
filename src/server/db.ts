@@ -13,6 +13,7 @@ import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { CiObservationSchema, type CiObservation } from "@shared/wait-for-ci.ts";
+import { requiredChecksRollup } from "@shared/ci-checks.ts";
 import { parseWorktreeReturnRefusal, type WorktreeReturnRefusal } from "@shared/storage-health.ts";
 import {
   APP_CONFIG_ENTRIES,
@@ -61,6 +62,7 @@ import type {
   FileCommentThread,
   InspectorCommentStatus,
   InspectorFailKind,
+  InspectorCiProjection,
   InspectorInspection,
   InspectorPr,
   InspectorPrState,
@@ -14167,13 +14169,34 @@ export function getInspectorCiObservation(key: string): CiObservation | null {
   const row = openDb()
     .prepare(`SELECT observed_ci_json FROM inspector_prs WHERE key = ?`)
     .get(key) as { observed_ci_json: string | null } | undefined;
-  if (!row?.observed_ci_json) return null;
+  return parseCiObservation(row?.observed_ci_json ?? null);
+}
+
+function parseCiObservation(json: string | null): CiObservation | null {
+  if (!json) return null;
   try {
-    const parsed = CiObservationSchema.safeParse(JSON.parse(row.observed_ci_json));
+    const parsed = CiObservationSchema.safeParse(JSON.parse(json));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Fork (ci-strictness): the stored CI snapshot reduced to what Foreman's Required mode reads,
+ * the head it was read on and the required checks' rollup. Derived beside `codeRabbit` so the
+ * registry's cached ledger row carries it and no session snapshot reads the column again.
+ *
+ * A snapshot GitHub reported more checks for than were read (`totalCount`) is Wait for CI's
+ * truncation rule applied to Foreman: a failing required check among those read still decides,
+ * but nothing else can be confirmed, so it reads as nothing marked and every check counts.
+ */
+function ciProjection(json: string | null): InspectorCiProjection {
+  const observation = parseCiObservation(json);
+  if (!observation) return { headSha: null, required: null };
+  const required = requiredChecksRollup(observation.checkRuns);
+  const truncated = (observation.totalCount ?? 0) > observation.checkRuns.length;
+  return { headSha: observation.headSha, required: truncated && required !== "failing" ? null : required };
 }
 
 export function getInspectorPr(key: string): InspectorPr | null {
@@ -14448,6 +14471,8 @@ const INSPECTION_TALLY_FROM = `SELECT p.*,
          LEFT JOIN inspector_comments c ON c.pr_key = p.key`;
 
 type InspectionTallyRow = InspectorPrRow & {
+  /** Selected by `p.*`; fork-added, so `InspectorPrRow` does not name it. */
+  observed_ci_json?: string | null;
   open_findings: number;
   posted_open_findings: number;
   resolved_findings: number;
@@ -14457,6 +14482,7 @@ function rowToInspection(r: InspectionTallyRow): InspectorInspection {
   return {
     ...rowToInspectorPr(r),
     codeRabbit: codeRabbitSummary(r.key),
+    ci: ciProjection(r.observed_ci_json ?? null),
     openFindings: Number(r.open_findings),
     postedOpenFindings: Number(r.posted_open_findings),
     resolvedFindings: Number(r.resolved_findings),

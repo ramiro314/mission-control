@@ -744,7 +744,12 @@ branch using focused tests, push, and verify the newly pushed head. It extends a
 instruction that says to stop immediately after opening the PR without rewriting that frozen
 instruction. With the preference off, no CI follow-through policy is added.
 
-The preference is read once per newly prepared packet. Preview, retries, and restart retain
+The wording follows Foreman's **Which failures count** picker. With **All checks** the session
+follows every check. With **Required checks** it watches the checks GitHub marks required
+(`gh pr checks <url> --required`), repairs failures of those, and leaves a failing check that is
+not required alone unless the task asks; if no check is marked required, it follows every check.
+
+The preference and the picker are read once per newly prepared packet. Preview, retries, and restart retain
 the recorded payload even if the setting later changes. Foreman's enabled state, mode,
 allowlist, and review-comment preference do not change this instruction choice; the workflow's
 existing delivery authorization still applies. Other completion kinds and on-demand session

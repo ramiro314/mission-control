@@ -102,6 +102,7 @@ import {
   followupPrs,
 } from "./review-followup.ts";
 import type { FollowupMark, FollowupPr, ReviewFollowupDecision } from "./review-followup.ts";
+import type { CiStrictness } from "@shared/ci-checks.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
@@ -948,10 +949,16 @@ const reviewNudged = new Map<string, Map<string, FollowupMark>>();
  * `advanceFollowupMark` gives: a CI recovery seen while the session was working has to be
  * remembered so the next failure re-arms once it parks.
  */
-function observeFollowupMarks(sessionId: string, prs: FollowupPr[]): Map<string, FollowupMark> {
+function observeFollowupMarks(
+  sessionId: string,
+  prs: FollowupPr[],
+  ciStrictness: CiStrictness,
+): Map<string, FollowupMark> {
   const prior = reviewNudged.get(sessionId);
   const next = new Map<string, FollowupMark>();
-  for (const pr of prs) next.set(pr.prKey, advanceFollowupMark(prior?.get(pr.prKey) ?? null, pr));
+  for (const pr of prs) {
+    next.set(pr.prKey, advanceFollowupMark(prior?.get(pr.prKey) ?? null, pr, ciStrictness));
+  }
   reviewNudged.set(sessionId, next);
   return next;
 }
@@ -1018,7 +1025,7 @@ export async function runReviewFollowup(
     // Fold this pass's observation (a CI recovery, or a new PR) into every mark and PERSIST
     // them, for EVERY open pull request - not only the one about to be nudged - because that
     // recovery is what re-arms CI once the session parks. See `advanceFollowupMark`.
-    const marks = observeFollowupMarks(session.id, prs);
+    const marks = observeFollowupMarks(session.id, prs, cfg.ciStrictness);
 
     // A workflow is another writer to this pane and checkout. Failure to read ownership
     // is a reason to hold, never permission to type across an owner we could not observe.
@@ -1046,6 +1053,7 @@ export async function runReviewFollowup(
           trackReviewComments: cfg.trackReviewFeedback,
           codeRabbitAutoResolve: shipping?.codeRabbitAutoResolve === true,
           trackCiFailures: cfg.trackCiFailures,
+          ciStrictness: cfg.ciStrictness,
           trackMergeConflicts: cfg.trackMergeConflicts,
           settleMs: SETTLE_MS,
         },
@@ -1095,7 +1103,7 @@ export async function runReviewFollowup(
       const freshPrs = followupPrs(fresh);
       const freshPr = freshPrs.find((candidate) => candidate.prKey === pr.prKey);
       if (!freshPr) break;
-      const freshMarks = observeFollowupMarks(fresh.id, freshPrs);
+      const freshMarks = observeFollowupMarks(fresh.id, freshPrs, freshCfg.ciStrictness);
       const freshMark = freshMarks.get(freshPr.prKey) ?? null;
 
       const freshDecision = decideReviewFollowup({
@@ -1109,6 +1117,7 @@ export async function runReviewFollowup(
           trackReviewComments: freshCfg.trackReviewFeedback,
           codeRabbitAutoResolve: freshShipping?.codeRabbitAutoResolve === true,
           trackCiFailures: freshCfg.trackCiFailures,
+          ciStrictness: freshCfg.ciStrictness,
           trackMergeConflicts: freshCfg.trackMergeConflicts,
           settleMs: SETTLE_MS,
         },
