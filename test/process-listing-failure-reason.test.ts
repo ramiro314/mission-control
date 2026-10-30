@@ -19,6 +19,18 @@ test("a killed process listing says it was killed, not `exit 1`", () => {
   );
 });
 
+test("a process listing killed at its timeout names the timeout, and one killed from outside the signal", () => {
+  const killed = { ...stubRun({ stdout: "", stderr: "", code: 1 }), outcomeUnknown: true };
+  assert.equal(
+    describeFailure({ ...killed, timedOut: true, signal: "SIGTERM", timeoutMs: 4_000 }),
+    "the process listing timed out after 4 s",
+  );
+  assert.equal(
+    describeFailure({ ...killed, timedOut: false, signal: "SIGKILL", timeoutMs: 4_000 }),
+    "the process listing was killed by SIGKILL",
+  );
+});
+
 test("an over-large process listing says so, because retrying cannot produce less", () => {
   assert.equal(
     describeFailure({ ...stubRun({ stdout: "", stderr: "maxBuffer", code: 1 }), overflowed: true }),

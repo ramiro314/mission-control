@@ -11,7 +11,7 @@ import {
   worktreeReturnBlocker,
 } from "../git/worktree-return-safety.ts";
 import type { StorageProblemObservation } from "../storage-health.ts";
-import { run } from "../util/exec.ts";
+import { commandFailureText, run } from "../util/exec.ts";
 import { inFlightTrees, type InFlightTrees } from "./in-flight.ts";
 import { inspectWorktreeOccupancy, pathContains, type WorktreeOccupancy } from "./occupancy.ts";
 import { canonicalWorktreePath } from "./path.ts";
@@ -514,7 +514,7 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     const branch = head.code === 0 ? head.stdout.trim() : "";
     if (this.deps.inFlight.has(path)) return "it is being created";
     const removed = await git(["--git-dir", commonDir, "worktree", "remove", "--force", path]);
-    if (!ok(removed)) return `it could not be removed: ${removed.stderr.trim() || `exit ${removed.code}`}`;
+    if (!ok(removed)) return `it could not be removed: ${commandFailureText(removed)}`;
     if (branch.startsWith("harness/")) {
       const contained = await git([
         "--git-dir", commonDir, "for-each-ref", "--contains", `refs/heads/${branch}`, "--format=%(refname)", "refs/remotes",
@@ -559,7 +559,7 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
         if (await lstat(path).then(() => true, () => false)) continue;
         const removed = await git(["--git-dir", commonDir, "worktree", "remove", "--force", path]);
         if (ok(removed)) pruned.push(path);
-        else console.warn(`[worktrees] could not prune the registration of ${path}: ${removed.stderr.trim()}`);
+        else console.warn(`[worktrees] could not prune the registration of ${path}: ${commandFailureText(removed)}`);
       }
     }
     return pruned;

@@ -9,7 +9,7 @@ import { readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { executableLocator, loginShellVariables } from "../executables/locator.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
-import { run } from "../util/exec.ts";
+import { describeCommandFailure, run } from "../util/exec.ts";
 import { scrubCheckEnv } from "../workflows/check-env.ts";
 import { TailRing } from "../workflows/check-spawn.ts";
 import type { GitResult } from "./git.ts";
@@ -182,7 +182,7 @@ export async function readTreeBlobs(cwd: string, sha: string): Promise<GitResult
   if (result.code !== 0 || result.outcomeUnknown || result.overflowed) {
     return {
       ok: false,
-      reason: `git ls-tree failed: ${result.stderr.trim() || `exit ${result.code}`}`,
+      reason: describeCommandFailure("git ls-tree", result),
       outcomeUnknown: result.outcomeUnknown,
     };
   }

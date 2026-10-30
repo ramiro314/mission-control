@@ -10,7 +10,7 @@ import { isWorktreeOwnerKind, type WorktreeOwnerKind, type WorktreeRecoveryRefus
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
 import { openDb } from "../db.ts";
-import { run } from "../util/exec.ts";
+import { describeCommandFailure, run, unansweredOutcome } from "../util/exec.ts";
 import { unref } from "../util/timers.ts";
 import {
   worktreeRepositoryIdentity,
@@ -51,6 +51,7 @@ import {
   type WorktreeRegistration,
 } from "./git.ts";
 import { ensureWorktreePoolMarker, readWorktreePoolMarker } from "./marker.ts";
+import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observation-retry.ts";
 import { taskOwner } from "./owners.ts";
 import { trackedRun } from "./own-processes.ts";
 import {
@@ -265,6 +266,8 @@ export interface WorktreeManagerDeps {
   seedRename?: (from: string, to: string) => Promise<void>;
   /** Every pid holding one file open, or null when that could not be read. Recover asks it of `index.lock`. */
   fileHolders: FileHolders;
+  /** The wait before an owner lookup that threw is tried once more. */
+  pause: (ms: number) => Promise<void>;
 }
 
 const DEFAULT_DEPS: WorktreeManagerDeps = {
@@ -281,11 +284,12 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
       timeoutMs: 120_000,
       maxBuffer: 64 * 1024,
     });
+    const unanswered = unansweredOutcome(result);
     return result.code === 0 && !result.outcomeUnknown && !result.overflowed
       ? { ok: true, reason: null, outcomeUnknown: false }
       : {
           ok: false,
-          reason: result.stderr.trim() ||
+          reason: (unanswered ? `setup ${unanswered}` : result.stderr.trim()) ||
             (result.outcomeUnknown ? "setup outcome could not be proven" : `setup exited ${result.code}`),
           outcomeUnknown: result.outcomeUnknown,
         };
@@ -300,6 +304,7 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
   manualPickupWindowMs: MANUAL_PICKUP_WINDOW_MS,
   cloneTree: copyOnWriteClone(),
   fileHolders: defaultFileHolders,
+  pause: pauseFor,
 };
 
 /** What a seed attempt did. */
@@ -405,7 +410,7 @@ async function gitCommonDirectory(
   if (result.code !== 0 || result.outcomeUnknown || !reported) {
     return {
       ok: false,
-      reason: `git rev-parse --git-common-dir failed: ${bounded(result.stderr.trim() || `exit ${result.code}`)}`,
+      reason: bounded(describeCommandFailure("git rev-parse --git-common-dir", result)),
     };
   }
   try {
@@ -883,11 +888,22 @@ export class WorktreeManager {
     return (await this.occupancyRefusal(path))?.reason ?? null;
   }
 
-  private ownerReferenced(reference: WorktreeOwnerReference): Promise<boolean> {
-    if (this.pendingDomainLeases.has(reference.leaseId)) return Promise.resolve(true);
+  /** A domain lookup that throws is tried once more (`observation-retry.ts`) before it is unknown. */
+  private async ownerReferenced(reference: WorktreeOwnerReference): Promise<boolean> {
+    if (this.pendingDomainLeases.has(reference.leaseId)) return true;
     // A `warm` owner has no domain row: its operation's life in this daemon is its reference.
-    if (reference.owner.kind === "warm") return Promise.resolve(this.liveWarmOwners.has(reference.owner.key));
-    return this.deps.ownerReferenced(reference);
+    if (reference.owner.kind === "warm") return this.liveWarmOwners.has(reference.owner.key);
+    try {
+      return await this.deps.ownerReferenced(reference);
+    } catch (first) {
+      await this.deps.pause(OBSERVATION_RETRY_DELAY_MS);
+      try {
+        return await this.deps.ownerReferenced(reference);
+      } catch (second) {
+        const text = (error: unknown) => (error instanceof Error ? error.message : String(error));
+        throw new Error(bothAttempts(text(first), text(second)));
+      }
+    }
   }
 
   /** Whether this `warm` owner's operation is running in this daemon right now. */
