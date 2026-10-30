@@ -1,5 +1,7 @@
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,16 +13,19 @@ import { TaskManager } from "../src/server/tasks.ts";
 import { QueueManager } from "../src/server/queue.ts";
 import { buildApp } from "../src/server/routes.ts";
 import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
+import { LeaseActivityObserver } from "../src/server/worktrees/lease-activity.ts";
 import { WorktreeManager } from "../src/server/worktrees/manager.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
+import { nativeWorktreeOwnerReferenced } from "../src/server/worktrees/owners.ts";
 import { OBSERVATION_FAILURE, RESERVATION_NOT_HANDED_BACK } from "../src/server/worktrees/quarantine-reasons.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import type { TerminalLaunchSpec } from "../src/server/terminal/targets.ts";
 import type { TerminalBackendId } from "../src/shared/terminal.ts";
 import { WorktreeActionRequestSchema, WorktreeClaimSchema, type WorktreeClaim } from "../src/shared/protocol.ts";
-import { WORKTREE_INVENTORY_LIMITS } from "../src/shared/worktrees.ts";
+import type { WorktreeLeaseActivity } from "../src/shared/storage-health.ts";
+import { WORKTREE_INVENTORY_LIMITS, type WorktreeInventory } from "../src/shared/worktrees.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const db = openDb();
@@ -39,6 +44,18 @@ const manager = new WorktreeManager(db, {
       occupants: occupied.has(path) ? [occupant(path)] : [],
     }]))),
   resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null, ...(poolClaim ? { claim: poolClaim } : {}) }),
+  ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference, db),
+});
+// The stale chip's real source, wired as the daemon wires it, with a clock the test can move.
+let leaseClock = Date.now();
+let leaseClocks: WorktreeLeaseActivity = {};
+const leaseActivity = new LeaseActivityObserver({
+  slots: () => manager.store.slots(),
+  ownerLive: (reference) => nativeWorktreeOwnerReferenced(reference, db),
+  staleLeaseDays: () => 7,
+  now: () => leaseClock,
+  read: () => leaseClocks,
+  write: (record) => { leaseClocks = record; },
 });
 const checks = new CheckLeaseManager(db, { manager, legacy: new LegacyTreehouseService(db) });
 const operations = new WorktreeOperationsService(manager, {
@@ -48,11 +65,19 @@ const operations = new WorktreeOperationsService(manager, {
   checkRecovery: async () => "unknown",
   notifyChanged: () => registry.emitWorktreesChanged(),
   diskBytes: async () => 0,
+  staleLeases: () => leaseActivity.staleSinceBySlot(),
 });
 const launched: TerminalLaunchSpec[] = [];
 let launchError: string | null = null;
+/** Set to run what the route asked for as a real process and wait for it, as a closed terminal ends. */
+let shellExits: Array<number | null> | null = null;
 const launch = async (_backend: TerminalBackendId, spec: TerminalLaunchSpec) => {
   launched.push(spec);
+  if (shellExits) {
+    const shell = spawn(spec.argv[0]!, spec.argv.slice(1), { cwd: spec.cwd, stdio: "ignore" });
+    const [code] = await once(shell, "exit") as [number | null];
+    shellExits.push(code);
+  }
   return launchError
     ? { ok: false, label: "Test terminal", homeName: null, status: 502, error: launchError }
     : { ok: true, label: "Test terminal", homeName: null, status: 200 };
@@ -512,6 +537,55 @@ for (const scenario of NO_LEASE_CASES) {
     assert.equal(occupancyReads.length, 0, "every staged read was consumed");
   });
 }
+
+test("a lease Open terminal took outlives its shell and is flagged stale like any live lease", async (t) => {
+  const { poolId, slotId, head, path, open, row } = await availableSlot();
+  // The route launches $SHELL, which on a developer's machine is whatever they log in to.
+  const shellBefore = process.env.SHELL;
+  process.env.SHELL = "/bin/sh";
+  t.after(() => {
+    if (shellBefore === undefined) delete process.env.SHELL;
+    else process.env.SHELL = shellBefore;
+  });
+  const leaseCard = async () => {
+    const inventory = await (await app.request("/api/worktrees", { headers: HEADERS })).json() as WorktreeInventory;
+    return inventory.repositories.flatMap((pool) => pool.slots).find((slot) => slot.id === slotId)!;
+  };
+
+  shellExits = [];
+  const opened = await open();
+  const exits = shellExits;
+  shellExits = null;
+  assert.equal(opened.status, 200);
+  assert.deepEqual(exits, [0], "a real shell ran in the slot and exited before the route answered");
+  const leaseId = row().activeLeaseId;
+  assert.ok(leaseId);
+  assert.equal(row().state, "leased");
+
+  // Reconcile is what would notice an owner that went away with its shell. It must not.
+  assert.equal(await manager.reconcilePoolById(poolId), true);
+  assert.equal(row().state, "leased");
+  assert.equal(row().activeLeaseId, leaseId);
+  assert.equal((await leaseCard()).owner?.label, "Terminal from Settings");
+
+  // The clock starts at the first probe, and a lease younger than the threshold is not stale.
+  const firstProbe = leaseClock;
+  await leaseActivity.pass();
+  assert.equal((await leaseCard()).staleSince, null);
+
+  leaseClock += 8 * 24 * 60 * 60 * 1_000;
+  await leaseActivity.pass();
+  const card = await leaseCard();
+  assert.equal(card.staleSince, firstProbe);
+  assert.equal(card.state, "leased");
+  assert.ok(card.actions.includes("return"));
+
+  // Flagged, never reclaimed: a further pass leaves the lease and the tree as they were.
+  assert.equal(await manager.reconcilePoolById(poolId), true);
+  assert.equal(row().state, "leased");
+  assert.equal(row().activeLeaseId, leaseId);
+  assert.equal(gitIn(path, "rev-parse", "HEAD"), head);
+});
 
 test("a failed launch on a slot that took no lease reports the launcher's own error", async () => {
   const failedOpen = async (open: () => Promise<Response> | Response) => {
