@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,7 +18,8 @@ import { RedactedOutput, buildClaimEnvironment, runClaimStep, runClaimSteps } fr
 import { WarmLogFile, WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
-import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
+import { inspectWorktreeOccupancy, type WorktreeOccupancy, type WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
+import { finishedTrees, OrphanProcessMonitor } from "../src/server/worktrees/orphan-processes.ts";
 import type { CloneTree } from "../src/server/worktrees/seed.ts";
 import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -202,6 +205,26 @@ function alive(pid: number): boolean {
   }
 }
 
+/** The daemon's orphan scan over this manager, with real `ps` and `lsof`. */
+function orphanScan(m: WorktreeManager): OrphanProcessMonitor {
+  return new OrphanProcessMonitor({
+    trees: () => finishedTrees({ pool: m, taskReturns: [], returningChecks: [] }),
+    retryReturn: () => {},
+  });
+}
+
+async function strayIn(cwd: string): Promise<ChildProcess> {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd, stdio: "ignore" });
+  await once(child, "spawn");
+  return child;
+}
+
+async function stopped(child: ChildProcess): Promise<void> {
+  const exited = once(child, "exit");
+  child.kill("SIGKILL");
+  await exited;
+}
+
 // ---- targeting ----
 
 test("Warm targets only idle slots, says what a pool Warm leaves alone, and needs a claim", async () => {
@@ -245,6 +268,69 @@ test("Warm targets only idle slots, says what a pool Warm leaves alone, and need
 });
 
 // ---- the happy path ----
+
+test("a Warm's claim step is not an orphan process while it runs, and what it leaves behind is once the Warm ends", async () => {
+  const fixture = repository("mission-warm-orphan-");
+  const policy: Policy = { claim: null };
+  const m = manager(policy);
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  const work = mkdtempSync(join(tmpdir(), "mission-warm-orphan-gate-"));
+  const gate = join(work, "gate");
+  const pidFile = join(work, "pid");
+  policy.claim = claimOf(gatedStep(gate, pidFile));
+  const ops = service(m, logsDirectory());
+  const id = await warm(ops, { kind: "slot", slotId: slot!.slotId });
+  await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, "utf8") !== "", "the claim step to start");
+  const step = Number(readFileSync(pidFile, "utf8"));
+  const leftover = await strayIn(slot!.path);
+  try {
+    const row = m.store.slot(slot!.slotId)!;
+    assert.equal(row.state, "leased", "a Warm holds its slot as leased");
+    assert.ok(row.activeLeaseId, "under a lease");
+    assert.equal(m.claims.has(slot!.slotId), true);
+    const inside = (await inspectWorktreeOccupancy([slot!.path])).get(slot!.path);
+    assert.equal(inside?.status, "known");
+    assert.ok(
+      inside?.status === "known" && inside.occupants.some((occupant) => occupant.pid === step),
+      "the step really is inside the slot, so nothing below passes by not seeing it",
+    );
+
+    const scan = orphanScan(m);
+    await scan.scan();
+    assert.deepEqual(scan.problems(), []);
+
+    writeFileSync(gate, "0");
+    await waitFor(async () => (await operation(ops, id)).state === "finished", "the Warm to finish");
+    const returned = m.store.slot(slot!.slotId)!;
+    assert.equal(returned.state, "available");
+    assert.equal(returned.activeLeaseId, null);
+    await scan.scan();
+    assert.deepEqual(scan.problems().map((problem) => problem.process?.pid), [leftover.pid]);
+  } finally {
+    await stopped(leftover);
+  }
+});
+
+test("an available slot with a claim still registered is not scanned until the claim leaves the registry", async () => {
+  const fixture = repository("mission-claim-orphan-");
+  const m = manager({ claim: null });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  // Where a claim ends: `warmSlot` returns the slot first and unregisters its claim after.
+  assert.equal(m.store.slot(slot!.slotId)!.state, "available");
+  const control = m.claims.register(slot!.slotId, { kind: "warm", key: "finishing" }, Date.now())!;
+  const child = await strayIn(slot!.path);
+  try {
+    const scan = orphanScan(m);
+    await scan.scan();
+    assert.deepEqual(scan.problems(), []);
+
+    m.claims.unregister(slot!.slotId, control);
+    await scan.scan();
+    assert.deepEqual(scan.problems().map((problem) => problem.process?.pid), [child.pid]);
+  } finally {
+    await stopped(child);
+  }
+});
 
 test("Warm holds the slot, resets it to origin's default, claims, returns it, and keeps its log", async () => {
   const fixture = repository("mission-warm-run-");

@@ -76,6 +76,11 @@ function harness(trees: FinishedTree[], root: string, deps: Partial<OrphanProces
 
 const taskOwner: FinishedTreeOwner = { kind: "task", taskId: "task-1" };
 
+/** Fixture rows in the shape `finishedTrees` reads. `test/worktree-warm.test.ts` passes the real manager. */
+function poolOf(rows: readonly WorktreeSlotRow[], claimRunning: (slotId: string) => boolean = () => false) {
+  return { store: { slots: () => rows }, claims: { has: claimRunning } };
+}
+
 async function reportedProcess(monitor: OrphanProcessMonitor, pid: number) {
   await monitor.scan();
   const problem = monitor.problems().find((each) => each.process?.pid === pid);
@@ -87,13 +92,12 @@ test("finished trees are pending task returns, returning check leases, quarantin
   const slot = (id: string, path: string, state: string, activeLeaseId: string | null = null) =>
     ({ id, path, state, activeLeaseId }) as WorktreeSlotRow;
   const trees = finishedTrees({
-    slots: [
+    pool: poolOf([
       slot("slot-1", "/pool/1/repo", "leased", "lease-task-1"),
       slot("slot-2", "/pool/2/repo", "quarantined"),
       slot("slot-5", "/pool/5/repo", "quarantined"),
       slot("slot-6", "/pool/6/repo", "available"),
-    ],
-    claimRunning: () => false,
+    ]),
     taskReturns: [{ taskId: "task-1", trees: [
       { path: "/pool/1/repo", leaseId: "lease-task-1" },
       { path: "/state/worktrees/overflow", leaseId: null },
@@ -113,24 +117,24 @@ test("finished trees are pending task returns, returning check leases, quarantin
   ]);
 });
 
-test("a slot leased to someone else, or running a Warm or a claim, is never a finished tree, so a live owner's processes are not offered for Kill", () => {
+test("a slot leased to someone else, holding a lease while available, or running a claim, is never a finished tree, so a live owner's processes are not offered for Kill", () => {
   const slot = (id: string, path: string, state: string, activeLeaseId: string | null) =>
     ({ id, path, state, activeLeaseId }) as WorktreeSlotRow;
   // Task T completed owing slot 1, which was then reset and leased to live task U. Check C's
   // returning lease names slot 2, now leased to a manual holder. Slot 3 was quarantined while
   // its live lease stayed in the row. Task V's return names slot 4, now back in the pool with
-  // no lease, where a dependency claim is still finishing. Slot 5 is held by a Warm, and task
-  // W's return names slot 6, which is back in the pool: it is an available slot, not W's tree.
+  // no lease, where a dependency claim is still finishing. Slot 5 carries a lease in a row that
+  // reads available, and task W's return names slot 6, which is back in the pool: it is an
+  // available slot, not W's tree.
   const trees = finishedTrees({
-    slots: [
+    pool: poolOf([
       slot("slot-1", "/pool/1/repo", "leased", "lease-task-u"),
       slot("slot-2", "/pool/2/repo", "leased", "lease-manual"),
       slot("slot-3", "/pool/3/repo", "quarantined", "lease-live"),
       slot("slot-4", "/pool/4/repo", "available", null),
-      slot("slot-5", "/pool/5/repo", "leased", "lease-warm"),
+      slot("slot-5", "/pool/5/repo", "available", "lease-stale"),
       slot("slot-6", "/pool/6/repo", "available", null),
-    ],
-    claimRunning: (slotId) => slotId === "slot-4",
+    ], (slotId) => slotId === "slot-4"),
     taskReturns: [
       { taskId: "task-t", trees: [{ path: "/pool/1/repo", leaseId: "lease-task-t" }] },
       { taskId: "task-v", trees: [{ path: "/pool/4/repo", leaseId: "lease-task-v" }] },
@@ -188,7 +192,7 @@ test("a process in an available slot with no lease is reported as an orphan proc
   const [slot] = poolSlots(root, [{ id: "slot-1", state: "available", activeLeaseId: null }]);
   const child = await occupant(slot!.path);
   const { monitor, signals, retried } = harness([], root, {
-    trees: () => finishedTrees({ slots: [slot!], claimRunning: () => false, taskReturns: [], returningChecks: [] }),
+    trees: () => finishedTrees({ pool: poolOf([slot!]), taskReturns: [], returningChecks: [] }),
   });
 
   const { problem, process: listed } = await reportedProcess(monitor, child.pid!);
@@ -205,27 +209,20 @@ test("a process in an available slot with no lease is reported as an orphan proc
   assert.deepEqual(monitor.problems(), []);
 });
 
-test("a claim's and a Warm's processes are not reported, and a claim's leftover is once the claim is over", async () => {
+test("a process in an available row that still carries a lease is not reported", async () => {
   const { root } = fixture();
-  const [claiming, warming] = poolSlots(root, [
-    { id: "slot-1", state: "available", activeLeaseId: null },
-    { id: "slot-2", state: "leased", activeLeaseId: "lease-warm" },
+  const [held, empty] = poolSlots(root, [
+    { id: "slot-1", state: "available", activeLeaseId: "lease-stale" },
+    { id: "slot-2", state: "available", activeLeaseId: null },
   ]);
-  const claimProcess = await occupant(claiming!.path);
-  await occupant(warming!.path);
-  let claimRunning = true;
+  await occupant(held!.path);
+  const control = await occupant(empty!.path);
   const { monitor } = harness([], root, {
-    trees: () => finishedTrees({
-      slots: [claiming!, warming!], claimRunning: (slotId) => claimRunning && slotId === "slot-1", taskReturns: [], returningChecks: [],
-    }),
+    trees: () => finishedTrees({ pool: poolOf([held!, empty!]), taskReturns: [], returningChecks: [] }),
   });
 
   await monitor.scan();
-  assert.deepEqual(monitor.problems(), []);
-
-  claimRunning = false;
-  await monitor.scan();
-  assert.deepEqual(monitor.problems().map((problem) => problem.process?.pid), [claimProcess.pid]);
+  assert.deepEqual(monitor.problems().map((problem) => problem.process?.pid), [control.pid]);
 });
 
 test("a slot reserved while the inspection runs is not reported, so a claim that just started is not offered for Kill", async () => {
@@ -234,7 +231,7 @@ test("a slot reserved while the inspection runs is not reported, so a claim that
   const child = await occupant(available!.path);
   let row = available!;
   const { monitor } = harness([], root, {
-    trees: () => finishedTrees({ slots: [row], claimRunning: () => false, taskReturns: [], returningChecks: [] }),
+    trees: () => finishedTrees({ pool: poolOf([row]), taskReturns: [], returningChecks: [] }),
     occupancy: async (paths) => {
       const observed = await inspectWorktreeOccupancy(paths);
       // The claim's step is in the slot by the time the listing answers, and the slot now holds

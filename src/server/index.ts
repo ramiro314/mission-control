@@ -478,8 +478,7 @@ let stopDatabaseBackups = async () => {};
 // problems; Kill retries the blocked return at once, and sweeps again for an unowned tree.
 const orphanProcesses = new OrphanProcessMonitor({
   trees: () => finishedTrees({
-    slots: worktrees.store.slots(),
-    claimRunning: (slotId) => worktrees.claims.has(slotId),
+    pool: worktrees,
     taskReturns: tasks.pendingWorktreeReturns(),
     returningChecks: checkLeases.returningLeases(),
     unownedTrees: orphanTrees.unreferenced(),

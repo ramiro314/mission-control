@@ -50,15 +50,18 @@ export interface FinishedTree {
  * with none, and only for the moment before it unregisters; that slot is skipped.
  */
 export function finishedTrees(input: {
-  slots: readonly WorktreeSlotRow[];
-  /** Whether a dependency claim is running in this slot right now. */
-  claimRunning: (slotId: string) => boolean;
+  /** The worktree manager: its slot rows, and the dependency claims running in them right now. */
+  pool: {
+    store: { slots: () => readonly WorktreeSlotRow[] };
+    claims: { has: (slotId: string) => boolean };
+  };
   taskReturns: ReadonlyArray<{ taskId: string; trees: ReadonlyArray<{ path: string; leaseId: string | null }> }>;
   returningChecks: ReadonlyArray<{ attemptId: string; path: string; leaseId: string | null }>;
   /** Unreferenced folders, which no slot, task or check owns. */
   unownedTrees?: readonly string[];
 }): FinishedTree[] {
-  const slotAt = new Map(input.slots.map((slot) => [slot.path, slot]));
+  const slots = input.pool.store.slots();
+  const slotAt = new Map(slots.map((slot) => [slot.path, slot]));
   const finishedFor = (path: string, leaseId: string | null): boolean => {
     const slot = slotAt.get(path);
     if (!slot) return true;
@@ -75,11 +78,11 @@ export function finishedTrees(input: {
       .map(({ attemptId, path }) => ({
         path, slotId: slotAt.get(path)?.id ?? null, owner: { kind: "check", attemptId } as const,
       })),
-    ...input.slots.filter((slot) => slot.state === "quarantined" && slot.activeLeaseId === null).map((slot) => ({
+    ...slots.filter((slot) => slot.state === "quarantined" && slot.activeLeaseId === null).map((slot) => ({
       path: slot.path, slotId: slot.id, owner: { kind: "slot", slotId: slot.id } as const,
     })),
-    ...input.slots
-      .filter((slot) => slot.state === "available" && slot.activeLeaseId === null && !input.claimRunning(slot.id))
+    ...slots
+      .filter((slot) => slot.state === "available" && slot.activeLeaseId === null && !input.pool.claims.has(slot.id))
       .map((slot) => ({
         path: slot.path, slotId: slot.id, owner: { kind: "available-slot", slotId: slot.id } as const,
       })),
