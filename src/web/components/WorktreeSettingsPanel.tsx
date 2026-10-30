@@ -769,6 +769,10 @@ function SlotCard({
         </p>
       )}
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
+      {/* The daemon offers Return on a quarantine only while its owner still references it. */}
+      {slot.state === "quarantined" && slot.owner && slot.actions.includes("return") && (
+        <p className="wt-owner">Its owner's return brings this slot back.</p>
+      )}
       {stuckReturn && <p className="wt-diagnostic wt-stuck-return">{stuckReturn.message}</p>}
       <SlotDiagnosis slot={slot} orphans={orphans} />
       <OrphanList
