@@ -686,7 +686,7 @@ export function idleSlotRefusal(facts: IdleSlotFacts): IdleSlotRefusal | null {
 type IdleScreening =
   | {
       ok: true;
-      idle: Array<{ slot: WorktreeSlotRow; head: string; detached: boolean }>;
+      idle: Array<{ slot: WorktreeSlotRow; head: string; headDetached: boolean }>;
       refused: Map<string, IdleSlotRefusal>;
     }
   | { ok: false; reason: string };
@@ -1179,7 +1179,7 @@ export class WorktreeManager {
       return { ok: false, reason: `${OBSERVATION_FAILURE.registrations}: ${registrations.reason}` };
     }
     const occupancy = await this.occupancy(available.map((slot) => slot.path));
-    const idle: Array<{ slot: WorktreeSlotRow; head: string; detached: boolean }> = [];
+    const idle: Array<{ slot: WorktreeSlotRow; head: string; headDetached: boolean }> = [];
     const refused = new Map<string, IdleSlotRefusal>();
     for (const slot of available) {
       const priorReference = lastReference(slot);
@@ -1208,7 +1208,7 @@ export class WorktreeManager {
       // The rules before the Git state first, so a slot one of them refuses costs no Git read.
       let refusal = idleSlotRefusal(facts);
       let head: string | null = null;
-      let detached = false;
+      let headDetached = false;
       if (!refusal) {
         let inspected: IdleSlotFacts["inspection"];
         try {
@@ -1223,7 +1223,7 @@ export class WorktreeManager {
             : { ok: false, reason: inspection.reason };
           if (inspection.ok) {
             head = inspection.value.head;
-            detached = inspection.value.detached;
+            headDetached = inspection.value.detached;
           }
         } catch (error) {
           inspected = { ok: false, reason: String(error) };
@@ -1242,7 +1242,7 @@ export class WorktreeManager {
       if (refusal) continue;
       // Every read this slot needed answered.
       this.clearObservationFailure(slot);
-      idle.push({ slot, head: head!, detached });
+      idle.push({ slot, head: head!, headDetached });
     }
     return { ok: true, idle, refused };
   }
@@ -1565,7 +1565,7 @@ export class WorktreeManager {
       const screened = await this.screenIdleSlots(pool, identity, [slot]);
       const idle = screened.ok ? screened.idle.find((entry) => entry.slot.id === slotId) ?? null : null;
       if (!idle) return { outcome: "refused", reason: notIdleReason(screened, slotId) };
-      if (!idle.detached) {
+      if (!idle.headDetached) {
         return { outcome: "refused", reason: "the slot is attached to a branch, which only a reset can undo" };
       }
       const leaseId = this.deps.randomId();
