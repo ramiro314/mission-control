@@ -338,7 +338,8 @@ test("retention keeps the newest 2,000 rows of each pool, by age, with id breaki
   for (let index = 0; index < rowsPerPool + 5; index += 1) {
     ids.push(Number(insert.run("pool-big", "slot-big", now - ageOf(index)).lastInsertRowid));
   }
-  for (let index = 0; index < 3; index += 1) insert.run("pool-small", "slot-small", now - index);
+  // Older than the big pool's cut and well inside 90 days: only its own pool's cap may judge it.
+  for (let index = 0; index < 3; index += 1) insert.run("pool-small", "slot-small", now - 10 * rowsPerPool - index);
   db.exec("COMMIT;");
 
   const survivors = () => (db

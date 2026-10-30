@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeActionPreview, WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { Page } from "@playwright/test";
@@ -679,6 +679,56 @@ test("a slot card's History lists what happened to the slot, newest first, and p
 });
 
 /**
+ * A failed read raises no version, so this is the only change an open list hears about through
+ * the slot's failed-read note. The failure is real: a slot whose `.git` file no longer points at
+ * a repository cannot be read, and Reconcile's Git inspection fails twice and keeps the lease.
+ */
+test("an open History picks up a failed read as it starts and as it clears", async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history failed read" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const dotGit = join(lease.path, ".git");
+  const original = readFileSync(dotGit, "utf8");
+
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const slot = repo.locator(".wt-slot", { hasText: lease.path });
+    const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+    const entries = history.getByRole("listitem");
+    const reconcile = async () => {
+      await repo.getByRole("button", { name: "Reconcile", exact: true }).click();
+      const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
+      await preview.getByRole("button", { name: "Execute" }).click();
+      await expect(preview).toHaveCount(0);
+    };
+
+    await history.getByRole("button", { name: "History" }).click();
+    await expect(entries).toHaveCount(2);
+
+    writeFileSync(dotGit, "not a gitdir pointer\n");
+    await reconcile();
+    await expect(entries).toHaveCount(3, { timeout: EXECUTES_MS });
+    await expect(entries.nth(0)).toContainText("Failed read");
+    await expect(entries.nth(0)).toContainText("slot Git state is unknown");
+    await expect(slot.getByText("leased", { exact: true })).toBeVisible();
+
+    writeFileSync(dotGit, original);
+    await reconcile();
+    await expect(entries).toHaveCount(4, { timeout: EXECUTES_MS });
+    await expect(entries.nth(0)).toContainText("Failed read cleared");
+  } finally {
+    writeFileSync(dotGit, original);
+    await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } });
+  }
+});
+
+/**
  * The states of History that hold no list of real rows. A slot that predates the table is real:
  * its rows are deleted, as a slot leased before this shipped never had any. A read that fails
  * cannot be produced from the daemon, so those replies are routed, and each is judged by what the
@@ -711,24 +761,36 @@ test("History says when a slot has no entries, and when its read or an older pag
     const entries = history.getByRole("listitem");
     const unreadable = history.getByText("This slot's history could not be read.");
     const empty = history.getByText("Nothing recorded for this slot yet.");
+    const reading = history.getByText("Reading this slot's history…");
     const reopen = async () => {
       await toggle.click();
       await toggle.click();
     };
+    const firstPage = (url: URL) => url.pathname.endsWith("/history") && !url.searchParams.has("before");
 
+    // The first read of all fails: only the failure shows, with nothing to imply a read or a result.
+    await dashboard.route(firstPage, (route) => route.fulfill({ status: 500, json: { error: "database is busy" } }));
     await toggle.click();
+    await expect(unreadable).toBeVisible();
+    await expect(reading).toHaveCount(0);
+    await expect(empty).toHaveCount(0);
+    await dashboard.unroute(firstPage);
+
+    await reopen();
     await expect(empty).toBeVisible();
     await expect(unreadable).toHaveCount(0);
 
-    const firstPage = (url: URL) => url.pathname.endsWith("/history") && !url.searchParams.has("before");
+    // A re-read that fails must not keep saying the slot has no history: that is no longer known.
     await dashboard.route(firstPage, (route) => route.fulfill({ status: 500, json: { error: "database is busy" } }));
     await reopen();
     await expect(unreadable).toBeVisible();
+    await expect(empty).toHaveCount(0);
     await dashboard.unroute(firstPage);
 
     await dashboard.route(firstPage, (route) => route.fulfill({ json: { entries: "not a list", nextBefore: null } }));
     await reopen();
     await expect(unreadable).toBeVisible();
+    await expect(empty).toHaveCount(0);
     await dashboard.unroute(firstPage);
 
     await reopen();

@@ -916,7 +916,7 @@ function SlotHistory({
       {open && (
         <>
           {entries === null && !failed && <p className="wt-history-note">Reading this slot's history…</p>}
-          {entries?.length === 0 && <p className="wt-history-note">Nothing recorded for this slot yet.</p>}
+          {entries?.length === 0 && !failed && <p className="wt-history-note">Nothing recorded for this slot yet.</p>}
           {failed && <p className="settings-error">This slot's history could not be read.</p>}
           {entries && entries.length > 0 && (
             <ol>
