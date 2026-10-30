@@ -89,6 +89,19 @@ test("every observation argv puts --no-optional-locks before the subcommand, and
     "mergedInto",
   );
 
+  // Without a cached origin/HEAD the default is found by the fallback probes, which are reads too.
+  gitIn(clone, "remote", "set-head", "origin", "-d");
+  const fallback = await argvOf(async () => {
+    const observed = await git.observedDefaultSha(identity);
+    assert.deepEqual(observed, { ok: true, value: base });
+  });
+  assertObservation(fallback, "observedDefaultSha fallback");
+  assert.ok(
+    fallback.some((args) => afterDirectory(args).join(" ") === `${FLAG} rev-parse --verify --quiet origin/main`),
+    `the fallback probed origin/main: ${fallback.map((args) => args.join(" ")).join("; ")}`,
+  );
+  gitIn(clone, "remote", "set-head", "origin", "main");
+
   // Return's fetch and the pool reset and removal write, and keep taking their locks.
   const fetched = await argvOf(async () => assert.equal((await git.fetchDefaultSha(identity)).ok, true));
   assertMutationsUnflagged(fetched, "fetchDefaultSha", "fetch");

@@ -156,6 +156,33 @@ test("inventory runs no Git in a slot whose lock is held, and shows it busy with
   assert.ok(read.includes(lease.path), "a free slot is read again");
 });
 
+test("a slot whose claim has not reached a step is busy reading its fingerprint, and then names the step", async (t) => {
+  const [slot] = await availableSlots("mission-worktree-bg-busy-claim-", 1);
+  const read: string[] = [];
+  const inspect = NativeWorktreeGit.prototype.inspect;
+  t.mock.method(NativeWorktreeGit.prototype, "inspect", function (this: NativeWorktreeGit, path: string) {
+    read.push(path);
+    return inspect.call(this, path);
+  });
+  const view = async () => (await operations.inventory()).repositories
+    .flatMap((repo) => repo.slots)
+    .find((entry) => entry.id === slot!.slotId);
+
+  // A claim is registered before its acquisition takes the slot lock, and counts from then.
+  const control = manager.claims.register(slot!.slotId, { kind: "manual", key: "busy-claim" }, Date.now());
+  assert.ok(control);
+  try {
+    assert.equal((await view())?.busy, "dependency claim, reading its fingerprint");
+    manager.claims.progress(slot!.slotId, control, { step: 2, stepCount: 3, argv: ["yarn", "install"], startedAt: Date.now() });
+    assert.equal((await view())?.busy, "dependency claim, step 2 of 3");
+    assert.deepEqual(read.filter((path) => path === slot!.path), [], "no Git ran in the claimed slot");
+  } finally {
+    manager.claims.unregister(slot!.slotId, control);
+  }
+  assert.equal((await view())?.busy, null);
+  assert.ok(read.includes(slot!.path), "a slot whose claim ended is read again");
+});
+
 test("a token is claimed synchronously, so a stale or reused one is refused before queueing", async () => {
   const [slot] = await availableSlots("mission-worktree-bg-claim-", 1);
   const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: slot!.slotId } });
