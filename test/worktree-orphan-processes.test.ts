@@ -76,6 +76,11 @@ function harness(trees: FinishedTree[], root: string, deps: Partial<OrphanProces
 
 const taskOwner: FinishedTreeOwner = { kind: "task", taskId: "task-1" };
 
+/** Fixture rows in the shape `finishedTrees` reads. `test/worktree-warm.test.ts` passes the real manager. */
+function poolOf(rows: readonly WorktreeSlotRow[], claimRunning: (slotId: string) => boolean = () => false) {
+  return { store: { slots: () => rows }, claims: { has: claimRunning } };
+}
+
 async function reportedProcess(monitor: OrphanProcessMonitor, pid: number) {
   await monitor.scan();
   const problem = monitor.problems().find((each) => each.process?.pid === pid);
@@ -97,15 +102,16 @@ test("a named process is still reported, and the report carries its name", async
   assert.equal(process.knownOwner, "IDE language server");
 });
 
-test("finished trees are pending task returns, returning check leases and quarantined slots", () => {
+test("finished trees are pending task returns, returning check leases, quarantined slots and available slots", () => {
   const slot = (id: string, path: string, state: string, activeLeaseId: string | null = null) =>
     ({ id, path, state, activeLeaseId }) as WorktreeSlotRow;
   const trees = finishedTrees({
-    slots: [
+    pool: poolOf([
       slot("slot-1", "/pool/1/repo", "leased", "lease-task-1"),
       slot("slot-2", "/pool/2/repo", "quarantined"),
       slot("slot-5", "/pool/5/repo", "quarantined"),
-    ],
+      slot("slot-6", "/pool/6/repo", "available"),
+    ]),
     taskReturns: [{ taskId: "task-1", trees: [
       { path: "/pool/1/repo", leaseId: "lease-task-1" },
       { path: "/state/worktrees/overflow", leaseId: null },
@@ -121,30 +127,38 @@ test("finished trees are pending task returns, returning check leases and quaran
     { path: "/state/check-worktrees/check", slotId: null, owner: { kind: "check", attemptId: "attempt-1" } },
     { path: "/pool/2/repo", slotId: "slot-2", owner: { kind: "slot", slotId: "slot-2" } },
     { path: "/pool/5/repo", slotId: "slot-5", owner: { kind: "slot", slotId: "slot-5" } },
+    { path: "/pool/6/repo", slotId: "slot-6", owner: { kind: "available-slot", slotId: "slot-6" } },
   ]);
 });
 
-test("a slot leased to someone else, or back in the pool with no lease, is never a finished tree, so a live owner's processes are not offered for Kill", () => {
+test("a slot leased to someone else, holding a lease while available, or running a claim, is never a finished tree, so a live owner's processes are not offered for Kill", () => {
   const slot = (id: string, path: string, state: string, activeLeaseId: string | null) =>
     ({ id, path, state, activeLeaseId }) as WorktreeSlotRow;
   // Task T completed owing slot 1, which was then reset and leased to live task U. Check C's
   // returning lease names slot 2, now leased to a manual holder. Slot 3 was quarantined while
   // its live lease stayed in the row. Task V's return names slot 4, now back in the pool with
-  // no lease, where a Warm or a dependency claim may be running.
+  // no lease, where a dependency claim is still finishing. Slot 5 carries a lease in a row that
+  // reads available, and task W's return names slot 6, which is back in the pool: it is an
+  // available slot, not W's tree.
   const trees = finishedTrees({
-    slots: [
+    pool: poolOf([
       slot("slot-1", "/pool/1/repo", "leased", "lease-task-u"),
       slot("slot-2", "/pool/2/repo", "leased", "lease-manual"),
       slot("slot-3", "/pool/3/repo", "quarantined", "lease-live"),
       slot("slot-4", "/pool/4/repo", "available", null),
-    ],
+      slot("slot-5", "/pool/5/repo", "available", "lease-stale"),
+      slot("slot-6", "/pool/6/repo", "available", null),
+    ], (slotId) => slotId === "slot-4"),
     taskReturns: [
       { taskId: "task-t", trees: [{ path: "/pool/1/repo", leaseId: "lease-task-t" }] },
       { taskId: "task-v", trees: [{ path: "/pool/4/repo", leaseId: "lease-task-v" }] },
+      { taskId: "task-w", trees: [{ path: "/pool/6/repo", leaseId: "lease-task-w" }] },
     ],
     returningChecks: [{ attemptId: "attempt-c", path: "/pool/2/repo", leaseId: "lease-check-c" }],
   });
-  assert.deepEqual(trees, []);
+  assert.deepEqual(trees, [
+    { path: "/pool/6/repo", slotId: "slot-6", owner: { kind: "available-slot", slotId: "slot-6" } },
+  ]);
 });
 
 test("a process inside a finished owner's tree is reported with its identity and tree", async () => {
@@ -176,6 +190,74 @@ test("a process inside a finished owner's tree is reported with its identity and
   assert.match(reported.process!.command, /setInterval/);
   assert.ok(Math.abs(reported.process!.startedAt - Date.now()) < 60_000);
   assert.deepEqual(problems.find((problem) => problem.process?.pid === inSlot.pid)!.link, { target: "slot", slotId: "slot-3" });
+});
+
+/** Pool slots at real paths, listed through `finishedTrees` as the daemon lists them. */
+function poolSlots(root: string, rows: Array<Pick<WorktreeSlotRow, "id" | "state" | "activeLeaseId">>) {
+  return rows.map((row) => {
+    const path = join(root, "pool", row.id, "repo");
+    mkdirSync(path, { recursive: true });
+    return { ...row, path } as WorktreeSlotRow;
+  });
+}
+
+test("a process in an available slot with no lease is reported as an orphan process and Kill stops it", async () => {
+  const { root } = fixture();
+  const [slot] = poolSlots(root, [{ id: "slot-1", state: "available", activeLeaseId: null }]);
+  const child = await occupant(slot!.path);
+  const { monitor, signals, retried } = harness([], root, {
+    trees: () => finishedTrees({ pool: poolOf([slot!]), taskReturns: [], returningChecks: [] }),
+  });
+
+  const { problem, process: listed } = await reportedProcess(monitor, child.pid!);
+  assert.equal(problem.kind, "orphan-process");
+  assert.equal(problem.bannered, true);
+  assert.deepEqual(problem.link, { target: "slot", slotId: "slot-1" });
+  assert.match(problem.message, /which no task or check owns/);
+
+  const result = await monitor.kill({ path: slot!.path, pid: listed.pid, startedAt: listed.startedAt, command: listed.command });
+  assert.deepEqual(result, { ok: true, signal: "SIGTERM" });
+  assert.deepEqual(signals.map((each) => each.signal), ["SIGTERM"]);
+  assert.equal(alive(child.pid!), false);
+  assert.deepEqual(retried, [{ kind: "available-slot", slotId: "slot-1" }]);
+  assert.deepEqual(monitor.problems(), []);
+});
+
+test("a process in an available row that still carries a lease is not reported", async () => {
+  const { root } = fixture();
+  const [held, empty] = poolSlots(root, [
+    { id: "slot-1", state: "available", activeLeaseId: "lease-stale" },
+    { id: "slot-2", state: "available", activeLeaseId: null },
+  ]);
+  await occupant(held!.path);
+  const control = await occupant(empty!.path);
+  const { monitor } = harness([], root, {
+    trees: () => finishedTrees({ pool: poolOf([held!, empty!]), taskReturns: [], returningChecks: [] }),
+  });
+
+  await monitor.scan();
+  assert.deepEqual(monitor.problems().map((problem) => problem.process?.pid), [control.pid]);
+});
+
+test("a slot reserved while the inspection runs is not reported, so a claim that just started is not offered for Kill", async () => {
+  const { root } = fixture();
+  const [available] = poolSlots(root, [{ id: "slot-1", state: "available", activeLeaseId: null }]);
+  const child = await occupant(available!.path);
+  let row = available!;
+  const { monitor } = harness([], root, {
+    trees: () => finishedTrees({ pool: poolOf([row]), taskReturns: [], returningChecks: [] }),
+    occupancy: async (paths) => {
+      const observed = await inspectWorktreeOccupancy(paths);
+      // The claim's step is in the slot by the time the listing answers, and the slot now holds
+      // the lease it was reserved under.
+      row = { ...row, state: "provisioning", activeLeaseId: "lease-task" };
+      return observed;
+    },
+  });
+
+  await monitor.scan();
+  assert.deepEqual(monitor.problems(), []);
+  assert.equal(alive(child.pid!), true);
 });
 
 test("Kill sends SIGTERM, the process exits, the pending return is retried and the report clears", async () => {

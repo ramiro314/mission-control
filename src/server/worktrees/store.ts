@@ -494,6 +494,21 @@ export class WorktreeStore {
   }
 
   /**
+   * Put a slot quarantined only by a failed read back under the lease it never lost. Nothing
+   * else about the lease changes, and nothing on disk does: its owner holds the same identity.
+   */
+  restoreLease(slotId: string, version: number, leaseId: string, now: number): WorktreeSlotRow | null {
+    const changed = this.db
+      .prepare(
+        `UPDATE worktree_slots SET state = 'leased', version = version + 1,
+           quarantine_reason = NULL, quarantined_at = NULL, last_error = NULL, updated_at = ?
+         WHERE id = ? AND state = 'quarantined' AND version = ? AND active_lease_id = ?`,
+      )
+      .run(now, slotId, version, leaseId);
+    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+  }
+
+  /**
    * The claim's write-ahead: ONE durable write that records the intent and clears the
    * fingerprint, before any step touches the tree. Only a reservation still provisioning at
    * the exact version its claim holds can take it. The version is deliberately left alone:

@@ -53,8 +53,13 @@ import {
 import { ensureWorktreePoolMarker, observeWorktreePoolMarker, readWorktreePoolMarker } from "./marker.ts";
 import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observation-retry.ts";
 import {
+  AVAILABLE_SLOT_DIRTY,
+  clearableQuarantineReason,
+  isObservationFailure,
   OBSERVATION_FAILURE,
   observationFailureText,
+  REGISTRATION_OR_IDENTITY,
+  registrationOrIdentityQuarantine,
   RESERVATION_NOT_HANDED_BACK,
   sameObservationFailure,
   splitObservationFailure,
@@ -73,12 +78,9 @@ import {
 } from "./index-lock.ts";
 import {
   describeWorktreeResetWork,
-  describeWorktreeWork,
   worktreeResetWork,
   worktreeResetWorkKey,
-  worktreeWork,
   type WorktreeResetWork,
-  type WorktreeWork,
   type WorktreeWorkEntry,
 } from "../git/worktree-return-safety.ts";
 import {
@@ -514,6 +516,25 @@ function validOwner(owner: WorktreeOwner): boolean {
   );
 }
 
+/** Whether the automatic pass may judge this quarantined slot at all. */
+function automaticRecoveryCandidate(slot: WorktreeSlotRow): boolean {
+  if (registrationOrIdentityQuarantine(slot.quarantineReason)) return false;
+  return lockCausedQuarantine(slot.lastError) || clearableQuarantineReason(slot.quarantineReason);
+}
+
+/** Why a reset-rule answer refuses a reset that may not discard work, or null when it does not. */
+function resetWorkRefusal(
+  work: WorktreeResetWork,
+): { reason: string; blocking?: NonNullable<WorktreeRecoveryRefusalView["blocking"]> } | null {
+  if (work.status === "clean") return null;
+  if (work.status === "unknown") return { reason: `the slot's work could not be read: ${work.reason}` };
+  const first = work.entries[0]!;
+  return {
+    reason: `the slot holds work Recover would discard: ${describeWorktreeResetWork(first)}`,
+    blocking: { kind: first.kind, path: first.path },
+  };
+}
+
 function registrationFor(
   registrations: readonly WorktreeRegistration[],
   path: string,
@@ -555,6 +576,15 @@ function activeReference(slot: WorktreeSlotRow): WorktreeOwnerReference | null |
     slot.activeOwnerKind,
     slot.activeOwnerKey,
   );
+}
+
+/**
+ * Whether this slot's active lease reached its owner. A reservation stamps `leased_at`, and only
+ * `finalizeLease` then stamps `last_used_at`. A failed-read reason cannot say so: earlier builds
+ * took those in any state, and a manual lease's row answers for itself as its owner.
+ */
+function leaseGranted(slot: WorktreeSlotRow): boolean {
+  return slot.leasedAt !== null && slot.lastUsedAt !== null && slot.lastUsedAt >= slot.leasedAt;
 }
 
 function exactSlotPath(
@@ -620,10 +650,10 @@ export function idleSlotRefusal(facts: IdleSlotFacts): IdleSlotRefusal | null {
   if (facts.state !== "available") {
     return { kind: "notAvailable", reason: `the slot is ${facts.state}`, detail: null, disposition: "skip" };
   }
-  if (!facts.exactPath) return refuse("slot path is not the exact path owned by its native pool");
-  if (facts.activeIdentity === "invalid") return refuse("available slot has incomplete active lease identity");
-  if (facts.activeIdentity === "present") return refuse("available slot still carries active lease identity");
-  if (facts.lastOwner === "invalid") return refuse("last-released lease identity is incomplete");
+  if (!facts.exactPath) return refuse(REGISTRATION_OR_IDENTITY.inexactPath);
+  if (facts.activeIdentity === "invalid") return refuse(REGISTRATION_OR_IDENTITY.incompleteAvailableIdentity);
+  if (facts.activeIdentity === "present") return refuse(REGISTRATION_OR_IDENTITY.availableIdentity);
+  if (facts.lastOwner === "invalid") return refuse(REGISTRATION_OR_IDENTITY.incompleteLastIdentity);
   if (facts.lastOwner === "referenced") {
     // The recoverable release/domain-row crash window. The slot stays available but is not
     // idle until the exact owner clears its durable row.
@@ -637,10 +667,10 @@ export function idleSlotRefusal(facts: IdleSlotFacts): IdleSlotRefusal | null {
     // Its processes are the card's to show and Kill; the slot itself is not at fault.
     return { kind: "notIdle", reason: "an available slot has process occupancy", detail: null, disposition: "skip" };
   }
-  if (!facts.registrationSafe) return refuse("slot has no safe Git worktree registration");
+  if (!facts.registrationSafe) return refuse(REGISTRATION_OR_IDENTITY.noSafeRegistration);
   if (!facts.inspection) return null;
   if (!facts.inspection.ok) return unknown(OBSERVATION_FAILURE.git, facts.inspection.reason);
-  if (!facts.inspection.pathMatches) return refuse("slot belongs to a different Git common directory");
+  if (!facts.inspection.pathMatches) return refuse(REGISTRATION_OR_IDENTITY.commonDirectory);
   if (facts.inspection.dirty) return refuse("available slot has dirty or untracked work");
   return null;
 }
@@ -1071,7 +1101,7 @@ export class WorktreeManager {
     if (!registration || registration.bare || registration.locked || registration.prunable) {
       return {
         ok: false,
-        reason: "slot has no safe Git worktree registration",
+        reason: REGISTRATION_OR_IDENTITY.noSafeRegistration,
         outcomeUnknown: false,
       };
     }
@@ -2503,8 +2533,8 @@ export class WorktreeManager {
     options: {
       ownerAuthorized?: boolean;
       requireClean?: boolean;
-      /** Task policy rechecked under the slot lock, after all provider awaits. */
-      beforeReset?: () => Promise<string | null>;
+      /** Task policy rechecked under the slot lock, after all provider awaits, against the reset's target. */
+      beforeReset?: (target: string) => Promise<string | null>;
     } = {},
   ): Promise<WorktreeReleaseResult> {
     if (lease.provider !== "mission") return { outcome: "refused", reason: "lease provider is not mission" };
@@ -2559,7 +2589,7 @@ export class WorktreeManager {
     if (marker?.poolId !== pool.id) {
       return { outcome: "refused", reason: "native pool marker is missing or does not match" };
     }
-    return this.resetToDefault(pool, identity, slot, async () => {
+    return this.resetToDefault(pool, identity, slot, async (target) => {
       // Fetch and target validation may take long enough for a process or domain reference
       // to appear. Re-read both immediately before persisting the destructive reset intent.
       const freshBlocker = options.ownerAuthorized
@@ -2582,7 +2612,7 @@ export class WorktreeManager {
           return { outcome: "refused", reason: "manual worktree is dirty" };
         }
       }
-      const policyBlocker = await options.beforeReset?.();
+      const policyBlocker = await options.beforeReset?.(target);
       if (policyBlocker) return { outcome: "refused", reason: policyBlocker };
       return null;
     });
@@ -2685,13 +2715,17 @@ export class WorktreeManager {
    * slot is available. A refusal leaves the lock where it was.
    *
    * The lock goes only when no Git process has its working directory in the slot and `lsof`
-   * shows nothing holding it. The automatic pass (`automatic`) further requires the lock to be
-   * `INDEX_LOCK_STALE_MS` old, the quarantine to be lock-caused, and the slot to be clean with
-   * regenerable ignored files discounted; it never discards work. An operator's Recover counts
-   * work by the reset rule against the commit the reset fetched, so ignored files the target
-   * keeps ignored and untracked are not work. It discards work only with `allowDirty`, which
-   * its preview's dirty acknowledgement grants, and with `expectedWork` it refuses a work set
+   * shows nothing holding it. Work counts by the reset rule against the commit the reset
+   * fetched, so ignored files the target keeps ignored and untracked are not work. An
+   * operator's Recover discards work only with `allowDirty`, which its preview's dirty
+   * acknowledgement grants, and with `expectedWork` it refuses a work set
    * (`worktreeResetWorkKey`) that differs from the preview's, as when the default moved.
+   *
+   * The automatic pass (`automatic`) never discards work. It takes only a quarantine a fresh
+   * read can disprove (`automaticRecoveryCandidate`), judges the reset rule before the reset as
+   * well as inside it, and judges `index.lock` only for a lock-caused quarantine, where the
+   * lock must also be `INDEX_LOCK_STALE_MS` old. Any other quarantine leaves a lock alone: a
+   * reset it then refuses records Git's text, which makes the slot lock-caused.
    */
   async recoverSlot(input: {
     slotId: string;
@@ -2712,9 +2746,10 @@ export class WorktreeManager {
     if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {
       return { outcome: "refused", reason: "slot changed after it was observed" };
     }
-    if (input.automatic && !lockCausedQuarantine(slot.lastError)) {
-      return { outcome: "refused", reason: "the quarantine was not caused by index.lock" };
+    if (input.automatic && !automaticRecoveryCandidate(slot)) {
+      return { outcome: "refused", reason: "automatic recovery does not clear this quarantine" };
     }
+    const judgesLock = !input.automatic || lockCausedQuarantine(slot.lastError);
     const ownerBlocker = await this.recoverOwnerBlocker(slot);
     if (ownerBlocker) return { outcome: "refused", reason: ownerBlocker };
     const identity = this.identity(pool.mainCheckoutRoot);
@@ -2727,31 +2762,19 @@ export class WorktreeManager {
     }
 
     const occupancy = (await this.withObservation(() => this.occupancy([slot.path]))).get(slot.path);
-    const lock = await inspectSlotIndexLock({
-      slotPath: slot.path,
-      commonDirectory: pool.gitCommonDirectory,
-      occupancy,
-      now: this.deps.now(),
-      fileHolders: this.deps.fileHolders,
-    });
-    const lockBlocker = indexLockBlocker(lock, input.automatic);
-    if (lockBlocker) {
-      return lock.path === null
-        ? { outcome: "refused", reason: lockBlocker }
-        : { outcome: "refused", reason: lockBlocker, blocking: { kind: "lock", path: lock.path } };
-    }
-    // After the lock check, never before it: the clean read is Git in the slot, and it reads
-    // with `--no-optional-locks` so it cannot itself take the lock it is judging. An operator's
-    // Recover reads its work once the target is fetched, below.
-    if (input.automatic && !input.allowDirty) {
-      const work = await this.slotWorkEntry(slot.path);
-      if (work.status === "unknown") return { outcome: "refused", reason: `the slot's work could not be read: ${work.reason}` };
-      if (work.status === "work") {
-        return {
-          outcome: "refused",
-          reason: `the slot holds work Recover would discard: ${describeWorktreeWork(work.entry)}`,
-          blocking: work.entry,
-        };
+    if (judgesLock) {
+      const lock = await inspectSlotIndexLock({
+        slotPath: slot.path,
+        commonDirectory: pool.gitCommonDirectory,
+        occupancy,
+        now: this.deps.now(),
+        fileHolders: this.deps.fileHolders,
+      });
+      const lockBlocker = indexLockBlocker(lock, input.automatic);
+      if (lockBlocker) {
+        return lock.path === null
+          ? { outcome: "refused", reason: lockBlocker }
+          : { outcome: "refused", reason: lockBlocker, blocking: { kind: "lock", path: lock.path } };
       }
     }
     if (!occupancy || occupancy.status === "unknown") {
@@ -2760,28 +2783,33 @@ export class WorktreeManager {
     if (occupancy.occupants.length > 0) {
       return { outcome: "refused", reason: "one or more processes still occupy the worktree" };
     }
+    // After the lock check, never before it: the work read is Git in the slot, and it reads with
+    // `--no-optional-locks` so it cannot itself take the lock it is judging. An operator's
+    // Recover reads its work once the target is fetched, below.
+    if (input.automatic) {
+      const refusal = resetWorkRefusal(await this.slotResetWork(slot));
+      if (refusal) return { outcome: "refused", ...refusal };
+    }
     let removedLock: string | null = null;
     let blocking: NonNullable<WorktreeRecoveryRefusalView["blocking"]> | undefined;
     const reset = await this.resetToDefault(pool, identity, slot, async (target) => {
       const freshBlocker = await this.occupancyBlocker(slot.path);
       if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
-      if (!input.automatic) {
-        const work = await this.resetWork(slot.path, target);
-        if (input.expectedWork !== undefined && worktreeResetWorkKey(work) !== input.expectedWork) {
-          return {
-            outcome: "refused",
-            reason: `the slot's work changed since the preview, against origin's default at ${target.slice(0, 12)}; preview Recover again`,
-          };
-        }
-        if (!input.allowDirty && work.status === "unknown") {
-          return { outcome: "refused", reason: `the slot's work could not be read: ${work.reason}` };
-        }
-        if (!input.allowDirty && work.status === "work") {
-          const first = work.entries[0]!;
-          blocking = { kind: first.kind, path: first.path };
-          return { outcome: "refused", reason: `the slot holds work Recover would discard: ${describeWorktreeResetWork(first)}` };
-        }
+      // The automatic pass read this before the fetch. The default may have moved since, and
+      // this is the commit the reset moves to.
+      const work = await this.resetWork(slot.path, target);
+      if (input.expectedWork !== undefined && worktreeResetWorkKey(work) !== input.expectedWork) {
+        return {
+          outcome: "refused",
+          reason: `the slot's work changed since the preview, against origin's default at ${target.slice(0, 12)}; preview Recover again`,
+        };
       }
+      const refusal = input.allowDirty ? null : resetWorkRefusal(work);
+      if (refusal) {
+        blocking = refusal.blocking;
+        return { outcome: "refused", reason: refusal.reason };
+      }
+      if (!judgesLock) return null;
       // The lock goes last, so a refusal above leaves the slot exactly as it was. The fetch may
       // have taken a while, so the lock is judged again right before it is removed.
       const current = await this.slotIndexLockNow(slot, pool.gitCommonDirectory);
@@ -2853,17 +2881,9 @@ export class WorktreeManager {
   }
 
   /**
-   * The first entry the automatic pass counts as work, by today's return rule: uncommitted,
-   * untracked or unpushed work, or an ignored file outside `REGENERABLE_IGNORED_PATHS`.
-   */
-  slotWorkEntry(path: string): Promise<WorktreeWork> {
-    return worktreeWork(path, { regenerableIgnored: true, execute: trackedRun });
-  }
-
-  /**
-   * What an operator's Recover would discard: the reset rule against origin's default, fetched
-   * now, which is the commit the reset moves to. Recover's preview names each entry, and its
-   * execute compares this set again once the reset has fetched its own target.
+   * What a reset of this slot would discard: the reset rule against origin's default, fetched
+   * now, which is the commit the reset moves to. Recover's preview names each entry, and every
+   * reset judges this again once it has fetched its own target.
    */
   async slotResetWork(slot: WorktreeSlotRow): Promise<WorktreeResetWork> {
     const pool = this.store.poolForSlot(slot.id);
@@ -2883,6 +2903,43 @@ export class WorktreeManager {
     return worktreeResetWork(path, { targetCommit, execute: trackedRun });
   }
 
+  /**
+   * Why a reset of the pool slot at `path` would lose something, in words, or null: its first
+   * entry by the reset rule. With `target`, the commit a release's `beforeReset` was given,
+   * the answer is about that reset. Without one it is against the last fetched default and
+   * reaches no network: a settled task's startup check runs inside the cleanup queue, where a
+   * fetch would stand in front of retention, and the reset judges again once it has fetched.
+   * A checkout with no local default ref says nothing about the slot, so that is left to the
+   * reset too, which asks the remote.
+   */
+  async slotResetBlocker(path: string, target?: string): Promise<string | null> {
+    const slot = this.store.slotByPath(path);
+    if (!slot) return "native slot no longer exists";
+    const work = await this.resetWorkAgainst(slot, target);
+    if (work === null || work.status === "clean") return null;
+    return work.status === "unknown" ? work.reason : describeWorktreeResetWork(work.entries[0]!);
+  }
+
+  /** The reset rule against `target`, else the last fetched default; null when there is none here. */
+  private async resetWorkAgainst(slot: WorktreeSlotRow, target: string | undefined): Promise<WorktreeResetWork | null> {
+    if (target !== undefined) return this.resetWork(slot.path, target);
+    const pool = this.store.poolForSlot(slot.id);
+    const identity = pool ? this.identity(pool.mainCheckoutRoot) : null;
+    if (!identity) return { status: "unknown", reason: "pool repository identity can no longer be proven" };
+    let observed: Awaited<ReturnType<WorktreeGit["observedDefaultSha"]>>;
+    try {
+      observed = await this.deps.git.observedDefaultSha(identity);
+    } catch (error) {
+      return { status: "unknown", reason: bounded(String(error)) };
+    }
+    if (!observed.ok) {
+      return observed.outcomeUnknown
+        ? { status: "unknown", reason: `origin's default could not be read: ${observed.reason}` }
+        : null;
+    }
+    return this.resetWork(slot.path, observed.value);
+  }
+
   /** The last automatic-recovery refusal of this slot's current quarantine, or null. */
   recoveryRefusal(slot: WorktreeSlotRow): WorktreeRecoveryRefusalView | null {
     const recorded = this.recoveryRefusals.get(slot.id);
@@ -2890,13 +2947,14 @@ export class WorktreeManager {
   }
 
   /**
-   * The automatic half of Recover, once per maintenance pass: every lock-caused quarantine is
-   * retried with `automatic`, so only a clean slot whose lock is gone or abandoned comes back.
-   * A refusal leaves the slot exactly as it was, for the operator's Recover.
+   * The automatic half of Recover, once per maintenance pass: every quarantine a fresh read can
+   * disprove is retried with `automatic`, so only a slot with no owner, no process and no work
+   * by the reset rule comes back, keeping its warm install. A refusal, and a read that failed
+   * before the reset began, leave the slot exactly as it was, for the operator's Recover.
    */
-  async recoverLockQuarantines(): Promise<void> {
+  async recoverQuarantines(): Promise<void> {
     const candidates = this.store.slots().filter((slot) =>
-      slot.state === "quarantined" && lockCausedQuarantine(slot.lastError) && !this.claims.has(slot.id));
+      slot.state === "quarantined" && automaticRecoveryCandidate(slot) && !this.claims.has(slot.id));
     // A slot that is no longer a candidate keeps no refusal: it left that quarantine, or is gone.
     const ids = new Set(candidates.map((slot) => slot.id));
     for (const id of this.recoveryRefusals.keys()) if (!ids.has(id)) this.recoveryRefusals.delete(id);
@@ -2908,9 +2966,15 @@ export class WorktreeManager {
         allowDirty: false,
         automatic: true,
       });
-      if (result.outcome === "refused") {
+      // An unknown outcome that moved no version never reached the reset: its read failed.
+      const untouched = result.outcome === "outcomeUnknown" && this.store.slot(slot.id)?.version === slot.version;
+      if (result.outcome === "refused" || untouched) {
         const prior = this.recoveryRefusals.get(slot.id);
-        const refusal = { at: this.deps.now(), reason: result.reason, blocking: result.blocking ?? null };
+        const refusal = {
+          at: this.deps.now(),
+          reason: result.reason,
+          blocking: result.outcome === "refused" ? result.blocking ?? null : null,
+        };
         this.recoveryRefusals.set(slot.id, { version: slot.version, refusal });
         // The card shows the refusal, so a new one reaches it, and so does the log; the same
         // one repeated on a later pass reaches neither.
@@ -2922,9 +2986,9 @@ export class WorktreeManager {
               (refusal.blocking ? ` (blocked by ${refusal.blocking.path})` : ""),
           ));
         }
-      } else {
-        this.recoveryRefusals.delete(slot.id);
+        continue;
       }
+      this.recoveryRefusals.delete(slot.id);
       if (result.outcome === "outcomeUnknown") {
         console.warn(`[worktrees] automatic recover of slot ${slot.ordinal} did not finish: ${result.reason}`);
       }
@@ -3029,7 +3093,7 @@ export class WorktreeManager {
       identity.gitCommonDirectory !== pool.gitCommonDirectory ||
       identity.poolPath !== pool.poolPath
     ) {
-      await failPool("pool repository identity no longer matches its durable row");
+      await failPool(REGISTRATION_OR_IDENTITY.poolIdentity);
       return;
     }
     const marker = await observeWorktreePoolMarker(pool.poolPath);
@@ -3038,7 +3102,7 @@ export class WorktreeManager {
       return;
     }
     if (marker.marker?.poolId !== pool.id) {
-      await failPool("pool marker is missing, malformed, or belongs to another pool");
+      await failPool(REGISTRATION_OR_IDENTITY.poolMarker);
       return;
     }
     let listed: Awaited<ReturnType<WorktreeGit["list"]>>;
@@ -3077,7 +3141,7 @@ export class WorktreeManager {
           continue;
         }
         if (!exactSlotPath(pool, identity, slot)) {
-          reject("slot path is not the exact path owned by its native pool");
+          reject(REGISTRATION_OR_IDENTITY.inexactPath);
           continue;
         }
         const registration = registrationFor(listed.value, slot.path);
@@ -3087,11 +3151,11 @@ export class WorktreeManager {
           continue;
         }
         if (!existsSync(slot.path) || !registration) {
-          reject("slot path or Git registration is missing");
+          reject(REGISTRATION_OR_IDENTITY.missingRegistration);
           continue;
         }
         if (registration.bare || registration.locked || registration.prunable) {
-          reject("slot Git registration is bare, locked, or prunable");
+          reject(REGISTRATION_OR_IDENTITY.unsafeRegistration);
           continue;
         }
         // Interrupted provisioning and prune are faults whatever Git or the process table say,
@@ -3120,7 +3184,7 @@ export class WorktreeManager {
           inspection.value.path !== slot.path ||
           inspection.value.commonDirectory !== pool.gitCommonDirectory
         ) {
-          reject("slot belongs to a different Git common directory");
+          reject(REGISTRATION_OR_IDENTITY.commonDirectory);
           continue;
         }
         const observedOccupancy = occupancy.get(slot.path) ?? {
@@ -3133,21 +3197,39 @@ export class WorktreeManager {
         }
 
         if (slot.state === "quarantined") {
-          this.recordObserved(slot, inspection.value.head, withoutObservationFailure(slot.lastError), now);
-          // A quarantine taken before its lease was granted, by a build that kept the active
-          // identity, names an owner that never received it. Withdraw that identity only when
-          // the owner is positively proven not to reference it; unknown ownership stays put.
-          const stale = activeReference(slot);
-          if (stale && stale !== "invalid") {
+          const active = activeReference(slot);
+          const owner = active === "invalid" ? null : active;
+          let referenced = false;
+          if (owner) {
             try {
-              if (!(await this.ownerReferenced(stale))) {
-                // `updateObserved` leaves the version alone, so this is still the row read above.
-                if (this.store.withdrawQuarantinedLease(slot.id, slot.version, stale.leaseId, now)) {
-                  this.publish();
-                }
-              }
-            } catch {
-              // Unknown ownership is not proof of absence; the identity stays as it is.
+              referenced = await this.ownerReferenced(owner);
+            } catch (error) {
+              // Unknown ownership proves neither an owner nor its absence: the identity stays
+              // as it is, and so does the quarantine.
+              this.store.updateObserved(slot.id, inspection.value.head, slot.lastError, now);
+              unknown(OBSERVATION_FAILURE.activeOwner, String(error));
+              continue;
+            }
+          }
+          this.recordObserved(slot, inspection.value.head, withoutObservationFailure(slot.lastError), now);
+          // `updateObserved` leaves the version alone, so below this is still the row read above.
+          if (owner && !referenced) {
+            // A quarantine taken before its lease was granted, by a build that kept the active
+            // identity, names an owner that never received it. Withdraw that identity only when
+            // the owner is positively proven not to reference it.
+            if (this.store.withdrawQuarantinedLease(slot.id, slot.version, owner.leaseId, now)) this.publish();
+          } else if (owner && leaseGranted(slot) && isObservationFailure(slot.quarantineReason)) {
+            // An earlier build quarantined this live lease only because a read failed. Everything
+            // has now read, so the lease resumes as it stands, dirty and occupied included, as a
+            // live lease may be. Nothing on disk is touched. An interrupted return looks the same
+            // and resumes too: its owner's return is what finishes it, as it would from here.
+            if (this.store.restoreLease(slot.id, slot.version, owner.leaseId, now)) {
+              this.publish();
+              console.log(oneLine(
+                `[worktrees] restored ${this.slotLabel(slot)} to leased from its quarantine (${slot.quarantineReason})`,
+              ));
+            } else {
+              errors.push(`slot ${slot.ordinal}: lease restore raced`);
             }
           }
           continue;
@@ -3155,7 +3237,7 @@ export class WorktreeManager {
         if (slot.state === "returning") {
           const returningReference = activeReference(slot);
           if (!returningReference || returningReference === "invalid") {
-            reject("interrupted return has incomplete active lease identity");
+            reject(REGISTRATION_OR_IDENTITY.incompleteReturnIdentity);
             continue;
           }
           if (observedOccupancy.occupants.length > 0 || inspection.value.dirty) {
@@ -3176,24 +3258,24 @@ export class WorktreeManager {
           if (active !== null) {
             reject(
               active === "invalid"
-                ? "available slot has incomplete active lease identity"
-                : "available slot still carries active lease identity",
+                ? REGISTRATION_OR_IDENTITY.incompleteAvailableIdentity
+                : REGISTRATION_OR_IDENTITY.availableIdentity,
             );
             continue;
           }
           // Changed files in a slot nobody leased are a proven fault. Processes alone are not:
           // the slot stays available, acquisition passes over it, and the card lists them.
           if (inspection.value.dirty) {
-            reject("available slot is dirty");
+            reject(AVAILABLE_SLOT_DIRTY);
             continue;
           }
           if (slot.currentHeadSha && slot.currentHeadSha !== inspection.value.head) {
-            reject("available slot HEAD moved outside an allocator transition");
+            reject(REGISTRATION_OR_IDENTITY.headMoved);
             continue;
           }
           const prior = lastReference(slot);
           if (prior === "invalid") {
-            reject("last-released lease identity is incomplete");
+            reject(REGISTRATION_OR_IDENTITY.incompleteLastIdentity);
             continue;
           }
           try {
@@ -3216,7 +3298,7 @@ export class WorktreeManager {
         // unknown scan leaves it leased. This preserves live work while still preventing reuse.
         const active = activeReference(slot);
         if (!active || active === "invalid") {
-          reject("leased slot has incomplete active identity");
+          reject(REGISTRATION_OR_IDENTITY.incompleteLeasedIdentity);
           continue;
         }
         if (active.owner.kind === "warm" && !(await this.ownerReferenced(active))) {
@@ -3245,7 +3327,7 @@ export class WorktreeManager {
         }
         try {
           if (!(await this.ownerReferenced(active))) {
-            reject("leased slot has no matching domain owner reference");
+            reject(REGISTRATION_OR_IDENTITY.noDomainOwner);
             continue;
           }
         } catch (error) {
@@ -3433,7 +3515,7 @@ export class WorktreeManager {
       }
       const prior = lastReference(slot);
       if (prior === "invalid") {
-        return { outcome: "refused", reason: "last-released lease identity is incomplete" };
+        return { outcome: "refused", reason: REGISTRATION_OR_IDENTITY.incompleteLastIdentity };
       }
       if (prior) {
         try {
@@ -3474,7 +3556,7 @@ export class WorktreeManager {
       if (!listed.ok) return { outcome: listed.outcomeUnknown ? "outcomeUnknown" : "refused", reason: listed.reason };
       const registration = registrationFor(listed.value, slot.path);
       if (!registration || registration.bare || registration.locked || registration.prunable) {
-        return { outcome: "refused", reason: "slot has no safe Git worktree registration" };
+        return { outcome: "refused", reason: REGISTRATION_OR_IDENTITY.noSafeRegistration };
       }
       if (!inspection.ok) {
         return { outcome: inspection.outcomeUnknown ? "outcomeUnknown" : "refused", reason: inspection.reason };
@@ -3627,7 +3709,7 @@ export class WorktreeManager {
         console.error("[worktrees] maintenance reconciliation failed:", error);
       }
       try {
-        await this.recoverLockQuarantines();
+        await this.recoverQuarantines();
       } catch (error) {
         console.error("[worktrees] automatic recover failed:", error);
       }
