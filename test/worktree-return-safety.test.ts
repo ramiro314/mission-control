@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   REGENERABLE_IGNORED_PATHS,
+  RESET_WORK_LIMIT,
   UNCOMMITTED_WORK,
   UNPUBLISHED_COMMITS,
   describeWorktreeResetWork,
@@ -267,7 +268,7 @@ function resetFixture(t: TestContext, options: { ignoreCase?: boolean } = {}) {
   };
   let count = 0;
   /** A commit on top of HEAD that writes each file (or symlink) and removes each null. */
-  const target = (changes: Record<string, string | { symlink: string } | null> = {}) => {
+  const target = (changes: Record<string, string | { symlink: string } | { gitlink: string } | null> = {}) => {
     const env = { ...process.env, GIT_INDEX_FILE: join(repo.path, "..", `target-index-${count += 1}`) };
     const git = (args: string[], input?: string) =>
       execFileSync("git", ["-C", repo.path, ...args], { encoding: "utf8", env, input }).trim();
@@ -275,6 +276,10 @@ function resetFixture(t: TestContext, options: { ignoreCase?: boolean } = {}) {
     for (const [file, content] of Object.entries(changes)) {
       if (content === null) {
         git(["update-index", "--force-remove", file]);
+        continue;
+      }
+      if (typeof content === "object" && "gitlink" in content) {
+        git(["update-index", "--add", "--cacheinfo", `160000,${content.gitlink},${file}`]);
         continue;
       }
       const symlink = typeof content === "object";
@@ -387,6 +392,27 @@ test("reset rule: an ignored entry the target overwrites or un-ignores is work, 
       work: [{ path: "apps/foo/.local/", because: "the target tracks apps/foo/.local" }],
     },
     {
+      name: "a target that tracks apps/foo/.local as a submodule above an ignored file",
+      plant: ["apps/foo/.local/notes.md"],
+      headIgnores: ".local/\n",
+      changes: { "apps/foo/.local": { gitlink: "1".repeat(40) } },
+      work: [{ path: "apps/foo/.local/", because: "the target tracks apps/foo/.local" }],
+    },
+    {
+      name: "a target that tracks an NFD-spelled path inside an NFC-spelled ignored directory",
+      plant: ["caf\u00e9/notes.md"],
+      headIgnores: "caf\u00e9/\n",
+      changes: { "cafe\u0301/x": "x\n" },
+      work: [{ path: "caf\u00e9/", because: "the target tracks cafe\u0301/x" }],
+    },
+    {
+      name: "a target that tracks an NFC-spelled path inside an NFD-spelled ignored directory",
+      plant: ["cafe\u0301/notes.md"],
+      headIgnores: "cafe\u0301/\n",
+      changes: { "caf\u00e9/x": "x\n" },
+      work: [{ path: "cafe\u0301/", because: "the target tracks caf\u00e9/x" }],
+    },
+    {
       name: "a target that tracks apps/foo/.local as a symlink above an ignored file",
       plant: ["apps/foo/.local/notes.md"],
       headIgnores: ".local/\n",
@@ -476,4 +502,18 @@ test("reset rule: the work set's key ignores why an entry counts, and the descri
     describeWorktreeResetWork({ kind: "ignored", path: ".idea/", because: "the target tracks .Idea/x" }),
     "ignored .idea/ (the target tracks .Idea/x)",
   );
+});
+
+test("reset rule: the work set stops at RESET_WORK_LIMIT entries and says there are more, which changes its key", async (t) => {
+  const repo = resetFixture(t);
+  const target = repo.target();
+  for (let index = 0; index < RESET_WORK_LIMIT; index += 1) repo.put(`notes/${String(index).padStart(2, "0")}.md`);
+  const full = await worktreeResetWork(repo.path, { targetCommit: target });
+  assert.equal(full.status === "work" && full.entries.length, RESET_WORK_LIMIT);
+  assert.equal(full.status === "work" && full.more, false);
+  repo.put("notes/99.md");
+  const over = await worktreeResetWork(repo.path, { targetCommit: target });
+  assert.equal(over.status === "work" && over.entries.length, RESET_WORK_LIMIT);
+  assert.equal(over.status === "work" && over.more, true);
+  assert.notEqual(worktreeResetWorkKey(over), worktreeResetWorkKey(full), "an entry past the limit still changes the work set");
 });

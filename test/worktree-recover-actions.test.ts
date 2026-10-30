@@ -9,7 +9,7 @@ import { slotGitDirectory } from "../src/server/worktrees/index-lock.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
-import { worktreeResetWorkKey } from "../src/server/git/worktree-return-safety.ts";
+import { RESET_WORK_LIMIT, worktreeResetWorkKey } from "../src/server/git/worktree-return-safety.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const db = openDb();
@@ -138,7 +138,7 @@ async function quarantinedSlot(prefix: string) {
     mkdirSync(join(lease.path, file, ".."), { recursive: true });
     writeFileSync(join(lease.path, file), "local\n");
   }
-  return { lease, advance };
+  return { lease, advance, clone };
 }
 
 test("Recover keeps a warm install: ignored files the default keeps ignored ask no acknowledgement and keep their inodes", async () => {
@@ -240,4 +240,57 @@ test("Recover's execute refuses when the default moved to a target whose work se
   assert.equal(recovered.outcome, "recovered");
   assert.equal(existsSync(join(lease.path, ".env")), false, "the acknowledged .env was discarded");
   assert.ok(existsSync(join(lease.path, "node_modules/pkg/index.js")), "the install was kept");
+});
+
+test("Recover's execute hands the preview's work set to the reset, which refuses a default that moved after execute's own check", async () => {
+  const { lease, advance } = await quarantinedSlot("mission-recover-handoff-");
+  advance({ ".gitignore": IGNORE.replace(".env\n", "") });
+  const preview = await operations.preview({ action: "recover", slotId: lease.slotId });
+  assert.deepEqual(preview.requiredAcknowledgements, ["dirty"]);
+  assert.ok(preview.consequences.includes("Discards the slot's work: ignored .env (the target's .gitignore files no longer ignore it)."));
+
+  // The default moves once execute has rebuilt the preview, before the reset fetches its target:
+  // .env is ignored again, so the reset would discard nothing the operator acknowledged.
+  const original = manager.recoverSlot.bind(manager);
+  const received: Array<string | undefined> = [];
+  manager.recoverSlot = async (input) => {
+    received.push(input.expectedWork);
+    advance({ ".gitignore": IGNORE });
+    return original(input);
+  };
+  try {
+    await assert.rejects(operations.execute(preview.token, ["dirty"]), /the slot's work changed since the preview/);
+  } finally {
+    manager.recoverSlot = original;
+  }
+  assert.deepEqual(received, [worktreeResetWorkKey({
+    status: "work",
+    entries: [{ kind: "ignored", path: ".env", because: null }],
+    more: false,
+  })]);
+  assert.equal(manager.store.slot(lease.slotId)?.state, "quarantined");
+  assert.ok(existsSync(join(lease.path, ".env")), "nothing was discarded");
+});
+
+test("Recover's preview offers an unreadable slot's discard for acknowledgement, naming why its work could not be read", async () => {
+  const { lease, clone } = await quarantinedSlot("mission-recover-unread-");
+  gitIn(clone, "remote", "set-url", "origin", join(clone, "..", "missing-origin"));
+  const preview = await operations.preview({ action: "recover", slotId: lease.slotId });
+  assert.ok(preview.requiredAcknowledgements.includes("dirty"), preview.requiredAcknowledgements.join(", "));
+  assert.ok(preview.risks.some((entry) => entry.label === "The slot's work could not be read, and whatever it holds will be discarded"));
+  assert.ok(
+    preview.consequences.some((line) => line.startsWith("Discards whatever the slot holds: its work could not be read (origin's default could not be fetched:")),
+    preview.consequences.join("\n"),
+  );
+});
+
+test("Recover's preview names the first entries of a large work set and says there are more", async () => {
+  const { lease } = await quarantinedSlot("mission-recover-many-");
+  for (let index = 0; index <= RESET_WORK_LIMIT; index += 1) {
+    writeFileSync(join(lease.path, `draft-${String(index).padStart(2, "0")}.md`), "draft\n");
+  }
+  const preview = await operations.preview({ action: "recover", slotId: lease.slotId });
+  const line = preview.consequences.find((entry) => entry.startsWith("Discards the slot's work:"));
+  assert.ok(line?.endsWith("untracked draft-19.md; and more."), line);
+  assert.equal(line?.includes("draft-20.md"), false);
 });
