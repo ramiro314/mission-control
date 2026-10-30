@@ -645,17 +645,33 @@ test("a refused native release stores the processes occupying the slot in the ch
     release: async () => next,
     settleDomainLease: () => {},
   } as unknown as import("../src/server/worktrees/manager.ts").WorktreeManager;
-  const manager = new CheckLeaseManager(db, { verifyBase: async (_r, sha) => sha, manager: allocator });
+  // A native slot is a pool slot: a failed release never reaches the Git tree deletion (S11).
+  const s11: string[] = [];
+  const manager = new CheckLeaseManager(db, {
+    verifyBase: async (_r, sha) => sha,
+    manager: allocator,
+    occupancy: idle,
+    removeTree: async (path) => {
+      s11.push(`delete ${path}`);
+    },
+    pruneRegistrations: async () => {
+      s11.push("prune");
+    },
+  });
   store.insertHeld({
     attemptId: "att-native", submissionId: "sub-native", nodeId: "unit", repoRoot: "/repo",
     leasePath: "/pool/slot-1", holderToken: "lease-native", provider: "mission", leaseId: "lease-native", now: 1,
   });
 
-  assert.equal((await manager.releaseForAttempt("att-native")).outcome, "retry");
+  assert.deepEqual(await manager.releaseForAttempt("att-native", empty), {
+    outcome: "retry",
+    reason: "refused: one or more processes still occupy the worktree",
+  });
   assert.deepEqual(manager.refusedReturns()[0]?.refusal, {
     reason: "refused: one or more processes still occupy the worktree",
     processes: [{ pid: 4242, command: "node vite" }],
   });
+  assert.equal(store.get("att-native")?.cleanupState, "returning");
 
   // A failure that is not a refusal names no process, and replaces the earlier list.
   next = { outcome: "outcomeUnknown", reason: "fetch timed out" };
@@ -668,6 +684,7 @@ test("a refused native release stores the processes occupying the slot in the ch
   next = { outcome: "released" };
   assert.deepEqual(await manager.releaseForAttempt("att-native"), { outcome: "returned" });
   assert.deepEqual(manager.refusedReturns(), []);
+  assert.deepEqual(s11, [], "a native slot is never deleted or pruned by the check lease");
 });
 
 test("a release that cannot read the pool does not become an authorised return", async () => {
@@ -1101,6 +1118,22 @@ test("a tree whose .git names a Git directory belonging to another tree is delet
   abandon(other.attemptId);
 });
 
+test("a tree whose .git names a Git directory that is gone is deleted", async () => {
+  // The registration stays, so Git still lists the path and refuses its removal; the `.git`
+  // file is present but names nothing, once as a missing path and once as a plain file.
+  const notADirectory = join(home, "not-a-git-directory");
+  writeFileSync(notADirectory, "a file\n");
+  for (const gitdir of [join(home, "no-such-git-directory"), notADirectory]) {
+    const tree = gitCheckTree();
+    writeFileSync(join(tree.path, ".git"), `gitdir: ${gitdir}\n`);
+    const { manager } = gitManager(tree.repo);
+
+    assert.deepEqual(await manager.releaseForAttempt(tree.attemptId, empty), { outcome: "returned" });
+    assert.equal(existsSync(tree.path), false);
+    assert.equal(registered(tree.repo, tree.path), false, "the scoped prune removed the registration");
+  }
+});
+
 test("a prune that fails is left to the next sweep, which no row stops any more", async () => {
   const tree = gitCheckTree();
   rmSync(join(tree.path, ".git"));
@@ -1267,6 +1300,19 @@ test("deletion is refused for a tree outside check-worktrees and for one reached
   assert.ok(existsSync(real.path));
   abandon(real.attemptId);
   abandon(`${real.attemptId}-linked`);
+});
+
+test("retryReturning deletes such a tree only with the group recovery it is handed", async () => {
+  const tree = gitCheckTree();
+  rmSync(join(tree.path, ".git"));
+  const { manager } = gitManager(tree.repo);
+
+  const refused = await manager.retryReturning(tree.attemptId);
+  assert.match(refused?.outcome === "retry" ? refused.reason : "", /process-group state is unknown/);
+  assert.ok(existsSync(tree.path));
+
+  assert.deepEqual(await manager.retryReturning(tree.attemptId, empty), { outcome: "returned" });
+  assert.equal(existsSync(tree.path), false);
 });
 
 test("a tree Git still recognizes keeps today's failed return, untouched", async () => {
