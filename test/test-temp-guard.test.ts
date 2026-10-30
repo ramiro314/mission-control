@@ -21,10 +21,14 @@ import { fileURLToPath } from "node:url";
 // stands in for the shared temp dir and keeps what it counts away from every other worker.
 
 const PRELOAD = fileURLToPath(new URL("./setup-state.mjs", import.meta.url));
+const TEMP_GUARD = new URL("./temp-guard.mjs", import.meta.url).href;
 const dir = mkdtempSync(join(tmpdir(), "mission-temp-guard-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 const supported = process.platform === "darwin" || process.platform === "linux";
+// On macOS the parent is the one the running suite is using, so another worker may sweep a stale
+// directory first, and what these tests may say about the sweep's report is limited to Linux.
+const privateParent = process.platform === "linux";
 const USER = process.geteuid?.() ?? "";
 
 let scenarios = 0;
@@ -87,6 +91,38 @@ writeFileSync(process.env.FIXTURE_MARKER, process.env.TMPDIR);
 `,
 );
 
+/**
+ * The guard with a process table of the test's choosing, which the preload never allows: `rows` is
+ * the source of an expression, and `names` go into the parent before the guard reads it.
+ */
+function runGuardWith(rows: string, names: string[], childEnv: NodeJS.ProcessEnv) {
+  const script = fixture(
+    `guard-with-${scenarios++}.mjs`,
+    `import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { armTempGuard, openTempParent } from ${JSON.stringify(TEMP_GUARD)};
+const { parent } = openTempParent();
+for (const name of ${JSON.stringify(names)}) mkdirSync(join(parent, name), { recursive: true });
+armTempGuard(openTempParent(), ${rows});
+writeFileSync(process.env.FIXTURE_MARKER, JSON.stringify({ parent, workerTemp: process.env.TMPDIR }));
+`,
+  );
+  const result = spawnSync(process.execPath, [script], { encoding: "utf8", env: childEnv, timeout: 60_000 });
+  assert.equal(result.status, 0, result.stderr);
+  const { parent, workerTemp } = JSON.parse(readFileSync(childEnv.FIXTURE_MARKER!, "utf8")) as {
+    parent: string;
+    workerTemp: string;
+  };
+  return { ...result, parent, workerTemp };
+}
+
+/** A PID that belonged to a real process and is provably gone. */
+function deadPid(): number {
+  const { pid } = spawnSync(process.execPath, ["-e", ""]);
+  assert.ok(pid);
+  return pid;
+}
+
 function runTestFile(file: string, childEnv: NodeJS.ProcessEnv) {
   return spawnSync(process.execPath, ["--test", "--test-reporter=spec", "--import", PRELOAD, file], {
     encoding: "utf8",
@@ -146,7 +182,7 @@ test("a failing file leaves nothing either", { skip: !supported }, () => {
   assert.deepEqual(entriesLeftIn(temp), []);
 });
 
-test("a worker's temp dir sits below the private parent, inside the temp dir it was given", { skip: process.platform !== "linux" }, () => {
+test("a worker's temp dir sits below the private parent, inside the temp dir it was given", { skip: !privateParent }, () => {
   const { temp, marker } = scenario();
   assert.equal(runBriefWorker(env(temp, marker)).status, 0);
   const workerTemp = readFileSync(marker, "utf8");
@@ -165,8 +201,10 @@ test("the next worker removes what a killed worker left, reports it, and passes"
   const next = runBriefWorker(env(temp, `${marker}-next`));
   assert.equal(next.status, 0, next.stderr);
   assert.equal(existsSync(workerTemp), false);
-  assert.match(next.stderr, /test temp guard: removed 1 temp dir\(s\) left by a test run whose worker is gone/);
-  assert.match(next.stderr, new RegExp(basename(workerTemp)));
+  if (privateParent) {
+    assert.match(next.stderr, /test temp guard: removed 1 temp dir\(s\) left by a test run whose worker is gone/);
+    assert.match(next.stderr, new RegExp(basename(workerTemp)));
+  }
 });
 
 test("a live worker's temp dir survives the next worker's start", { skip: !supported }, async () => {
@@ -177,7 +215,7 @@ test("a live worker's temp dir survives the next worker's start", { skip: !suppo
     const next = runBriefWorker(env(temp, `${marker}-next`));
     assert.equal(next.status, 0, next.stderr);
     assert.equal(existsSync(workerTemp), true);
-    assert.doesNotMatch(next.stderr, /test temp guard/);
+    assert.doesNotMatch(next.stderr, new RegExp(basename(workerTemp)));
   } finally {
     await killed(child);
   }
@@ -193,7 +231,7 @@ test("a directory named for a live PID with another start time is a reused PID, 
   assert.equal(existsSync(stale), false);
 });
 
-test("the sweep leaves everything it cannot prove belongs to a dead worker", { skip: !supported }, () => {
+test("the sweep leaves a name it did not make, and everything outside its parent", { skip: !supported }, () => {
   const { temp, marker } = scenario();
   assert.equal(runBriefWorker(env(temp, marker)).status, 0);
   const parent = dirname(readFileSync(marker, "utf8"));
@@ -205,6 +243,79 @@ test("the sweep leaves everything it cannot prove belongs to a dead worker", { s
   assert.equal(existsSync(unnamed), true);
   assert.equal(existsSync(neighbor), true);
   rmSync(unnamed, { recursive: true });
+});
+
+test("a directory whose owner is missing from the table but not proven dead is kept", { skip: !supported }, () => {
+  const { temp, marker } = scenario();
+  // This worker is alive and PID 1 answers EPERM to anyone but root, and neither is in the table.
+  const alive = `${process.pid}-abcdef`;
+  const unprovable = "1-abcdef";
+  const { stderr, parent } = runGuardWith(
+    `[{ pid: process.pid, start: "fixture" }]`,
+    [alive, unprovable],
+    env(temp, marker),
+  );
+  assert.equal(existsSync(join(parent, alive)), true);
+  assert.equal(existsSync(join(parent, unprovable)), true);
+  assert.doesNotMatch(stderr, /abcdef/);
+  rmSync(join(parent, alive), { recursive: true });
+  rmSync(join(parent, unprovable), { recursive: true });
+});
+
+test("a worker with no process table judges nothing and still removes its own temp dir", { skip: !privateParent }, () => {
+  const { temp, marker } = scenario();
+  const earlier = "unjudged-abc123";
+  const dead = `${deadPid()}-abcdef`;
+  const { stderr, parent, workerTemp } = runGuardWith("null", [earlier, dead], env(temp, marker));
+  assert.equal(dirname(workerTemp), parent);
+  assert.match(basename(workerTemp), /^unjudged-/);
+  assert.equal(existsSync(workerTemp), false);
+  assert.equal(existsSync(join(parent, earlier)), true);
+  assert.equal(existsSync(join(parent, dead)), true, "a sweep with no table has nothing to judge by");
+  assert.doesNotMatch(stderr, /test temp guard/);
+  rmSync(join(parent, earlier), { recursive: true });
+  rmSync(join(parent, dead), { recursive: true });
+});
+
+test("a worker missing from its own table is unjudged, and can still sweep the dead", { skip: !privateParent }, () => {
+  const { temp, marker } = scenario();
+  const earlier = "unjudged-abc123";
+  const dead = `${deadPid()}-abcdef`;
+  const { stderr, parent, workerTemp } = runGuardWith("[]", [earlier, dead], env(temp, marker));
+  assert.match(basename(workerTemp), /^unjudged-/);
+  assert.equal(existsSync(workerTemp), false);
+  assert.equal(existsSync(join(parent, earlier)), true);
+  assert.equal(existsSync(join(parent, dead)), false);
+  assert.match(stderr, /test temp guard: removed 1 temp dir\(s\)/);
+  rmSync(join(parent, earlier), { recursive: true });
+});
+
+test("a child still writing to the temp dir is killed before the directory goes", { skip: !supported }, () => {
+  const { temp, marker } = scenario();
+  // The child recreates its directory for as long as it lives, so removing first would lose: the
+  // leak guard only kills it afterwards, and by then the worker's temp dir is back.
+  const file = fixture(
+    "outliving-child.test.mjs",
+    `import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+writeFileSync(process.env.FIXTURE_MARKER, process.env.TMPDIR);
+const churn = join(tmpdir(), "churn");
+test("leaves a child running", async () => {
+  const recreate = 'setInterval(() => require("node:fs").mkdirSync(process.argv[1], { recursive: true }), 5)';
+  spawn(process.execPath, ["-e", recreate, churn], { detached: true, stdio: "ignore" }).unref();
+  while (!existsSync(churn)) await new Promise((resolve) => setTimeout(resolve, 5));
+});
+`,
+  );
+  const result = runTestFile(file, env(temp, marker));
+  const output = result.stdout + result.stderr;
+  assert.notEqual(result.status, 0, output);
+  assert.match(output, /test leak guard: this test file left 1 process\(es\) running; killed:/);
+  assert.equal(existsSync(readFileSync(marker, "utf8")), false);
+  assert.deepEqual(entriesLeftIn(temp), []);
 });
 
 test("removing a worker's temp dir does not reach through to the shared compile cache", { skip: !supported }, () => {
@@ -228,8 +339,7 @@ writeFileSync(join(tmpdir(), "tsx-${USER}", "compiled"), "kept");
   assert.equal(readFileSync(join(base, `tsx-${USER}`, "compiled"), "utf8"), "kept");
 });
 
-// Linux only: on macOS the parent is the one the running suite is using.
-test("a symlink at the private parent's name is refused before anything is deleted", { skip: process.platform !== "linux" }, () => {
+test("a symlink at the private parent's name is refused before anything is deleted", { skip: !privateParent }, () => {
   const { temp, marker } = scenario();
   const childEnv = env(temp, marker);
   assert.equal(runBriefWorker(childEnv).status, 0);
@@ -261,5 +371,5 @@ test("a file with no report requested prints nothing about what it left", { skip
   delete childEnv.MISSION_TEST_TEMP_REPORT;
   const result = runTestFile(CLEAN_FILE, childEnv);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.doesNotMatch(result.stdout + result.stderr, /test temp guard/);
+  assert.doesNotMatch(result.stdout + result.stderr, / left \d+ entries/);
 });
