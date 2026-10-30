@@ -1,4 +1,6 @@
+import type { ReadOptions } from "../process-inspection/contract.ts";
 import { processInspector } from "../process-inspection/index.ts";
+import { unansweredOutcome } from "../util/exec.ts";
 
 export interface ProcCwdSnapshot {
   cwds: Map<number, string>;
@@ -23,19 +25,22 @@ export interface ProcCwdSnapshot {
  * survivors. The partial map remains available to discovery callers; destructive callers
  * independently recheck an omitted PID before treating it as gone.
  */
-export async function readProcCwdsSnapshot(pids: number[]): Promise<ProcCwdSnapshot> {
+export async function readProcCwdsSnapshot(pids: number[], options?: ReadOptions): Promise<ProcCwdSnapshot> {
   const uniq = [...new Set(pids)].filter((p) => Number.isInteger(p) && p > 0);
   if (uniq.length === 0) return { cwds: new Map(), unreadable: new Set(), unknownReason: null };
 
-  const { cwds, unreadable, result: res } = await processInspector().readCwds(uniq);
+  const { cwds, unreadable, result: res } = await processInspector().readCwds(uniq, options);
   // lsof exits 1 when one PID vanishes during a batched read, while still printing the
   // survivors. A partial answer is usable evidence, but omission is not proof of exit;
   // destructive callers compare unresolved PIDs against a fresh process snapshot.
+  const unanswered = unansweredOutcome(res);
   const failure = res.overflowed
     ? "the cwd listing was too large to buffer"
-    : res.outcomeUnknown
-      ? "the cwd listing was killed before it answered (timed out, or stopped from outside)"
-      : res.stderr.trim() || `exit ${res.code}`;
+    : unanswered
+      ? `the cwd listing ${unanswered}`
+      : res.outcomeUnknown
+        ? "the cwd listing was killed before it answered (timed out, or stopped from outside)"
+        : res.stderr.trim() || `exit ${res.code}`;
   const unknown =
     res.outcomeUnknown || res.overflowed || (res.code !== 0 && cwds.size === 0)
       ? `cwd listing failed: ${failure}`

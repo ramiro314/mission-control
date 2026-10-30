@@ -1,4 +1,5 @@
-import type { RunResult } from "../util/exec.ts";
+import { unansweredOutcome, type RunResult } from "../util/exec.ts";
+import type { ReadOptions } from "../process-inspection/contract.ts";
 import { processInspector } from "../process-inspection/index.ts";
 import { normTty } from "./tty.ts";
 import { allHarnesses, harnessFor } from "../harness/index.ts";
@@ -276,6 +277,8 @@ export function daemonOwnedPids(procs: Proc[], daemonPid: number = process.pid):
  */
 export function describeFailure(result: RunResult): string {
   if (result.overflowed) return "the process listing was too large to buffer";
+  const unanswered = unansweredOutcome(result);
+  if (unanswered) return `the process listing ${unanswered}`;
   if (result.outcomeUnknown) {
     return "the process listing was killed before it answered (timed out, or stopped from outside)";
   }
@@ -296,8 +299,8 @@ export interface ProcessSnapshot {
  * The process snapshot plus the health of the two underlying reads. Discovery may use the
  * partial rows, but destructive worktree decisions must treat `unknownReason` as a refusal.
  */
-export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
-  const table = await processInspector().listProcesses();
+export async function listProcessesSnapshot(options?: ReadOptions): Promise<ProcessSnapshot> {
+  const table = await processInspector().listProcesses(options);
   const procs: Proc[] = [];
   const cwdScopePids: number[] = [];
   const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;

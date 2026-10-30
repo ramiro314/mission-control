@@ -88,6 +88,15 @@ rows persist that ID before work starts. Cleanup reads the recorded provider and
 than deciding again from current configuration, and refuses a stale lease or any slot whose
 process occupancy cannot be proved empty. Startup reconciliation uses the same fail-closed rules.
 
+An observation read gets one retry before it counts as unknown. The process and cwd listings
+behind occupancy, `git worktree list`, each Git read of a slot inspection, and an owner lookup
+that throws each try once more in the same pass, 2 seconds later and with double the timeout. A
+PID that an otherwise healthy cwd listing omitted is first re-read on its own, and only one that
+is still unresolved, and still alive with the same start time, leaves occupancy unknown. A read
+that fails twice records both attempts, for example "git status timed out after 15 s, and after
+30 s on retry". A command killed at its timeout is named as a timeout, and one killed by another
+signal names that signal, so neither reads as "exit 1".
+
 A reservation quarantined before its lease is granted - a failed or unproven reset, creation,
 setup command, or verification, or a lost lease commit - drops its active owner in the same
 transition, because that owner never received the lease ID and could never return it. The slot
@@ -727,7 +736,8 @@ A tree whose owner has finished is one a completed task still owes a return, a c
 `returning`, a quarantined slot, or an unreferenced folder the [orphan tree sweep](#orphan-tree-sweep)
 left in place because it is kept or occupied. After each maintenance pass (`MISSION_WORKTREE_SWEEP_MS`,
 5 minutes by default), and whenever Settings > Storage is opened, Mission Control runs the same
-occupancy inspection the return guard uses (`ps` plus one batched `lsof`) over every such tree.
+occupancy inspection the return guard uses (`ps` plus one batched `lsof`, with its one retry)
+over every such tree.
 Only pool slots and children of `worktrees/` and `check-worktrees/` are inspected. A pool slot
 counts only while it holds the finished owner's own lease, or no lease and is quarantined. A
 completed task can keep owing a return after its slot was reset and leased to a live task, a
