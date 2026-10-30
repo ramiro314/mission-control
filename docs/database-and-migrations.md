@@ -23,6 +23,17 @@ snapshot; terminal statusLine and SDK usage reports update the same record. Expi
 remain available as explicitly historical UI data and are excluded from current quota. This is
 independent of the usage ledger and never contributes dollars or tokens.
 
+`worktree_slot_history` is the durable record of what happened to each native slot. `WorktreeStore`
+writes one row for every slot transition in the same transaction as the change, so a failed
+transition writes nothing and a row that cannot be written rolls the transition back. A slot's
+failed-read state adds a row only when it starts or clears, never on each pass. Text is bounded to
+2 KB and a row's JSON meta likewise, and no row holds a claim variable's value. Rows have no foreign
+key, so a destroyed slot's rows stay until retention ages them out: each maintenance pass drops rows
+older than 90 days, then anything beyond 2,000 rows per pool, oldest first. Retention is the table's
+only delete. The table arrived with schema version 11, a fork entry: the migration is
+`CREATE ... IF NOT EXISTS` and is not gated by the number, so an upstream 11 can renumber it, as
+#618 did for the fork's 7 to 9.
+
 ## Full-database recovery points
 
 Mission Control creates verified recovery points for normal operation and schema upgrades. See

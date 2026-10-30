@@ -6,7 +6,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { WorktreeClaim, WorktreeClaimSeed } from "@shared/protocol.ts";
 import type { WorktreeProvider } from "@shared/types.ts";
-import { isWorktreeOwnerKind, type WorktreeOwnerKind, type WorktreeRecoveryRefusalView } from "@shared/worktrees.ts";
+import {
+  isWorktreeOwnerKind,
+  type WorktreeHistoryActor,
+  type WorktreeOwnerKind,
+  type WorktreeRecoveryRefusalView,
+} from "@shared/worktrees.ts";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
 import { openDb } from "../db.ts";
@@ -20,10 +25,12 @@ import {
   ClaimRegistry,
   claimEnvironment,
   claimFingerprint,
+  claimSecrets,
   claimVariableNames,
   describeClaimFailure,
   encodeClaimFailure,
   readTreeBlobs,
+  redactClaimValues,
   runClaimStep,
   runClaimSteps,
   type ClaimEnvironment,
@@ -1400,6 +1407,7 @@ export class WorktreeManager {
           // lists. A setup command that relied on an unlisted credential from the daemon's
           // environment no longer receives it.
           const setupEnvironment = await this.deps.claimEnvironment(claimVariableNames(policy.claim));
+          const setupSecrets = claimSecrets(setupEnvironment);
           let setup: SetupResult;
           try {
             setup = await this.deps.runSetup(policy.setupArgv, reservation.path, setupEnvironment.env);
@@ -1407,8 +1415,12 @@ export class WorktreeManager {
             cleanupAgentSubprocessEnv(setupEnvironment.env);
           }
           if (!setup.ok || setup.outcomeUnknown) {
-            const reason = setup.reason ??
-              (setup.outcomeUnknown ? "setup outcome could not be proven" : "setup failed");
+            // Setup runs with the claim's variables, and its stderr is this reason, which the
+            // slot row and its history keep.
+            const reason = redactClaimValues(
+              setup.reason ?? (setup.outcomeUnknown ? "setup outcome could not be proven" : "setup failed"),
+              setupSecrets,
+            );
             this.quarantineReservation(
               reservation,
               setup.outcomeUnknown
@@ -2048,6 +2060,7 @@ export class WorktreeManager {
             ownerKey: owner.key,
             requestedHeadSha: idle.head,
             now: this.deps.now(),
+            actor: "operator",
           }));
       } catch (error) {
         return { outcome: "failed", reason: `the slot could not be reserved: ${bounded(String(error))}` };
@@ -2061,7 +2074,7 @@ export class WorktreeManager {
       if (!control) {
         // Shutdown began between the check above and the reservation. Held but untouched, so
         // startup returns it through the ordinary path.
-        this.store.finalizeLease(reserved.id, reserved.version, idle.head, this.deps.now());
+        this.store.finalizeLease(reserved.id, reserved.version, idle.head, this.deps.now(), "operator");
         return { outcome: "failed", reason: STOPPING_REASON };
       }
       const unfollow = followSignal(input.signal, control);
@@ -2112,7 +2125,7 @@ export class WorktreeManager {
     if (entered) return { outcome: entered.returned ? "skipped" : "failed", reason: entered.reason };
     let leased: WorktreeSlotRow | null;
     try {
-      leased = this.store.finalizeLease(reservation.id, reservation.version, input.head, this.deps.now());
+      leased = this.store.finalizeLease(reservation.id, reservation.version, input.head, this.deps.now(), "operator");
     } catch (error) {
       this.quarantineReservation(reservation, "Warm lease outcome is unknown", bounded(String(error)));
       return { outcome: "failed", reason: "the Warm lease could not be recorded" };
@@ -2157,7 +2170,7 @@ export class WorktreeManager {
         ? "Returning the slot to the pool, discarding what the stopped step changed\n"
         : "Returning the slot to the pool\n");
       try {
-        const released = await this.releaseLocked(lease, { ownerAuthorized: true, requireClean: !discardStepChanges });
+        const released = await this.releaseLocked(lease, { ownerAuthorized: true, requireClean: !discardStepChanges, actor: "operator" });
         return released.outcome === "released" || released.outcome === "alreadyReleased" ? null : released.reason;
       } catch (error) {
         return bounded(String(error));
@@ -2535,6 +2548,8 @@ export class WorktreeManager {
       requireClean?: boolean;
       /** Task policy rechecked under the slot lock, after all provider awaits, against the reset's target. */
       beforeReset?: (target: string) => Promise<string | null>;
+      /** Who the slot's history names, when it is not the lease's owner. */
+      actor?: WorktreeHistoryActor;
     } = {},
   ): Promise<WorktreeReleaseResult> {
     if (lease.provider !== "mission") return { outcome: "refused", reason: "lease provider is not mission" };
@@ -2615,7 +2630,7 @@ export class WorktreeManager {
       const policyBlocker = await options.beforeReset?.(target);
       if (policyBlocker) return { outcome: "refused", reason: policyBlocker };
       return null;
-    });
+    }, options.actor);
   }
 
   /**
@@ -2630,6 +2645,7 @@ export class WorktreeManager {
     identity: WorktreeRepositoryIdentity,
     slot: WorktreeSlotRow,
     beforeIntent: (target: string) => Promise<WorktreeReleaseResult | null>,
+    actor?: WorktreeHistoryActor,
   ): Promise<WorktreeReleaseResult> {
     let target: Awaited<ReturnType<WorktreeGit["fetchDefaultSha"]>>;
     try {
@@ -2652,7 +2668,7 @@ export class WorktreeManager {
     if (blocked) return blocked;
     let returning: WorktreeSlotRow | null;
     try {
-      returning = this.store.markReturning(slot.id, slot.version, target.value, this.deps.now());
+      returning = this.store.markReturning(slot.id, slot.version, target.value, this.deps.now(), actor);
     } catch (error) {
       return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
     }
@@ -2700,6 +2716,7 @@ export class WorktreeManager {
         returning.version,
         target.value,
         this.deps.now(),
+        actor,
       );
     } catch (error) {
       return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
@@ -2828,7 +2845,7 @@ export class WorktreeManager {
       }
       removedLock = current.path;
       return null;
-    });
+    }, input.automatic ? "automatic" : "operator");
     if (reset.outcome === "released" || reset.outcome === "alreadyReleased") {
       console.log(oneLine(
         `[worktrees] recovered ${this.slotLabel(slot)}${input.automatic ? " automatically" : ""}` +
@@ -3146,7 +3163,7 @@ export class WorktreeManager {
         }
         const registration = registrationFor(listed.value, slot.path);
         if (slot.state === "pruning" && !existsSync(slot.path) && !registration) {
-          if (!this.store.removePruned(slot.id, slot.version)) errors.push(`slot ${slot.ordinal}: prune completion raced`);
+          if (!this.store.removePruned(slot.id, slot.version, now)) errors.push(`slot ${slot.ordinal}: prune completion raced`);
           else this.publish();
           continue;
         }
@@ -3248,7 +3265,7 @@ export class WorktreeManager {
             reject("interrupted return did not reach its requested exact HEAD");
             continue;
           }
-          const completed = this.store.completeRelease(slot.id, slot.version, inspection.value.head, now);
+          const completed = this.store.completeRelease(slot.id, slot.version, inspection.value.head, now, "automatic");
           if (!completed) errors.push(`slot ${slot.ordinal}: proven return completion raced`);
           else this.publish();
           continue;
@@ -3609,7 +3626,7 @@ export class WorktreeManager {
         this.quarantine(pruning, "worktree removal could not be verified");
         return { outcome: "outcomeUnknown", reason: "worktree removal could not be verified" };
       }
-      if (!this.store.removePruned(pruning.id, pruning.version)) {
+      if (!this.store.removePruned(pruning.id, pruning.version, this.deps.now(), "operator")) {
         return { outcome: "outcomeUnknown", reason: "removed worktree row could not be settled" };
       }
       this.publish();
@@ -3713,6 +3730,11 @@ export class WorktreeManager {
       } catch (error) {
         console.error("[worktrees] automatic recover failed:", error);
       }
+    }
+    try {
+      this.store.pruneHistory(this.deps.now());
+    } catch (error) {
+      console.error("[worktrees] slot history retention failed:", error);
     }
     try {
       await this.reclaimDomainLeases();

@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { WORKTREES_CONFIG_LIMITS, type WorktreeClaim, type WorktreesConfigPatch } from "@shared/protocol.ts";
+import {
+  WORKTREES_CONFIG_LIMITS,
+  type WorktreeClaim,
+  type WorktreeSlotHistoryEntry,
+  type WorktreesConfigPatch,
+} from "@shared/protocol.ts";
 import type { OrphanProcess, StorageHealth, StorageProblem } from "@shared/storage-health.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
 import type {
@@ -19,7 +24,7 @@ import type {
 import { worktreeOperationPending, worktreeRetryRequest } from "@shared/worktrees.ts";
 import type { WorktreesConfigUpdate, WorktreesState } from "../useWorktrees.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
-import { api, openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
+import { api, fetchWorktreeSlotHistory, openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
 import { BULK_SELECTION_LIMIT, changeSelection } from "../lib/worktree-selection.ts";
@@ -833,7 +838,111 @@ function SlotCard({
         )}
       </div>
       {(copy.error || openError) && <p className="settings-error">{copy.error ?? openError}</p>}
+      <SlotHistory
+        slotId={slot.id}
+        ordinal={slot.ordinal}
+        refreshKey={`${slot.version}:${slot.observationFailure ?? ""}`}
+      />
     </article>
+  );
+}
+
+/** What one history row is, in the row's first line. A kind a later build added reads as itself. */
+export function slotHistoryHeadline(entry: WorktreeSlotHistoryEntry): string {
+  if (entry.kind === "transition") return `${entry.fromState ?? "new"} → ${entry.toState ?? "removed"}`;
+  if (entry.kind === "observation") return entry.outcome === "cleared" ? "Failed read cleared" : "Failed read";
+  return entry.kind;
+}
+
+const HISTORY_ACTORS: Record<string, string> = {
+  automatic: "automatic",
+  operator: "by the operator",
+  owner: "by its owner",
+};
+
+/**
+ * What happened to this slot, newest first. Read only while open, so a pool of closed cards asks
+ * the daemon for nothing, and read again when `refreshKey` says the slot moved on. Showing the
+ * list again after that starts from the newest page.
+ */
+function SlotHistory({
+  slotId,
+  ordinal,
+  refreshKey,
+}: {
+  slotId: string;
+  ordinal: number;
+  refreshKey: string;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState<WorktreeSlotHistoryEntry[] | null>(null);
+  const [nextBefore, setNextBefore] = useState<number | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    void fetchWorktreeSlotHistory(slotId, null, controller.signal).then((page) => {
+      if (controller.signal.aborted) return;
+      setFailed(page === null);
+      if (!page) return;
+      setEntries(page.entries);
+      setNextBefore(page.nextBefore);
+    });
+    return () => controller.abort();
+  }, [open, slotId, refreshKey]);
+
+  async function showOlder(): Promise<void> {
+    setLoadingOlder(true);
+    const page = await fetchWorktreeSlotHistory(slotId, nextBefore);
+    setLoadingOlder(false);
+    setFailed(page === null);
+    if (!page) return;
+    // A refresh that landed meanwhile can already hold the top of this page.
+    setEntries((shown) => {
+      const known = new Set(shown?.map((entry) => entry.id));
+      return [...(shown ?? []), ...page.entries.filter((entry) => !known.has(entry.id))];
+    });
+    setNextBefore(page.nextBefore);
+  }
+
+  return (
+    <section className="wt-history" aria-label={`Slot ${ordinal} history`}>
+      <button type="button" className="wt-disclosure" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        <span className="wt-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+        <span>History</span>
+      </button>
+      {open && (
+        <>
+          {entries === null && !failed && <p className="wt-history-note">Reading this slot's history…</p>}
+          {entries?.length === 0 && <p className="wt-history-note">Nothing recorded for this slot yet.</p>}
+          {failed && <p className="settings-error">This slot's history could not be read.</p>}
+          {entries && entries.length > 0 && (
+            <ol>
+              {entries.map((entry) => (
+                <li key={entry.id}>
+                  <div className="wt-history-head">
+                    <strong>{slotHistoryHeadline(entry)}</strong>
+                    <span>
+                      {startedLabel(entry.at)}
+                      {entry.actor && ` · ${HISTORY_ACTORS[entry.actor] ?? entry.actor}`}
+                    </span>
+                  </div>
+                  {entry.reason && <p>{entry.reason}</p>}
+                  {entry.detail && <code>{entry.detail}</code>}
+                </li>
+              ))}
+            </ol>
+          )}
+          {nextBefore !== null && (
+            <button className="btn btn-ghost" type="button" disabled={loadingOlder} onClick={() => void showOlder()}>
+              Show older
+            </button>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

@@ -679,6 +679,13 @@ this order:
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
   manager-known path.
 
+  Each slot card ends in a **History** disclosure: what happened to the slot, newest first, 50
+  entries at a time through `GET /api/worktrees/:slotId/history`, each with its state change, its
+  reason and detail, and who caused it (automatic, the operator, or the owner). The list is read
+  only while open, and follows the slot while it stays open. Every state transition writes one
+  entry in the same transaction as the change, and a failed read adds an entry only when it starts
+  and when it clears. See [the database guide](database-and-migrations.md) for retention.
+
   The group states loading, empty, and unavailable separately, and never renders a heading over
   nothing. An inventory that could not be observed says so and offers Refresh; it is never drawn as
   zero pools.

@@ -1,4 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
+import type { WorktreeSlotHistoryEntry, WorktreeSlotHistoryPage } from "../../shared/protocol.ts";
+import {
+  WORKTREE_HISTORY_LIMITS,
+  type WorktreeHistoryActor,
+  type WorktreeHistoryKind,
+} from "../../shared/worktrees.ts";
+import { clipUtf8Bytes } from "../util/utf8.ts";
+import { splitObservationFailure } from "./quarantine-reasons.ts";
 
 export const WORKTREE_SLOT_STATES = [
   "provisioning",
@@ -147,6 +155,72 @@ function slotRow(row: Record<string, unknown>): WorktreeSlotRow {
   };
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A row's fields beyond the slot it belongs to. Only what a writer knows; the rest stays NULL. */
+interface WorktreeHistoryInput {
+  at: number;
+  kind: WorktreeHistoryKind;
+  fromState: string | null;
+  toState: string | null;
+  reason: string | null;
+  /** Never a claim step's output: only a failed read's or a Git command's bounded reason. */
+  detail?: string | null;
+  outcome?: string | null;
+  actor: WorktreeHistoryActor;
+  meta?: Record<string, unknown> | null;
+}
+
+/** What a transition's history row says; the store fills in the states on either side of it. */
+type WorktreeTransitionEntry = Pick<WorktreeHistoryInput, "reason" | "detail" | "actor">;
+
+function boundedMeta(meta: Record<string, unknown> | null | undefined): string | null {
+  if (!meta) return null;
+  const json = JSON.stringify(meta);
+  return Buffer.byteLength(json, "utf8") <= WORKTREE_HISTORY_LIMITS.metaBytes ? json : '{"truncated":true}';
+}
+
+function parsedMeta(json: string | null): Record<string, unknown> | null {
+  if (json === null) return null;
+  try {
+    const value: unknown = JSON.parse(json);
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function historyEntry(row: Record<string, unknown>): WorktreeSlotHistoryEntry {
+  return {
+    id: Number(row.id),
+    slotId: String(row.slot_id),
+    ordinal: Number(row.ordinal),
+    at: Number(row.at),
+    kind: String(row.kind),
+    fromState: nullableString(row.from_state),
+    toState: nullableString(row.to_state),
+    reason: nullableString(row.reason),
+    detail: nullableString(row.detail),
+    operation: nullableString(row.operation),
+    outcome: nullableString(row.outcome),
+    actor: nullableString(row.actor),
+    durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
+    meta: parsedMeta(nullableString(row.meta)),
+  };
+}
+
+/** Who a lease's own step belongs to, unless the caller knows better: `warm` is maintenance. */
+function leaseActor(ownerKind: string | null): WorktreeHistoryActor {
+  return ownerKind === "warm" ? "automatic" : "owner";
+}
+
+/** "<kind>:<key>", as a history reason names a lease's owner. */
+function ownerName(kind: string | null, key: string | null): string {
+  return kind === null ? "no owner" : `${kind}:${key ?? "unknown"}`;
+}
+
 /**
  * The slot states a claim's writes may land in: a reservation still provisioning inside its
  * acquire, or a slot a Warm holds under its `warm` lease.
@@ -156,6 +230,155 @@ export type WorktreeClaimSlotState = "provisioning" | "leased";
 /** The only reader/writer for native operational pool and slot rows. */
 export class WorktreeStore {
   constructor(private readonly db: DatabaseSync) {}
+
+  /** Run `write` in a transaction of its own, or in the one already open on this connection. */
+  private transact<T>(write: () => T): T {
+    const owns = !this.db.isTransaction;
+    if (owns) this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      const result = write();
+      if (owns) this.db.exec("COMMIT;");
+      return result;
+    } catch (error) {
+      if (owns && this.db.isTransaction) {
+        try {
+          this.db.exec("ROLLBACK;");
+        } catch {}
+      }
+      throw error;
+    }
+  }
+
+  private record(slot: Pick<WorktreeSlotRow, "id" | "poolId" | "ordinal">, entry: WorktreeHistoryInput): void {
+    const text = (value: string | null | undefined) =>
+      value === null || value === undefined ? null : clipUtf8Bytes(value, WORKTREE_HISTORY_LIMITS.textBytes);
+    this.db
+      .prepare(
+        `INSERT INTO worktree_slot_history
+           (pool_id, slot_id, ordinal, at, kind, from_state, to_state, reason, detail, outcome, actor, meta)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        slot.poolId,
+        slot.id,
+        slot.ordinal,
+        entry.at,
+        entry.kind,
+        entry.fromState,
+        entry.toState,
+        text(entry.reason),
+        text(entry.detail),
+        entry.outcome ?? null,
+        entry.actor,
+        boundedMeta(entry.meta),
+      );
+  }
+
+  /**
+   * One slot transition: `write` changes the row, and its one history row commits with it. A
+   * compare-and-swap that misses writes no row, and a row that cannot be written rolls the
+   * transition back, so history cannot drift from the slot. Every write that raises `version`
+   * comes through here, or through `reserveNew` and `removePruned`, which record the same way.
+   */
+  private transition(
+    slotId: string,
+    now: number,
+    write: () => { changes: number | bigint },
+    entry: (before: WorktreeSlotRow) => WorktreeTransitionEntry,
+  ): WorktreeSlotRow | null {
+    return this.transact(() => {
+      const before = this.slot(slotId);
+      if (!before || Number(write().changes) !== 1) return null;
+      const after = this.slot(slotId)!;
+      this.record(after, {
+        ...entry(before),
+        at: now,
+        kind: "transition",
+        fromState: before.state,
+        toState: after.state,
+        meta: { version: after.version, head: after.currentHeadSha },
+      });
+      return after;
+    });
+  }
+
+  /**
+   * A write of `last_error` that is not a transition. It leaves one history row only when the
+   * failed-read note appears or goes, so a pass that fails the same way again stays silent. A
+   * transition that drops the note needs no row of its own: its one row is the record.
+   */
+  private observed(
+    slotId: string,
+    lastError: string | null,
+    now: number,
+    write: () => { changes: number | bigint },
+  ): boolean {
+    return this.transact(() => {
+      const before = this.slot(slotId);
+      if (Number(write().changes) !== 1) return false;
+      const prior = splitObservationFailure(before?.lastError ?? null).failure;
+      const next = splitObservationFailure(lastError).failure;
+      if (before && (prior === null) !== (next === null)) {
+        this.record(before, {
+          at: now,
+          kind: "observation",
+          fromState: before.state,
+          toState: before.state,
+          reason: next === null ? "a read succeeded again" : "a read failed, and the slot kept its state",
+          detail: next ?? prior,
+          outcome: next === null ? "cleared" : "started",
+          actor: "automatic",
+        });
+      }
+      return true;
+    });
+  }
+
+  /** One page of a slot's history, newest first. A destroyed slot's rows still answer. */
+  slotHistory(slotId: string, before: number | null = null): WorktreeSlotHistoryPage {
+    const size = WORKTREE_HISTORY_LIMITS.pageEntries;
+    const rows = (before === null
+      ? this.db
+          .prepare(`SELECT * FROM worktree_slot_history WHERE slot_id = ? ORDER BY id DESC LIMIT ?`)
+          .all(slotId, size + 1)
+      : this.db
+          .prepare(`SELECT * FROM worktree_slot_history WHERE slot_id = ? AND id < ? ORDER BY id DESC LIMIT ?`)
+          .all(slotId, before, size + 1)) as unknown as Record<string, unknown>[];
+    const entries = rows.slice(0, size).map(historyEntry);
+    return { entries, nextBefore: rows.length > size ? entries[size - 1]!.id : null };
+  }
+
+  /**
+   * History retention, once per maintenance pass: rows past their age, then whatever a pool
+   * holds beyond its cap, oldest first. A destroyed slot's rows age out like any other.
+   */
+  pruneHistory(now: number): number {
+    const { retentionDays, rowsPerPool } = WORKTREE_HISTORY_LIMITS;
+    return this.transact(() => {
+      let dropped = Number(
+        this.db.prepare(`DELETE FROM worktree_slot_history WHERE at < ?`).run(now - retentionDays * DAY_MS).changes,
+      );
+      const pools = this.db.prepare(`SELECT DISTINCT pool_id FROM worktree_slot_history`).all() as Array<{ pool_id: string }>;
+      for (const { pool_id: poolId } of pools) {
+        const oldestKept = this.db
+          .prepare(
+            `SELECT at, id FROM worktree_slot_history WHERE pool_id = ?
+             ORDER BY at DESC, id DESC LIMIT 1 OFFSET ?`,
+          )
+          .get(poolId, rowsPerPool - 1) as { at: number; id: number } | undefined;
+        if (!oldestKept) continue;
+        dropped += Number(
+          this.db
+            .prepare(
+              `DELETE FROM worktree_slot_history
+               WHERE pool_id = ? AND (at < ? OR (at = ? AND id < ?))`,
+            )
+            .run(poolId, oldestKept.at, oldestKept.at, oldestKept.id).changes,
+        );
+      }
+      return dropped;
+    });
+  }
 
   pools(): WorktreePoolRow[] {
     return (this.db.prepare(`SELECT * FROM worktree_pools ORDER BY created_at, id`).all() as unknown as Record<string, unknown>[])
@@ -325,8 +548,18 @@ export class WorktreeStore {
           input.now,
           input.now,
         );
+      const reserved = this.slot(input.id)!;
+      this.record(reserved, {
+        at: input.now,
+        kind: "transition",
+        fromState: null,
+        toState: reserved.state,
+        reason: `new slot reserved for ${ownerName(input.ownerKind, input.ownerKey)}`,
+        actor: leaseActor(input.ownerKind),
+        meta: { version: reserved.version, head: null },
+      });
       this.db.exec("COMMIT;");
-      return this.slot(input.id);
+      return reserved;
     } catch (error) {
       try {
         this.db.exec("ROLLBACK;");
@@ -343,26 +576,35 @@ export class WorktreeStore {
     ownerKey: string;
     requestedHeadSha: string;
     now: number;
+    /** Who caused this, when it is not the lease's owner: an operator's Warm. */
+    actor?: WorktreeHistoryActor;
   }): WorktreeSlotRow | null {
-    const changed = this.db
-      .prepare(
-        `UPDATE worktree_slots SET
-           state = 'provisioning', version = version + 1, requested_head_sha = ?,
-           active_lease_id = ?, active_owner_kind = ?, active_owner_key = ?, leased_at = ?,
-           quarantine_reason = NULL, last_error = NULL, updated_at = ?
-         WHERE id = ? AND state = 'available' AND version = ?`,
-      )
-      .run(
-        input.requestedHeadSha,
-        input.leaseId,
-        input.ownerKind,
-        input.ownerKey,
-        input.now,
-        input.now,
-        input.slotId,
-        input.version,
-      );
-    return Number(changed.changes) === 1 ? this.slot(input.slotId) : null;
+    return this.transition(
+      input.slotId,
+      input.now,
+      () => this.db
+        .prepare(
+          `UPDATE worktree_slots SET
+             state = 'provisioning', version = version + 1, requested_head_sha = ?,
+             active_lease_id = ?, active_owner_kind = ?, active_owner_key = ?, leased_at = ?,
+             quarantine_reason = NULL, last_error = NULL, updated_at = ?
+           WHERE id = ? AND state = 'available' AND version = ?`,
+        )
+        .run(
+          input.requestedHeadSha,
+          input.leaseId,
+          input.ownerKind,
+          input.ownerKey,
+          input.now,
+          input.now,
+          input.slotId,
+          input.version,
+        ),
+      () => ({
+        reason: `reserved for ${ownerName(input.ownerKind, input.ownerKey)}`,
+        actor: input.actor ?? leaseActor(input.ownerKind),
+      }),
+    );
   }
 
   /**
@@ -377,71 +619,124 @@ export class WorktreeStore {
     lastError: string | null;
     now: number;
   }): WorktreeSlotRow | null {
-    const changed = this.db
-      .prepare(
-        `UPDATE worktree_slots SET
-           state = 'available', version = version + 1, requested_head_sha = ?,
-           active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL,
-           quarantine_reason = NULL, last_error = ?, updated_at = ?
-         WHERE id = ? AND state = 'provisioning' AND version = ? AND active_lease_id = ?`,
-      )
-      .run(input.requestedHeadSha, input.lastError, input.now, input.slotId, input.version, input.leaseId);
-    return Number(changed.changes) === 1 ? this.slot(input.slotId) : null;
+    return this.transition(
+      input.slotId,
+      input.now,
+      () => this.db
+        .prepare(
+          `UPDATE worktree_slots SET
+             state = 'available', version = version + 1, requested_head_sha = ?,
+             active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL,
+             quarantine_reason = NULL, last_error = ?, updated_at = ?
+           WHERE id = ? AND state = 'provisioning' AND version = ? AND active_lease_id = ?`,
+        )
+        .run(input.requestedHeadSha, input.lastError, input.now, input.slotId, input.version, input.leaseId),
+      (before) => ({
+        reason: "reservation handed back before anything in the slot changed",
+        // A read that refused the reservation starts its failed-read note here, on this one row.
+        detail: splitObservationFailure(input.lastError).failure,
+        actor: leaseActor(before.activeOwnerKind),
+      }),
+    );
   }
 
-  finalizeLease(slotId: string, version: number, currentHeadSha: string, now: number): WorktreeSlotRow | null {
-    const changed = this.db
-      .prepare(
-        `UPDATE worktree_slots SET
-           state = 'leased', version = version + 1, current_head_sha = ?, last_used_at = ?,
-           last_released_lease_id = NULL, last_released_owner_kind = NULL,
-           last_released_owner_key = NULL, quarantine_reason = NULL, last_error = NULL,
-           updated_at = ?
-         WHERE id = ? AND state = 'provisioning' AND version = ?`,
-      )
-      .run(currentHeadSha, now, now, slotId, version);
-    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+  finalizeLease(
+    slotId: string,
+    version: number,
+    currentHeadSha: string,
+    now: number,
+    actor?: WorktreeHistoryActor,
+  ): WorktreeSlotRow | null {
+    return this.transition(
+      slotId,
+      now,
+      () => this.db
+        .prepare(
+          `UPDATE worktree_slots SET
+             state = 'leased', version = version + 1, current_head_sha = ?, last_used_at = ?,
+             last_released_lease_id = NULL, last_released_owner_kind = NULL,
+             last_released_owner_key = NULL, quarantine_reason = NULL, last_error = NULL,
+             updated_at = ?
+           WHERE id = ? AND state = 'provisioning' AND version = ?`,
+        )
+        .run(currentHeadSha, now, now, slotId, version),
+      (before) => ({
+        reason: `lease granted to ${ownerName(before.activeOwnerKind, before.activeOwnerKey)}`,
+        actor: actor ?? leaseActor(before.activeOwnerKind),
+      }),
+    );
   }
 
-  markReturning(slotId: string, version: number, targetSha: string, now: number): WorktreeSlotRow | null {
-    const changed = this.db
-      .prepare(
-        `UPDATE worktree_slots SET
-           state = 'returning', version = version + 1, requested_head_sha = ?,
-           last_error = NULL, updated_at = ?
-         WHERE id = ? AND state IN ('leased', 'quarantined') AND version = ?`,
-      )
-      .run(targetSha, now, slotId, version);
-    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+  markReturning(
+    slotId: string,
+    version: number,
+    targetSha: string,
+    now: number,
+    actor?: WorktreeHistoryActor,
+  ): WorktreeSlotRow | null {
+    return this.transition(
+      slotId,
+      now,
+      () => this.db
+        .prepare(
+          `UPDATE worktree_slots SET
+             state = 'returning', version = version + 1, requested_head_sha = ?,
+             last_error = NULL, updated_at = ?
+           WHERE id = ? AND state IN ('leased', 'quarantined') AND version = ?`,
+        )
+        .run(targetSha, now, slotId, version),
+      (before) => ({
+        reason: `return started from ${ownerName(before.activeOwnerKind, before.activeOwnerKey)}`,
+        actor: actor ?? leaseActor(before.activeOwnerKind),
+      }),
+    );
   }
 
-  completeRelease(slotId: string, version: number, currentHeadSha: string, now: number): WorktreeSlotRow | null {
-    const changed = this.db
-      .prepare(
-        `UPDATE worktree_slots SET
-           state = 'available', version = version + 1, current_head_sha = ?,
-           last_released_lease_id = active_lease_id,
-           last_released_owner_kind = active_owner_kind,
-           last_released_owner_key = active_owner_key,
-           active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL,
-           leased_at = NULL, last_used_at = ?, quarantine_reason = NULL, last_error = NULL,
-           updated_at = ?
-         WHERE id = ? AND state = 'returning' AND version = ?`,
-      )
-      .run(currentHeadSha, now, now, slotId, version);
-    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+  completeRelease(
+    slotId: string,
+    version: number,
+    currentHeadSha: string,
+    now: number,
+    actor?: WorktreeHistoryActor,
+  ): WorktreeSlotRow | null {
+    return this.transition(
+      slotId,
+      now,
+      () => this.db
+        .prepare(
+          `UPDATE worktree_slots SET
+             state = 'available', version = version + 1, current_head_sha = ?,
+             last_released_lease_id = active_lease_id,
+             last_released_owner_kind = active_owner_kind,
+             last_released_owner_key = active_owner_key,
+             active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL,
+             leased_at = NULL, last_used_at = ?, quarantine_reason = NULL, last_error = NULL,
+             updated_at = ?
+           WHERE id = ? AND state = 'returning' AND version = ?`,
+        )
+        .run(currentHeadSha, now, now, slotId, version),
+      (before) => ({
+        reason: "returned to the pool",
+        actor: actor ?? leaseActor(before.activeOwnerKind),
+      }),
+    );
   }
 
+  /** Removal starts only from an operator's Destroy or prune. */
   markPruning(slotId: string, version: number, now: number): WorktreeSlotRow | null {
-    const changed = this.db
-      .prepare(
-        `UPDATE worktree_slots SET state = 'pruning', version = version + 1,
-           last_error = NULL, updated_at = ?
-         WHERE id = ? AND state IN ('available', 'quarantined') AND version = ?
-           AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
-      )
-      .run(now, slotId, version);
-    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+    return this.transition(
+      slotId,
+      now,
+      () => this.db
+        .prepare(
+          `UPDATE worktree_slots SET state = 'pruning', version = version + 1,
+             last_error = NULL, updated_at = ?
+           WHERE id = ? AND state IN ('available', 'quarantined') AND version = ?
+             AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
+        )
+        .run(now, slotId, version),
+      () => ({ reason: "removal started", actor: "operator" }),
+    );
   }
 
   /**
@@ -464,17 +759,21 @@ export class WorktreeStore {
     const withdraw = withdrawGrant
       ? "active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL,"
       : "";
-    const changed = this.db
-      .prepare(
-        // A slot already quarantined keeps its entry time: the same occurrence continues.
-        `UPDATE worktree_slots SET
-           quarantined_at = CASE WHEN state = 'quarantined' AND quarantined_at IS NOT NULL
-             THEN quarantined_at ELSE ? END,
-           state = 'quarantined', version = version + 1, ${withdraw}
-           quarantine_reason = ?, last_error = ?, updated_at = ? WHERE ${where}`,
-      )
-      .run(...args);
-    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+    return this.transition(
+      slotId,
+      now,
+      () => this.db
+        .prepare(
+          // A slot already quarantined keeps its entry time: the same occurrence continues.
+          `UPDATE worktree_slots SET
+             quarantined_at = CASE WHEN state = 'quarantined' AND quarantined_at IS NOT NULL
+               THEN quarantined_at ELSE ? END,
+             state = 'quarantined', version = version + 1, ${withdraw}
+             quarantine_reason = ?, last_error = ?, updated_at = ? WHERE ${where}`,
+        )
+        .run(...args),
+      () => ({ reason, detail: error, actor: "automatic" }),
+    );
   }
 
   /**
@@ -482,15 +781,22 @@ export class WorktreeStore {
    * reference it. The slot stays quarantined; only the stale owner is withdrawn.
    */
   withdrawQuarantinedLease(slotId: string, version: number, leaseId: string, now: number): WorktreeSlotRow | null {
-    const changed = this.db
-      .prepare(
-        `UPDATE worktree_slots SET version = version + 1,
-           active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL,
-           leased_at = NULL, updated_at = ?
-         WHERE id = ? AND state = 'quarantined' AND version = ? AND active_lease_id = ?`,
-      )
-      .run(now, slotId, version, leaseId);
-    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+    return this.transition(
+      slotId,
+      now,
+      () => this.db
+        .prepare(
+          `UPDATE worktree_slots SET version = version + 1,
+             active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL,
+             leased_at = NULL, updated_at = ?
+           WHERE id = ? AND state = 'quarantined' AND version = ? AND active_lease_id = ?`,
+        )
+        .run(now, slotId, version, leaseId),
+      (before) => ({
+        reason: `lease of ${ownerName(before.activeOwnerKind, before.activeOwnerKey)} withdrawn: its owner does not reference it`,
+        actor: "automatic",
+      }),
+    );
   }
 
   /**
@@ -498,14 +804,21 @@ export class WorktreeStore {
    * else about the lease changes, and nothing on disk does: its owner holds the same identity.
    */
   restoreLease(slotId: string, version: number, leaseId: string, now: number): WorktreeSlotRow | null {
-    const changed = this.db
-      .prepare(
-        `UPDATE worktree_slots SET state = 'leased', version = version + 1,
-           quarantine_reason = NULL, quarantined_at = NULL, last_error = NULL, updated_at = ?
-         WHERE id = ? AND state = 'quarantined' AND version = ? AND active_lease_id = ?`,
-      )
-      .run(now, slotId, version, leaseId);
-    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+    return this.transition(
+      slotId,
+      now,
+      () => this.db
+        .prepare(
+          `UPDATE worktree_slots SET state = 'leased', version = version + 1,
+             quarantine_reason = NULL, quarantined_at = NULL, last_error = NULL, updated_at = ?
+           WHERE id = ? AND state = 'quarantined' AND version = ? AND active_lease_id = ?`,
+        )
+        .run(now, slotId, version, leaseId),
+      (before) => ({
+        reason: `lease restored after a quarantine for: ${before.quarantineReason ?? "no recorded reason"}`,
+        actor: "automatic",
+      }),
+    );
   }
 
   /**
@@ -651,9 +964,9 @@ export class WorktreeStore {
   }
 
   updateObserved(slotId: string, currentHeadSha: string | null, error: string | null, now: number): void {
-    this.db
+    this.observed(slotId, error, now, () => this.db
       .prepare(`UPDATE worktree_slots SET current_head_sha = ?, last_error = ?, updated_at = ? WHERE id = ?`)
-      .run(currentHeadSha, error, now, slotId);
+      .run(currentHeadSha, error, now, slotId));
   }
 
   /**
@@ -662,17 +975,35 @@ export class WorktreeStore {
    * operation that judged this version, and it never lands on a slot that changed since.
    */
   noteLastError(slotId: string, version: number, error: string | null, now: number): boolean {
-    const changed = this.db
+    return this.observed(slotId, error, now, () => this.db
       .prepare(`UPDATE worktree_slots SET last_error = ?, updated_at = ? WHERE id = ? AND version = ?`)
-      .run(error, now, slotId, version);
-    return Number(changed.changes) === 1;
+      .run(error, now, slotId, version));
   }
 
-  removePruned(slotId: string, version: number): boolean {
-    const changed = this.db
-      .prepare(`DELETE FROM worktree_slots WHERE id = ? AND state = 'pruning' AND version = ?`)
-      .run(slotId, version);
-    return Number(changed.changes) === 1;
+  /** The slot's row goes and its history stays, so this row's `toState` is NULL. */
+  removePruned(
+    slotId: string,
+    version: number,
+    now: number = Date.now(),
+    actor: WorktreeHistoryActor = "automatic",
+  ): boolean {
+    return this.transact(() => {
+      const before = this.slot(slotId);
+      const changed = this.db
+        .prepare(`DELETE FROM worktree_slots WHERE id = ? AND state = 'pruning' AND version = ?`)
+        .run(slotId, version);
+      if (!before || Number(changed.changes) !== 1) return false;
+      this.record(before, {
+        at: now,
+        kind: "transition",
+        fromState: before.state,
+        toState: null,
+        reason: "slot removed",
+        actor,
+        meta: { version: before.version, head: before.currentHeadSha },
+      });
+      return true;
+    });
   }
 
   recordReconciliation(poolId: string, now: number, error: string | null): void {

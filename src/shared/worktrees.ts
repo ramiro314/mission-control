@@ -20,6 +20,28 @@ export const WORKTREE_INVENTORY_LIMITS = {
   operations: 64,
 } as const;
 
+/**
+ * What a slot's history row records (`worktree_slot_history.kind`). Append-only: a later build
+ * adds a value, it never renames or reorders one.
+ */
+export const WORKTREE_HISTORY_KINDS = ["transition", "operation", "observation", "claim", "seed", "provisioning"] as const;
+export type WorktreeHistoryKind = (typeof WORKTREE_HISTORY_KINDS)[number];
+
+/** Who caused a history row (`worktree_slot_history.actor`). Append-only, like the kinds. */
+export const WORKTREE_HISTORY_ACTORS = ["automatic", "operator", "owner"] as const;
+export type WorktreeHistoryActor = (typeof WORKTREE_HISTORY_ACTORS)[number];
+
+export const WORKTREE_HISTORY_LIMITS = {
+  /** One page of `GET /api/worktrees/:slotId/history`. */
+  pageEntries: 50,
+  /** One row's reason, and one row's detail, in UTF-8 bytes. */
+  textBytes: 2048,
+  /** One row's JSON meta, in UTF-8 bytes. */
+  metaBytes: 2048,
+  retentionDays: 90,
+  rowsPerPool: 2000,
+} as const;
+
 export type WorktreeRiskKey =
   | "dirty"
   | "unlanded"

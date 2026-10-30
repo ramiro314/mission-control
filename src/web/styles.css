@@ -1186,6 +1186,47 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 .wt-occupants code { font-size: 11px; overflow-wrap: anywhere; }
 .wt-occupants span { color: var(--dim); font-size: 10px; }
 
+/* What happened to the slot: a disclosure at the card's foot, read only while open. */
+.wt-history {
+  border-top: 1px solid var(--border);
+  margin: 10px 0 0;
+  padding-top: 8px;
+}
+
+.wt-history .wt-disclosure {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.wt-history-note { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
+
+.wt-history ol {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 8px 0;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.wt-history li { display: grid; gap: 2px; min-width: 0; }
+
+.wt-history-head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+.wt-history-head strong { font-size: 11px; font-weight: 600; }
+.wt-history-head span { color: var(--dim); font-size: 10px; }
+.wt-history li p { font-size: 11px; line-height: 1.45; margin: 0; overflow-wrap: anywhere; }
+.wt-history li code { color: var(--dim); font-size: 10px; overflow-wrap: anywhere; white-space: pre-wrap; }
+
 /* Processes that outlived the slot's owner, each with its guarded Kill. */
 .wt-orphans {
   border-top: 1px solid var(--border);

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStaleLeaseDays, WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
+import { parseStaleLeaseDays, slotHistoryHeadline, WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
 import { capacityGeometry } from "../src/web/lib/worktree-capacity.ts";
 import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
 import type { WorktreesState } from "../src/web/useWorktrees.ts";
@@ -755,4 +755,24 @@ test("a slot whose last observation failed says so on its own line, in whatever 
   assert.match(html, /aria-label="Why slot 1 is leased"><dl><div><dt>Last observation failed<\/dt><dd>slot Git state is unknown \(git status timed out after 15 s, and after 30 s on retry\)<\/dd><\/div>/);
   // A quarantine keeps its reason and detail; the failed read is a line of its own beside them.
   assert.match(html, /<dt>Reason<\/dt><dd>worktree reset failed<\/dd><\/div><div><dt>Detail<\/dt><dd>fatal: unable to write new index file<\/dd><\/div><div><dt>Last observation failed<\/dt>/);
+});
+
+test("every slot card closes its History, which reads nothing until it is opened", () => {
+  const html = render();
+  assert.match(html, /<section class="wt-history" aria-label="Slot 1 history">/);
+  assert.match(html, /aria-expanded="false"[^>]*>.*?<span>History<\/span>/s);
+  assert.doesNotMatch(html, /Reading this slot's history|Nothing recorded for this slot/);
+});
+
+test("a history row's headline names the change, and a later build's kind reads as itself", () => {
+  const entry = {
+    id: 1, slotId: "s", ordinal: 1, at: 1, kind: "transition", fromState: "leased", toState: "returning", reason: null,
+    detail: null, operation: null, outcome: null, actor: null, durationMs: null, meta: null,
+  };
+  assert.equal(slotHistoryHeadline(entry), "leased → returning");
+  assert.equal(slotHistoryHeadline({ ...entry, fromState: null, toState: "provisioning" }), "new → provisioning");
+  assert.equal(slotHistoryHeadline({ ...entry, fromState: "pruning", toState: null }), "pruning → removed");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "observation", outcome: "started" }), "Failed read");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "observation", outcome: "cleared" }), "Failed read cleared");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "a-later-kind" }), "a-later-kind");
 });

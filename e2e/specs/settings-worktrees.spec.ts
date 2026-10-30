@@ -598,6 +598,87 @@ test("a slot whose last observation failed stays leased, says why on its card, a
 });
 
 /**
+ * A slot's History is what the store wrote in the same transaction as each change, so everything
+ * here but the paged rows comes from real transitions: a lease and its return, a real Reconcile
+ * quarantining a slot that was made dirty, and a new lease while the disclosure is open. The
+ * rows that prove paging are written directly, because reaching 50 entries for real would mean
+ * dozens of real resets; `test/worktree-history.test.ts` proves the page bounds at the route.
+ */
+test("a slot card's History lists what happened to the slot, newest first, and pages back", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const acquire = async (label: string) => {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    return await response.json() as { path: string; leaseId: string };
+  };
+  const lease = await acquire("history");
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+  const toggle = history.getByRole("button", { name: "History" });
+  const entries = history.getByRole("listitem");
+
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(entries).toHaveCount(0);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+  await expect(entries).toHaveCount(4);
+  await expect(entries.nth(0)).toContainText("returning → available");
+  await expect(entries.nth(0)).toContainText("returned to the pool");
+  await expect(entries.nth(0)).toContainText("by its owner");
+  await expect(entries.nth(1)).toContainText("leased → returning");
+  await expect(entries.nth(2)).toContainText("provisioning → leased");
+  await expect(entries.nth(2)).toContainText("lease granted to manual:");
+  await expect(entries.nth(3)).toContainText("new → provisioning");
+
+  // A real fault, from a real pass: the open list follows the slot without being reopened.
+  writeFileSync(join(lease.path, "stray.txt"), "left behind in an available slot\n");
+  await repo.getByRole("button", { name: "Reconcile", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(slot.getByText("quarantined", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(entries).toHaveCount(5);
+  await expect(entries.nth(0)).toContainText("available → quarantined");
+  await expect(entries.nth(0)).toContainText("available slot is dirty");
+  await expect(entries.nth(0)).toContainText("automatic");
+  await history.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "25-slot-history");
+
+  withDaemonDb(daemon, (db) => {
+    const row = db.prepare(`SELECT id, pool_id, ordinal FROM worktree_slots WHERE path = ?`).get(lease.path) as
+      { id: string; pool_id: string; ordinal: number };
+    const insert = db.prepare(
+      `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind, reason, actor)
+       VALUES (?, ?, ?, ?, 'observation', ?, 'automatic')`,
+    );
+    for (let index = 1; index <= 60; index += 1) insert.run(row.pool_id, row.id, row.ordinal, Date.now(), `paged row ${index}`);
+  });
+  await toggle.click();
+  await toggle.click();
+  await expect(entries).toHaveCount(50);
+  await expect(entries.nth(0)).toContainText("paged row 60");
+  await history.getByRole("button", { name: "Show older" }).click();
+  await expect(entries).toHaveCount(65);
+  await expect(entries.nth(64)).toContainText("new → provisioning");
+  await expect(history.getByRole("button", { name: "Show older" })).toHaveCount(0);
+});
+
+/**
  * The three states the pane used to render as a heading over nothing, plus the one state
  * a number input cannot express.
  *
