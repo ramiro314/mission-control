@@ -6,6 +6,7 @@ import { parseStaleLeaseDays, WorktreeSettingsPanel } from "../src/web/component
 import { capacityGeometry } from "../src/web/lib/worktree-capacity.ts";
 import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
 import type { WorktreesState } from "../src/web/useWorktrees.ts";
+import type { StorageHealth } from "../src/shared/storage-health.ts";
 
 const noop = async () => {};
 
@@ -677,6 +678,29 @@ test("a quarantined slot card shows its reason, detail, last automatic-recovery 
   assert.match(html, /<section class="wt-occupants" aria-label="Processes in slot 1">/);
   assert.match(html, /<strong>Session fix the login<\/strong><code>node \/pool\/1\/repo\/node_modules\/.bin\/tsserver<\/code><span>PID 4242 · started [^<]+<\/span>/);
   assert.match(html, /and 2 more not listed/);
+});
+
+test("an orphan row shows what names its process, and an unnamed one shows no name", () => {
+  const slot = overCapacityPool.slots[0]!;
+  const problem = (pid: number, knownOwner?: string | null) => ({
+    kind: "orphan-process",
+    link: { target: "slot", slotId: slot.id },
+    process: { tree: slot.path, pid, ppid: 1, command: `worker-${pid}`, startedAt: 0, knownOwner },
+  });
+  const html = renderToStaticMarkup(createElement(WorktreeSettingsPanel, {
+    state: {
+      ...state,
+      inventory: {
+        ...state.inventory!,
+        repositories: [{ ...overCapacityPool, slots: [{ ...slot, occupants: [] }] }],
+      },
+    },
+    storageHealth: { problems: [problem(7001, "IDE language server"), problem(7002, null), problem(7003)] } as unknown as StorageHealth,
+  }));
+  assert.match(html, /<li class="wt-orphan"><div><strong>IDE language server<\/strong><code>worker-7001<\/code><span>PID 7001 /);
+  assert.match(html, /<li class="wt-orphan"><div><code>worker-7002<\/code><span>PID 7002 /);
+  assert.match(html, /<li class="wt-orphan"><div><code>worker-7003<\/code><span>PID 7003 /);
+  assert.match(html, /aria-label="Kill process 7001"/, "a name does not take the Kill away");
 });
 
 test("a lock refusal names the lock path, and a detail equal to the reason is not repeated", () => {
