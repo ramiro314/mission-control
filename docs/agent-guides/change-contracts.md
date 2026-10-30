@@ -206,7 +206,10 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - Worktree slot history kinds and actors (`WORKTREE_HISTORY_KINDS` and `WORKTREE_HISTORY_ACTORS` in
   `src/shared/worktrees.ts`) - persisted as `worktree_slot_history.kind` and `.actor`, and read back
   as strings so a value a later build appended stays readable after a downgrade. Append a value;
-  never rename or reorder one
+  never rename or reorder one. The timed outcomes (`WORKTREE_PROVISIONING_OUTCOMES`,
+  `WORKTREE_CLAIM_OUTCOMES`, `WORKTREE_SEED_OUTCOMES`) are `worktree_slot_history.outcome`, and
+  `WorktreeStore.poolTimings` counts `new` and `placed` by exact value, so they are append-only
+  for the same reason
 - Organization ids (`ORGANIZATION_IDS` in `src/shared/organizations.ts`) - persisted as
   `organization` in the `telemetry.organization` record and read back by exact value. Append an
   organization; never rename one. The detection rule and the managed lock are the approved

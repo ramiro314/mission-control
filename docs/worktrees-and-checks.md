@@ -700,6 +700,28 @@ this order:
   entry in the same transaction as the change, and a failed read adds an entry only when it starts
   and when it clears. See [the database guide](database-and-migrations.md) for retention.
 
+  History also holds the timed steps, and the card shows the last of each as **Last provisioning**,
+  **Last claim** and **Last seed**:
+
+  - A **provisioning** entry runs from reservation to granted lease, for a new slot and for a reused
+    one. An acquisition that never reached a lease has none, and neither has a Warm or Open
+    terminal's lease, which provision nothing.
+  - A **claim** entry records the claim's duration, its seed included, and its outcome: succeeded,
+    failed, skipped on a matching fingerprint, or stopped by a shutdown. A failed one keeps the
+    failing step's command and reason, never its output.
+  - A **seed** entry names its source slot and duration. One that placed nothing says why: no idle
+    sibling held a current install or matched a stale slot's commit, its siblings could not be read,
+    none could be held, the clone was abandoned or cut off, the paths of an earlier cut-off seed
+    could not be removed, or the pool's claim configures no seed. A slot that wants no seed, because
+    its install still matches, adds no entry, so the last seed stays readable.
+
+  The pool row shows the **median new slot** provisioning time and the **seed hit rate** over the
+  pool's last 10 new slots, computed from history whenever it is read, so retention can shorten
+  the window. A new slot counts once it is granted, a claim that failed included, and it is a hit
+  when a seed placed anything in it before the grant. Acquisition leases an idle sibling before it
+  makes a new slot, so a new slot rarely finds a seed source, and a low rate there is the fault
+  this number exists to show. A reused slot's seed is in its History and not in the rate.
+
   The group states loading, empty, and unavailable separately, and never renders a heading over
   nothing. An inventory that could not be observed says so and offers Refresh; it is never drawn as
   zero pools.

@@ -31,6 +31,7 @@ import {
   encodeClaimFailure,
   readTreeBlobs,
   redactClaimValues,
+  renderClaimArgv,
   runClaimStep,
   runClaimSteps,
   type ClaimEnvironment,
@@ -115,6 +116,7 @@ import {
   type WorktreeClaimSlotState,
   type WorktreePoolRow,
   type WorktreeSlotRow,
+  type WorktreeTimingEntry,
 } from "./store.ts";
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -378,17 +380,17 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
 /** What a seed attempt did. */
 type SeedRun =
   /** No idle sibling could be held, so nothing was copied and the target is untouched. */
-  | { kind: "none" }
+  | { kind: "none"; reason: string }
   /** A source was held, but the seed could not be prepared. The target is untouched. */
-  | { kind: "abandoned"; reason: string }
+  | { kind: "abandoned"; reason: string; source: WorktreeSlotRow }
   /**
    * Every staged path is in place. `fingerprint` is the source's, which the target inherits,
    * or null when the seed was incomplete or the source recorded none: then the steps run.
    */
-  | { kind: "placed"; fingerprint: string | null }
+  | { kind: "placed"; fingerprint: string | null; source: WorktreeSlotRow }
   /** Stopped, timed out, or not placed whole: the target's seed paths cannot be trusted. */
-  | { kind: "interrupted"; reason: string }
-  | { kind: "unrecorded" };
+  | { kind: "interrupted"; reason: string; source: WorktreeSlotRow }
+  | { kind: "unrecorded"; source: WorktreeSlotRow };
 
 /** The warning reason for an interrupted seed's wipe that a Stop or the claim's deadline ended. */
 const WIPE_ENDED = {
@@ -426,6 +428,8 @@ interface ClaimOptions {
    * live. A promise it returns is backpressure on the running step's output.
    */
   output?: (text: string) => void | Promise<void>;
+  /** Who the claim's history rows name: the lease's owner unless the operator ran it. */
+  actor?: WorktreeHistoryActor;
 }
 
 type Say = (text: string) => void | Promise<void>;
@@ -454,6 +458,22 @@ type ClaimRun =
   | { kind: "shutdown" }
   /** The write-ahead or its settlement could not be recorded. */
   | { kind: "unrecorded"; reason: string };
+
+/** A claim's history row: its outcome and, when it failed, the step, never the step's output. */
+function claimTiming(run: ClaimRun): Pick<WorktreeTimingEntry & { kind: "claim" }, "outcome" | "reason" | "detail"> {
+  switch (run.kind) {
+    case "failed":
+      return {
+        outcome: run.kind,
+        reason: `step ${run.warning.step} of ${run.warning.stepCount} ${run.warning.reason}`,
+        detail: renderClaimArgv(run.warning.argv),
+      };
+    case "unrecorded":
+      return { outcome: run.kind, reason: run.reason, detail: null };
+    default:
+      return { outcome: run.kind, reason: null, detail: null };
+  }
+}
 
 /** What `claimDisposableTree` did. */
 export type DisposableClaimResult =
@@ -1556,16 +1576,20 @@ export class WorktreeManager {
         // Shutdown grants no claimed lease, including one whose claim finished just before it.
         if (claim && this.claims.stopping) return { outcome: "outcomeUnknown", reason: STOPPED_REASON };
 
-        const leased = this.store.finalizeLease(
-          reservation.id,
-          reservation.version,
-          input.baseSha,
-          this.deps.now(),
-        );
+        const grantedAt = this.deps.now();
+        const leased = this.store.finalizeLease(reservation.id, reservation.version, input.baseSha, grantedAt);
         if (!leased) {
           this.quarantineReservation(reservation, "lease commit lost its slot compare-and-swap");
           return { outcome: "outcomeUnknown", reason: "lease commit could not be proven" };
         }
+        this.recordTiming(leased, {
+          kind: "provisioning",
+          at: grantedAt,
+          durationMs: grantedAt - reservation.updatedAt,
+          outcome: created ? "new" : "reused",
+          reason: null,
+          actor: "owner",
+        });
         this.publish();
         if (input.awaitingDomainRecord) this.pendingDomainLeases.add(leaseId);
         return {
@@ -1707,6 +1731,41 @@ export class WorktreeManager {
   }
 
   /**
+   * A timing only reports on a step that already happened, so a row that cannot be written costs
+   * that row and never the lease or the claim it describes.
+   */
+  private recordTiming(slot: WorktreeSlotRow, entry: WorktreeTimingEntry): void {
+    try {
+      this.store.recordTiming(slot, entry);
+    } catch (error) {
+      console.warn(`[worktrees] the ${entry.kind} timing of ${slot.path} was not recorded: ${bounded(String(error))}`);
+    }
+  }
+
+  /** The one place a claim ends, whichever way it does: `runClaim`, and its history row. */
+  private async claimDependencies(
+    reservation: WorktreeSlotRow,
+    claim: WorktreeClaim,
+    sha: string,
+    control: AbortController,
+    onClaimStart: (() => void) | undefined,
+    where: { pool: WorktreePoolRow; identity: WorktreeRepositoryIdentity; enabled: boolean },
+    options: ClaimOptions = {},
+  ): Promise<ClaimRun> {
+    const startedAt = this.deps.now();
+    const run = await this.runClaim(reservation, claim, sha, control, onClaimStart, where, options);
+    const at = this.deps.now();
+    this.recordTiming(reservation, {
+      kind: "claim",
+      at,
+      durationMs: at - startedAt,
+      actor: options.actor ?? "owner",
+      ...claimTiming(run),
+    });
+    return run;
+  }
+
+  /**
    * The claim, under the reservation's slot lock. A slot whose recorded fingerprint matches
    * this commit's skips the steps. Otherwise one durable write records the intent and clears
    * the fingerprint before anything touches the tree, so a crash anywhere after it leaves
@@ -1718,7 +1777,7 @@ export class WorktreeManager {
    * ignored. A slot with no trusted fingerprint, or a stale one that an idle sibling matches
    * exactly, is then seeded copy-on-write from that sibling, and inherits its fingerprint.
    */
-  private async claimDependencies(
+  private async runClaim(
     reservation: WorktreeSlotRow,
     claim: WorktreeClaim,
     sha: string,
@@ -1728,6 +1787,7 @@ export class WorktreeManager {
     options: ClaimOptions = {},
   ): Promise<ClaimRun> {
     const slotState = options.slotState ?? "provisioning";
+    const actor = options.actor ?? "owner";
     const say = sayTo(options.output);
     const fingerprint = await this.commitFingerprint(reservation.path, claim, sha);
     const recorded = this.store.slot(reservation.id);
@@ -1776,6 +1836,7 @@ export class WorktreeManager {
       if (!wiped.ok) {
         // Left `claiming` while the daemon stops: startup records it as interrupted.
         if ("ended" in wiped && this.claims.stopping) return { kind: "shutdown" };
+        this.recordNoSeed(reservation, actor, "the paths of the seed that was cut off could not be removed");
         // Still interrupted, not failed: the seed paths may be half renamed, or half removed by
         // this very wipe, and only `interrupted` makes the next claim remove them again before
         // anything else. The lease is granted with the warning, as for any failed claim.
@@ -1817,9 +1878,12 @@ export class WorktreeManager {
         pool: where.pool,
         identity: where.identity,
         slotState,
+        actor,
         say,
       });
       if (seeded) return seeded;
+    } else if (!claim.seed && (cold || stale)) {
+      this.recordNoSeed(reservation, actor, "the pool's claim configures no seed");
     }
 
     const outcome = await runClaimSteps({
@@ -1852,6 +1916,11 @@ export class WorktreeManager {
     return { kind: "succeeded" };
   }
 
+  /** A slot that wanted a seed and never reached a search for a source. */
+  private recordNoSeed(slot: WorktreeSlotRow, actor: WorktreeHistoryActor, reason: string): void {
+    this.recordTiming(slot, { kind: "seed", at: this.deps.now(), durationMs: 0, outcome: "none", reason, actor });
+  }
+
   /**
    * A slot claim's seed, taken under the claim's write-ahead. The settled run when the seed
    * decided the claim: stopped or timed out (`interrupted`), placed from a source that matches
@@ -1873,9 +1942,11 @@ export class WorktreeManager {
     pool: WorktreePoolRow;
     identity: WorktreeRepositoryIdentity;
     slotState: WorktreeClaimSlotState;
+    actor: WorktreeHistoryActor;
     say: Say | null;
   }): Promise<ClaimRun | null> {
     const { reservation, claim, seed, sha, fingerprint, exactOnly, inherit, control, deadline, slotState, say } = input;
+    const startedAt = this.deps.now();
     const seeded = await this.seedTree({
       pool: input.pool,
       identity: input.identity,
@@ -1895,6 +1966,16 @@ export class WorktreeManager {
         return true;
       },
       ...(say ? { say } : {}),
+    });
+    const seededAt = this.deps.now();
+    this.recordTiming(reservation, {
+      kind: "seed",
+      at: seededAt,
+      durationMs: seededAt - startedAt,
+      outcome: seeded.kind,
+      reason: "reason" in seeded ? seeded.reason : null,
+      actor: input.actor,
+      meta: seeded.kind === "none" ? null : { sourceSlotId: seeded.source.id, sourceOrdinal: seeded.source.ordinal },
     });
     if (seeded.kind === "unrecorded") {
       return { kind: "unrecorded", reason: "the dependency seed intent could not be recorded" };
@@ -1968,7 +2049,8 @@ export class WorktreeManager {
    * The idle siblings a seed may copy from, best first: a fingerprint that matches the target
    * commit's exactly, then the most recently claimed successfully. Idle is exactly what
    * acquisition means by it, screened by the same code, so a sibling acquisition would refuse
-   * is never a source. The main checkout is never a slot, so it is never a source.
+   * is never a source. The main checkout is never a slot, so it is never a source. `whyNone` says
+   * why the list is empty, for the seed's history row.
    */
   private async seedSources(input: {
     pool: WorktreePoolRow;
@@ -1976,7 +2058,7 @@ export class WorktreeManager {
     targetSlotId: string | null;
     fingerprint: string | null;
     exactOnly: boolean;
-  }): Promise<Array<{ slot: WorktreeSlotRow; head: string }>> {
+  }): Promise<{ sources: Array<{ slot: WorktreeSlotRow; head: string }>; whyNone: string }> {
     const { fingerprint } = input;
     // Any sibling whose last claim succeeded is a fallback source, including one whose claim
     // lists no fingerprint paths and so recorded none. Only an exact match needs a fingerprint.
@@ -1986,12 +2068,17 @@ export class WorktreeManager {
       slot.depsState === "current" &&
       (!input.exactOnly || (fingerprint !== null && slot.depsFingerprint === fingerprint)));
     const screened = await this.screenIdleSlots(input.pool, input.identity, claimed);
-    if (!screened.ok) return [];
+    if (!screened.ok) return { sources: [], whyNone: `its siblings could not be read: ${screened.reason}` };
     const rank = (slot: WorktreeSlotRow): number => (fingerprint !== null && slot.depsFingerprint === fingerprint ? 0 : 1);
-    return screened.idle.sort((a, b) =>
-      rank(a.slot) - rank(b.slot) ||
-      (b.slot.depsClaimedAt ?? 0) - (a.slot.depsClaimedAt ?? 0) ||
-      a.slot.ordinal - b.slot.ordinal);
+    return {
+      sources: screened.idle.sort((a, b) =>
+        rank(a.slot) - rank(b.slot) ||
+        (b.slot.depsClaimedAt ?? 0) - (a.slot.depsClaimedAt ?? 0) ||
+        a.slot.ordinal - b.slot.ordinal),
+      whyNone: input.exactOnly
+        ? "no idle sibling matches this commit's dependencies"
+        : "no idle sibling holds a current install",
+    };
   }
 
   /**
@@ -2078,20 +2165,23 @@ export class WorktreeManager {
     this.liveSeedStaging.add(stagingId);
     try {
       let source: NativeWorktreeLease | null = null;
-      let sourceFingerprint: string | null = null;
-      for (const candidate of await this.seedSources(input)) {
+      let sourceSlot: WorktreeSlotRow | null = null;
+      const { sources, whyNone } = await this.seedSources(input);
+      for (const candidate of sources) {
         if (input.signal.aborted) break;
         source = await this.leaseSeedSource(input.pool, candidate, input.ownerKey);
         if (source) {
-          sourceFingerprint = candidate.slot.depsFingerprint;
+          sourceSlot = candidate.slot;
           break;
         }
       }
-      if (!source) return { kind: "none" };
+      if (!source || !sourceSlot) {
+        return { kind: "none", reason: sources.length > 0 ? "no idle sibling could be held" : whyNone };
+      }
       input.say?.(`Seeding copy-on-write from the idle sibling ${source.path}\n`);
       let staged: Awaited<ReturnType<typeof stageSeed>>;
       try {
-        if (!input.begin()) return { kind: "unrecorded" };
+        if (!input.begin()) return { kind: "unrecorded", source: sourceSlot };
         staged = await stageSeed({
           sourceRoot: source.path,
           targetRoot: input.targetPath,
@@ -2105,8 +2195,8 @@ export class WorktreeManager {
       } finally {
         await this.returnSeedSource(source);
       }
-      if (staged.kind === "abandoned") return { kind: "abandoned", reason: staged.reason };
-      if (staged.kind !== "staged") return { kind: "interrupted", reason: SEED_ENDED[staged.kind] };
+      if (staged.kind === "abandoned") return { kind: "abandoned", reason: staged.reason, source: sourceSlot };
+      if (staged.kind !== "staged") return { kind: "interrupted", reason: SEED_ENDED[staged.kind], source: sourceSlot };
       // Placement watches the Stop and the deadline itself, before each rename and after the
       // last, so neither lands unseen once anything in the target may have changed.
       const placed = await placeSeed({
@@ -2121,18 +2211,21 @@ export class WorktreeManager {
       });
       // A seed an exclusion left a whole path out of did not place the source's tree, so it
       // inherits nothing and the steps run on top of what it did place.
-      if (placed.ok) return { kind: "placed", fingerprint: staged.complete ? sourceFingerprint : null };
+      if (placed.ok) {
+        return { kind: "placed", fingerprint: staged.complete ? sourceSlot.depsFingerprint : null, source: sourceSlot };
+      }
       // A rename that failed before anything in the target changed placed nothing: no seed.
       // The cold check fallback's tree can sit on another volume than the pool's staging, and
       // its first rename then fails with EXDEV; that must run the steps, not fail the claim.
       if ("reason" in placed && !placed.touched) {
-        return { kind: "abandoned", reason: `the seed could not be placed: ${placed.reason}` };
+        return { kind: "abandoned", reason: `the seed could not be placed: ${placed.reason}`, source: sourceSlot };
       }
       return {
         kind: "interrupted",
         reason: "ended" in placed
           ? SEED_ENDED[placed.ended]
           : `did not run, because the dependency seed failed: ${placed.reason}`,
+        source: sourceSlot,
       };
     } finally {
       await rm(stagingDirectory, { recursive: true, force: true }).catch(() => {});
@@ -2392,7 +2485,7 @@ export class WorktreeManager {
       input.control,
       undefined,
       { pool, identity, enabled: input.policy.enabled },
-      { slotState: "leased", output: say },
+      { slotState: "leased", output: say, actor: "operator" },
     );
     if (claimed.kind === "shutdown") {
       // Left leased to this Warm with its write-ahead. Startup marks it interrupted and returns

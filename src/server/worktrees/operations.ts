@@ -703,6 +703,8 @@ export class WorktreeOperationsService {
               defaultFingerprint: pool.defaultFingerprint,
             }),
             warmLog: this.warmLogView(entry.slot.depsLogPath),
+            timings: this.manager.store.slotTimings(entry.slot.id),
+            lastHistoryId: this.manager.store.lastHistoryId(entry.slot.id),
           };
         });
       const counts = {
@@ -735,6 +737,7 @@ export class WorktreeOperationsService {
           : counts.quarantined > 0 || counts.overCapacity > 0
             ? "attention"
             : "ready",
+        timings: this.manager.store.poolTimings(pool.pool.id),
         slots,
       });
     }
