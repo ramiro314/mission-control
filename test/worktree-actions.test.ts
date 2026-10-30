@@ -509,7 +509,7 @@ test("a task Return states the discard of ignored work its slot's own dirty read
 });
 
 test("an owned quarantine names its owner, offers the owner's own Return, and refuses it while a process is inside", async () => {
-  let referenced = true;
+  let referenced: boolean | "unreadable" = true;
   const inside = new Map<string, WorktreeOccupant[]>();
   const ownedManager = new WorktreeManager(db, {
     occupancy: (paths) => Promise.resolve(new Map(paths.map((path) => [
@@ -517,7 +517,11 @@ test("an owned quarantine names its owner, offers the owner's own Return, and re
       { status: "known" as const, occupants: inside.get(path) ?? [] },
     ]))),
     resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
-    ownerReferenced: async () => referenced,
+    ownerReferenced: async () => {
+      if (referenced === "unreadable") throw new Error("tasks table is locked");
+      return referenced;
+    },
+    pause: async () => {},
   });
   const primaryRepo = mkOriginAndClone("mission-worktree-owned-quarantine-").clone;
   const primary = await ownedManager.acquire({
@@ -605,13 +609,18 @@ test("an owned quarantine names its owner, offers the owner's own Return, and re
   assert.equal((await owned.preview({ action: "return", slotId: primary.lease.slotId })).allowed, true);
   inside.clear();
 
-  // An owner that no longer references the slot, or cannot be read, gets no Return.
+  // An owner that no longer references the slot gets Recover instead of Return.
   referenced = false;
   assert.deepEqual((await card()).actions, ["destroy", "recover"]);
-  assert.match(
-    (await owned.preview({ action: "return", slotId: primary.lease.slotId })).blockers.join(" "),
-    /owner no longer references it; Recover it instead/,
-  );
+  const gone = await owned.preview({ action: "return", slotId: primary.lease.slotId });
+  assert.equal(gone.allowed, false);
+  assert.match(gone.blockers.join(" "), /owner no longer references it; Recover it instead/);
+  // One that cannot be read, even on its retry, gets neither: unknown is never a way back.
+  referenced = "unreadable";
+  assert.deepEqual((await card()).actions, ["destroy"]);
+  const unknown = await owned.preview({ action: "return", slotId: primary.lease.slotId });
+  assert.equal(unknown.allowed, false);
+  assert.match(unknown.blockers.join(" "), /Whether slot \d+'s owner still references it is unknown\./);
   referenced = true;
 
   const accepted = await owned.preview({ action: "return", slotId: primary.lease.slotId });
@@ -622,6 +631,45 @@ test("an owned quarantine names its owner, offers the owner's own Return, and re
   assert.equal(returned.quarantineReason, null);
   assert.equal(returned.activeLeaseId, null);
   assert.equal(existsSync(primary.lease.path), true, "the slot is kept as warm capacity");
+});
+
+test("a quarantined slot a live seed holds offers no Return, and its Return preview is refused", async () => {
+  const seedManager = new WorktreeManager(db, {
+    occupancy,
+    resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
+  });
+  const { clone } = mkOriginAndClone("mission-worktree-warm-quarantine-");
+  const acquired = await seedManager.acquire({
+    repositoryPath: clone,
+    baseSha: gitIn(clone, "rev-parse", "HEAD"),
+    owner: { kind: "manual", key: "manual-warm-quarantine" },
+  });
+  assert.equal(acquired.outcome, "acquired");
+  if (acquired.outcome !== "acquired") return;
+  // A seed's own `warm` lease, quarantined while the seed still runs: the manager calls a warm
+  // owner referenced exactly while its operation is live in this daemon, which nothing outside
+  // a real seed can arrange, so the test marks it live directly.
+  db.prepare(
+    "UPDATE worktree_slots SET active_owner_kind = 'warm', active_owner_key = 'warm-op-1' WHERE id = ?",
+  ).run(acquired.lease.slotId);
+  (seedManager as unknown as { liveWarmOwners: Set<string> }).liveWarmOwners.add("warm-op-1");
+  seedManager.store.quarantine(acquired.lease.slotId, "worktree reset failed", null, Date.now());
+  const seeded = new WorktreeOperationsService(seedManager, {
+    legacy: new LegacyTreehouseService(db),
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks,
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async () => 0,
+  });
+  const listed = (await seeded.inventory()).repositories.flatMap((repo) => repo.slots)
+    .find((slot) => slot.id === acquired.lease.slotId)!;
+  assert.equal(listed.owner?.kind, "warm");
+  assert.equal(listed.actions.includes("return"), false, "the seed returns its own lease when its copy ends");
+  const preview = await seeded.preview({ action: "return", slotId: acquired.lease.slotId });
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes("A dependency seed holds this slot and returns it when its copy ends."), preview.blockers.join("; "));
+  assert.equal(preview.consequences.some((line) => line.includes("manual lease")), false);
 });
 
 test("a manual lease is named by its label", async () => {
