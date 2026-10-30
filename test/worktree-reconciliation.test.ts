@@ -906,3 +906,37 @@ test("a failed read never keeps an interrupted provisioning or prune; an interru
   assert.equal(completed.state, "available", "the next good read completes the proven return");
   assert.equal(completed.lastError, null);
 });
+
+test("a pool-wide failed read still quarantines an interrupted provisioning or prune, and notes the rest", async () => {
+  const repository = repo("mission-reconcile-pool-transitional-");
+  const referenced = new Set<string>();
+  let failList = false;
+  const git = new NativeWorktreeGit(
+    async (bin, args, opts) => failList && args.includes("list") ? timedOut(opts?.timeoutMs) : run(bin, args, opts),
+    async () => {},
+  );
+  const manager = harness({ referenced, git, policy: () => ({ enabled: true, maxSlots: 3, setupArgv: null }) });
+  const take = async (key: string) => acquired(
+    await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha, owner: { kind: "task", key } }),
+  );
+  const provisioning = await take("task-pool-provisioning");
+  const pruning = await take("task-pool-pruning");
+  const leased = await take("task-pool-leased");
+  for (const lease of [provisioning, pruning, leased]) referenced.add(lease.leaseId);
+  db.prepare(`UPDATE worktree_slots SET state = 'provisioning' WHERE id = ?`).run(provisioning.slotId);
+  assert.equal((await manager.release(pruning, { ownerAuthorized: true })).outcome, "released");
+  db.prepare(`UPDATE worktree_slots SET state = 'pruning', version = version + 1 WHERE id = ?`).run(pruning.slotId);
+  failList = true;
+
+  await manager.reconcile();
+  assert.equal(manager.store.slot(provisioning.slotId)?.state, "quarantined");
+  assert.equal(manager.store.slot(provisioning.slotId)?.quarantineReason, "startup found an interrupted provisioning intent");
+  assert.equal(manager.store.slot(pruning.slotId)?.state, "quarantined");
+  assert.equal(
+    manager.store.slot(pruning.slotId)?.quarantineReason,
+    "startup found an interrupted prune with filesystem state still present",
+  );
+  const rest = manager.store.slot(leased.slotId)!;
+  assert.equal(rest.state, "leased");
+  assert.match(rest.lastError ?? "", /^Last observation failed: Git worktree registrations are unknown/);
+});

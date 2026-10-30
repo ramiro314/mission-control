@@ -22,7 +22,10 @@ export const OBSERVATION_FAILURE = {
  * qualify without a migration. The writer and every matcher read this one set.
  *
  * "pool marker is missing, unreadable, or belongs to another pool" is deliberately absent:
- * older builds wrote it for a missing or foreign marker too, which is a proven fault.
+ * older builds wrote it for a missing or foreign marker too, which is a proven fault. The
+ * "slot occupancy became unknown before ..." reasons are only ever older builds' quarantines of
+ * a failed occupancy read; this build hands such a reservation back instead, and quarantines one
+ * it cannot hand back under a reason of its own that is not in this set.
  */
 export const OBSERVATION_FAILURE_REASONS: ReadonlySet<string> = new Set([
   ...Object.values(OBSERVATION_FAILURE),
@@ -45,6 +48,12 @@ export function isObservationFailure(reason: string | null): boolean {
   const colon = reason.indexOf(": ");
   return colon > 0 && OBSERVATION_FAILURE_REASONS.has(reason.slice(0, colon));
 }
+
+/**
+ * The quarantine of a reservation refused before anything changed that could not be handed back
+ * to available. Whether the hand-back landed is unknown, so it is deliberately not in the set.
+ */
+export const RESERVATION_NOT_HANDED_BACK = "a refused reservation could not be handed back to available";
 
 const PREFIX = "Last observation failed: ";
 

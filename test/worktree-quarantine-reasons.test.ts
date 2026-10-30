@@ -5,6 +5,7 @@ import {
   isObservationFailure,
   OBSERVATION_FAILURE,
   OBSERVATION_FAILURE_REASONS,
+  RESERVATION_NOT_HANDED_BACK,
   splitObservationFailure,
   withObservationFailure,
   withoutObservationFailure,
@@ -40,6 +41,7 @@ test("a proven fault, or a reason that mixed one in, is not an observation failu
     "pool marker is missing, unreadable, or belongs to another pool",
     "return reset failed",
     "native worktree materialization outcome is unknown",
+    RESERVATION_NOT_HANDED_BACK,
     "slot Git state is unknown, really",
   ]) assert.equal(isObservationFailure(reason), false, String(reason));
 });

@@ -28,6 +28,7 @@ import {
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit, type GitResult } from "../src/server/worktrees/git.ts";
+import { isObservationFailure, RESERVATION_NOT_HANDED_BACK } from "../src/server/worktrees/quarantine-reasons.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { nativeWorktreeOwnerReferenced } from "../src/server/worktrees/owners.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
@@ -966,7 +967,10 @@ test("a reused slot refused before its reset goes back to available, not acquire
       reason: "lsof timed out",
     });
     assert.equal(m.store.slot(first.slotId)?.state, "quarantined");
-    assert.equal(m.store.slot(first.slotId)?.quarantineReason, "slot occupancy became unknown before reset");
+    // Its own reason, never one the failed-read set matches: the hand-back's outcome is unknown.
+    assert.equal(m.store.slot(first.slotId)?.quarantineReason, RESERVATION_NOT_HANDED_BACK);
+    assert.equal(isObservationFailure(m.store.slot(first.slotId)!.quarantineReason), false);
+    assert.equal(m.store.slot(first.slotId)?.lastError, "slot occupancy became unknown before reset: lsof timed out");
     assertNoUngrantedOwner(m);
     db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;");
   }

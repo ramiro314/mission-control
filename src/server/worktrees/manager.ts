@@ -55,6 +55,7 @@ import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observatio
 import {
   OBSERVATION_FAILURE,
   observationFailureText,
+  RESERVATION_NOT_HANDED_BACK,
   sameObservationFailure,
   splitObservationFailure,
   withObservationFailure,
@@ -906,14 +907,16 @@ export class WorktreeManager {
 
   /**
    * A reservation taken from an available slot was refused before anything in the slot
-   * changed, so the slot goes back to available as it was found (`prior`), with `failure`
-   * recorded when a read was what refused it. Only if that cannot be recorded is it quarantined.
-   * True when the slot is available again, false when it was quarantined instead.
+   * changed (`refusal`), so the slot goes back to available as it was found (`prior`), with
+   * `failure` recorded when a read was what refused it. Only if that cannot be recorded is it
+   * quarantined, under a reason of its own: whether the hand-back landed is unknown, which is
+   * not a failed read, so it must never match `OBSERVATION_FAILURE_REASONS`. True when the slot
+   * is available again, false when it was quarantined instead.
    */
   private returnReservation(
     reservation: WorktreeSlotRow,
     prior: WorktreeSlotRow,
-    reason: string,
+    refusal: string,
     failure: { reason: string; detail: string | null } | null,
   ): boolean {
     const text = failure && bounded(observationFailureText(failure.reason, failure.detail));
@@ -931,7 +934,11 @@ export class WorktreeManager {
       console.error(`[worktrees] could not return the reservation of slot ${reservation.id}:`, error);
     }
     if (!returned) {
-      this.quarantineReservation(reservation, reason, failure?.detail ?? null);
+      this.quarantineReservation(
+        reservation,
+        RESERVATION_NOT_HANDED_BACK,
+        failure?.detail ? `${refusal}: ${failure.detail}` : refusal,
+      );
       return false;
     }
     this.publish();
@@ -2925,7 +2932,10 @@ export class WorktreeManager {
       this.store.recordReconciliation(pool.id, now, bounded([reason, ...skipped].join("; ")));
     };
     // A pool-wide read that failed proves nothing about any slot: each keeps its state and
-    // records the failure, and the next pass reads again.
+    // records the failure, and the next pass reads again. The faults no read decides are still
+    // judged, as the per-slot pass judges them: an interrupted provisioning, and an interrupted
+    // prune whose folder is still there. A prune whose folder is gone needs the listing to tell
+    // a finished removal from a fault, so it waits for one.
     const unknownPool = async (reason: string, detail: string) => {
       for (const original of slots) {
         if (skipClaiming(original)) continue;
@@ -2933,7 +2943,14 @@ export class WorktreeManager {
         try {
           const slot = this.store.slot(original.id);
           if (slot) this.markInterruptedClaim(slot, now);
-          if (slot?.version === original.version) this.noteObservationFailure(slot, reason, detail);
+          if (slot?.version !== original.version) continue;
+          if (slot.state === "provisioning") {
+            this.quarantine(slot, "startup found an interrupted provisioning intent");
+          } else if (slot.state === "pruning" && existsSync(slot.path)) {
+            this.quarantine(slot, "startup found an interrupted prune with filesystem state still present");
+          } else {
+            this.noteObservationFailure(slot, reason, detail);
+          }
         } finally {
           releaseSlot();
         }

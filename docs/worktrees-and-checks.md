@@ -116,18 +116,21 @@ without a migration.
 
 Only a proven fault quarantines: an inexact path, a missing registration once listing succeeded,
 a bare, locked or prunable registration, a different common directory, an interrupted
-provisioning or prune (judged before any Git or process read, so a failed read never keeps one),
-an interrupted return proven occupied, dirty or off its target commit (one whose read failed
-waits for the next pass to prove and complete it), a dirty available slot, an available slot whose HEAD moved or that
-carries an active lease identity, an incomplete identity, a leased slot whose owner is positively
+provisioning or prune (judged before any Git or process read, and even when the pool's listing
+or marker cannot be read, so a failed read never keeps one; only a prune whose folder is already
+gone waits for a listing to tell a finished removal from a fault), an interrupted return proven
+occupied, dirty or off its target commit (one whose read failed waits for the next pass to prove
+and complete it), a dirty available slot, an available slot whose HEAD moved or that carries an active lease identity, an incomplete identity, a leased slot whose owner is positively
 gone, a reset or verification that failed, and a pool identity or marker that is missing,
 malformed or belongs to another pool. A process inside an available slot is not a fault: the slot
 stays available, acquisition passes over it, and its card lists the process. A reservation that a
 read refused before anything in the slot changed - its occupancy became unknown, or a process
 entered it, before the reset - goes back to available as it was, and the acquisition reports it
 as not acquired, so a task falls back as it does for any refusal. One whose mutation outcome is
-unknown is still quarantined, and so is a reservation that could not be handed back; only those
-report an unknown outcome.
+unknown is still quarantined, and so is a reservation that could not be handed back, as "a
+refused reservation could not be handed back to available"; only those report an unknown
+outcome. That reason is deliberately outside the failed-read set, because whether the hand-back
+landed is unknown.
 
 Each quarantine, each recovery, each automatic-recovery refusal and each slot left unchanged
 after a failed read writes one `[worktrees]` line to the daemon's output, naming the pool and
