@@ -743,8 +743,10 @@ export function buildPayload(
   // The merge-in method has one owner, shared with the workflow's conflict repair round.
   if (fb.conflicting) steps.push(...mergeConflictResolutionSteps(pr.baseRef).split("\n"));
   steps.push("Commit and push.");
+  // Whenever the required checks decided, failing or not, "CI is green" would send the agent
+  // after a non-required check the operator chose not to count.
   steps.push(
-    `Then keep watching the PR until ${fb.ciFailing && fb.ciRequired ? "the required checks are" : "CI is"} green and the review threads are resolved - ` +
+    `Then keep watching the PR until ${fb.ciRequired ? "the required checks are" : "CI is"} green and the review threads are resolved - ` +
       "GitHub Inspector re-reviews each push automatically, so wait for it and answer anything new.",
   );
 

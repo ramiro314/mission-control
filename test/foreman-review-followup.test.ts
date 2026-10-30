@@ -1326,6 +1326,31 @@ test("Required mode nudges only on a failing required check, and names the requi
   assert.deepEqual(notRequired, { kind: "skip", why: "no enabled review comments, failing CI or merge conflict" });
 });
 
+test("a findings nudge in Required mode never asks for a non-required check to go green", () => {
+  // The required checks pass and only a non-required one is red, so CI is not relayed; the
+  // findings are, and their closing line must not steer the agent at the uncounted failure.
+  const session = mkSession({
+    prChecks: "failing",
+    prHeadSha: HEAD,
+    inspector: inspector({ open: 1, ci: ciProjection({ required: "passing" }) }),
+  });
+  const d = decide({ session, cfg: { ...REQUIRED_CFG, trackReviewComments: true } });
+  assert.equal(d.kind, "nudge");
+  if (d.kind !== "nudge") return;
+  assert.match(d.payload, /^PR #7 needs follow-through: GitHub Inspector has 1 unresolved finding on it/);
+  assert.doesNotMatch(d.payload, /CI checks are failing|gh pr checks/);
+  assert.match(d.payload, /until the required checks are green/);
+  assert.doesNotMatch(d.payload, /until CI is green/);
+
+  // A fallback has no required checks to name, so it keeps today's closing line.
+  const fallback = decide({
+    session: mkSession({ ...session, inspector: inspector({ open: 1, ci: ciProjection({ required: null }) }) }),
+    cfg: { ...REQUIRED_CFG, trackReviewComments: true },
+  });
+  assert.equal(fallback.kind, "nudge");
+  if (fallback.kind === "nudge") assert.match(fallback.payload, /until CI is green/);
+});
+
 test("a fallback and All mode keep today's nudge wording", () => {
   const today = decide({
     session: ciSession("failing", null),
