@@ -2,7 +2,7 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { canonical, type WorktreeRegistration } from "./git.ts";
 import { slotGitDirectory } from "./index-lock.ts";
-import { interruptedPruneQuarantine, REGISTRATION_OR_IDENTITY } from "./quarantine-reasons.ts";
+import { INTERRUPTED_FORGET, interruptedPruneQuarantine, REGISTRATION_OR_IDENTITY } from "./quarantine-reasons.ts";
 
 /**
  * Git's own fixes for a slot's registration, the only ones that run without an operator:
@@ -135,6 +135,7 @@ export async function forgetCause(input: {
   if (registration?.bare) return null;
   const folder = await lstat(slotPath).catch(() => null);
   if (!folder?.isDirectory()) return "the slot's folder is gone";
+  if (quarantineReason === INTERRUPTED_FORGET) return "an earlier Forget was cut off with files still present";
   if (interruptedPruneQuarantine(quarantineReason)) return "a prune was interrupted with files still present";
   if (
     quarantineReason === REGISTRATION_OR_IDENTITY.commonDirectory ||

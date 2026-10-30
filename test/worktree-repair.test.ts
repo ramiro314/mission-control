@@ -7,10 +7,13 @@ import { WorktreeManager, type NativeWorktreeLease } from "../src/server/worktre
 import { NativeWorktreeGit, type WorktreeRegistration } from "../src/server/worktrees/git.ts";
 import { slotGitDirectory } from "../src/server/worktrees/index-lock.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
+import type { WorktreeSlotRow } from "../src/server/worktrees/store.ts";
 import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
 import { WorktreeOperationError, WorktreeOperationsService, type WorktreeOperationsDeps } from "../src/server/worktrees/operations.ts";
 import {
+  clearableQuarantineReason,
+  INTERRUPTED_FORGET,
   INTERRUPTED_PRUNE,
   REGISTRATION_OR_IDENTITY,
   registrationRepairQuarantine,
@@ -1034,6 +1037,16 @@ test("a lock an earlier build left in another language is refused, and is not ca
 });
 
 const FORGET_ACK = ["dirty"] as const;
+
+/** The row Forget left once it began deleting: only its recorded intent differs, and it is still the way back. */
+function assertForgetBegan(m: WorktreeManager, row: WorktreeSlotRow): void {
+  const current = m.store.slot(row.id)!;
+  assert.equal(current.quarantineReason, INTERRUPTED_FORGET);
+  assert.deepEqual(
+    { ...current, quarantineReason: row.quarantineReason, lastError: row.lastError, updatedAt: row.updatedAt },
+    { ...row, version: row.version + 1 },
+  );
+}
 const ROW_ACKNOWLEDGED = "The slot's row is deleted for good, and nothing can bring it back";
 const FILES_ACKNOWLEDGED = "Every file in the folder will be discarded, including uncommitted, untracked, unpushed or ignored work";
 
@@ -1349,7 +1362,7 @@ test("a folder that cannot be deleted keeps the row and the registration", async
   const result = await m.forgetSlot({ slotId: slot.slotId });
   assert.equal(result.outcome, "outcomeUnknown");
   assert.match((result as { reason: string }).reason, /could not be removed: .*EACCES/);
-  assert.deepEqual(m.store.slot(slot.slotId), row);
+  assertForgetBegan(m, row);
   assert.equal(registered(clone, slot.path), true);
 });
 
@@ -1577,7 +1590,7 @@ test("a registration Git still lists after its removal keeps the row, and a late
   assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), {
     outcome: "outcomeUnknown", reason: "Git still lists a registration for the slot's path",
   });
-  assert.deepEqual(m.store.slot(slot.slotId), row);
+  assertForgetBegan(m, row);
   assert.equal(registered(clone, slot.path), true);
 
   ignoreRemove = false;
@@ -1644,7 +1657,7 @@ for (const failure of [{ shape: "fails", throws: false }, { shape: "throws", thr
       assert.equal(result.outcome, "outcomeUnknown");
       assert.match((result as { reason: string }).reason, /git worktree list timed out after 30 s/);
       assert.equal(existsSync(slot.path), false, "the folder had already gone");
-      assert.deepEqual(m.store.slot(slot.slotId), row, "the row is the way back to Forget");
+      assertForgetBegan(m, row);
       assert.equal(registered(clone, slot.path), call === 2, "only a removal that ran drops the registration");
 
       assert.equal((await forgetActions(service, slot.slotId)).includes("forget"), true);
@@ -1669,7 +1682,7 @@ test("a git worktree remove that throws is an unknown outcome, and the row stays
   const result = await m.forgetSlot({ slotId: slot.slotId });
   assert.equal(result.outcome, "outcomeUnknown");
   assert.match((result as { reason: string }).reason, /spawn git EAGAIN/);
-  assert.deepEqual(m.store.slot(slot.slotId), row);
+  assertForgetBegan(m, row);
 });
 
 test("a row that cannot be settled is an unknown outcome, never a reported success", async () => {
@@ -1838,4 +1851,110 @@ test("a queued Forget lists its slot as a removal, blocks a second preview, and 
   assert.equal(failed?.error, "git worktree remove timed out after 60 s");
   assert.deepEqual(failed?.removals, [{ id: slot.slotId, path: slot.path }]);
   assert.deepEqual(failed?.completed, [], "a Forget that did not finish is not reported as done");
+});
+
+/** What a partial delete leaves: the delete takes `.git`, then stops on a file it cannot remove. */
+function partialDelete(failing: () => boolean, path: () => string) {
+  return async (target: string) => {
+    assert.equal(target, path());
+    if (failing()) {
+      rmSync(join(target, ".git"));
+      throw new Error("EACCES: permission denied, unlink 'owned-by-root'");
+    }
+    rmSync(target, { recursive: true, force: true });
+  };
+}
+
+for (const cause of [
+  {
+    name: "a registration that belongs to another path",
+    build: (clone: string, slot: { path: string; administrative: string }) => {
+      const elsewhere = join(dirname(clone), "still-here");
+      gitIn(clone, "worktree", "add", "-q", "--detach", elsewhere);
+      rmSync(slot.administrative, { recursive: true });
+      writeFileSync(join(slot.path, ".git"), readFileSync(join(elsewhere, ".git")));
+    },
+  },
+  {
+    name: "a different common directory read from the slot",
+    build: (clone: string, slot: { path: string }, other: string) => {
+      const foreign = join(dirname(other), "foreign-tree");
+      gitIn(other, "worktree", "add", "-q", "--detach", foreign);
+      gitIn(clone, "worktree", "remove", "--force", slot.path);
+      mkdirSync(slot.path, { recursive: true });
+      writeFileSync(join(slot.path, ".git"), readFileSync(join(foreign, ".git")));
+    },
+  },
+]) {
+  test(`a delete that stops partway through ${cause.name} keeps Forget on the card, and a later Forget finishes`, async () => {
+    const { clone, sha } = repository("mission-forget-partial-");
+    const other = repository("mission-forget-partial-other-");
+    let failing = true;
+    let slotPath = "";
+    const m = new WorktreeManager(db, { ...deps, removeTree: partialDelete(() => failing, () => slotPath) });
+    const service = operationsFor(m);
+    const slot = await quarantinedSlot(m, clone, sha, `task-forget-partial-${cause.name.length}`, REGISTRATION_OR_IDENTITY.missingRegistration);
+    slotPath = slot.path;
+    cause.build(clone, slot, other.clone);
+    writeFileSync(join(slot.path, "owned-by-root"), "stuck\n");
+    const ordinal = m.store.slot(slot.slotId)!.ordinal;
+
+    const first = await service.preview({ action: "forget", slotId: slot.slotId });
+    assert.equal(first.allowed, true, first.blockers.join("; "));
+    await assert.rejects(service.execute(first.token, [...FORGET_ACK]), /could not be removed: .*EACCES/);
+    assert.equal(existsSync(join(slot.path, ".git")), false, "the delete took the file the cause was read from");
+    assert.equal(existsSync(join(slot.path, "owned-by-root")), true);
+    assert.equal(m.store.slot(slot.slotId)?.quarantineReason, INTERRUPTED_FORGET);
+    assert.ok(m.store.slot(slot.slotId)?.lastError, "the detail keeps why Forget began");
+
+    await m.recoverQuarantines();
+    await m.reconcile();
+    assert.equal(m.store.slot(slot.slotId)?.quarantineReason, INTERRUPTED_FORGET, "no pass clears what is left");
+    assert.equal(existsSync(join(slot.path, "owned-by-root")), true);
+
+    // A new manager is what a restart in the middle of the delete comes back to.
+    failing = false;
+    const restarted = new WorktreeManager(db, { ...deps, removeTree: partialDelete(() => failing, () => slotPath) });
+    const resumed = operationsFor(restarted);
+    assert.equal((await forgetActions(resumed, slot.slotId)).includes("forget"), true);
+    const second = await resumed.preview({ action: "forget", slotId: slot.slotId });
+    assert.equal(second.allowed, true, second.blockers.join("; "));
+    assert.ok(second.consequences.includes("Repair has no answer here: an earlier Forget was cut off with files still present."), second.consequences.join("\n"));
+    assert.ok(second.consequences.includes(`Deletes slot ${ordinal}'s row. Its ordinal is never reused, and a new slot starts from its own install.`));
+    await resumed.execute(second.token, [...FORGET_ACK]);
+    assert.equal(existsSync(slot.path), false);
+    assert.equal(restarted.store.slot(slot.slotId), null);
+  });
+}
+
+test("Forget records its intent before it deletes anything, and clears a lock error that would make the slot a candidate", async () => {
+  const { clone, sha } = repository("mission-forget-intent-");
+  let seen: { reason: string | null; lastError: string | null; files: boolean } | null = null;
+  let slotId = "";
+  const m: WorktreeManager = new WorktreeManager(db, {
+    ...deps,
+    removeTree: async (path) => {
+      const row = m.store.slot(slotId)!;
+      seen = { reason: row.quarantineReason, lastError: row.lastError, files: existsSync(path) };
+      throw new Error("EBUSY");
+    },
+  });
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-intent", INTERRUPTED_PRUNE);
+  slotId = slot.slotId;
+  assert.ok(m.store.quarantine(slot.slotId, INTERRUPTED_PRUNE, "Unable to create '/x/index.lock': File exists", Date.now()));
+
+  assert.equal((await m.forgetSlot({ slotId: slot.slotId })).outcome, "outcomeUnknown");
+  assert.deepEqual(seen, { reason: INTERRUPTED_FORGET, lastError: "a prune was interrupted with files still present", files: true });
+  assert.equal(clearableQuarantineReason(INTERRUPTED_FORGET), false);
+  assert.equal(registrationRepairQuarantine(INTERRUPTED_FORGET), false, "Repair never touches a half-deleted folder");
+});
+
+test("a Forget that lost its slot to a change refuses before it deletes anything", async () => {
+  const { clone, sha } = repository("mission-forget-intent-raced-");
+  const m = managerWith();
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-intent-raced", INTERRUPTED_PRUNE);
+  m.store.quarantine = () => null;
+
+  assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), { outcome: "refused", reason: "slot changed after it was observed" });
+  assert.equal(readFileSync(slot.install, "utf8"), "warm\n");
 });

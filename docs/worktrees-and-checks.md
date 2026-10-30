@@ -929,12 +929,17 @@ The operations have deliberately narrow meanings:
   that fails refuses too, because a registration may name the path, and so does a folder whose
   contents cannot be read, because its work cannot be named. Execute refuses a changed
   preview: the preview binds a signature of the folder's entries, as Unowned trees does, so a write
-  the list does not show still stops it. Execute then takes the owner, pool, occupancy and claim
-  proofs again under the slot lock, deletes the folder without following a symlink, in the tree or
+  the list does not show still stops it. Execute refuses a running claim, then takes the owner, pool
+  and occupancy proofs again under the slot lock. It records "a Forget was cut off before its folder
+  was gone" as the quarantine reason, deletes the folder without following a symlink, in the tree or
   at its path, removes any registration that names the path, a locked one included, and deletes the
   row. A registration that names another path is that checkout's and stays. The pool's ordinal
-  high-water mark stays too, so the ordinal is never reused. A Forget cut off after the folder went
-  leaves the slot quarantined, and the card offers Forget again to finish it.
+  high-water mark stays too, so the ordinal is never reused.
+
+  A delete is not atomic, and it can take the `.git` file a cause was read from. That recorded
+  reason keeps Forget on the card however far the delete got, a restart included, so the slot can
+  always be finished. No maintenance pass clears it or repairs the slot: what is left waits for the
+  operator who began deleting it.
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
   adapter. There is no force action for unverifiable or foreign resources.
 - **Warm** prepares idle slots ahead of time: it holds each under a `warm` lease, fetches, resets

@@ -112,6 +112,13 @@ export function interruptedPruneQuarantine(reason: string | null): boolean {
   return reason === INTERRUPTED_PRUNE || reason === UNVERIFIED_REMOVAL;
 }
 
+/**
+ * Forget's write-ahead, recorded before its first delete. A recursive delete is not atomic and can
+ * take the `.git` file a cause was read from, so this reason keeps Forget offered on what is left.
+ * No pass clears it: a half-deleted folder waits for the operator who began deleting it.
+ */
+export const INTERRUPTED_FORGET = "a Forget was cut off before its folder was gone";
+
 /** A dirty available slot, and the reason older builds gave it before occupied was split off. */
 export const AVAILABLE_SLOT_DIRTY = "available slot is dirty";
 const AVAILABLE_SLOT_OCCUPIED_OR_DIRTY = "available slot is occupied or dirty";

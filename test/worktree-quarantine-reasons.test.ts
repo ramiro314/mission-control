@@ -4,6 +4,7 @@ import test from "node:test";
 import { lockCausedQuarantine } from "../src/server/worktrees/index-lock.ts";
 import {
   clearableQuarantineReason,
+  INTERRUPTED_FORGET,
   INTERRUPTED_PRUNE,
   isObservationFailure,
   OBSERVATION_FAILURE,
@@ -11,6 +12,7 @@ import {
   REGISTRATION_OR_IDENTITY,
   REGISTRATION_OR_IDENTITY_REASONS,
   registrationOrIdentityQuarantine,
+  registrationRepairQuarantine,
   RESERVATION_NOT_HANDED_BACK,
   splitObservationFailure,
   UNVERIFIED_REMOVAL,
@@ -107,6 +109,12 @@ const OTHER_QUARANTINE_REASONS = new Set([
 
 /** The same kind of reason, written through a constant because Forget reads them back. */
 const NAMED_QUARANTINE_REASONS = { INTERRUPTED_PRUNE, UNVERIFIED_REMOVAL };
+
+test("Forget's write-ahead is a reason no pass may clear or repair", () => {
+  assert.equal(clearableQuarantineReason(INTERRUPTED_FORGET), false);
+  assert.equal(isObservationFailure(INTERRUPTED_FORGET), false);
+  assert.equal(registrationRepairQuarantine(INTERRUPTED_FORGET), false);
+});
 
 test("no quarantine reason in the manager escapes classification", () => {
   const source = readFileSync(new URL("../src/server/worktrees/manager.ts", import.meta.url), "utf8");

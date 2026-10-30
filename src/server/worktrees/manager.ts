@@ -55,6 +55,7 @@ import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observatio
 import {
   AVAILABLE_SLOT_DIRTY,
   clearableQuarantineReason,
+  INTERRUPTED_FORGET,
   INTERRUPTED_PRUNE,
   isObservationFailure,
   OBSERVATION_FAILURE,
@@ -3083,8 +3084,9 @@ export class WorktreeManager {
    * Forget one quarantined slot, the fallback when Repair refuses or cannot prove a result: delete
    * its folder, remove any registration that names its path, then delete its row. Every proof
    * Recover needs about the owner, the pool and the occupancy is taken again here, under the slot
-   * lock. A slot whose folder went before something later failed stays quarantined, and Forget
-   * offers itself again, so it can always be finished. It never runs without an operator: no pass
+   * lock. It records `INTERRUPTED_FORGET` before its first delete, so a delete that stops partway,
+   * or a restart during it, leaves a slot that still offers Forget even once the `.git` file a cause
+   * was read from is gone, and it can always be finished. It never runs without an operator: no pass
    * calls this, because it discards whatever the folder holds.
    */
   async forgetSlot(input: { slotId: string; expectedVersion?: number }): Promise<WorktreeForgetResult> {
@@ -3117,6 +3119,11 @@ export class WorktreeManager {
     if (parent !== null && parent !== dirname(slot.path)) {
       return { outcome: "refused", reason: `${dirname(slot.path)} resolves outside its pool` };
     }
+    // The cause replaces `last_error`, so an old lock error cannot make what is left a candidate for
+    // automatic recovery.
+    const intent = this.store.quarantine(slot.id, INTERRUPTED_FORGET, bounded(cause), this.deps.now(), slot.version);
+    if (!intent) return { outcome: "refused", reason: "slot changed after it was observed" };
+    this.publish();
     try {
       await this.deps.removeTree(slot.path);
     } catch (error) {
@@ -3140,7 +3147,7 @@ export class WorktreeManager {
     const after = await this.registrationsNaming(identity, slot.path);
     if (!after.ok) return { outcome: "outcomeUnknown", reason: after.reason };
     if (after.value > 0) return { outcome: "outcomeUnknown", reason: "Git still lists a registration for the slot's path" };
-    if (!this.store.forget(slot.id, slot.version)) {
+    if (!this.store.forget(intent.id, intent.version)) {
       return { outcome: "outcomeUnknown", reason: "the forgotten slot's row could not be settled" };
     }
     console.log(oneLine(`[worktrees] forgot ${this.slotLabel(slot)}: ${cause}`));
