@@ -43,10 +43,61 @@ export const OBSERVATION_FAILURE_REASONS: ReadonlySet<string> = new Set([
  * listing failure with its cause ("Git worktree registrations are unknown: <cause>").
  */
 export function isObservationFailure(reason: string | null): boolean {
+  return reasonIn(OBSERVATION_FAILURE_REASONS, reason);
+}
+
+/** Whether a reason is in this set, on its own or suffixed with its cause. */
+function reasonIn(reasons: ReadonlySet<string>, reason: string | null): boolean {
   if (reason === null) return false;
-  if (OBSERVATION_FAILURE_REASONS.has(reason)) return true;
+  if (reasons.has(reason)) return true;
   const colon = reason.indexOf(": ");
-  return colon > 0 && OBSERVATION_FAILURE_REASONS.has(reason.slice(0, colon));
+  return colon > 0 && reasons.has(reason.slice(0, colon));
+}
+
+/**
+ * The reasons that say a slot's registration, its path, its pool, its lease identity or the
+ * commit the allocator recorded for it is wrong. A later read that succeeds repairs none of
+ * these, so automatic recovery never judges one, whatever else `last_error` holds. Every
+ * writer uses these labels, so this is the one copy of each.
+ */
+export const REGISTRATION_OR_IDENTITY = {
+  inexactPath: "slot path is not the exact path owned by its native pool",
+  missingRegistration: "slot path or Git registration is missing",
+  unsafeRegistration: "slot Git registration is bare, locked, or prunable",
+  noSafeRegistration: "slot has no safe Git worktree registration",
+  commonDirectory: "slot belongs to a different Git common directory",
+  poolIdentity: "pool repository identity no longer matches its durable row",
+  poolMarker: "pool marker is missing, malformed, or belongs to another pool",
+  incompleteAvailableIdentity: "available slot has incomplete active lease identity",
+  availableIdentity: "available slot still carries active lease identity",
+  incompleteLastIdentity: "last-released lease identity is incomplete",
+  incompleteLeasedIdentity: "leased slot has incomplete active identity",
+  incompleteReturnIdentity: "interrupted return has incomplete active lease identity",
+  noDomainOwner: "leased slot has no matching domain owner reference",
+  headMoved: "available slot HEAD moved outside an allocator transition",
+} as const;
+
+/** Every registration or identity reason: the labels above, and an older build's marker wording. */
+export const REGISTRATION_OR_IDENTITY_REASONS: ReadonlySet<string> = new Set([
+  ...Object.values(REGISTRATION_OR_IDENTITY),
+  "pool marker is missing, unreadable, or belongs to another pool",
+]);
+
+export function registrationOrIdentityQuarantine(reason: string | null): boolean {
+  return reasonIn(REGISTRATION_OR_IDENTITY_REASONS, reason);
+}
+
+/** A dirty available slot, and the reason older builds gave it before occupied was split off. */
+export const AVAILABLE_SLOT_DIRTY = "available slot is dirty";
+const AVAILABLE_SLOT_OCCUPIED_OR_DIRTY = "available slot is occupied or dirty";
+
+/**
+ * Whether automatic recovery may judge a slot quarantined for this reason: a failed read, or a
+ * dirty available slot, each of which a fresh read can disprove. An `index.lock` quarantine is
+ * recognized by its error instead (`lockCausedQuarantine`).
+ */
+export function clearableQuarantineReason(reason: string | null): boolean {
+  return isObservationFailure(reason) || reason === AVAILABLE_SLOT_DIRTY || reason === AVAILABLE_SLOT_OCCUPIED_OR_DIRTY;
 }
 
 /**
