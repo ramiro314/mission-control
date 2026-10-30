@@ -122,6 +122,8 @@ Only one non-terminal task may be bound to a session. Enforce this anywhere the 
 
 When an agent disappears, settle the task and retain its resources unless final completion or an accepted safe-Kill return authorizes cleanup. Unrequested disappearance alone never authorizes immediate teardown; retained failed and cancelled work follows the 30-day activity policy.
 
+`session_remove` triggers reclaim for cancelled and failed tasks. When the removed session was bound to a task already in one of those states, or its cwd lies inside a tree such a task holds, `TaskManager` runs `reclaimSettledTreesIfClean` on the cleanup queue, the same reclaim its startup twin, the restart-settle pass, runs. It frees only trees that hold no work and no process, so a dirty tree or a remaining occupant keeps the task's trees. A task this same event settles is left out, which is the rule above, and so is a managed Pipeline task, because its provider owns the outcome.
+
 New final completions persist a `task_worktree_returns` obligation in the same transaction as
 the done status and optional session closure. Startup resumes only those explicit obligations;
 historical done tasks are never backfilled and keep the existing retention policy. The obligation
