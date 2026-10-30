@@ -395,6 +395,15 @@ test("the CodeRabbit message's CI lines follow which failures count", (t) => {
   assert.match(red.payload, /its required CI checks are failing/);
   assert.ok(red.payload.includes(`gh pr checks ${red.url} --required`));
 
+  // Held: the snapshot is behind the PR's head, so CI is not relayed and every check is not asked for.
+  const held = fixture();
+  Object.assign(held.session, { prChecks: "failing", prHeadSha: "head" });
+  held.session.inspector!.ci = { headSha: "older", required: "passing", inspectorEnabled: true };
+  setForemanConfig({ trackCiFailures: true, ciStrictness: "required" });
+  const heldPayload = codeRabbitCandidate(held.registry, held.session.id, held.request).payload!;
+  assert.doesNotMatch(heldPayload, /CI checks are failing|gh pr checks/);
+  assert.match(heldPayload, /until the required checks are green/);
+
   const all = payloadFor("all", "passing");
   assert.match(all.payload, /, and its CI checks are failing/);
   assert.ok(all.payload.includes(`gh pr checks ${all.url}\``));

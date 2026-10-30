@@ -389,7 +389,10 @@ export function ciFeedback(
   cfg: Pick<ReviewFollowupConfig, "trackCiFailures" | "ciStrictness">,
 ): Pick<Feedback, "ciFailing" | "ciRequired"> {
   const ci = cfg.trackCiFailures ? ciFollowup(pr, cfg.ciStrictness) : null;
-  if (ci === null || ci === "held") return { ciFailing: false, ciRequired: false };
+  if (ci === null) return { ciFailing: false, ciRequired: false };
+  // Held is Required mode with the snapshot behind the head: nothing is relayed about CI, but
+  // a findings or conflict nudge sent meanwhile must still not ask for every check to go green.
+  if (ci === "held") return { ciFailing: false, ciRequired: true };
   return { ciFailing: ci.failing, ciRequired: ci.required };
 }
 
@@ -399,7 +402,10 @@ interface Feedback {
   findings: boolean;
   /** The PR's CI counts as failing under `ciStrictness` (see `ciFollowup`). */
   ciFailing: boolean;
-  /** The required checks' rollup decided `ciFailing`, so the nudge names required checks. */
+  /**
+   * The required checks decided `ciFailing`, or are the ones that will once a held snapshot
+   * catches up, so the nudge names required checks.
+   */
   ciRequired?: boolean;
   /** The PR's current head is observed conflicting with its base. */
   conflicting: boolean;
@@ -756,8 +762,8 @@ export function buildPayload(
   // The merge-in method has one owner, shared with the workflow's conflict repair round.
   if (fb.conflicting) steps.push(...mergeConflictResolutionSteps(pr.baseRef).split("\n"));
   steps.push("Commit and push.");
-  // Whenever the required checks decided, failing or not, "CI is green" would send the agent
-  // after a non-required check the operator chose not to count.
+  // Whenever the required checks decide, failing, passing or held, "CI is green" would send
+  // the agent after a non-required check the operator chose not to count.
   steps.push(
     `Then keep watching the PR until ${fb.ciRequired ? "the required checks are" : "CI is"} green and the review threads are resolved - ` +
       "GitHub Inspector re-reviews each push automatically, so wait for it and answer anything new.",

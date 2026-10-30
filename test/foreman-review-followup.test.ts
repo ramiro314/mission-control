@@ -1342,6 +1342,23 @@ test("a findings nudge in Required mode never asks for a non-required check to g
   assert.match(d.payload, /until the required checks are green/);
   assert.doesNotMatch(d.payload, /until CI is green/);
 
+  // Held, the snapshot behind the head or not stored yet, is still Required mode: CI is not
+  // relayed, and the closing line must not ask for every check to go green either.
+  for (const [name, ci] of [
+    ["snapshot for another head", ciProjection({ headSha: "head-1", required: "passing" })],
+    ["no snapshot yet", ciProjection({ headSha: null, required: null })],
+  ] as const) {
+    const held = decide({
+      session: mkSession({ ...session, inspector: inspector({ open: 1, ci }) }),
+      cfg: { ...REQUIRED_CFG, trackReviewComments: true },
+    });
+    assert.equal(held.kind, "nudge", name);
+    if (held.kind !== "nudge") continue;
+    assert.doesNotMatch(held.payload, /CI checks are failing|gh pr checks/, name);
+    assert.match(held.payload, /until the required checks are green/, name);
+    assert.doesNotMatch(held.payload, /until CI is green/, name);
+  }
+
   // A fallback has no required checks to name, so it keeps today's closing line.
   const fallback = decide({
     session: mkSession({ ...session, inspector: inspector({ open: 1, ci: ciProjection({ required: null }) }) }),
