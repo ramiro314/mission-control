@@ -2,8 +2,14 @@ import type { DatabaseSync } from "node:sqlite";
 import type { WorktreeSlotHistoryEntry, WorktreeSlotHistoryPage } from "../../shared/protocol.ts";
 import {
   WORKTREE_HISTORY_LIMITS,
+  type WorktreeClaimOutcome,
   type WorktreeHistoryActor,
   type WorktreeHistoryKind,
+  type WorktreePoolTimingsView,
+  type WorktreeProvisioningOutcome,
+  type WorktreeSeedOutcome,
+  type WorktreeSlotTimingsView,
+  type WorktreeTimingView,
 } from "../../shared/worktrees.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { splitObservationFailure } from "./quarantine-reasons.ts";
@@ -168,11 +174,22 @@ interface WorktreeHistoryInput {
   detail?: string | null;
   outcome?: string | null;
   actor: WorktreeHistoryActor;
+  durationMs?: number | null;
   meta?: Record<string, unknown> | null;
 }
 
 /** What a transition's history row says; the store fills in the states on either side of it. */
 type WorktreeTransitionEntry = Pick<WorktreeHistoryInput, "reason" | "detail" | "actor">;
+
+/** A timed step's history row: when it ended, how long it took, and how it came out. */
+export type WorktreeTimingEntry =
+  & Pick<WorktreeHistoryInput, "at" | "reason" | "detail" | "actor" | "meta">
+  & { durationMs: number }
+  & (
+    | { kind: "provisioning"; outcome: WorktreeProvisioningOutcome }
+    | { kind: "claim"; outcome: WorktreeClaimOutcome }
+    | { kind: "seed"; outcome: WorktreeSeedOutcome }
+  );
 
 function boundedMeta(meta: Record<string, unknown> | null | undefined): string | null {
   if (!meta) return null;
@@ -209,6 +226,25 @@ function historyEntry(row: Record<string, unknown>): WorktreeSlotHistoryEntry {
     durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
     meta: parsedMeta(nullableString(row.meta)),
   };
+}
+
+function timingView(row: Record<string, unknown> | undefined): WorktreeTimingView | null {
+  if (!row) return null;
+  const source = parsedMeta(nullableString(row.meta))?.sourceOrdinal;
+  return {
+    at: Number(row.at),
+    outcome: nullableString(row.outcome),
+    durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
+    reason: nullableString(row.reason),
+    sourceOrdinal: typeof source === "number" ? source : null,
+  };
+}
+
+function median(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
 /** Who a lease's own step belongs to, unless the caller knows better: `warm` is maintenance. */
@@ -255,8 +291,8 @@ export class WorktreeStore {
     this.db
       .prepare(
         `INSERT INTO worktree_slot_history
-           (pool_id, slot_id, ordinal, at, kind, from_state, to_state, reason, detail, outcome, actor, meta)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (pool_id, slot_id, ordinal, at, kind, from_state, to_state, reason, detail, outcome, actor, duration_ms, meta)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         slot.poolId,
@@ -270,8 +306,18 @@ export class WorktreeStore {
         text(entry.detail),
         entry.outcome ?? null,
         entry.actor,
+        entry.durationMs ?? null,
         boundedMeta(entry.meta),
       );
+  }
+
+  /**
+   * One provisioning, claim or seed row. These report on a step that already happened and change
+   * no slot row, so unlike a transition's they stand alone, and the caller decides what a row
+   * that cannot be written costs.
+   */
+  recordTiming(slot: Pick<WorktreeSlotRow, "id" | "poolId" | "ordinal">, entry: WorktreeTimingEntry): void {
+    this.record(slot, { ...entry, fromState: null, toState: null });
   }
 
   /**
@@ -346,6 +392,45 @@ export class WorktreeStore {
           .all(slotId, before, size + 1)) as unknown as Record<string, unknown>[];
     const entries = rows.slice(0, size).map(historyEntry);
     return { entries, nextBefore: rows.length > size ? entries[size - 1]!.id : null };
+  }
+
+  /** The id of a slot's newest history row of any kind, or null when it has none. */
+  lastHistoryId(slotId: string): number | null {
+    const row = this.db.prepare(`SELECT MAX(id) AS id FROM worktree_slot_history WHERE slot_id = ?`).get(slotId) as
+      { id: number | null };
+    return row.id;
+  }
+
+  /** The newest provisioning, claim and seed rows of a slot, for its card. */
+  slotTimings(slotId: string): WorktreeSlotTimingsView {
+    const last = (kind: "provisioning" | "claim" | "seed") =>
+      timingView(this.db
+        .prepare(`SELECT * FROM worktree_slot_history WHERE slot_id = ? AND kind = ? ORDER BY id DESC LIMIT 1`)
+        .get(slotId, kind) as Record<string, unknown> | undefined);
+    return { provisioning: last("provisioning"), claim: last("claim"), seed: last("seed") };
+  }
+
+  /**
+   * A pool's newest new slots, read from history alone. A new slot has one `new` provisioning row
+   * and it is that slot's first, so any seed row before it belongs to the same provisioning.
+   */
+  poolTimings(poolId: string): WorktreePoolTimingsView {
+    const rows = this.db
+      .prepare(
+        `SELECT p.duration_ms AS duration, EXISTS (
+           SELECT 1 FROM worktree_slot_history s
+           WHERE s.slot_id = p.slot_id AND s.kind = 'seed' AND s.outcome = 'placed' AND s.id < p.id
+         ) AS seeded
+         FROM worktree_slot_history p
+         WHERE p.pool_id = ? AND p.kind = 'provisioning' AND p.outcome = 'new'
+         ORDER BY p.id DESC LIMIT ?`,
+      )
+      .all(poolId, WORKTREE_HISTORY_LIMITS.timingWindowSlots) as Array<{ duration: number; seeded: number }>;
+    return {
+      newSlots: rows.length,
+      medianProvisioningMs: median(rows.map((row) => Number(row.duration))),
+      seededSlots: rows.filter((row) => row.seeded === 1).length,
+    };
   }
 
   /**

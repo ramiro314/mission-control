@@ -41,7 +41,47 @@ export const WORKTREE_HISTORY_LIMITS = {
   metaBytes: 2048,
   retentionDays: 90,
   rowsPerPool: 2000,
+  /** How many of a pool's newest new slots its row's timings cover. */
+  timingWindowSlots: 10,
 } as const;
+
+/**
+ * What a timed step's history row says in `outcome`. Persisted and read back by exact value (a
+ * pool's summary counts `new` and `placed`), so these are append-only like the kinds. A
+ * provisioning row exists only for a granted lease, so its outcome says which slot was granted.
+ */
+export const WORKTREE_PROVISIONING_OUTCOMES = ["new", "reused"] as const;
+export type WorktreeProvisioningOutcome = (typeof WORKTREE_PROVISIONING_OUTCOMES)[number];
+export const WORKTREE_CLAIM_OUTCOMES = ["skipped", "succeeded", "failed", "shutdown", "unrecorded"] as const;
+export type WorktreeClaimOutcome = (typeof WORKTREE_CLAIM_OUTCOMES)[number];
+export const WORKTREE_SEED_OUTCOMES = ["placed", "none", "abandoned", "interrupted", "unrecorded"] as const;
+export type WorktreeSeedOutcome = (typeof WORKTREE_SEED_OUTCOMES)[number];
+
+/** A slot's newest row of one timed kind, as its card shows it. */
+export interface WorktreeTimingView {
+  at: number;
+  /** Read as a string, like a history row's: a value a later build appended stays readable. */
+  outcome: string | null;
+  durationMs: number | null;
+  reason: string | null;
+  /** The sibling a seed copied from. Null on every other row, and on a seed that had none. */
+  sourceOrdinal: number | null;
+}
+
+export interface WorktreeSlotTimingsView {
+  provisioning: WorktreeTimingView | null;
+  claim: WorktreeTimingView | null;
+  seed: WorktreeTimingView | null;
+}
+
+/** A pool's newest new slots, at most `timingWindowSlots` of them, read from history. */
+export interface WorktreePoolTimingsView {
+  newSlots: number;
+  /** Null when no new slot is on record, since the table arrived or retention dropped them. */
+  medianProvisioningMs: number | null;
+  /** How many of `newSlots` had a seed placed: the seed hit rate's numerator. */
+  seededSlots: number;
+}
 
 export type WorktreeRiskKey =
   | "dirty"
@@ -240,6 +280,10 @@ export interface NativeWorktreeSlotView {
    * reachable after a restart. Null when no Warm has held it, or that log is gone.
    */
   warmLog: WorktreeWarmLogView | null;
+  /** The last provisioning, claim and seed in this slot's history. */
+  timings: WorktreeSlotTimingsView;
+  /** This slot's newest history row, which is what tells an open History to read again. */
+  lastHistoryId: number | null;
 }
 
 /** A Warm operation's full log, under the daemon's state directory. */
@@ -278,6 +322,7 @@ export interface WorktreeRepositoryView {
   lastReconciledAt: number | null;
   reconciliationError: string | null;
   status: "ready" | "attention" | "unavailable";
+  timings: WorktreePoolTimingsView;
   slots: NativeWorktreeSlotView[];
 }
 

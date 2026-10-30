@@ -26,9 +26,12 @@ independent of the usage ledger and never contributes dollars or tokens.
 `worktree_slot_history` is the durable record of what happened to each native slot. `WorktreeStore`
 writes one row for every slot transition in the same transaction as the change, so a failed
 transition writes nothing and a row that cannot be written rolls the transition back. A slot's
-failed-read state adds a row only when it starts or clears, never on each pass. Text is bounded to
-2 KB and a row's JSON meta likewise, and no row holds a claim variable's value. Rows have no foreign
-key, so a destroyed slot's rows stay until retention ages them out: each maintenance pass drops rows
+failed-read state adds a row only when it starts or clears, never on each pass. A provisioning,
+claim or seed row reports a step that already ended, with its duration and outcome, so it stands
+alone: a row that cannot be written is logged, and costs neither the lease nor the claim. Text is
+bounded to 2 KB and a row's JSON meta likewise, and no row holds a claim variable's value or a claim
+step's output. A pool's median and seed hit rate are computed from these rows on read. Rows have no
+foreign key, so a destroyed slot's rows stay until retention ages them out: each maintenance pass drops rows
 older than 90 days, then anything beyond 2,000 rows per pool, oldest first. Retention is the table's
 only delete. The table arrived with schema version 11, a fork entry: the migration is
 `CREATE ... IF NOT EXISTS` and is not gated by the number, so an upstream 11 can renumber it, as
