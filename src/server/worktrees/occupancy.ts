@@ -205,7 +205,9 @@ async function observe(d: WorktreeOccupancyDeps, options: ReadOptions): Promise<
   //
   // A PID a healthy listing omitted is first re-read on its own: a batched `lsof` under load
   // drops a PID it answers for when asked alone, and one such omission used to make a whole
-  // pass unknown.
+  // pass unknown. The re-reads run one at a time and stop at the first that does not answer
+  // (or throws): under the load that causes a timeout the next would time out too, so an
+  // attempt spends at most one cwd timeout on them rather than eight.
   const cwdFailure = cwdSnapshot.unknownReason;
   const cwds = new Map(cwdSnapshot.cwds);
   const unreadable = new Set(cwdSnapshot.unreadable ?? []);
@@ -218,8 +220,9 @@ async function observe(d: WorktreeOccupancyDeps, options: ReadOptions): Promise<
       try {
         alone = await d.readCwds([process.pid], options);
       } catch {
-        continue; // Still unresolved; the disappearance check below decides.
+        break; // This and the rest stay unresolved; the disappearance check below decides.
       }
+      if (alone.unanswered) break;
       // Only this PID's own answer counts, whatever else the reader returned.
       const cwd = alone.cwds.get(process.pid);
       if (cwd !== undefined) cwds.set(process.pid, cwd);

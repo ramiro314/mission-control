@@ -128,8 +128,11 @@ export class NativeWorktreeGit implements WorktreeGit {
 
   /**
    * One observation read, retried once (see `observation-retry.ts`). `interpret` turns a
-   * command result into the read's answer; a failed answer is retried, and one that fails
-   * twice names both attempts. Mutations never come through here.
+   * command result into the read's answer. Only a failure whose outcome is unknown - a child
+   * killed at its timeout or by a signal - is retried; a Git that exited with its own error
+   * ("not a git repository", a corrupt index) would say the same again, so it is answered at
+   * once rather than adding 2 s to every status read of a broken slot. One that fails twice
+   * names both attempts. Mutations never come through here.
    */
   private async observe<T>(
     args: string[],
@@ -137,7 +140,7 @@ export class NativeWorktreeGit implements WorktreeGit {
     interpret: (result: RunResult) => GitResult<T> | Promise<GitResult<T>>,
   ): Promise<GitResult<T>> {
     const first = await interpret(await this.execute("git", args, { timeoutMs }));
-    if (first.ok) return first;
+    if (first.ok || !first.outcomeUnknown) return first;
     await this.pause(OBSERVATION_RETRY_DELAY_MS);
     const second = await interpret(
       await this.execute("git", args, { timeoutMs: timeoutMs * OBSERVATION_RETRY_TIMEOUT_SCALE }),

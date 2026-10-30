@@ -535,3 +535,31 @@ test("an owner lookup that throws once is retried before it counts as unknown", 
   // The retry proved the owner gone, so the stale identity is withdrawn as for any proven absence.
   assert.equal(manager.store.slot(lease.slotId)?.activeLeaseId, null);
 });
+
+test("a Git read that exits with its own error is answered at once, without a retry", async () => {
+  const repository = repo("mission-reconcile-git-definite-");
+  let failStatus = false;
+  let statusReads = 0;
+  const git = new NativeWorktreeGit(
+    async (bin, args, opts) => {
+      if (failStatus && args.includes("status")) {
+        statusReads++;
+        return { stdout: "", stderr: "fatal: index file corrupt\n", code: 128, outcomeUnknown: false, overflowed: false };
+      }
+      return run(bin, args, opts);
+    },
+    async () => assert.fail("a Git that reported its own exit would say the same again"),
+  );
+  const manager = harness({ git });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-git-definite" },
+    }),
+  );
+  failStatus = true;
+  const inspected = await git.inspect(lease.path);
+  assert.equal(statusReads, 1);
+  assert.deepEqual(inspected, { ok: false, reason: "git status failed: fatal: index file corrupt", outcomeUnknown: false });
+});

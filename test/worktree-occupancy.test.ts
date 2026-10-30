@@ -570,3 +570,32 @@ test("a read that fails twice names both attempts", () => {
     "git status timed out after 15 s, and on retry git rev-parse HEAD timed out after 30 s",
   );
 });
+
+test("the re-reads stop at the first one that did not answer, so an attempt spends one timeout on them", async () => {
+  const { one } = fixture();
+  const cwdReads: number[][] = [];
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [process(10), process(20), process(30)],
+      unknownReason: null,
+      cwdScopePids: [10, 20, 30],
+      completedCollectorPids: [],
+    }),
+    readCwds: async (pids) => {
+      cwdReads.push(pids);
+      return pids.length > 1
+        ? { cwds: new Map([[10, one]]), unknownReason: null }
+        : {
+            cwds: new Map(),
+            unknownReason: "cwd listing failed: the cwd listing timed out after 30 s",
+            unanswered: true,
+          };
+    },
+    pause: noPause,
+  });
+  assert.deepEqual(cwdReads, [[10, 20, 30], [20], [10, 20, 30], [20]], "30 is never re-read after 20 timed out");
+  assert.deepEqual(result.get(one), {
+    status: "unknown",
+    reason: "cwd listing omitted 2 ps-listed PIDs: 20, 30, and again on retry",
+  });
+});
