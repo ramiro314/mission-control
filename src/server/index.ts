@@ -43,7 +43,7 @@ import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
-import { getForemanConfig } from "./foreman/config.ts";
+import { foremanPullRequestPacketPreferences, getForemanConfig } from "./foreman/config.ts";
 import { startPoller } from "./discovery/poller.ts";
 import {
   defaultRetentionCleanupDeps,
@@ -421,9 +421,7 @@ await worktreeOperations.sweepWarmLogs();
 // other's store. The guard hands back only a reason string or null.
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
-  trackCiFailures: () => getForemanConfig().trackCiFailures,
-  ciStrictness: () => getForemanConfig().ciStrictness,
-  trackMergeConflicts: () => getForemanConfig().trackMergeConflicts,
+  ...foremanPullRequestPacketPreferences(),
   queueManager: queues,
   reviewScheduler,
   checkScheduler,

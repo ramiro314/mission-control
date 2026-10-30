@@ -113,6 +113,8 @@ function fakeDaemon(opts: {
   findings: () => Promise<InspectorFindingsResponse>;
   workflowRuns?: (afterRead: boolean) => Array<{ status: string }>;
   inject?: () => Promise<void>;
+  /** The config the freshness recheck reads, when it must differ from the pass's. */
+  config?: ForemanConfig;
 }) {
   let afterRead = false;
   const calls: string[] = [];
@@ -122,7 +124,7 @@ function fakeDaemon(opts: {
       calls.push("sessions");
       return opts.sessions(afterRead);
     },
-    getConfig: async () => CFG,
+    getConfig: async () => opts.config ?? CFG,
     // Upstream's CodeRabbit follow-up reads the Shipping config each pass; off here.
     shippingConfig: async () => ({ codeRabbitAutoResolve: false }),
     workflowRuns: async () => {
@@ -296,5 +298,68 @@ test("a delivery the daemon refused frees the pane and leaves the round to retry
 test("a worker that lost the lease types nothing", async () => {
   const fake = fakeDaemon({ sessions: () => [parked("follower")], findings: async () => response([draft()]) });
   assert.equal((await runReviewFollowup(fake.client, CFG, () => false)).size, 0);
+  assert.deepEqual(fake.injected, []);
+});
+
+// ---- which failures count (fork: ci-strictness) ----
+//
+// The worker builds the follow-up config twice, once for the pass and once for the recheck
+// just before typing, and each must carry `ciStrictness`. The two configs disagree below, so a
+// site that dropped it would decide as All checks and the outcome would change.
+
+const REQUIRED_CFG = { ...CFG, ciStrictness: "required" } as ForemanConfig;
+const ALL_CFG = { ...CFG, ciStrictness: "all" } as ForemanConfig;
+const HEAD = "head-7";
+
+/** Parked on a PR whose whole rollup is red, with the required checks' rollup as given. */
+function redRollup(id: string, required: "passing" | "failing"): Session {
+  return parked(id, {
+    prChecks: "failing",
+    prHeadSha: HEAD,
+    inspector: summary({ open: 0, ci: { headSha: HEAD, required, inspectorEnabled: true } }),
+  });
+}
+
+test("Required checks: a non-required failure is left alone, a required one is typed with --required", async () => {
+  const quiet = fakeDaemon({
+    sessions: () => [redRollup("required-quiet", "passing")],
+    findings: async () => assert.fail("no findings to read"),
+    config: REQUIRED_CFG,
+  });
+  assert.equal((await runReviewFollowup(quiet.client, REQUIRED_CFG, LEADER)).size, 0);
+  assert.deepEqual(quiet.injected, []);
+
+  const red = fakeDaemon({
+    sessions: () => [redRollup("required-red", "failing")],
+    findings: async () => assert.fail("no findings to read"),
+    config: REQUIRED_CFG,
+  });
+  assert.equal((await runReviewFollowup(red.client, REQUIRED_CFG, LEADER)).size, 1);
+  const text = red.injected[0]!.text;
+  assert.match(text, /^PR #7 needs follow-through: its required CI checks are failing\./);
+  assert.ok(text.includes(`gh pr checks ${PR_URL} --required`));
+});
+
+test("the pass's decision reads ciStrictness from the pass's config", async () => {
+  // Required for the pass, All for the recheck: the pass must skip, so no recheck happens.
+  const fake = fakeDaemon({
+    sessions: () => [redRollup("pass-site", "passing")],
+    findings: async () => assert.fail("no findings to read"),
+    config: ALL_CFG,
+  });
+  assert.equal((await runReviewFollowup(fake.client, REQUIRED_CFG, LEADER)).size, 0);
+  assert.deepEqual(fake.calls, ["sessions", "workflowRuns"], "the pass decided Required and stopped");
+  assert.deepEqual(fake.injected, []);
+});
+
+test("the recheck's decision reads ciStrictness from the fresh config", async () => {
+  // All for the pass, Required by the time of the recheck: the pass nudges, the recheck holds.
+  const fake = fakeDaemon({
+    sessions: () => [redRollup("recheck-site", "passing")],
+    findings: async () => assert.fail("no findings to read"),
+    config: REQUIRED_CFG,
+  });
+  assert.equal((await runReviewFollowup(fake.client, ALL_CFG, LEADER)).size, 0);
+  assert.deepEqual(fake.calls, ["sessions", "workflowRuns", "sessions", "workflowRuns"], "the recheck ran");
   assert.deepEqual(fake.injected, []);
 });

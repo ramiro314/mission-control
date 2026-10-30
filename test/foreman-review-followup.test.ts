@@ -1292,6 +1292,10 @@ test("the five-row table decides which failures count", () => {
       ciSession("failing", ciProjection({ headSha: "head-1", required: "failing" })), "held"],
     ["required, no snapshot yet", "required",
       ciSession("failing", ciProjection({ headSha: null, required: null })), "held"],
+    // The PR poller does not know the head either: two unknowns are not a match.
+    ["required, both heads unknown", "required",
+      mkSession({ prChecks: "failing", prHeadSha: null, inspector: inspector({ ci: ciProjection({ headSha: null }) }) }),
+      "held"],
     // required, fallback: the snapshot is current but nothing is marked required.
     ["required, nothing marked", "required",
       ciSession("failing", ciProjection({ required: null })), { failing: true, required: false }],

@@ -42,7 +42,9 @@ const { SessionActionManager } = await import("../src/server/workflows/session-a
 const { WorkflowManager, sessionPrMergeability } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
-const { getForemanConfig } = await import("../src/server/foreman/config.ts");
+const { foremanPullRequestPacketPreferences, getForemanConfig, setForemanConfig } = await import(
+  "../src/server/foreman/config.ts"
+);
 const { workflowPullRequestCiContract } = await import("../src/server/workflows/agent-contract.ts");
 
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
@@ -740,16 +742,40 @@ test("scripted skill and workflow sessions create PRs from the live draft policy
 });
 
 test("an unstored Foreman CI preference reaches PR packets as default-on", async () => {
+  // The daemon's own wiring, not a copy of it: `src/server/index.ts` spreads this helper.
   const h = await harness("ci-policy-default", {
     pullRequest: true,
-    trackCiFailures: () => getForemanConfig().trackCiFailures,
+    ...foremanPullRequestPacketPreferences(),
     deliveryMode: "preview",
   });
   try {
     const runId = await runToAction(h);
     await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
-    assert.match(h.store.listDeliveries(runId)[0]!.payload, /Workflow pull request CI follow-through/);
+    const payload = h.store.listDeliveries(runId)[0]!.payload;
+    assert.ok(payload.includes(workflowPullRequestCiContract("all")), "an unstored strictness is All checks");
   } finally {
+    await h.stop();
+  }
+});
+
+test("a saved Required checks reaches PR packets through the daemon's wiring", async () => {
+  // Fork (ci-strictness): the stored Foreman setting, read through the same helper the daemon
+  // spreads into `WorkflowManager`, so dropping its `ciStrictness` reader fails here.
+  assert.equal(getForemanConfig().ciStrictness, "all");
+  setForemanConfig({ ciStrictness: "required" });
+  const h = await harness("ci-strictness-wiring", {
+    pullRequest: true,
+    ...foremanPullRequestPacketPreferences(),
+    deliveryMode: "preview",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+    const payload = h.store.listDeliveries(runId)[0]!.payload;
+    assert.ok(payload.includes(workflowPullRequestCiContract("required")));
+    assert.ok(!payload.includes(workflowPullRequestCiContract("all")));
+  } finally {
+    setForemanConfig({ ciStrictness: "all" });
     await h.stop();
   }
 });
