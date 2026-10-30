@@ -20,6 +20,7 @@ import type {
   WorktreeRiskKey,
   WorktreeSlotDependenciesView,
   WorktreeSlotDependencyState,
+  WorktreeSlotTimingsView,
   WorktreeWarmTargetOutcome,
 } from "@shared/worktrees.ts";
 import { worktreeOperationPending, worktreeRetryRequest } from "@shared/worktrees.ts";
@@ -28,7 +29,7 @@ import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { api, fetchWorktreeSlotHistory, openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
-import { refreshedSlotHistory } from "../lib/worktree-history.ts";
+import { poolTimingSummary, refreshedSlotHistory, timingHeadline, timingSummary } from "../lib/worktree-history.ts";
 import { BULK_SELECTION_LIMIT, changeSelection } from "../lib/worktree-selection.ts";
 import {
   claimErrorsFrom,
@@ -791,6 +792,7 @@ function SlotCard({
         <div><dt>Processes</dt><dd>{slot.processes.count ?? "unknown"}</dd></div>
         <div><dt>Disk</dt><dd>{bytes(slot.diskBytes)}</dd></div>
       </dl>
+      <SlotTimings ordinal={slot.ordinal} timings={slot.timings} />
       {slot.dependencies && <SlotDependencies slotId={slot.id} ordinal={slot.ordinal} dependencies={slot.dependencies} />}
       {slot.warmLog && (
         <p className="wt-warm-log">
@@ -885,9 +887,34 @@ function SlotCard({
       <SlotHistory
         slotId={slot.id}
         ordinal={slot.ordinal}
-        refreshKey={slot.historyHead}
+        lastHistoryId={slot.lastHistoryId}
       />
     </article>
+  );
+}
+
+const TIMED_STEPS = [
+  { step: "provisioning", label: "Last provisioning" },
+  { step: "claim", label: "Last claim" },
+  { step: "seed", label: "Last seed" },
+] as const;
+
+/** The last of each timed step in this slot's history, with why a seed had no source. */
+function SlotTimings({ ordinal, timings }: { ordinal: number; timings: WorktreeSlotTimingsView }): React.JSX.Element | null {
+  const facts = TIMED_STEPS.flatMap(({ step, label }) => {
+    const timing = timings[step];
+    return timing ? [{ step, label, timing }] : [];
+  });
+  if (facts.length === 0) return null;
+  return (
+    <dl className="wt-facts" aria-label={`Slot ${ordinal} timings`}>
+      {facts.map(({ step, label, timing }) => (
+        <div key={step}>
+          <dt>{label}</dt>
+          <dd>{timingSummary(step, timing)}{step === "seed" && timing.reason ? `: ${timing.reason}` : ""}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -912,7 +939,7 @@ export function slotHistoryHeadline(entry: WorktreeSlotHistoryEntry): string {
     const outcome = entry.outcome ?? "";
     return `${HISTORY_OPERATIONS[operation] ?? operation} ${HISTORY_OUTCOMES[outcome] ?? outcome}`.trim();
   }
-  return entry.kind;
+  return timingHeadline(entry) ?? entry.kind;
 }
 
 const HISTORY_ACTORS: Record<string, string> = {
@@ -923,17 +950,17 @@ const HISTORY_ACTORS: Record<string, string> = {
 
 /**
  * What happened to this slot, newest first. Read only while open, so a pool of closed cards asks
- * the daemon for nothing, and read again when `refreshKey` says the slot moved on, which keeps
+ * the daemon for nothing, and read again when `lastHistoryId` says a row was written, which keeps
  * the older pages already shown.
  */
 function SlotHistory({
   slotId,
   ordinal,
-  refreshKey,
+  lastHistoryId,
 }: {
   slotId: string;
   ordinal: number;
-  refreshKey: number | null;
+  lastHistoryId: number | null;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<WorktreeSlotHistoryPage | null>(null);
@@ -951,7 +978,7 @@ function SlotHistory({
       if (page) setList((shown) => refreshedSlotHistory(shown, page));
     });
     return () => controller.abort();
-  }, [open, slotId, refreshKey]);
+  }, [open, slotId, lastHistoryId]);
 
   async function showOlder(): Promise<void> {
     setLoadingOlder(true);
@@ -1480,6 +1507,7 @@ function PoolRow({
   }, [hasFlagged]);
   const tone = repo.status === "ready" ? "ready" : repo.status === "attention" ? "attention" : "danger";
   const geometry = capacityGeometry(repo.counts, repo.policy.maxSlots);
+  const timings = poolTimingSummary(repo.timings);
   const selectable = repo.slots.filter((slot) => slot.actions.includes("destroy") && !pendingBySlot.has(slot.id));
   const allSelected = selectable.length > 0 && selectable.every((slot) => selected.has(slot.id));
 
@@ -1507,6 +1535,7 @@ function PoolRow({
       </header>
       <CapacityBar geometry={geometry} />
       <CapacityLegend geometry={geometry} />
+      {timings && <p className="wt-pool-timings">{timings}</p>}
       {repo.status === "unavailable" && (
         <p className="wt-diagnostic">This pool&rsquo;s state could not be observed. The counts above are the last reading Mission Control took.</p>
       )}

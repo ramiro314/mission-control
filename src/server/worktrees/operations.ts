@@ -640,7 +640,6 @@ export class WorktreeOperationsService {
     } catch {
       // A chip is context. An unreadable clock shows none rather than failing the inventory.
     }
-    const historyHeads = this.manager.store.historyHeads();
     const repositories: WorktreeRepositoryView[] = [];
     for (const pool of shown) {
       const slots = pool.slots
@@ -730,7 +729,6 @@ export class WorktreeOperationsService {
                 path: clipUtf8Bytes(entry.recoveryRefusal.blocking.path, WORKTREE_INVENTORY_LIMITS.textBytes),
               },
             },
-            historyHead: historyHeads.get(entry.slot.id) ?? null,
             actions,
             dependencies: slotDependencies({
               hasClaim: Boolean(pool.policy.claim),
@@ -740,6 +738,8 @@ export class WorktreeOperationsService {
               defaultFingerprint: pool.defaultFingerprint,
             }),
             warmLog: this.warmLogView(entry.slot.depsLogPath),
+            timings: this.manager.store.slotTimings(entry.slot.id),
+            lastHistoryId: this.manager.store.lastHistoryId(entry.slot.id),
           };
         });
       const counts = {
@@ -772,6 +772,7 @@ export class WorktreeOperationsService {
           : counts.quarantined > 0 || counts.overCapacity > 0
             ? "attention"
             : "ready",
+        timings: this.manager.store.poolTimings(pool.pool.id),
         slots,
       });
     }

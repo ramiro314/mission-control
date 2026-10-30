@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, mock, test } from "node:test";
@@ -9,13 +9,14 @@ import { ReviewManager } from "../src/server/reviews.ts";
 import { TaskManager } from "../src/server/tasks.ts";
 import { QueueManager } from "../src/server/queue.ts";
 import { buildApp } from "../src/server/routes.ts";
-import { buildClaimEnvironment } from "../src/server/worktrees/claim.ts";
+import { buildClaimEnvironment, type ClaimStepResult } from "../src/server/worktrees/claim.ts";
+import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
 import { WorktreeManager, type WorktreeManagerDeps } from "../src/server/worktrees/manager.ts";
 import { WorktreeOperationsService, type WorktreeOperationsDeps } from "../src/server/worktrees/operations.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
-import { WorktreeStore, type WorktreeSlotRow } from "../src/server/worktrees/store.ts";
+import { WorktreeStore, type WorktreeSlotRow, type WorktreeTimingEntry } from "../src/server/worktrees/store.ts";
 import { REGISTRATION_OR_IDENTITY, withObservationFailure } from "../src/server/worktrees/quarantine-reasons.ts";
 import { taskResourceGeneration } from "../src/server/task-resource-generation.ts";
 import { WorktreeSlotHistoryPageSchema, type WorktreeClaim } from "../src/shared/protocol.ts";
@@ -124,6 +125,7 @@ test("the limits are the numbers the operator chose, not whatever the constant s
     metaBytes: 2048,
     retentionDays: 90,
     rowsPerPool: 2000,
+    timingWindowSlots: 10,
   });
 });
 
@@ -486,7 +488,10 @@ test("a slot's whole life through the real manager reads back in order, each ste
     "available -> pruning (operator)",
     "pruning -> null (operator)",
   ]);
-  const versions = historyOf(lease.slotId).reverse().map((entry) => entry.meta?.version);
+  const versions = historyOf(lease.slotId)
+    .filter((entry) => entry.kind === "transition")
+    .reverse()
+    .map((entry) => entry.meta?.version);
   assert.deepEqual(versions, [1, 2, 3, 4, 5, 5], "one row per version, and the removal keeps the last");
 });
 
@@ -810,7 +815,7 @@ test("a failing claim's variable value and output never reach history", async ()
   const { clone, sha } = repository("mission-history-claim-");
   const claim: WorktreeClaim = {
     steps: [{
-      argv: [process.execPath, "-e", "console.log(process.env.CLAIM_TOKEN);console.error(process.env.CLAIM_TOKEN);process.exit(3)"],
+      argv: [process.execPath, "-e", "console.log(process.env.CLAIM_TOKEN+['output','of','the','step'].join('-'));process.exit(3)"],
       env: ["CLAIM_TOKEN"],
     }],
     timeoutMinutes: 1,
@@ -831,7 +836,12 @@ test("a failing claim's variable value and output never reach history", async ()
   const rows = JSON.stringify(db.prepare(`SELECT * FROM worktree_slot_history WHERE slot_id = ?`).all(slot.id));
   assert.equal(trail(slot.id).length, 2, "the reservation and the grant");
   assert.ok(!rows.includes(CLAIM_SECRET), "no claim variable value");
-  assert.ok(!rows.includes("CLAIM_TOKEN"), "and nothing of the failing step at all");
+  assert.ok(!rows.includes("output-of-the-step"), "and nothing the step printed");
+
+  const [row] = historyOf(slot.id).filter((entry) => entry.kind === "claim");
+  assert.equal(row!.outcome, "failed");
+  assert.equal(row!.reason, "step 1 of 1 exited with code 3");
+  assert.match(row!.detail!, /process\.env\.CLAIM_TOKEN/, "the step's command, which is the operator's own argv");
 });
 
 test("a setup command that prints a claim variable leaves its name in history, not its value", async () => {
@@ -969,7 +979,7 @@ test("a refused operation records its reason, and dismissing its report keeps th
   const lease = await manualLease(m, clone, sha, "op-stale");
   const preview = await operations.preview({ action: "return", slotId: lease.slotId });
   assert.equal((await m.release(lease, { ownerAuthorized: true })).outcome, "released", "the slot moved after the preview");
-  const head = (await operations.inventory()).repositories[0]!.slots[0]!.historyHead;
+  const head = (await operations.inventory()).repositories[0]!.slots[0]!.lastHistoryId;
 
   const { operation } = operations.submit(preview.token, []);
   await operations.idle();
@@ -982,7 +992,7 @@ test("a refused operation records its reason, and dismissing its report keeps th
 
   const inventory = await operations.inventory();
   assert.equal(inventory.operations.length, 1, "the operations list keeps its failed report");
-  assert.notEqual(inventory.repositories[0]!.slots[0]!.historyHead, head, "an open History hears of a row that moved no state");
+  assert.notEqual(inventory.repositories[0]!.slots[0]!.lastHistoryId, head, "an open History hears of a row that moved no state");
 
   assert.equal(operations.dismiss(operation.id), true);
   assert.deepEqual((await operations.inventory()).operations, []);
@@ -1645,4 +1655,499 @@ test("a row a later build wrote reads back as itself, and a broken meta reads as
   const [entry] = store.slotHistory("slot-later").entries;
   assert.deepEqual([entry!.kind, entry!.actor, entry!.meta], ["a-later-kind", "a-later-actor", null]);
   assert.ok(WorktreeSlotHistoryPageSchema.safeParse(store.slotHistory("slot-later")).success);
+});
+
+function timing(slotId: string, kind: WorktreeTimingEntry["kind"], at: number, durationMs: number, outcome: string, poolId = "pool-a"): void {
+  store.recordTiming(
+    { id: slotId, poolId, ordinal: 1 },
+    { kind, at, durationMs, outcome, reason: null, actor: "owner" } as WorktreeTimingEntry,
+  );
+}
+
+test("a pool's timings are the median and seed hits of its last 10 new slots, read from history", () => {
+  assert.deepEqual(store.poolTimings("pool-a"), { newSlots: 0, medianProvisioningMs: null, seededSlots: 0 });
+
+  timing("first", "provisioning", 1, 1_000, "new");
+  assert.deepEqual(store.poolTimings("pool-a"), { newSlots: 1, medianProvisioningMs: 1_000, seededSlots: 0 });
+
+  timing("hit", "seed", 2, 5, "placed");
+  timing("hit", "provisioning", 3, 3_000, "new");
+  timing("miss", "seed", 4, 5, "none");
+  timing("miss", "provisioning", 5, 8_000, "new");
+  assert.deepEqual(store.poolTimings("pool-a"), { newSlots: 3, medianProvisioningMs: 3_000, seededSlots: 1 }, "odd: the middle one");
+  timing("late", "provisioning", 6, 100_000, "new");
+  assert.deepEqual(store.poolTimings("pool-a"), { newSlots: 4, medianProvisioningMs: 5_500, seededSlots: 1 }, "even: between the two");
+
+  // Neither a reused slot's lease, nor a later seed of an existing slot, nor another pool counts.
+  timing("hit", "provisioning", 7, 9_999_999, "reused");
+  timing("first", "seed", 8, 5, "placed");
+  timing("first", "provisioning", 9, 9_999_999, "reused");
+  timing("other", "provisioning", 10, 9_999_999, "new", "pool-b");
+  assert.deepEqual(store.poolTimings("pool-a"), { newSlots: 4, medianProvisioningMs: 5_500, seededSlots: 1 });
+
+  // The window: ten newer new slots, all seeded, push out all four above.
+  for (let index = 0; index < 10; index += 1) {
+    timing(`window-${index}`, "seed", 20 + index, 5, "placed");
+    timing(`window-${index}`, "provisioning", 40 + index, (index + 1) * 60_000, "new");
+  }
+  assert.deepEqual(store.poolTimings("pool-a"), { newSlots: 10, medianProvisioningMs: 330_000, seededSlots: 10 });
+});
+
+test("a slot's timings are the newest of each kind, each with its duration and outcome", () => {
+  const slot = { id: "slot-a", poolId: "pool-a", ordinal: 1 };
+  assert.deepEqual(store.slotTimings("slot-a"), { provisioning: null, claim: null, seed: null });
+  timing("slot-a", "provisioning", 1, 1_000, "new");
+  timing("slot-a", "provisioning", 2, 2_000, "reused");
+  store.recordTiming(slot, {
+    kind: "seed", at: 3, durationMs: 40, outcome: "placed", reason: null, actor: "owner", meta: { sourceSlotId: "slot-b", sourceOrdinal: 7 },
+  });
+  store.recordTiming(slot, {
+    kind: "claim", at: 4, durationMs: 50, outcome: "failed", reason: "step 1 of 1 exited", detail: "yarn install", actor: "owner",
+  });
+  assert.deepEqual(store.slotTimings("slot-a"), {
+    provisioning: { at: 2, outcome: "reused", durationMs: 2_000, reason: null, sourceOrdinal: null },
+    claim: { at: 4, outcome: "failed", durationMs: 50, reason: "step 1 of 1 exited", sourceOrdinal: null },
+    seed: { at: 3, outcome: "placed", durationMs: 40, reason: null, sourceOrdinal: 7 },
+  });
+  const claim = historyOf("slot-a")[0]!;
+  assert.deepEqual([claim.kind, claim.durationMs, claim.detail, claim.toState], ["claim", 50, "yarn install", null]);
+});
+
+test("a slot's newest history row is the newest of any kind, and only its own", () => {
+  assert.equal(store.lastHistoryId("slot-a"), null);
+  const slot = reserved();
+  assert.equal(store.lastHistoryId(slot.id), historyOf(slot.id)[0]!.id, "a transition");
+  timing(slot.id, "claim", 2, 1, "skipped", slot.poolId);
+  assert.equal(store.lastHistoryId(slot.id), historyOf(slot.id)[0]!.id, "a timing, with no slot change");
+  const newest = store.lastHistoryId(slot.id);
+  timing("slot-other", "claim", 3, 1, "skipped", slot.poolId);
+  assert.equal(store.lastHistoryId(slot.id), newest, "another slot's row changes nothing here");
+});
+
+/**
+ * A repository whose `deps/` a claim installs and a seed copies, and a manager whose clock moves
+ * only when a step spends time, so every duration below is exact. `occupied` names a path that
+ * reads as occupied once: an idle sibling is otherwise leased in preference to a new slot, so
+ * this is how a new slot reaches one, an occupant leaving between its screening and its seed.
+ */
+function timedManager(
+  prefix: string,
+  options: {
+    seed?: WorktreeClaim["seed"];
+    install?: number;
+    clone?: number;
+    cloneResult?: Awaited<ReturnType<WorktreeManagerDeps["cloneTree"]>>;
+    /** What the claim's step does in place of succeeding; undefined lets it install and succeed. */
+    step?: (m: WorktreeManager) => ClaimStepResult | undefined;
+    git?: WorktreeManagerDeps["git"];
+  },
+) {
+  const { origin, clone } = mkOriginAndClone(prefix);
+  writeFileSync(join(origin, ".gitignore"), "deps/\n");
+  gitIn(origin, "add", "-A");
+  gitIn(origin, "commit", "-qm", "ignore deps");
+  gitIn(clone, "fetch", "-q", "origin");
+  gitIn(clone, "reset", "-q", "--hard", "origin/main");
+  const sha = gitIn(clone, "rev-parse", "HEAD");
+  const state = { now: 1_000_000, steps: 0, occupied: null as string | null };
+  const claim: WorktreeClaim = {
+    steps: [{ argv: ["install"], env: [] }],
+    timeoutMinutes: 60,
+    fingerprintPaths: [".gitignore"],
+    ...(options.seed ? { seed: options.seed } : {}),
+  };
+  const m: WorktreeManager = realManager({
+    now: () => state.now,
+    resolvePolicy: () => ({ enabled: true, maxSlots: 4, setupArgv: null, claim }),
+    claimEnvironment: async (names) => claimEnvironment(names),
+    ...(options.git ? { git: options.git } : {}),
+    occupancy: (paths) => Promise.resolve(new Map(paths.map((path) => {
+      if (path !== state.occupied) return [path, { status: "known", occupants: [] }];
+      state.occupied = null;
+      return [path, {
+        status: "known",
+        occupants: [{ pid: 4242, ppid: 1, startMs: 1, startRaw: "1", command: "editor", cwd: path, knownOwner: null, session: null }],
+      }];
+    }))),
+    runClaimStep: async (request): Promise<ClaimStepResult> => {
+      state.steps += 1;
+      state.now += options.install ?? 0;
+      const result = options.step?.(m);
+      if (result) return result;
+      mkdirSync(join(request.cwd, "deps"), { recursive: true });
+      writeFileSync(join(request.cwd, "deps", "marker"), "installed\n");
+      return { outcome: "exited", code: 0, signal: null, tail: "", truncatedBytes: 0 };
+    },
+    cloneTree: async (request) => {
+      state.now += options.clone ?? 0;
+      if (options.cloneResult) return options.cloneResult;
+      cpSync(request.source, request.destination, { recursive: true });
+      return { outcome: "cloned" };
+    },
+  });
+  const acquire = (key: string, baseSha = sha) =>
+    m.acquire({ repositoryPath: clone, baseSha, owner: { kind: "task", key }, runClaim: true });
+  const lease = async (key: string, baseSha = sha) => {
+    const acquired = await acquire(key, baseSha);
+    assert.equal(acquired.outcome, "acquired", JSON.stringify(acquired));
+    if (acquired.outcome !== "acquired") throw new Error("not acquired");
+    return acquired.lease;
+  };
+  return { m, acquire, lease, state, origin, clone };
+}
+
+/** Oldest first, as [kind, outcome, duration, actor], without the transitions. */
+function timedRows(slotId: string) {
+  return historyOf(slotId)
+    .filter((entry) => entry.kind !== "transition")
+    .reverse()
+    .map((entry) => [entry.kind, entry.outcome, entry.durationMs, entry.actor]);
+}
+
+test("a new slot records its seed, claim and provisioning, and a reused one its own provisioning", async () => {
+  const { m, lease, state } = timedManager("mission-history-timing-new-", { seed: { paths: ["deps"], exclude: [] }, install: 600_000 });
+  const first = await lease("task-first");
+  assert.deepEqual(timedRows(first.slotId), [
+    ["seed", "none", 0, "owner"],
+    ["claim", "succeeded", 600_000, "owner"],
+    ["provisioning", "new", 600_000, "owner"],
+  ]);
+  assert.equal(historyOf(first.slotId).find((entry) => entry.kind === "seed")!.reason, "no idle sibling holds a current install");
+
+  assert.equal((await m.release(first, { ownerAuthorized: true })).outcome, "released");
+  const second = await lease("task-second");
+  assert.equal(second.slotId, first.slotId, "the same slot, reused");
+  assert.equal(state.steps, 1, "its install still matches");
+  assert.deepEqual(timedRows(first.slotId).slice(3), [
+    ["claim", "skipped", 0, "owner"],
+    ["provisioning", "reused", 0, "owner"],
+  ], "and no seed was wanted, so none is recorded over the last real one");
+  assert.deepEqual(m.store.poolTimings(first.poolId), { newSlots: 1, medianProvisioningMs: 600_000, seededSlots: 0 });
+});
+
+test("a seed names its source and its duration, and a new slot it served counts as a hit", async () => {
+  const { m, lease, state } = timedManager("mission-history-timing-hit-", {
+    seed: { paths: ["deps"], exclude: [] }, install: 600_000, clone: 5_000,
+  });
+  const source = await lease("task-source");
+  assert.equal((await m.release(source, { ownerAuthorized: true })).outcome, "released");
+  const sourceSlot = m.store.slot(source.slotId)!;
+
+  state.occupied = sourceSlot.path;
+  const seeded = await lease("task-seeded");
+  assert.notEqual(seeded.slotId, source.slotId, "a new slot");
+  assert.equal(state.steps, 1, "the seed's source matches this commit, so the steps were skipped");
+  assert.deepEqual(timedRows(seeded.slotId), [
+    ["seed", "placed", 5_000, "owner"],
+    ["claim", "succeeded", 5_000, "owner"],
+    ["provisioning", "new", 5_000, "owner"],
+  ]);
+  assert.equal(m.store.slotTimings(seeded.slotId).seed!.sourceOrdinal, sourceSlot.ordinal);
+  assert.equal(historyOf(seeded.slotId).find((entry) => entry.kind === "seed")!.meta!.sourceSlotId, sourceSlot.id);
+  assert.deepEqual(m.store.poolTimings(seeded.poolId), { newSlots: 2, medianProvisioningMs: 302_500, seededSlots: 1 });
+});
+
+test("a seed abandoned at its source names it and why, and is no hit", async () => {
+  const { m, lease, state } = timedManager("mission-history-timing-abandoned-", {
+    seed: { paths: ["deps"], exclude: [] },
+    clone: 2_000,
+    cloneResult: { outcome: "failed", reason: "this volume cannot clone" },
+  });
+  const source = await lease("task-source");
+  assert.equal((await m.release(source, { ownerAuthorized: true })).outcome, "released");
+
+  state.occupied = m.store.slot(source.slotId)!.path;
+  const target = await lease("task-target");
+  assert.equal(state.steps, 2, "the steps ran instead");
+  assert.deepEqual(timedRows(target.slotId).slice(0, 2), [
+    ["seed", "abandoned", 2_000, "owner"],
+    ["claim", "succeeded", 2_000, "owner"],
+  ]);
+  const seed = m.store.slotTimings(target.slotId).seed!;
+  assert.match(seed.reason!, /this volume cannot clone/);
+  assert.equal(seed.sourceOrdinal, m.store.slot(source.slotId)!.ordinal);
+  assert.equal(m.store.poolTimings(target.poolId).seededSlots, 0);
+});
+
+test("a pool whose claim lists no seed says so, and a lease with no claim records only its provisioning", async () => {
+  const { lease } = timedManager("mission-history-timing-unseeded-", {});
+  const claimed = await lease("task-claimed");
+  assert.deepEqual(timedRows(claimed.slotId).map(([kind]) => kind), ["seed", "claim", "provisioning"]);
+  assert.equal(store.slotTimings(claimed.slotId).seed!.reason, "the pool's claim configures no seed");
+
+  const { clone, sha } = repository("mission-history-timing-unclaimed-");
+  const acquired = await realManager().acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key: "task-plain" } });
+  assert.equal(acquired.outcome, "acquired");
+  if (acquired.outcome !== "acquired") return;
+  assert.deepEqual(timedRows(acquired.lease.slotId).map(([kind]) => kind), ["provisioning"]);
+});
+
+test("a Warm's claim names the operator, and a Warm is no provisioning", async () => {
+  const { m, lease } = timedManager("mission-history-timing-warm-", {});
+  const first = await lease("task-first");
+  assert.equal((await m.release(first, { ownerAuthorized: true })).outcome, "released");
+  const before = timedRows(first.slotId).length;
+
+  const warmed = await m.warmSlot({
+    slotId: first.slotId, operationId: "op-warm-timing", signal: new AbortController().signal, output: () => {}, log: null,
+  });
+  assert.equal(warmed.outcome, "warmed", JSON.stringify(warmed));
+  assert.deepEqual(timedRows(first.slotId).slice(before), [["claim", "skipped", 0, "operator"]]);
+});
+
+test("a timing that cannot be written costs that row, never the lease", async () => {
+  const { lease, m } = timedManager("mission-history-timing-refused-", {});
+  db.exec(`
+    CREATE TEMP TRIGGER refuse_history BEFORE INSERT ON main.worktree_slot_history
+    WHEN NEW.kind IN ('provisioning', 'claim', 'seed')
+    BEGIN SELECT RAISE(ABORT, 'history refused'); END;
+  `);
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    const granted = await lease("task-refused");
+    assert.equal(m.store.slot(granted.slotId)!.state, "leased");
+    assert.deepEqual(timedRows(granted.slotId), []);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.ok(warnings.some((args) => /the provisioning timing of .* was not recorded/.test(String(args[0]))));
+});
+
+test("the inventory carries each slot's last timings and its pool's summary", async () => {
+  const { m, lease } = timedManager("mission-history-timing-inventory-", { install: 60_000 });
+  const granted = await lease("task-inventory");
+  const legacy = new LegacyTreehouseService(db);
+  const operations = new WorktreeOperationsService(m, {
+    legacy,
+    tasks: { get: () => null, reclaim: async () => ({ ok: true }) },
+    checks: new CheckLeaseManager(db, { manager: m, legacy }),
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async () => 0,
+  });
+  const [repo] = (await operations.inventory()).repositories;
+  assert.deepEqual(repo!.timings, { newSlots: 1, medianProvisioningMs: 60_000, seededSlots: 0 });
+  const slot = repo!.slots.find((candidate) => candidate.id === granted.slotId)!;
+  assert.equal(slot.timings.provisioning!.outcome, "new");
+  assert.equal(slot.timings.claim!.durationMs, 60_000);
+  assert.equal(slot.timings.seed!.outcome, "none");
+  assert.equal(slot.lastHistoryId, historyOf(granted.slotId)[0]!.id);
+});
+
+
+const SEED_DEPS = { paths: ["deps"], exclude: [] };
+
+/** The one slot a refused acquire reserved, which no lease handed back. */
+function onlySlot(m: WorktreeManager, except?: string): WorktreeSlotRow {
+  const [slot, ...rest] = m.store.slots().filter((candidate) => candidate.id !== except);
+  assert.ok(slot);
+  assert.deepEqual(rest, []);
+  return slot;
+}
+
+function seedRow(slotId: string) {
+  return historyOf(slotId).find((entry) => entry.kind === "seed")!;
+}
+
+test("a claim stopped by a shutdown records its duration, and no grant means no provisioning row", async () => {
+  const { m, acquire } = timedManager("mission-history-timing-shutdown-", {
+    install: 7_000,
+    step: (manager) => {
+      manager.stopClaims();
+      return { outcome: "stopped", tail: "", truncatedBytes: 0 };
+    },
+  });
+  assert.equal((await acquire("task-shutdown")).outcome, "outcomeUnknown");
+  assert.deepEqual(timedRows(onlySlot(m).id), [
+    ["seed", "none", 0, "owner"],
+    ["claim", "shutdown", 7_000, "owner"],
+  ]);
+  assert.deepEqual(m.store.poolTimings(onlySlot(m).poolId), { newSlots: 0, medianProvisioningMs: null, seededSlots: 0 });
+});
+
+test("a claim whose outcome could not be recorded keeps that reason, and is granted nothing", async () => {
+  const { m, acquire } = timedManager("mission-history-timing-unrecorded-", { install: 4_000 });
+  m.store.finishClaim = () => false;
+  assert.equal((await acquire("task-unrecorded")).outcome, "outcomeUnknown");
+  const slot = onlySlot(m);
+  assert.deepEqual(timedRows(slot.id).slice(-1), [["claim", "unrecorded", 4_000, "owner"]]);
+  assert.equal(m.store.slotTimings(slot.id).claim!.reason, "the dependency claim outcome could not be recorded");
+  assert.equal(m.store.slotTimings(slot.id).provisioning, null);
+});
+
+test("a new slot granted after a failed claim is recorded, and counts at the time it took", async () => {
+  const { m, lease } = timedManager("mission-history-timing-failed-grant-", {
+    install: 30_000,
+    step: () => ({ outcome: "exited", code: 3, signal: null, tail: "", truncatedBytes: 0 }),
+  });
+  const granted = await lease("task-failed-claim");
+  assert.deepEqual(timedRows(granted.slotId), [
+    ["seed", "none", 0, "owner"],
+    ["claim", "failed", 30_000, "owner"],
+    ["provisioning", "new", 30_000, "owner"],
+  ]);
+  assert.deepEqual(m.store.poolTimings(granted.poolId), { newSlots: 1, medianProvisioningMs: 30_000, seededSlots: 0 });
+});
+
+test("a seed cut off at its source names it and why, and is no hit", async () => {
+  const { m, lease, state } = timedManager("mission-history-timing-cut-off-", {
+    seed: SEED_DEPS,
+    clone: 3_000,
+    cloneResult: { outcome: "timedOut" },
+  });
+  const source = await lease("task-source");
+  assert.equal((await m.release(source, { ownerAuthorized: true })).outcome, "released");
+  const sourceOrdinal = m.store.slot(source.slotId)!.ordinal;
+
+  state.occupied = m.store.slot(source.slotId)!.path;
+  const target = await lease("task-target");
+  assert.deepEqual(timedRows(target.slotId), [
+    ["seed", "interrupted", 3_000, "owner"],
+    ["claim", "failed", 3_000, "owner"],
+    ["provisioning", "new", 3_000, "owner"],
+  ]);
+  const seed = m.store.slotTimings(target.slotId).seed!;
+  assert.equal(seed.reason, "did not run, because the dependency seed reached the claim's time limit");
+  assert.equal(seed.sourceOrdinal, sourceOrdinal);
+  assert.deepEqual(m.store.poolTimings(target.poolId), { newSlots: 2, medianProvisioningMs: 1_500, seededSlots: 0 });
+});
+
+test("a seed whose intent could not be recorded names its source, and is granted nothing", async () => {
+  const { m, acquire, lease, state } = timedManager("mission-history-timing-seed-unrecorded-", { seed: SEED_DEPS });
+  const source = await lease("task-source");
+  assert.equal((await m.release(source, { ownerAuthorized: true })).outcome, "released");
+  const sourceSlot = m.store.slot(source.slotId)!;
+
+  state.occupied = sourceSlot.path;
+  m.store.beginSeed = () => false;
+  assert.equal((await acquire("task-target")).outcome, "outcomeUnknown");
+  const target = onlySlot(m, source.slotId);
+  assert.deepEqual(timedRows(target.id).map(([kind, outcome]) => [kind, outcome]), [["seed", "unrecorded"], ["claim", "unrecorded"]]);
+  assert.equal(seedRow(target.id).meta!.sourceOrdinal, sourceSlot.ordinal);
+  assert.equal(m.store.slotTimings(target.id).claim!.reason, "the dependency seed intent could not be recorded");
+});
+
+test("a sibling that could not be held is why there was no seed", async () => {
+  const { m, lease, state } = timedManager("mission-history-timing-unheld-", { seed: SEED_DEPS });
+  const source = await lease("task-source");
+  assert.equal((await m.release(source, { ownerAuthorized: true })).outcome, "released");
+
+  state.occupied = m.store.slot(source.slotId)!.path;
+  m.store.reserveAvailable = () => null;
+  const target = await lease("task-target");
+  assert.deepEqual([seedRow(target.slotId).outcome, seedRow(target.slotId).reason], ["none", "no idle sibling could be held"]);
+  assert.equal(m.store.slotTimings(target.slotId).seed!.sourceOrdinal, null);
+});
+
+test("siblings that could not be read are why there was no seed", async () => {
+  // The second listing is the seed's own screening: acquisition's read the pool as it should.
+  let listings = 0;
+  let failing = false;
+  class SeedListingFails extends NativeWorktreeGit {
+    override list(...args: Parameters<NativeWorktreeGit["list"]>): ReturnType<NativeWorktreeGit["list"]> {
+      listings += 1;
+      return failing && listings === 2
+        ? Promise.resolve({ ok: false, reason: "git worktree list timed out after 15 s", outcomeUnknown: true })
+        : super.list(...args);
+    }
+  }
+  const { m, lease, state } = timedManager("mission-history-timing-unread-", { seed: SEED_DEPS, git: new SeedListingFails() });
+  const source = await lease("task-source");
+  assert.equal((await m.release(source, { ownerAuthorized: true })).outcome, "released");
+
+  listings = 0;
+  failing = true;
+  state.occupied = m.store.slot(source.slotId)!.path;
+  const target = await lease("task-target");
+  assert.equal(seedRow(target.slotId).outcome, "none");
+  assert.match(seedRow(target.slotId).reason!, /^its siblings could not be read: .*git worktree list timed out after 15 s/);
+});
+
+test("a stale slot with no sibling matching its commit says that is why it had no seed", async () => {
+  const { m, lease, origin, clone } = timedManager("mission-history-timing-stale-", { seed: SEED_DEPS });
+  const first = await lease("task-first");
+  assert.equal((await m.release(first, { ownerAuthorized: true })).outcome, "released");
+
+  writeFileSync(join(origin, ".gitignore"), "deps/\n# a new fingerprint\n");
+  gitIn(origin, "add", "-A");
+  gitIn(origin, "commit", "-qm", "change the fingerprint");
+  gitIn(clone, "fetch", "-q", "origin");
+  const second = await lease("task-second", gitIn(clone, "rev-parse", "origin/main"));
+  assert.equal(second.slotId, first.slotId, "the same slot, now stale");
+  const newest = historyOf(first.slotId).filter((entry) => entry.kind === "seed")[0]!;
+  assert.deepEqual([newest.outcome, newest.reason], ["none", "no idle sibling matches this commit's dependencies"]);
+});
+
+test("cut-off seed paths that cannot be removed are why there was no seed", async () => {
+  // `keep.txt` is tracked, so the wipe refuses it whole.
+  const { m, lease } = timedManager("mission-history-timing-wipe-", { seed: { paths: ["keep.txt"], exclude: [] } });
+  const first = await lease("task-first");
+  assert.equal((await m.release(first, { ownerAuthorized: true })).outcome, "released");
+  db.prepare(`UPDATE worktree_slots SET deps_state = 'interrupted', deps_fingerprint = NULL WHERE id = ?`).run(first.slotId);
+
+  const second = await lease("task-second");
+  assert.equal(second.slotId, first.slotId);
+  assert.deepEqual(timedRows(first.slotId).slice(3).map(([kind, outcome]) => [kind, outcome]), [
+    ["seed", "none"],
+    ["claim", "failed"],
+    ["provisioning", "reused"],
+  ]);
+  assert.equal(m.store.slotTimings(first.slotId).seed!.reason, "the paths of the seed that was cut off could not be removed");
+});
+
+test("a reused slot's provisioning runs from its reservation, past the idle gap and through its claim", async () => {
+  const { m, lease, state, origin, clone } = timedManager("mission-history-timing-reused-", { install: 20_000 });
+  const first = await lease("task-first");
+  assert.equal((await m.release(first, { ownerAuthorized: true })).outcome, "released");
+
+  state.now += 3_600_000;
+  writeFileSync(join(origin, ".gitignore"), "deps/\n# a new fingerprint\n");
+  gitIn(origin, "add", "-A");
+  gitIn(origin, "commit", "-qm", "change the fingerprint");
+  gitIn(clone, "fetch", "-q", "origin");
+  const second = await lease("task-second", gitIn(clone, "rev-parse", "origin/main"));
+  assert.equal(second.slotId, first.slotId, "the same slot, stale, so its steps run");
+  assert.deepEqual(timedRows(first.slotId).slice(-2), [
+    ["claim", "succeeded", 20_000, "owner"],
+    ["provisioning", "reused", 20_000, "owner"],
+  ], "the hour it sat idle is no part of it");
+});
+
+test("a Warm's seed rows name the operator, whether it found no seed or took one", async () => {
+  const warm = async (m: WorktreeManager, slotId: string) => {
+    const warmed = await m.warmSlot({
+      slotId, operationId: `op-${slotId}`, signal: new AbortController().signal, output: () => {}, log: null,
+    });
+    assert.equal(warmed.outcome, "warmed", JSON.stringify(warmed));
+  };
+  const makeCold = (slotId: string) =>
+    db.prepare(`UPDATE worktree_slots SET deps_state = 'failed', deps_fingerprint = NULL WHERE id = ?`).run(slotId);
+
+  const unseeded = timedManager("mission-history-timing-warm-unseeded-", {});
+  const only = await unseeded.lease("task-only");
+  assert.equal((await unseeded.m.release(only, { ownerAuthorized: true })).outcome, "released");
+  makeCold(only.slotId);
+  const before = timedRows(only.slotId).length;
+  await warm(unseeded.m, only.slotId);
+  assert.deepEqual(timedRows(only.slotId).slice(before), [
+    ["seed", "none", 0, "operator"],
+    ["claim", "succeeded", 0, "operator"],
+  ]);
+
+  db.exec(`DELETE FROM worktree_slot_history; DELETE FROM worktree_slots; DELETE FROM worktree_pools;`);
+  const seeded = timedManager("mission-history-timing-warm-seeded-", { seed: SEED_DEPS, clone: 5_000 });
+  const source = await seeded.lease("task-source");
+  const target = await seeded.lease("task-target");
+  assert.equal((await seeded.m.release(source, { ownerAuthorized: true })).outcome, "released");
+  assert.equal((await seeded.m.release(target, { ownerAuthorized: true })).outcome, "released");
+  makeCold(target.slotId);
+  const prior = timedRows(target.slotId).length;
+  await warm(seeded.m, target.slotId);
+  assert.deepEqual(timedRows(target.slotId).slice(prior), [
+    ["seed", "placed", 5_000, "operator"],
+    ["claim", "succeeded", 5_000, "operator"],
+  ]);
+  assert.equal(seeded.m.store.slotTimings(target.slotId).seed!.sourceOrdinal, seeded.m.store.slot(source.slotId)!.ordinal);
 });

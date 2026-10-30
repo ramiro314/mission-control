@@ -712,12 +712,34 @@ this order:
   and Repair write the same entries as automatic; a refusal or an unknown outcome writes one when
   its reason changes, so a pass repeating it stays quiet. On either path, a Recover or Repair whose
   outcome is unknown reads refused when the slot's version did not move, because its read failed
-  before the reset began and the slot is as it was, and failed when the version moved. A Kill entry names the PID and never the command. The operations
-  list above the pools keeps its behavior, and dismissing a report there leaves the history alone.
+  before the reset began and the slot is as it was, and failed when the version moved. A Kill entry
+  names the PID and never the command. The operations list above the pools keeps its behavior, and dismissing a report there leaves the history alone.
   An Unowned trees operation has no slot, so it is logged to the daemon log only. A request refused
   before it was accepted (an expired token, a target with a cleanup already queued) answers the
   dialog and writes nothing, and a return a task or check makes on its own is recorded by its
   transitions.
+
+  History also holds the timed steps, and the card shows the last of each as **Last provisioning**,
+  **Last claim** and **Last seed**:
+
+  - A **provisioning** entry runs from reservation to granted lease, for a new slot and for a reused
+    one. An acquisition that never reached a lease has none, and neither has a Warm or Open
+    terminal's lease, which provision nothing.
+  - A **claim** entry records the claim's duration, its seed included, and its outcome: succeeded,
+    failed, skipped on a matching fingerprint, or stopped by a shutdown. A failed one keeps the
+    failing step's command and reason, never its output.
+  - A **seed** entry names its source slot and duration. One that placed nothing says why: no idle
+    sibling held a current install or matched a stale slot's commit, its siblings could not be read,
+    none could be held, the clone was abandoned or cut off, the paths of an earlier cut-off seed
+    could not be removed, or the pool's claim configures no seed. A slot that wants no seed, because
+    its install still matches, adds no entry, so the last seed stays readable.
+
+  The pool row shows the **median new slot** provisioning time and the **seed hit rate** over the
+  pool's last 10 new slots, computed from history whenever it is read, so retention can shorten
+  the window. A new slot counts once it is granted, a claim that failed included, and it is a hit
+  when a seed placed anything in it before the grant. Acquisition leases an idle sibling before it
+  makes a new slot, so a new slot rarely finds a seed source, and a low rate there is the fault
+  this number exists to show. A reused slot's seed is in its History and not in the rate.
 
   The group states loading, empty, and unavailable separately, and never renders a heading over
   nothing. An inventory that could not be observed says so and offers Refresh; it is never drawn as

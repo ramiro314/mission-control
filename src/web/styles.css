@@ -582,6 +582,12 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   white-space: nowrap;
 }
 
+.wt-pool-timings {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin: 8px 0 0;
+}
+
 .wt-disclosure {
   align-items: flex-start;
   background: none;
@@ -1114,6 +1120,7 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   color: var(--muted);
   font-size: 11px;
   margin: 2px 0 0;
+  overflow-wrap: anywhere;
 }
 
 .wt-owner,

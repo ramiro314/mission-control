@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStaleLeaseDays, slotHistoryHeadline, WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
 import { capacityGeometry } from "../src/web/lib/worktree-capacity.ts";
-import { refreshedSlotHistory } from "../src/web/lib/worktree-history.ts";
+import { poolTimingSummary, refreshedSlotHistory, timingSummary } from "../src/web/lib/worktree-history.ts";
 import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
 import type { WorktreesState } from "../src/web/useWorktrees.ts";
 import type { StorageHealth } from "../src/shared/storage-health.ts";
@@ -29,6 +29,7 @@ const overCapacityPool: WorktreeRepositoryView = {
   diskBytes: 4096,
   lastReconciledAt: 1,
   reconciliationError: "one slot needs attention",
+  timings: { newSlots: 0, medianProvisioningMs: null, seededSlots: 0 },
   status: "attention",
   slots: [{
     id: "slot-1",
@@ -50,11 +51,12 @@ const overCapacityPool: WorktreeRepositoryView = {
     quarantineReason: null,
     diagnostic: null,
     observationFailure: null,
-    historyHead: null,
     recoveryRefusal: null,
     actions: ["return", "destroy"],
     dependencies: null,
     warmLog: null,
+    timings: { provisioning: null, claim: null, seed: null },
+    lastHistoryId: null,
   }],
 };
 
@@ -71,6 +73,7 @@ const roomToGrowPool: WorktreeRepositoryView = {
   diskBytes: 8192,
   lastReconciledAt: 1,
   reconciliationError: null,
+  timings: { newSlots: 0, medianProvisioningMs: null, seededSlots: 0 },
   status: "ready",
   slots: [],
 };
@@ -851,6 +854,64 @@ test("every slot card starts with its History closed, showing no list and no not
   assert.match(html, /<section class="wt-history" aria-label="Slot 1 history">/);
   assert.match(html, /aria-expanded="false"[^>]*>.*?<span>History<\/span>/s);
   assert.doesNotMatch(html, /Reading this slot's history|Nothing recorded for this slot/);
+});
+
+function cardHtml(slot: Partial<WorktreeRepositoryView["slots"][number]> = {}): string {
+  return render({
+    inventory: {
+      ...inventory,
+      repositories: [{ ...overCapacityPool, slots: [{ ...overCapacityPool.slots[0]!, ...slot }] }],
+    },
+  });
+}
+
+test("a slot card shows the last timings and why a seed had no source, and nothing until it has some", () => {
+  assert.doesNotMatch(cardHtml(), /Last provisioning|Last claim|Last seed/);
+  const html = cardHtml({
+    timings: {
+      provisioning: { at: 1, outcome: "new", durationMs: 662_000, reason: null, sourceOrdinal: null },
+      claim: { at: 2, outcome: "succeeded", durationMs: 640_000, reason: null, sourceOrdinal: null },
+      seed: { at: 3, outcome: "none", durationMs: 0, reason: "no idle sibling holds a current install", sourceOrdinal: null },
+    },
+  });
+  assert.match(html, /<dl class="wt-facts" aria-label="Slot 1 timings">/);
+  assert.match(html, /<dt>Last provisioning<\/dt><dd>new slot in 11m 02s<\/dd>/);
+  assert.match(html, /<dt>Last claim<\/dt><dd>succeeded in 10m 40s<\/dd>/);
+  assert.match(html, /<dt>Last seed<\/dt><dd>none: no idle sibling holds a current install<\/dd>/);
+});
+
+test("the pool row shows the median and hit rate once history holds a new slot", () => {
+  assert.equal(poolTimingSummary({ newSlots: 0, medianProvisioningMs: null, seededSlots: 0 }), null);
+  assert.equal(
+    poolTimingSummary({ newSlots: 10, medianProvisioningMs: 662_000, seededSlots: 3 }),
+    "Median new slot 11m 02s · seed hit rate 30% (3 of last 10 new slots)",
+  );
+  assert.equal(
+    poolTimingSummary({ newSlots: 1, medianProvisioningMs: 5_000, seededSlots: 1 }),
+    "Median new slot 5s · seed hit rate 100% (1 of last 1 new slot)",
+  );
+});
+
+test("a timed step reads the same on the card and in History, and a later outcome reads as itself", () => {
+  const timing = { outcome: "failed", durationMs: 3_000, sourceOrdinal: null };
+  assert.equal(timingSummary("claim", timing), "failed after 3s");
+  assert.equal(timingSummary("claim", { ...timing, outcome: "skipped" }), "skipped, dependencies already matched");
+  assert.equal(timingSummary("claim", { ...timing, outcome: "shutdown" }), "stopped by a shutdown after 3s");
+  assert.equal(timingSummary("provisioning", { ...timing, outcome: "reused" }), "reused slot in 3s");
+  assert.equal(timingSummary("seed", { ...timing, outcome: "placed", sourceOrdinal: 4 }), "from slot 4 in 3s");
+  assert.equal(timingSummary("seed", { ...timing, outcome: "abandoned" }), "abandoned after 3s");
+  assert.equal(timingSummary("seed", { ...timing, outcome: "interrupted" }), "cut off after 3s");
+  assert.equal(timingSummary("seed", { ...timing, outcome: "a-later-outcome" }), "a-later-outcome");
+  assert.equal(timingSummary("seed", { ...timing, outcome: null }), "unknown");
+
+  const entry = {
+    id: 1, slotId: "slot-1", ordinal: 1, at: 1, kind: "seed", fromState: null, toState: null, reason: null,
+    detail: null, operation: null, outcome: "placed", actor: "owner", durationMs: 12_000, meta: { sourceOrdinal: 3 },
+  };
+  assert.equal(slotHistoryHeadline(entry), "Seed: from slot 3 in 12s");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "claim", outcome: "succeeded" }), "Claim: succeeded in 12s");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "provisioning", outcome: "new" }), "Provisioned: new slot in 12s");
+  assert.equal(slotHistoryHeadline({ ...entry, meta: null }), "Seed: from slot unknown in 12s");
 });
 
 test("a history row's headline names the change, and a later build's kind reads as itself", () => {
