@@ -106,6 +106,16 @@ test("the kind and actor vocabularies are the plan's, in the plan's order", () =
   assert.deepEqual(WORKTREE_HISTORY_ACTORS, ["automatic", "operator", "owner"]);
 });
 
+test("the limits are the numbers the operator chose, not whatever the constant says", () => {
+  assert.deepEqual(WORKTREE_HISTORY_LIMITS, {
+    pageEntries: 50,
+    textBytes: 2048,
+    metaBytes: 2048,
+    retentionDays: 90,
+    rowsPerPool: 2000,
+  });
+});
+
 test("every slot transition writes exactly one row with the states either side of it", () => {
   const poolId = pool().id;
   const { result: created, row: first } = oneRowFrom(() => reserved(poolId));
@@ -166,7 +176,7 @@ test("every slot transition writes exactly one row with the states either side o
       lastError: withObservationFailure(null, "slot process occupancy is unknown (ps timed out)"),
       now: 510,
     })!);
-  assert.deepEqual([backRow.fromState, backRow.toState], ["provisioning", "available"]);
+  assert.deepEqual([backRow.fromState, backRow.toState, backRow.actor], ["provisioning", "available", "automatic"]);
   assert.equal(backRow.detail, "slot process occupancy is unknown (ps timed out)", "the failed read that refused it");
 
   const { result: pruning, row: removal } = oneRowFrom(() => store.markPruning(handedBack.id, handedBack.version, 600)!);
@@ -176,6 +186,30 @@ test("every slot transition writes exactly one row with the states either side o
   assert.deepEqual([gone.fromState, gone.toState, gone.actor], ["pruning", null, "operator"]);
   assert.equal(store.slot(pruning.id), null);
   assert.equal(historyOf(pruning.id).length, 10, "the row went and its history stayed");
+});
+
+test("a reservation handed back is recorded against the owner it was reserved for", () => {
+  const slot = leased();
+  const returning = store.markReturning(slot.id, slot.version, "b".repeat(40), 300)!;
+  const free = store.completeRelease(returning.id, returning.version, "b".repeat(40), 400)!;
+  const reservation = store.reserveAvailable({
+    slotId: free.id,
+    version: free.version,
+    leaseId: "lease-task",
+    ownerKind: "task",
+    ownerKey: "task-2",
+    requestedHeadSha: "b".repeat(40),
+    now: 500,
+  })!;
+  const { row } = oneRowFrom(() => store.releaseReservation({
+    slotId: reservation.id,
+    version: reservation.version,
+    leaseId: "lease-task",
+    requestedHeadSha: "b".repeat(40),
+    lastError: null,
+    now: 510,
+  }));
+  assert.deepEqual([row.fromState, row.toState, row.actor, row.detail], ["provisioning", "available", "owner", null]);
 });
 
 test("a quarantined slot's own moves each write a row: a new reason, and a withdrawn lease", () => {
