@@ -154,7 +154,9 @@ Only a disabled policy or a positive native refusal may degrade to a disposable 
 unknown native outcome fails closed. Cleanup follows the provider and exact lease identity stored
 on the owning row, never current configuration. Native release remains conditional and
 occupancy-gated, and clearing a task's worktree facts is atomic with recording the successful
-release. Historical rows that name Treehouse retain their provider-specific cleanup path.
+release. A failed observation never quarantines a slot: reconcile and idle screening leave it in
+its state with "Last observation failed" as its last error, and only a proven fault quarantines.
+Match failed-read reasons through `src/server/worktrees/quarantine-reasons.ts`, never a copy. Historical rows that name Treehouse retain their provider-specific cleanup path.
 
 Final task completion records done and any session-closure obligation atomically, then uses the
 existing closure sweep and repository cleanup queue to stop, archive, reset and return owned

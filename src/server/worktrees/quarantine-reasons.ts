@@ -1,0 +1,84 @@
+/**
+ * The reasons that mean only "a read failed": a Git listing or inspection, a process listing,
+ * an owner lookup or the pool marker could not be read, even after its one retry
+ * (`observation-retry.ts`). None of them proves anything about the slot, so none quarantines
+ * it any more. The slot keeps its state and records the reason in `last_error` as
+ * "Last observation failed: <reason>".
+ *
+ * The labels this build writes, as the reason a failed read records.
+ */
+export const OBSERVATION_FAILURE = {
+  registrations: "Git worktree registrations are unknown",
+  marker: "pool marker could not be read",
+  git: "slot Git state is unknown",
+  occupancy: "slot process occupancy is unknown",
+  lastOwner: "last-released domain ownership is unknown",
+  activeOwner: "leased domain ownership is unknown",
+} as const;
+
+/**
+ * Every quarantine reason that is an observation failure: the labels above, and the reasons
+ * older builds quarantined with for the same failed reads, so rows already in the database
+ * qualify without a migration. The writer and every matcher read this one set.
+ *
+ * "pool marker is missing, unreadable, or belongs to another pool" is deliberately absent:
+ * older builds wrote it for a missing or foreign marker too, which is a proven fault.
+ */
+export const OBSERVATION_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  ...Object.values(OBSERVATION_FAILURE),
+  "Git registrations could not be read",
+  "slot Git state could not be inspected",
+  "slot occupancy is unknown",
+  "last-released domain ownership could not be read",
+  "slot occupancy became unknown before reset",
+  "slot occupancy became unknown before it was warmed",
+  "slot occupancy became unknown before it was seeded from",
+]);
+
+/**
+ * Whether a quarantine reason is an observation failure. Older builds suffixed the pool-wide
+ * listing failure with its cause ("Git worktree registrations are unknown: <cause>").
+ */
+export function isObservationFailure(reason: string | null): boolean {
+  if (reason === null) return false;
+  if (OBSERVATION_FAILURE_REASONS.has(reason)) return true;
+  const colon = reason.indexOf(": ");
+  return colon > 0 && OBSERVATION_FAILURE_REASONS.has(reason.slice(0, colon));
+}
+
+const PREFIX = "Last observation failed: ";
+
+/** "<label> (<detail>)", or the label alone. */
+export function observationFailureText(label: string, detail: string | null): string {
+  return detail ? `${label} (${detail})` : label;
+}
+
+/** Whether a recorded failed-read note names this reason, whatever its detail. */
+export function sameObservationFailure(note: string | null, label: string): boolean {
+  return note === label || Boolean(note?.startsWith(`${label} (`));
+}
+
+/**
+ * A slot's `last_error` split into its failed-read note, on the first line when present, and
+ * whatever else it carries: on a quarantined slot, the detail of its quarantine, which the
+ * note never replaces.
+ */
+export function splitObservationFailure(lastError: string | null): { failure: string | null; rest: string | null } {
+  if (lastError === null || !lastError.startsWith(PREFIX)) return { failure: null, rest: lastError };
+  const newline = lastError.indexOf("\n");
+  return newline < 0
+    ? { failure: lastError.slice(PREFIX.length), rest: null }
+    : { failure: lastError.slice(PREFIX.length, newline), rest: lastError.slice(newline + 1) || null };
+}
+
+/** `last_error` with this failed-read note in front of whatever else it carries. */
+export function withObservationFailure(lastError: string | null, failure: string): string {
+  const { rest } = splitObservationFailure(lastError);
+  const note = `${PREFIX}${failure.replace(/\s*\n\s*/g, " ")}`;
+  return rest === null ? note : `${note}\n${rest}`;
+}
+
+/** `last_error` without its failed-read note: what a successful read leaves. */
+export function withoutObservationFailure(lastError: string | null): string | null {
+  return splitObservationFailure(lastError).rest;
+}
