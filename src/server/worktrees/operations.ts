@@ -68,6 +68,7 @@ import {
   type NativeSlotStatus,
   type WarmSlotResult,
 } from "./manager.ts";
+import { runAsWorktreeActor } from "./actor.ts";
 import { isTerminalOwnerKey } from "./owners.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
@@ -2039,7 +2040,7 @@ export class WorktreeOperationsService {
     // publishOnSuccess covers legacy-only actions where no native manager method calls
     // publish(). Supplying the service publisher also coalesces native mutations through the
     // same content-free invalidation path instead of emitting once from each dependency.
-    await this.manager.runAsOperator(() => this.manager.runChangeBatch(
+    await runAsWorktreeActor("operator", () => this.manager.runChangeBatch(
       () => this.dispatch(held.preview, acknowledgementSet, removed, expectedWork),
       true,
       this.deps.notifyChanged,

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, mock, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
 import { Registry } from "../src/server/registry.ts";
@@ -13,7 +15,8 @@ import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { WorktreeStore, type WorktreeSlotRow } from "../src/server/worktrees/store.ts";
-import { withObservationFailure } from "../src/server/worktrees/quarantine-reasons.ts";
+import { REGISTRATION_OR_IDENTITY, withObservationFailure } from "../src/server/worktrees/quarantine-reasons.ts";
+import { taskResourceGeneration } from "../src/server/task-resource-generation.ts";
 import { WorktreeSlotHistoryPageSchema, type WorktreeClaim } from "../src/shared/protocol.ts";
 import {
   WORKTREE_HISTORY_ACTORS,
@@ -622,6 +625,144 @@ test("Open terminal's lease, and handing it back unused, name the operator", asy
     "leased -> returning (operator)",
     "returning -> available (operator)",
   ]);
+});
+
+test("a card's Repair names the operator, and its automatic recovery stays automatic", async () => {
+  const { clone, sha } = repository("mission-history-repair-");
+  const m = realManager();
+  const legacy = new LegacyTreehouseService(db);
+  const operations = new WorktreeOperationsService(m, {
+    legacy,
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks: new CheckLeaseManager(db, { manager: m, legacy }),
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async () => 0,
+  });
+  const broken = async (key: string) => {
+    const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key } });
+    assert.equal(acquired.outcome, "acquired");
+    if (acquired.outcome !== "acquired") throw new Error("not acquired");
+    assert.equal((await m.release(acquired.lease, { ownerAuthorized: true })).outcome, "released");
+    assert.ok(m.store.quarantine(acquired.lease.slotId, REGISTRATION_OR_IDENTITY.unsafeRegistration, null, Date.now()));
+    rmSync(join(acquired.lease.path, ".git"));
+    return acquired.lease.slotId;
+  };
+
+  const carded = await broken("task-repair-card");
+  const preview = await operations.preview({ action: "repair", slotId: carded });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  await operations.execute(preview.token, []);
+  assert.deepEqual(trail(carded).slice(-2), [
+    "quarantined -> returning (operator)",
+    "returning -> available (operator)",
+  ]);
+
+  const passed = await broken("task-repair-pass");
+  await m.recoverQuarantines();
+  assert.deepEqual(trail(passed).slice(-2), [
+    "quarantined -> returning (automatic)",
+    "returning -> available (automatic)",
+  ]);
+});
+
+test("a reservation an operator's action hands back names the operator", async () => {
+  const { clone, sha } = repository("mission-history-handback-");
+  const claim: WorktreeClaim = {
+    steps: [{ argv: [process.execPath, "-e", ""], env: [] }], timeoutMinutes: 1, fingerprintPaths: [],
+  };
+  // A process walks in during the reservation: idle at the screening, occupied once reserved.
+  let m: WorktreeManager | null = null;
+  m = realManager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 4, setupArgv: null, claim }),
+    claimEnvironment: async (names) => claimEnvironment(names),
+    occupancy: (paths) => Promise.resolve(new Map(paths.map((path) => [path, {
+      status: "known" as const,
+      occupants: m?.store.slotByPath(path)?.state === "provisioning" && m.store.slotByPath(path)?.activeOwnerKey !== "m1"
+        ? [{ pid: 4242, ppid: 1, startRaw: "x", startMs: 1, command: "node", cwd: path, knownOwner: null }]
+        : [],
+    }]))),
+  });
+  const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "manual", key: "m1" } });
+  assert.equal(acquired.outcome, "acquired");
+  if (acquired.outcome !== "acquired") return;
+  assert.equal((await m.release(acquired.lease, { ownerAuthorized: true })).outcome, "released");
+  const { slotId } = acquired.lease;
+
+  const opened = await m.leaseAsIs(slotId, { kind: "manual", key: "terminal-entered" });
+  assert.equal(opened.outcome, "refused", JSON.stringify(opened));
+  assert.deepEqual(trail(slotId).slice(-2), [
+    "available -> provisioning (operator)",
+    "provisioning -> available (operator)",
+  ]);
+
+  const warmed = await m.warmSlot({
+    slotId, operationId: "op-entered", signal: new AbortController().signal, output: () => {}, log: null,
+  });
+  assert.equal(warmed.outcome, "skipped", JSON.stringify(warmed));
+  assert.deepEqual(trail(slotId).slice(-2), [
+    "available -> provisioning (operator)",
+    "provisioning -> available (operator)",
+  ]);
+});
+
+test("a return the daemon decides on its own is automatic, through the check and task routes", async () => {
+  const { clone, sha } = repository("mission-history-daemon-");
+  const m = realManager({ ownerReferenced: async () => true });
+  const legacy = new LegacyTreehouseService(db);
+  const registry = new Registry();
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, undefined, undefined, m);
+  const checks = new CheckLeaseManager(db, { manager: m, legacy });
+  const take = async (key: string) => {
+    const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key } });
+    assert.equal(acquired.outcome, "acquired");
+    if (acquired.outcome !== "acquired") throw new Error("not acquired");
+    return acquired.lease;
+  };
+  const settled = (id: string, lease: Awaited<ReturnType<typeof take>>) => {
+    const task = mkTask({
+      id,
+      status: "failed",
+      repoRoot: clone,
+      worktreePath: lease.path,
+      provider: "mission",
+      worktreeLeaseId: lease.leaseId,
+    });
+    registry.upsertTask(task);
+    return task;
+  };
+  const daemonRows = ["leased -> returning (automatic)", "returning -> available (automatic)"];
+
+  // A check lease its attempt stopped tending, reclaimed by one real maintenance pass.
+  const attemptId = "check-leaked";
+  await checks.acquireForAttempt({ attemptId, submissionId: "sub-leaked", nodeId: "node-leaked", repoRoot: clone, headSha: sha });
+  const leaked = m.store.slots().find((slot) => slot.activeOwnerKey === attemptId)!;
+  checks.handOffForReclaim(attemptId);
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    m.startMaintenance(() => checks.reclaimLeaked(async () => "empty"));
+    mock.timers.tick(300_000);
+    await m.stop();
+  } finally {
+    mock.timers.reset();
+  }
+  assert.deepEqual(trail(leaked.id).slice(-2), daemonRows);
+
+  const reclaimed = await take("task-settled:0");
+  const task = settled("task-settled", reclaimed);
+  await tasks["reclaimSettledTreesIfClean"](task.id);
+  assert.deepEqual(trail(reclaimed.slotId).slice(-2), daemonRows);
+
+  const retained = await take("task-retained:0");
+  const retainedTask = settled("task-retained", retained);
+  const outcome = await tasks.enqueueRetentionCleanup({
+    taskId: retainedTask.id,
+    generation: taskResourceGeneration(retainedTask),
+    fingerprint: "fp",
+    probe: async () => ({ kind: "known", digest: "fp" }),
+  });
+  assert.equal(outcome.kind, "reclaimed", JSON.stringify(outcome));
+  assert.deepEqual(trail(retained.slotId).slice(-2), daemonRows);
 });
 
 test("a Warm names the operator, and the return that ends it does too", async () => {

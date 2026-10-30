@@ -40,6 +40,7 @@ import {
   type TreeBlob,
   type WorktreeClaimWarning,
 } from "./claim.ts";
+import { currentWorktreeActor, runAsWorktreeActor } from "./actor.ts";
 import { MANUAL_PICKUP_WINDOW_MS, ManualAcquireRequests } from "./manual-requests.ts";
 import {
   copyOnWriteClone,
@@ -786,8 +787,6 @@ export class WorktreeManager {
    */
   private readonly defaultFingerprints = new Map<string, { key: string; fingerprint: string | null }>();
   private readonly changeBatch = new AsyncLocalStorage<{ pending: boolean }>();
-  /** Set while an operator's action runs. See `runAsOperator`. */
-  private readonly operatorAction = new AsyncLocalStorage<true>();
   /**
    * The `warm` owners whose operation is running in this daemon right now. In memory by
    * design: no Warm or seed survives a restart, so startup reconciliation, which runs before
@@ -891,15 +890,6 @@ export class WorktreeManager {
   }
 
   /** Coalesces every visible mutation in one operator action into one invalidation. */
-  /**
-   * An operator's action reaches a release through whichever domain owns the lease (a task's
-   * reclaim, a check's recovery, a manual return), so the history's actor travels with the work
-   * instead of through each of them. A release this runs names the operator, not the owner.
-   */
-  runAsOperator<T>(operation: () => Promise<T>): Promise<T> {
-    return this.operatorAction.run(true, operation);
-  }
-
   async runChangeBatch<T>(
     operation: () => Promise<T>,
     publishOnSuccess = true,
@@ -1007,6 +997,7 @@ export class WorktreeManager {
     prior: WorktreeSlotRow,
     refusal: string,
     failure: { reason: string; detail: string | null } | null,
+    actor?: WorktreeHistoryActor,
   ): boolean {
     const text = failure && bounded(observationFailureText(failure.reason, failure.detail));
     let returned: WorktreeSlotRow | null = null;
@@ -1018,6 +1009,7 @@ export class WorktreeManager {
         requestedHeadSha: prior.requestedHeadSha,
         lastError: text ? withObservationFailure(prior.lastError, text) : withoutObservationFailure(prior.lastError),
         now: this.deps.now(),
+        actor,
       });
     } catch (error) {
       console.error(`[worktrees] could not return the reservation of slot ${reservation.id}:`, error);
@@ -1289,6 +1281,7 @@ export class WorktreeManager {
     reservation: WorktreeSlotRow,
     prior: WorktreeSlotRow,
     before: string,
+    actor?: WorktreeHistoryActor,
   ): Promise<{ reason: string; returned: boolean } | null> {
     const fresh = (await this.occupancy([reservation.path])).get(reservation.path);
     if (!fresh || fresh.status === "unknown") {
@@ -1298,12 +1291,13 @@ export class WorktreeManager {
         prior,
         `slot occupancy became unknown before ${before}`,
         { reason: OBSERVATION_FAILURE.occupancy, detail },
+        actor,
       );
       return { reason: detail, returned };
     }
     if (fresh.occupants.length > 0) {
       const reason = `a process entered the available slot before ${before}`;
-      return { reason, returned: this.returnReservation(reservation, prior, reason, null) };
+      return { reason, returned: this.returnReservation(reservation, prior, reason, null, actor) };
     }
     return null;
   }
@@ -1626,7 +1620,7 @@ export class WorktreeManager {
       }
       if (!reservation) return { outcome: "refused", reason: "the slot was leased by something else first" };
       try {
-        const entered = await this.enteredSinceReservation(reservation, idle.slot, "it was leased");
+        const entered = await this.enteredSinceReservation(reservation, idle.slot, "it was leased", "operator");
         if (entered) return { outcome: entered.returned ? "refused" : "outcomeUnknown", reason: entered.reason };
         const leased = this.store.finalizeLease(reservation.id, reservation.version, idle.head, this.deps.now(), "operator");
         if (!leased) {
@@ -2270,7 +2264,7 @@ export class WorktreeManager {
     say: Say;
   }): Promise<WarmSlotResult> {
     const { reservation, pool, identity, claim, say } = input;
-    const entered = await this.enteredSinceReservation(reservation, input.prior, "it was warmed");
+    const entered = await this.enteredSinceReservation(reservation, input.prior, "it was warmed", "operator");
     if (entered) return { outcome: entered.returned ? "skipped" : "failed", reason: entered.reason };
     let leased: WorktreeSlotRow | null;
     try {
@@ -2779,7 +2773,7 @@ export class WorktreeManager {
       const policyBlocker = await options.beforeReset?.(target);
       if (policyBlocker) return { outcome: "refused", reason: policyBlocker };
       return null;
-    }, options.actor ?? (this.operatorAction.getStore() ? "operator" : undefined));
+    }, options.actor ?? currentWorktreeActor());
   }
 
   /**
@@ -2989,7 +2983,7 @@ export class WorktreeManager {
       }
       removedLock = current.path;
       return null;
-    }, input.automatic ? "automatic" : "operator");
+    }, currentWorktreeActor() ?? (input.automatic ? "automatic" : "operator"));
     if (reset.outcome === "released" || reset.outcome === "alreadyReleased") {
       console.log(oneLine(
         `[worktrees] recovered ${this.slotLabel(slot)}${input.automatic ? " automatically" : ""}` +
@@ -4020,7 +4014,7 @@ export class WorktreeManager {
       console.error("[worktrees] slot history retention failed:", error);
     }
     try {
-      await this.reclaimDomainLeases();
+      await runAsWorktreeActor("automatic", () => this.reclaimDomainLeases());
     } catch (error) {
       console.error("[worktrees] domain lease reclamation failed:", error);
     }

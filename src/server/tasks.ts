@@ -86,6 +86,7 @@ import {
   teardownWorktree,
   type TaskDispatchOptions,
 } from "./dispatcher.ts";
+import { runAsWorktreeActor } from "./worktrees/actor.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 import {
@@ -6370,7 +6371,7 @@ export class TaskManager {
         // this to move durable ledger state, so a promise that never settles would strand the
         // claim on the row and stall the whole observation pass behind it.
         try {
-          resolve(await this.reclaimForRetention(request));
+          resolve(await runAsWorktreeActor("automatic", () => this.reclaimForRetention(request)));
         } catch (error) {
           resolve({ kind: "failed", detail: `cleanup failed unexpectedly (${readFailureClass(error)})` });
         }
@@ -6918,11 +6919,11 @@ export class TaskManager {
     // The default may move between the check above and a pool slot's reset, so the reset
     // judges its slot again against the commit it fetched, and refuses rather than discard.
     const refused: Array<{ path: string; reason: string }> = [];
-    const result = await this.reclaim(id, async (path, target) => {
+    const result = await runAsWorktreeActor("automatic", () => this.reclaim(id, async (path, target) => {
       const reason = target === undefined ? null : await this.worktrees.slotResetBlocker(path, target);
       if (reason) refused.push({ path, reason });
       return reason;
-    });
+    }));
     if (result.ok) return;
     console.warn(`[tasks] could not reclaim settled task ${id}'s clean worktrees: ${result.error}`);
     // The reset's own refusal is what is listed; judging the slot again could answer otherwise.

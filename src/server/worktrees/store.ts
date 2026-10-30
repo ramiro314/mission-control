@@ -618,6 +618,8 @@ export class WorktreeStore {
     requestedHeadSha: string | null;
     lastError: string | null;
     now: number;
+    /** Who caused this, when it is not the lease's owner: an operator's Warm or Open terminal. */
+    actor?: WorktreeHistoryActor;
   }): WorktreeSlotRow | null {
     return this.transition(
       input.slotId,
@@ -635,7 +637,7 @@ export class WorktreeStore {
         reason: "reservation handed back before anything in the slot changed",
         // A read that refused the reservation starts its failed-read note here, on this one row.
         detail: splitObservationFailure(input.lastError).failure,
-        actor: leaseActor(before.activeOwnerKind),
+        actor: input.actor ?? leaseActor(before.activeOwnerKind),
       }),
     );
   }
