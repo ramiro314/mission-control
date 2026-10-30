@@ -132,9 +132,9 @@ refused reservation could not be handed back to available"; only those report an
 outcome. That reason is deliberately outside the failed-read set, because whether the hand-back
 landed is unknown.
 
-Each quarantine, each recovery, each automatic-recovery refusal and each slot left unchanged
-after a failed read writes one `[worktrees]` line to the daemon's output, naming the pool and
-slot. A refusal or failed read is logged only when the slot's reason changes, so a pass repeating
+Each quarantine, each recovery, each restore to `leased`, each automatic-recovery refusal and
+each slot left unchanged after a failed read writes one `[worktrees]` line to the daemon's output,
+naming the pool and slot. A refusal or failed read is logged only when the slot's reason changes, so a pass repeating
 the same one stays quiet.
 
 A reservation quarantined before its lease is granted - a failed or unproven reset, creation,
@@ -144,6 +144,16 @@ stays quarantined and Destroy removes it through the ordinary revalidation. Reco
 same state left by an earlier build: a quarantined slot whose owner is positively proven not to
 reference its active lease loses that identity and stays quarantined. Unknown ownership is left
 untouched.
+
+A slot an earlier build quarantined only because a read failed, while its owner was alive, goes
+back to that owner. Reconcile returns a quarantined slot to `leased` when its reason is in the
+failed-read set, its active identity is complete, its owner is positively referenced, and this
+pass read it: registration exact, Git readable, path and common directory matching, occupancy
+known. The compare-and-swap, `WorktreeStore.restoreLease`, changes the slot's state and clears its
+quarantine fields, and nothing on disk is touched: HEAD, the index and every file stay as they
+were, and a slot may be dirty and occupied, as any live lease may. A slot whose owner cannot be
+read stays quarantined and records that on its card. One whose owner is positively gone loses its
+identity as above and stays quarantined; it is not restored.
 
 `make session` is a loopback client for that daemon-owned inventory:
 
@@ -725,7 +735,8 @@ The operations have deliberately narrow meanings:
   maximum.
 - **Reconcile** re-observes durable state, Git registration, ownership, and processes. It repairs
   only states whose result is positively proven and quarantines only a proven fault; a slot whose
-  read failed keeps its state and says so on its card (see [Native pools](#native-pools)).
+  read failed keeps its state and says so on its card, and a slot quarantined only by a failed
+  read goes back to its referenced owner (see [Native pools](#native-pools)).
 - **Destroy** removes one exact manager-owned slot, the fixed slot set enumerated for one pool, or
   a bulk selection. Each destroyable slot has a checkbox, and a pool's **Select all slots** adds
   every destroyable slot in it; the selection may span pools. **Destroy selected** previews exactly
