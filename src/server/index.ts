@@ -472,12 +472,13 @@ let stopDatabaseBackups = async () => {};
 // whenever the worktree pool publishes a change, so a quarantine raises its problem at once,
 // and when the settled task trees a restart kept change.
 // Processes still inside a tree whose owner has finished (a pending task return, a check
-// lease stuck in `returning`, a quarantined slot, an unreferenced folder the sweep left).
+// lease stuck in `returning`, a quarantined slot) or that has none (an available slot with no
+// lease, an unreferenced folder the sweep left).
 // Scanned after each maintenance pass, which sweeps first, and reported as `orphan-process`
 // problems; Kill retries the blocked return at once, and sweeps again for an unowned tree.
 const orphanProcesses = new OrphanProcessMonitor({
   trees: () => finishedTrees({
-    slots: worktrees.store.slots(),
+    pool: worktrees,
     taskReturns: tasks.pendingWorktreeReturns(),
     returningChecks: checkLeases.returningLeases(),
     unownedTrees: orphanTrees.unreferenced(),

@@ -548,7 +548,7 @@ export function worktreeUnownedTreeAnchor(path: string): string {
 }
 
 /**
- * Processes still running in a tree after its owner finished, each with a guarded Kill, and
+ * Processes still running in a tree with no live owner, each with a guarded Kill, and
  * a Kill all that confirms every listed process at once when there is more than one.
  */
 function OrphanList({
@@ -682,7 +682,7 @@ function SlotCard({
   selectionFull: boolean;
   onSelect: (slotId: string, selected: boolean) => void;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
-  /** Processes still running in this slot after its owner finished, from the storage report. */
+  /** Processes still running in this slot with no live owner, from the storage report. */
   orphans: readonly OrphanProcess[];
   onKill: (orphans: readonly OrphanProcess[], trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
@@ -778,7 +778,9 @@ function SlotCard({
       <OrphanList
         label={`Orphan processes in slot ${slot.ordinal}`}
         orphans={orphans}
-        killHint="Confirm stopping this process, which outlived the slot's owner and blocks its return"
+        killHint={slot.state === "available"
+          ? "Confirm stopping this process, which keeps this slot from being leased"
+          : "Confirm stopping this process, which outlived the slot's owner and blocks its return"}
         onKill={onKill}
       />
       <div className="wt-slot-actions">
