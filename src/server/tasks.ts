@@ -1042,7 +1042,8 @@ export class TaskManager {
    * kept it. Rebuilt by every startup reconciliation, which visits each one again, so it needs
    * no table. See `dirtySettledTreeProblems`.
    */
-  private readonly dirtySettledTrees = new Map<string, { path: string; reason: string }>();
+  /** `unreclaimed` is a tree whose reclaim failed for a reason other than work in it. */
+  private readonly dirtySettledTrees = new Map<string, { path: string; reason: string; unreclaimed?: boolean }>();
   private settledTreesChanged: () => void = () => {};
   /** One in-process launcher per durable retry reservation. SQLite owns cross-request CAS. */
   private readonly pipelineRecoveries = new Set<string>();
@@ -1585,7 +1586,9 @@ export class TaskManager {
           "dirty-settled-tree",
           id,
           firstSeenAt,
-          `${task.title} settled with work left in ${kept.path} (${kept.reason}); its worktrees are kept for the 30-day retention window`,
+          kept.unreclaimed
+            ? `${task.title} settled, but ${kept.path} could not be reclaimed (${kept.reason}); its worktrees are kept for the 30-day retention window`
+            : `${task.title} settled with work left in ${kept.path} (${kept.reason}); its worktrees are kept for the 30-day retention window`,
           link,
         ),
       });
@@ -6894,11 +6897,17 @@ export class TaskManager {
     if (result.ok) return;
     console.warn(`[tasks] could not reclaim settled task ${id}'s clean worktrees: ${result.error}`);
     // The reset's own refusal is what is listed; judging the slot again could answer otherwise.
-    // By path, not generation: a sibling tree that did come back changes the generation.
-    const [refusal] = refused;
+    // By path, not generation: a sibling tree that did come back changes the generation. A pool
+    // slot still held for any other reason is listed too, or it would sit out its 30 days
+    // unseen, but as a failed reclaim: its origin being down is no work left in it.
     const remaining = this.registry.getTask(id);
-    if (refusal && remaining && taskRepoRefs(remaining).some((ref) => ref.worktreePath === refusal.path)) {
-      this.dirtySettledTrees.set(id, refusal);
+    const held = remaining ? taskRepoRefs(remaining) : [];
+    const refusal = refused.find(({ path }) => held.some((ref) => ref.worktreePath === path));
+    const stuck = held.find((ref) => ref.provider === "mission" && ref.worktreePath)?.worktreePath;
+    const listed = refusal ??
+      (stuck ? { path: stuck, reason: result.error ?? "its reclaim failed", unreclaimed: true } : null);
+    if (listed) {
+      this.dirtySettledTrees.set(id, listed);
       this.settledTreesChanged();
     }
   }

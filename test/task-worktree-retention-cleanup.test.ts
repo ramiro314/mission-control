@@ -1291,8 +1291,8 @@ test("a settled pool slot whose reset-rule read fails keeps its window and is li
   assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
 });
 
-test("a settled pool slot's check never fetches, and an unreachable origin keeps the slot without calling it work", async (t) => {
-  const warned = t.mock.method(console, "warn", () => {});
+test("a settled pool slot's check never fetches, and an unreachable origin is listed as unreclaimed, not as work", async (t) => {
+  t.mock.method(console, "warn", () => {});
   const id = uid("settled-unreachable");
   let fetches = 0;
   class UnreachableGit extends NativeWorktreeGit {
@@ -1304,12 +1304,61 @@ test("a settled pool slot's check never fetches, and an unreachable origin keeps
   const slot = await settledPoolSlot(id, new UnreachableGit());
 
   const manager = slot.restart();
-  await eventually(() => warned.mock.calls.some((call) => String(call.arguments[0]).includes(id)), "the reclaim was never tried");
+  await eventually(() => keptTree(manager, id) !== undefined, "the held slot was never listed");
+  const { message } = keptTree(manager, id)!.problem(1);
+  assert.match(message, new RegExp(`${slot.path} could not be reclaimed \\(.*git fetch timed out after 60 s`));
+  assert.doesNotMatch(message, /work left/, "a clean slot behind an unreachable origin holds no work");
   assert.equal(fetches, 1, "only the reset fetched");
   assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
   assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
-  assert.equal(keptTree(manager, id), undefined, "a clean slot behind an unreachable origin holds no work to list");
 });
+
+test("a settled pool slot whose reset refuses for its registration is listed, not left to the log", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const id = uid("settled-locked");
+  const slot = await settledPoolSlot(id);
+  gitIn(slot.path, "worktree", "lock", slot.path);
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
+  const { message } = keptTree(manager, id)!.problem(1);
+  assert.match(message, /could not be reclaimed \(.*slot has no safe Git worktree registration/);
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+});
+
+for (const { name, plant, listed } of [
+  { name: "a clean slot is reclaimed by the reset's own answer", plant: () => {}, listed: false },
+  { name: "work in the slot is still caught by the reset", plant: (path: string) => writeIn(path, "notes.md", "draft\n"), listed: true },
+]) {
+  test(`with no local default ref, ${name}`, async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const id = uid("settled-no-ref");
+    let missing = false;
+    class NoLocalDefaultGit extends NativeWorktreeGit {
+      override async observedDefaultSha(identity: Parameters<WorktreeGit["observedDefaultSha"]>[0]) {
+        return missing
+          ? { ok: false as const, reason: "no remote default branch is available", outcomeUnknown: false }
+          : super.observedDefaultSha(identity);
+      }
+    }
+    const slot = await settledPoolSlot(id, new NoLocalDefaultGit());
+    plant(slot.path);
+    missing = true;
+
+    const manager = slot.restart();
+    if (listed) {
+      await eventually(() => keptTree(manager, id) !== undefined, "the work was never listed");
+      assert.match(keptTree(manager, id)!.problem(1).message, /work left in .*\(untracked notes\.md\)/);
+      assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+      assert.equal(existsSync(join(slot.path, "notes.md")), true);
+    } else {
+      await eventually(() => slot.registry.getTask(id)?.worktreePath === null, "the clean slot was not reclaimed");
+      assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "available");
+      assert.equal(keptTree(manager, id), undefined);
+    }
+  });
+}
 
 test("a settled pool slot whose read fails only at the reset's repeated check is kept and listed", async (t) => {
   t.mock.method(console, "warn", () => {});
