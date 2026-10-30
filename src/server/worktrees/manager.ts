@@ -110,6 +110,7 @@ import {
   depsCutOff,
   isDepsWriteAhead,
   type WorktreeClaimSlotState,
+  type WorktreeOperationEntry,
   type WorktreePoolRow,
   type WorktreeSlotRow,
 } from "./store.ts";
@@ -221,6 +222,11 @@ export type WorktreeRepairResult =
   | WorktreeRecoverResult
   /** The registration is repaired, and the slot stays quarantined for the work it holds. */
   | { outcome: "heldWork"; reason: string };
+
+/** What an operation came to, as its history entry says it. */
+export type WorktreeOperationSettled =
+  | { outcome: "done"; reason: null }
+  | { outcome: Exclude<WorktreeOperationOutcome, "done">; reason: string };
 
 export type NativeLeaseLookup =
   | { state: "active" | "released"; lease: NativeWorktreeLease }
@@ -3268,13 +3274,12 @@ export class WorktreeManager {
         });
       const priorFailure = this.recoveryFailures.get(slot.id);
       this.recoveryFailures.delete(slot.id);
-      // An unknown outcome that moved no version never reached the reset: its read failed.
-      const untouched = result.outcome === "outcomeUnknown" && this.store.slot(slot.id)?.version === slot.version;
-      if (result.outcome === "refused" || untouched) {
+      const settled = this.recoverySettled(slot.id, slot.version, result);
+      if (settled.outcome === "refused") {
         const prior = this.recoveryRefusals.get(slot.id);
         const refusal = {
           at: this.deps.now(),
-          reason: result.reason,
+          reason: settled.reason,
           blocking: result.outcome === "refused" ? result.blocking ?? null : null,
         };
         this.recoveryRefusals.set(slot.id, { version: slot.version, refusal });
@@ -3282,7 +3287,7 @@ export class WorktreeManager {
         // one repeated on a later pass reaches neither.
         if (prior?.version !== slot.version || prior.refusal.reason !== refusal.reason ||
           prior.refusal.blocking?.path !== refusal.blocking?.path) {
-          this.recordAutomaticOperation(slot.id, repairing, "refused", refusal.reason, startedAt);
+          this.recordAutomaticOperation(slot.id, repairing, settled, startedAt);
           this.publish();
           console.warn(oneLine(
             `[worktrees] automatic recovery of ${this.slotLabel(slot)} refused: ${refusal.reason}` +
@@ -3292,17 +3297,37 @@ export class WorktreeManager {
         continue;
       }
       this.recoveryRefusals.delete(slot.id);
-      if (result.outcome === "outcomeUnknown") {
-        console.warn(`[worktrees] automatic recover of slot ${slot.ordinal} did not finish: ${result.reason}`);
-        this.recoveryFailures.set(slot.id, result.reason);
-        if (priorFailure === result.reason) continue;
-        this.recordAutomaticOperation(slot.id, repairing, "failed", result.reason, startedAt);
-      } else if (result.outcome === "heldWork") {
-        this.recordAutomaticOperation(slot.id, repairing, "partial", result.reason, startedAt);
-      } else {
-        this.recordAutomaticOperation(slot.id, repairing, "done", null, startedAt);
+      if (settled.outcome === "failed") {
+        console.warn(`[worktrees] automatic recover of slot ${slot.ordinal} did not finish: ${settled.reason}`);
+        this.recoveryFailures.set(slot.id, settled.reason);
+        if (priorFailure === settled.reason) continue;
       }
+      this.recordAutomaticOperation(slot.id, repairing, settled, startedAt);
       this.publish();
+    }
+  }
+
+  /**
+   * What a Recover or Repair of a slot at `version` came to, whoever ran it. An unknown outcome
+   * that moved no version never reached the reset: its read failed and the slot is as it was,
+   * so it reads as a refusal.
+   */
+  recoverySettled(slotId: string, version: number | null, result: WorktreeRepairResult): WorktreeOperationSettled {
+    switch (result.outcome) {
+      case "recovered":
+        return { outcome: "done", reason: null };
+      case "heldWork":
+        return {
+          outcome: "partial",
+          reason: `The registration is repaired, and the slot stays quarantined for its work: ${result.reason}`,
+        };
+      case "refused":
+        return { outcome: "refused", reason: result.reason };
+      case "outcomeUnknown":
+        return {
+          outcome: this.store.slot(slotId)?.version === version ? "refused" : "failed",
+          reason: result.reason,
+        };
     }
   }
 
@@ -3314,20 +3339,23 @@ export class WorktreeManager {
   private recordAutomaticOperation(
     slotId: string,
     repairing: boolean,
-    outcome: WorktreeOperationOutcome,
-    reason: string | null,
+    settled: WorktreeOperationSettled,
     startedAt: number,
   ): void {
     const at = this.deps.now();
+    this.recordOperation(slotId, {
+      ...settled,
+      at,
+      operation: repairing ? "repair" : "recover",
+      actor: "automatic",
+      durationMs: at - startedAt,
+    });
+  }
+
+  /** The record of an operation that already happened, so losing it never changes that result. */
+  recordOperation(slotId: string, entry: WorktreeOperationEntry): void {
     try {
-      this.store.recordOperation(slotId, {
-        at,
-        operation: repairing ? "repair" : "recover",
-        outcome,
-        reason,
-        actor: "automatic",
-        durationMs: at - startedAt,
-      });
+      this.store.recordOperation(slotId, entry);
     } catch (error) {
       console.warn(`[worktrees] a finished operation's history entry was lost: ${bounded(String(error))}`);
     }

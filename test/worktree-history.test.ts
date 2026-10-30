@@ -1103,6 +1103,33 @@ test("an operation whose outcome is unknown records failed, and a repair that ke
   assert.equal(repair?.reason, "The registration is repaired, and the slot stays quarantined for its work: uncommitted change: a.txt");
 });
 
+test("an operator's Recover left unknown reads as the automatic one does: refused unmoved, failed moved", async () => {
+  const { clone, sha } = repository("mission-history-op-recover-unknown-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const quarantine = () => assert.ok(
+    m.store.quarantine(slotId!, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+  );
+  const recover = async () => {
+    const preview = await operations.preview({ action: "recover", slotId: slotId! });
+    assert.equal(preview.allowed, true, preview.blockers.join("; "));
+    await assert.rejects(operations.execute(preview.token, []), /timed out/);
+  };
+  quarantine();
+  m.recoverSlot = async () => ({ outcome: "outcomeUnknown", reason: "git status timed out after 15 s" });
+  await recover();
+  m.recoverSlot = async () => {
+    quarantine();
+    return { outcome: "outcomeUnknown", reason: "git checkout timed out after 60 s" };
+  };
+  await recover();
+  assert.deepEqual(operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason]), [
+    ["recover", "refused", "operator", "git status timed out after 15 s"],
+    ["recover", "failed", "operator", "git checkout timed out after 60 s"],
+  ]);
+});
+
 test("a Recover records done for the operator, and an entry that cannot be written changes no result", async () => {
   const { clone, sha } = repository("mission-history-op-recover-");
   const m = realManager();
@@ -1338,7 +1365,7 @@ test("automatic Repair names itself, and a repair that kept work records partly 
   await m.recoverQuarantines();
   assert.deepEqual(
     operationRows(slot.id).map((row) => [row.operation, row.outcome, row.actor, row.reason]),
-    [["repair", "partial", "automatic", "uncommitted change: a.txt"]],
+    [["repair", "partial", "automatic", "The registration is repaired, and the slot stays quarantined for its work: uncommitted change: a.txt"]],
   );
 });
 

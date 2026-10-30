@@ -69,10 +69,11 @@ import {
   type NativePoolStatus,
   type NativeSlotStatus,
   type WarmSlotResult,
+  type WorktreeOperationSettled,
 } from "./manager.ts";
 import { runAsWorktreeActor } from "./actor.ts";
 import { isTerminalOwnerKey } from "./owners.ts";
-import { depsCutOff, type WorktreeOperationEntry, type WorktreeSlotRow } from "./store.ts";
+import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
 import { registrationRepairQuarantine, splitObservationFailure } from "./quarantine-reasons.ts";
 import { describeRegistrationFix } from "./registration-repair.ts";
@@ -276,8 +277,8 @@ interface OperationProgress {
   finished: Set<string>;
   /** A step short of finishing a slot landed, such as a Destroy returning its owner's lease. */
   moved: boolean;
-  /** Set when the operation ended short of its goal without an error. */
-  partly: string | null;
+  /** A Recover or Repair's own reading of its result, which outranks reading the error. */
+  settled: WorktreeOperationSettled | null;
 }
 
 interface NativeTarget {
@@ -1877,7 +1878,7 @@ export class WorktreeOperationsService {
             target.outcome = result.outcome;
             target.detail = compact(result.reason);
         }
-        this.writeOperationEntry(target.slotId, {
+        this.manager.recordOperation(target.slotId, {
           at: this.deps.now(),
           operation: "warm",
           outcome: warmOutcome(result),
@@ -1895,7 +1896,7 @@ export class WorktreeOperationsService {
       console.error("[worktrees] Warm operation failed:", error);
       // The one slot a throw can leave undecided: nothing past it was reached.
       for (const target of warm.targets.filter((candidate) => candidate.outcome === "running")) {
-        this.writeOperationEntry(target.slotId, {
+        this.manager.recordOperation(target.slotId, {
           at: this.deps.now(),
           operation: "warm",
           outcome: "failed",
@@ -2103,7 +2104,7 @@ export class WorktreeOperationsService {
     removed: (target: WorktreeActionAffected) => void = () => {},
   ): Promise<WorktreeActionExecuteResult> {
     const startedAt = this.deps.now();
-    const progress: OperationProgress = { finished: new Set(), moved: false, partly: null };
+    const progress: OperationProgress = { finished: new Set(), moved: false, settled: null };
     try {
       const observed = await this.observe();
       const rebuilt = await this.buildPreview(held.preview.request, observed, operationId);
@@ -2125,17 +2126,10 @@ export class WorktreeOperationsService {
       const reason = compact(error instanceof Error ? error.message : String(error)) ?? "operation failed";
       const refused = error instanceof WorktreeOperationError && error.code !== "unavailable";
       const outcome = progress.moved || progress.finished.size > 0 ? "partial" : refused ? "refused" : "failed";
-      this.recordOperation(held.preview, operationId, startedAt, outcome, reason, progress);
+      this.recordOperation(held.preview, operationId, startedAt, progress.settled ?? { outcome, reason }, progress);
       throw error;
     }
-    this.recordOperation(
-      held.preview,
-      operationId,
-      startedAt,
-      progress.partly === null ? "done" : "partial",
-      progress.partly,
-      progress,
-    );
+    this.recordOperation(held.preview, operationId, startedAt, progress.settled ?? { outcome: "done", reason: null }, progress);
     if (held.preview.request.action === "legacyReturn") this.legacyVisibleRevision = null;
     return { ok: true, action: held.preview.request.action, message: this.successMessage(held.preview.request.action) };
   }
@@ -2149,8 +2143,7 @@ export class WorktreeOperationsService {
     preview: WorktreeActionPreview,
     operationId: string | null,
     startedAt: number,
-    outcome: WorktreeOperationOutcome,
-    reason: string | null,
+    { outcome, reason }: WorktreeOperationSettled,
     progress: OperationProgress,
   ): void {
     const { request } = preview;
@@ -2163,8 +2156,8 @@ export class WorktreeOperationsService {
     const at = this.deps.now();
     for (const target of preview.affected) {
       if (target.provider !== "mission") continue;
-      const stopped = outcome === "partial" && progress.partly === null;
-      this.writeOperationEntry(target.id, {
+      const stopped = outcome === "partial" && progress.settled === null;
+      this.manager.recordOperation(target.id, {
         at,
         operation,
         outcome,
@@ -2177,15 +2170,6 @@ export class WorktreeOperationsService {
         durationMs: at - startedAt,
         meta: { operationId },
       });
-    }
-  }
-
-  /** The record of an operation that already happened, so losing it never changes that result. */
-  private writeOperationEntry(slotId: string, entry: WorktreeOperationEntry): void {
-    try {
-      this.manager.store.recordOperation(slotId, entry);
-    } catch (error) {
-      console.warn(`[worktrees] a finished operation's history entry was lost: ${compact(String(error))}`);
     }
   }
 
@@ -2204,7 +2188,7 @@ export class WorktreeOperationsService {
       return;
     }
     const at = this.deps.now();
-    this.writeOperationEntry(slotId, {
+    this.manager.recordOperation(slotId, {
       at,
       operation: "kill",
       outcome,
@@ -2244,6 +2228,7 @@ export class WorktreeOperationsService {
         automatic: false,
         expectedWork,
       });
+      progress.settled = this.manager.recoverySettled(target.id, target.version, result);
       if (result.outcome === "recovered") return;
       throw new WorktreeOperationError(
         result.outcome === "outcomeUnknown" ? 503 : 409,
@@ -2254,11 +2239,8 @@ export class WorktreeOperationsService {
     if (request.action === "repair") {
       const target = preview.affected[0]!;
       const result = await this.manager.repairSlot({ slotId: target.id, expectedVersion: target.version ?? undefined });
-      if (result.outcome === "recovered") return;
-      if (result.outcome === "heldWork") {
-        progress.partly = `The registration is repaired, and the slot stays quarantined for its work: ${result.reason}`;
-        return;
-      }
+      progress.settled = this.manager.recoverySettled(target.id, target.version, result);
+      if (result.outcome === "recovered" || result.outcome === "heldWork") return;
       throw new WorktreeOperationError(
         result.outcome === "outcomeUnknown" ? 503 : 409,
         result.reason,

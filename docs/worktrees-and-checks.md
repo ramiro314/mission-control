@@ -710,7 +710,9 @@ this order:
   a slot skipped reads refused, a failed claim or a Cancel that reached the slot reads partly done,
   and a slot Cancel stopped before its turn was never touched and has no entry. Automatic Recover
   and Repair write the same entries as automatic; a refusal or an unknown outcome writes one when
-  its reason changes, so a pass repeating it stays quiet. A Kill entry names the PID and never the command. The operations
+  its reason changes, so a pass repeating it stays quiet. On either path, a Recover or Repair whose
+  outcome is unknown reads refused when the slot's version did not move, because its read failed
+  before the reset began and the slot is as it was, and failed when the version moved. A Kill entry names the PID and never the command. The operations
   list above the pools keeps its behavior, and dismissing a report there leaves the history alone.
   An Unowned trees operation has no slot, so it is logged to the daemon log only. A request refused
   before it was accepted (an expired token, a target with a cleanup already queued) answers the
