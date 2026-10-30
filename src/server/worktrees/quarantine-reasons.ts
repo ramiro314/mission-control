@@ -115,9 +115,11 @@ export function interruptedPruneQuarantine(reason: string | null): boolean {
 /**
  * Forget's write-ahead, recorded before its first delete. A recursive delete is not atomic and can
  * take the `.git` file a cause was read from, so this reason keeps Forget offered on what is left.
- * No pass clears it: a half-deleted folder waits for the operator who began deleting it.
+ * Nothing but Forget or Destroy leaves it: a reset keeps ignored files and the slot's dependency
+ * state, so Recover would hand a partly deleted install to the next lease as a warm one.
  */
 export const INTERRUPTED_FORGET = "a Forget was cut off before its folder was gone";
+export const RECOVER_REFUSES_INTERRUPTED_FORGET = "a Forget was cut off here and may have deleted part of its install, so only Forget or Destroy can finish it";
 
 /** A dirty available slot, and the reason older builds gave it before occupied was split off. */
 export const AVAILABLE_SLOT_DIRTY = "available slot is dirty";

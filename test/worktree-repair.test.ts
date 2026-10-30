@@ -15,6 +15,7 @@ import {
   clearableQuarantineReason,
   INTERRUPTED_FORGET,
   INTERRUPTED_PRUNE,
+  RECOVER_REFUSES_INTERRUPTED_FORGET,
   REGISTRATION_OR_IDENTITY,
   registrationRepairQuarantine,
   UNVERIFIED_REMOVAL,
@@ -1957,4 +1958,45 @@ test("a Forget that lost its slot to a change refuses before it deletes anything
 
   assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), { outcome: "refused", reason: "slot changed after it was observed" });
   assert.equal(readFileSync(slot.install, "utf8"), "warm\n");
+});
+
+test("a Forget cut off with .git intact is never recovered: a partly deleted install must not come back as warm", async () => {
+  const { clone, sha } = repository("mission-forget-no-recover-");
+  let failing = true;
+  const m = new WorktreeManager(db, {
+    ...deps,
+    removeTree: async (path) => {
+      if (!failing) return rmSync(path, { recursive: true, force: true });
+      rmSync(join(path, "node_modules"), { recursive: true });
+      throw new Error("EACCES: permission denied, unlink 'node_modules/dep/index.js'");
+    },
+  });
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-no-recover", INTERRUPTED_PRUNE);
+  db.prepare("UPDATE worktree_slots SET deps_state = 'current' WHERE id = ?").run(slot.slotId);
+  assert.equal((await forgetActions(service, slot.slotId)).includes("recover"), true, "before Forget began, Recover was on offer");
+
+  assert.equal((await m.forgetSlot({ slotId: slot.slotId })).outcome, "outcomeUnknown");
+  assert.equal(gitIn(slot.path, "status", "--porcelain"), "", "Git sees nothing wrong: only ignored files went");
+  const row = m.store.slot(slot.slotId)!;
+  assert.equal(row.quarantineReason, INTERRUPTED_FORGET);
+
+  const actions = await forgetActions(service, slot.slotId);
+  assert.equal(actions.includes("recover"), false);
+  assert.equal(actions.includes("forget"), true);
+  const preview = await service.preview({ action: "recover", slotId: slot.slotId });
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes(RECOVER_REFUSES_INTERRUPTED_FORGET), preview.blockers.join("; "));
+  for (const automatic of [false, true]) {
+    assert.deepEqual(await m.recoverSlot({ slotId: slot.slotId, allowDirty: true, automatic }), {
+      outcome: "refused", reason: RECOVER_REFUSES_INTERRUPTED_FORGET,
+    });
+  }
+  assert.ok(m.store.quarantine(slot.slotId, INTERRUPTED_FORGET, "Unable to create '/x/index.lock': File exists", Date.now()));
+  await m.recoverQuarantines();
+  assert.equal(m.store.slot(slot.slotId)?.state, "quarantined", "a lock error does not bring it back either");
+
+  failing = false;
+  await service.execute((await service.preview({ action: "forget", slotId: slot.slotId })).token, [...FORGET_ACK]);
+  assert.equal(m.store.slot(slot.slotId), null);
 });

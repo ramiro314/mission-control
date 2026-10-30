@@ -577,6 +577,37 @@ test("Forget runs from the slot card through its preview when Repair has no answ
   expect(worktrees()).not.toContain(`worktree ${pruneCutOff.path}\n`);
 });
 
+test("a Forget cut off with its Git registration intact offers Forget and no Recover, so a partly deleted install never comes back", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "forget cut off" },
+  });
+  expect(acquired.status()).toBe(201);
+  const { path, leaseId } = await acquired.json() as { path: string; leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId } });
+  expect(returned.ok()).toBe(true);
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+              quarantine_reason = 'a Forget was cut off before its folder was gone', last_error = NULL
+        WHERE path = ? AND state = 'available'`,
+    ).run(Date.now(), path);
+    expect(Number(changed.changes)).toBe(1);
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const slot = dashboard.locator(".wt-slot", { hasText: path });
+  await expect(slot).toContainText("a Forget was cut off before its folder was gone");
+  await expect(slot.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  await slot.getByRole("button", { name: "Forget", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "forget worktree preview" });
+  await expect(preview.getByText("Repair has no answer here: an earlier Forget was cut off with files still present.")).toBeVisible();
+  await expectContentClearsBorder(preview);
+});
+
 test("Recover keeps a warm install: it names an ignored path the default would overwrite, and asks nothing once it would not", async ({
   dashboard,
   daemon,

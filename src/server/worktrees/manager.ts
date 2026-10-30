@@ -69,6 +69,7 @@ import {
   isObservationFailure,
   OBSERVATION_FAILURE,
   observationFailureText,
+  RECOVER_REFUSES_INTERRUPTED_FORGET,
   REGISTRATION_OR_IDENTITY,
   registrationOrIdentityQuarantine,
   registrationRepairQuarantine,
@@ -3035,6 +3036,7 @@ export class WorktreeManager {
     if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {
       return { outcome: "refused", reason: "slot changed after it was observed" };
     }
+    if (slot.quarantineReason === INTERRUPTED_FORGET) return { outcome: "refused", reason: RECOVER_REFUSES_INTERRUPTED_FORGET };
     if (input.automatic && !input.repaired && !automaticRecoveryCandidate(slot)) {
       return { outcome: "refused", reason: "automatic recovery does not clear this quarantine" };
     }

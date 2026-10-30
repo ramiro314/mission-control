@@ -73,7 +73,12 @@ import { runAsWorktreeActor } from "./actor.ts";
 import { isTerminalOwnerKey } from "./owners.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
-import { registrationRepairQuarantine, splitObservationFailure } from "./quarantine-reasons.ts";
+import {
+  INTERRUPTED_FORGET,
+  RECOVER_REFUSES_INTERRUPTED_FORGET,
+  registrationRepairQuarantine,
+  splitObservationFailure,
+} from "./quarantine-reasons.ts";
 import { describeRegistrationFix } from "./registration-repair.ts";
 import { describeTreeDiscard, type TreeDiscard, type UnownedTreeDiscards } from "./orphan-sweep.ts";
 import { NO_SEED } from "./seed.ts";
@@ -622,8 +627,12 @@ export class WorktreeOperationsService {
             actions.push("destroy");
           }
           // Recover is for a quarantine nobody is still working in: its owner, if it had one,
-          // is positively gone. The preview and the manager each re-read that.
-          if (entry.slot.state === "quarantined" && exact && entry.ownerReferenced === false) {
+          // is positively gone. The preview and the manager each re-read that. A Forget cut off
+          // here is never recovered: only finishing it is safe for what the delete left.
+          if (
+            entry.slot.state === "quarantined" && exact && entry.ownerReferenced === false &&
+            entry.slot.quarantineReason !== INTERRUPTED_FORGET
+          ) {
             actions.push("recover");
           }
           // Repair is Recover's way in when Git's registration is what is wrong, so it asks for
@@ -1407,6 +1416,7 @@ export class WorktreeOperationsService {
       diskBytes: null,
     });
     if (slot.slot.state !== "quarantined") blockers.push(`Slot ${ordinal} is ${slot.slot.state}, not quarantined.`);
+    if (slot.slot.quarantineReason === INTERRUPTED_FORGET) blockers.push(RECOVER_REFUSES_INTERRUPTED_FORGET);
     if (slot.ownerReferenced !== false) {
       blockers.push(slot.ownerReferenced === null
         ? `Slot ${ordinal}'s owner could not be read, so it may still be in use.`
