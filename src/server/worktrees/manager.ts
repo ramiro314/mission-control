@@ -67,12 +67,19 @@ import {
   observationFailureText,
   REGISTRATION_OR_IDENTITY,
   registrationOrIdentityQuarantine,
+  registrationRepairQuarantine,
   RESERVATION_NOT_HANDED_BACK,
   sameObservationFailure,
   splitObservationFailure,
   withObservationFailure,
   withoutObservationFailure,
 } from "./quarantine-reasons.ts";
+import {
+  describeRegistrationFix,
+  diagnoseRegistration,
+  type RegistrationDiagnosis,
+  type RegistrationFix,
+} from "./registration-repair.ts";
 import { taskOwner } from "./owners.ts";
 import { trackedRun } from "./own-processes.ts";
 import {
@@ -207,6 +214,11 @@ export type WorktreeRecoverResult =
   /** `blocking` is the exact path that refused it: the first work entry, or the slot's `index.lock`. */
   | { outcome: "refused"; reason: string; blocking?: NonNullable<WorktreeRecoveryRefusalView["blocking"]> }
   | { outcome: "outcomeUnknown"; reason: string };
+
+export type WorktreeRepairResult =
+  | WorktreeRecoverResult
+  /** The registration is repaired, and the slot stays quarantined for the work it holds. */
+  | { outcome: "heldWork"; reason: string };
 
 export type NativeLeaseLookup =
   | { state: "active" | "released"; lease: NativeWorktreeLease }
@@ -2892,7 +2904,9 @@ export class WorktreeManager {
     return this.withSlot(input.slotId, () => this.recoverLocked(input));
   }
 
-  private async recoverLocked(input: Parameters<WorktreeManager["recoverSlot"]>[0]): Promise<WorktreeRecoverResult> {
+  private async recoverLocked(
+    input: Parameters<WorktreeManager["recoverSlot"]>[0] & { repaired?: boolean },
+  ): Promise<WorktreeRecoverResult> {
     const pool = this.store.poolForSlot(input.slotId);
     const slot = this.store.slot(input.slotId);
     if (!pool || !slot) return { outcome: "refused", reason: "native slot no longer exists" };
@@ -2900,20 +2914,13 @@ export class WorktreeManager {
     if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {
       return { outcome: "refused", reason: "slot changed after it was observed" };
     }
-    if (input.automatic && !automaticRecoveryCandidate(slot)) {
+    if (input.automatic && !input.repaired && !automaticRecoveryCandidate(slot)) {
       return { outcome: "refused", reason: "automatic recovery does not clear this quarantine" };
     }
     const judgesLock = !input.automatic || lockCausedQuarantine(slot.lastError);
-    const ownerBlocker = await this.recoverOwnerBlocker(slot);
-    if (ownerBlocker) return { outcome: "refused", reason: ownerBlocker };
-    const identity = this.identity(pool.mainCheckoutRoot);
-    if (!identity || !exactSlotPath(pool, identity, slot)) {
-      return { outcome: "refused", reason: "pool repository identity can no longer be proven" };
-    }
-    const marker = await readWorktreePoolMarker(pool.poolPath);
-    if (marker?.poolId !== pool.id) {
-      return { outcome: "refused", reason: "native pool marker is missing or does not match" };
-    }
+    const proof = await this.quarantinedSlotProof(pool, slot);
+    if (typeof proof === "string") return { outcome: "refused", reason: proof };
+    const { identity } = proof;
 
     const occupancy = (await this.withObservation(() => this.occupancy([slot.path]))).get(slot.path);
     if (judgesLock) {
@@ -2992,6 +2999,140 @@ export class WorktreeManager {
       return { outcome: "recovered", removedLock };
     }
     return reset.outcome === "refused" && blocking ? { outcome: "refused", reason: reset.reason, blocking } : reset;
+  }
+
+  /** What Recover and Repair each prove before they touch a quarantined slot, or why they cannot. */
+  private async quarantinedSlotProof(
+    pool: WorktreePoolRow,
+    slot: WorktreeSlotRow,
+  ): Promise<{ identity: WorktreeRepositoryIdentity } | string> {
+    const ownerBlocker = await this.recoverOwnerBlocker(slot);
+    if (ownerBlocker) return ownerBlocker;
+    const identity = this.identity(pool.mainCheckoutRoot);
+    if (!identity || !exactSlotPath(pool, identity, slot)) return "pool repository identity can no longer be proven";
+    const marker = await readWorktreePoolMarker(pool.poolPath);
+    if (marker?.poolId !== pool.id) return "native pool marker is missing or does not match";
+    return { identity };
+  }
+
+  /**
+   * Repair one slot quarantined for its registration: apply Git's own fixes, prove the
+   * registration healthy, then run automatic recovery's checks and reset, which never discard
+   * work. A slot with no owner, occupant or claim whose registration already reads healthy goes
+   * straight to those checks, so a repair whose recovery was refused is finished by a later pass.
+   * A slot that holds work stays quarantined as `repairedHoldsWork`, for a manual Recover.
+   *
+   * A claim holds the slot lock for hours, so it is refused here rather than waited on.
+   * Re-registration is not here: it moves files, so it never runs without an operator.
+   */
+  async repairSlot(input: { slotId: string; expectedVersion?: number }): Promise<WorktreeRepairResult> {
+    if (!this.store.poolForSlot(input.slotId)) return { outcome: "refused", reason: "native slot no longer exists" };
+    if (this.claims.has(input.slotId)) return { outcome: "refused", reason: "a dependency claim is running in this slot" };
+    return this.withSlot(input.slotId, () => this.repairLocked(input));
+  }
+
+  private async repairLocked(input: { slotId: string; expectedVersion?: number }): Promise<WorktreeRepairResult> {
+    const pool = this.store.poolForSlot(input.slotId);
+    const slot = this.store.slot(input.slotId);
+    if (!pool || !slot) return { outcome: "refused", reason: "native slot no longer exists" };
+    if (slot.state !== "quarantined") return { outcome: "refused", reason: `slot is ${slot.state}, not quarantined` };
+    if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {
+      return { outcome: "refused", reason: "slot changed after it was observed" };
+    }
+    if (!registrationRepairQuarantine(slot.quarantineReason)) {
+      return { outcome: "refused", reason: "this quarantine is not about the slot's Git registration" };
+    }
+    const proof = await this.quarantinedSlotProof(pool, slot);
+    if (typeof proof === "string") return { outcome: "refused", reason: proof };
+    const { identity } = proof;
+    const occupancy = (await this.withObservation(() => this.occupancy([slot.path]))).get(slot.path);
+    if (!occupancy || occupancy.status === "unknown") {
+      return { outcome: "refused", reason: occupancy?.status === "unknown" ? occupancy.reason : "slot occupancy is unknown" };
+    }
+    if (occupancy.occupants.length > 0) {
+      return { outcome: "refused", reason: "one or more processes still occupy the worktree" };
+    }
+    const diagnosis = await this.readRegistration(pool, identity, slot);
+    if (!diagnosis.ok) return { outcome: "outcomeUnknown", reason: diagnosis.reason };
+    if (diagnosis.value.status === "refused") return { outcome: "refused", reason: diagnosis.value.reason };
+    if (diagnosis.value.status === "fixable") {
+      const { fixes } = diagnosis.value;
+      for (const fix of fixes) {
+        const fixed = await this.applyRegistrationFix(identity, slot.path, fix);
+        if (fixed) return fixed;
+      }
+      const repaired = await this.readRegistration(pool, identity, slot);
+      if (!repaired.ok) return { outcome: "outcomeUnknown", reason: repaired.reason };
+      if (repaired.value.status !== "healthy") {
+        return { outcome: "refused", reason: "Git's repair did not leave the registration healthy" };
+      }
+      console.log(oneLine(`[worktrees] repaired ${this.slotLabel(slot)}: ${fixes.map(describeRegistrationFix).join("; ")}`));
+    }
+    const recovered = await this.recoverLocked({
+      slotId: slot.id,
+      expectedVersion: slot.version,
+      allowDirty: false,
+      automatic: true,
+      repaired: true,
+    });
+    if (recovered.outcome !== "refused" || !recovered.blocking || recovered.blocking.kind === "lock") return recovered;
+    const current = this.store.slot(slot.id);
+    if (current?.version === slot.version) {
+      this.quarantine(current, REGISTRATION_OR_IDENTITY.repairedHoldsWork, recovered.reason);
+    }
+    return { outcome: "heldWork", reason: recovered.reason };
+  }
+
+  /** Which of Git's fixes this slot needs, from a fresh listing. */
+  private async readRegistration(
+    pool: WorktreePoolRow,
+    identity: WorktreeRepositoryIdentity,
+    slot: WorktreeSlotRow,
+  ): Promise<GitResult<RegistrationDiagnosis>> {
+    let listed: Awaited<ReturnType<WorktreeGit["list"]>>;
+    try {
+      listed = await this.deps.git.list(identity);
+    } catch (error) {
+      return { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
+    }
+    if (!listed.ok) return listed;
+    return {
+      ok: true,
+      value: await diagnoseRegistration({
+        slotPath: slot.path,
+        commonDirectory: pool.gitCommonDirectory,
+        registration: registrationFor(listed.value, slot.path),
+      }),
+    };
+  }
+
+  /** Run one of Git's fixes. Null when it reported success. */
+  private async applyRegistrationFix(
+    identity: WorktreeRepositoryIdentity,
+    path: string,
+    fix: RegistrationFix,
+  ): Promise<WorktreeRepairResult | null> {
+    let result: Awaited<ReturnType<WorktreeGit["repair"]>>;
+    try {
+      result = fix === "unlock"
+        ? await this.deps.git.unlock(identity, path)
+        : await this.deps.git.repair(identity, fix === "repairPath" ? path : undefined);
+    } catch (error) {
+      return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+    }
+    if (result.ok) return null;
+    return { outcome: result.outcomeUnknown ? "outcomeUnknown" : "refused", reason: result.reason };
+  }
+
+  /**
+   * What Repair would do to this slot now, for its preview, or the read that failed, which says
+   * nothing about the slot. Null when the pool cannot be proven.
+   */
+  async slotRegistrationDiagnosis(slot: WorktreeSlotRow): Promise<GitResult<RegistrationDiagnosis> | null> {
+    const pool = this.store.poolForSlot(slot.id);
+    const identity = pool ? this.identity(pool.mainCheckoutRoot) : null;
+    if (!pool || !identity) return null;
+    return this.readRegistration(pool, identity, slot);
   }
 
   /**
@@ -3104,22 +3245,27 @@ export class WorktreeManager {
    * The automatic half of Recover, once per maintenance pass: every quarantine a fresh read can
    * disprove is retried with `automatic`, so only a slot with no owner, no process and no work
    * by the reset rule comes back, keeping its warm install. A refusal, and a read that failed
-   * before the reset began, leave the slot exactly as it was, for the operator's Recover.
+   * before the reset began, leave the slot exactly as it was, for the operator's Recover. A
+   * quarantine about the slot's registration takes Repair instead, which runs Git's own fixes
+   * first and the same checks after.
    */
   async recoverQuarantines(): Promise<void> {
     const candidates = this.store.slots().filter((slot) =>
-      slot.state === "quarantined" && automaticRecoveryCandidate(slot) && !this.claims.has(slot.id));
+      slot.state === "quarantined" && !this.claims.has(slot.id) &&
+      (registrationRepairQuarantine(slot.quarantineReason) || automaticRecoveryCandidate(slot)));
     // A slot that is no longer a candidate keeps no refusal: it left that quarantine, or is gone.
     const ids = new Set(candidates.map((slot) => slot.id));
     for (const id of this.recoveryRefusals.keys()) if (!ids.has(id)) this.recoveryRefusals.delete(id);
     for (const slot of candidates) {
       if (this.stopped) return;
-      const result = await this.recoverSlot({
-        slotId: slot.id,
-        expectedVersion: slot.version,
-        allowDirty: false,
-        automatic: true,
-      });
+      const result = registrationRepairQuarantine(slot.quarantineReason)
+        ? await this.repairSlot({ slotId: slot.id, expectedVersion: slot.version })
+        : await this.recoverSlot({
+          slotId: slot.id,
+          expectedVersion: slot.version,
+          allowDirty: false,
+          automatic: true,
+        });
       // An unknown outcome that moved no version never reached the reset: its read failed.
       const untouched = result.outcome === "outcomeUnknown" && this.store.slot(slot.id)?.version === slot.version;
       if (result.outcome === "refused" || untouched) {

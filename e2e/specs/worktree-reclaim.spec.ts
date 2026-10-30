@@ -1,7 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Page } from "@playwright/test";
 import { storageProblem, type StorageView } from "../../src/shared/storage-health.ts";
 import type { WorktreeInventory } from "../../src/shared/worktrees.ts";
@@ -43,6 +43,12 @@ import { mkSession } from "../../test/helpers/session-fixture.ts";
  * that owner on the next maintenance pass with its work and its process exactly as they were. The
  * lease, the dirty file, the process and the restart are real; the one seeded fact is the
  * quarantine, which this build no longer writes for a failed read.
+ *
+ * Repair: a slot quarantined for its Git registration has a Repair of its own, because Recover needs
+ * the registration it is missing. The preview names Git's fix, Execute runs it for real and then
+ * recovers the slot, and a slot that holds work comes out repaired and still quarantined, for
+ * Recover. The broken registrations are real files in the repository's Git directory; the one
+ * seeded fact is the quarantine reason, which needs a pass this fixture has switched off.
  *
  * Orphan processes: a process still inside a tree whose owner has finished is listed in Storage,
  * its link lands on the slot card, and Kill there goes through its confirmation to the guarded
@@ -398,6 +404,87 @@ test("a Storage problem link opens the quarantined slot, whose Recover previews 
   await expect(dashboard.getByText("No storage problems.")).toBeVisible();
   await expect(banner).toHaveCount(0);
   await shoot(dashboard, "05-storage-cleared");
+});
+
+test("Repair runs Git's own fix from the slot card through its preview, and a slot holding work stays quarantined for Recover", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const lease = async (label: string) => {
+    const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(acquired.status()).toBe(201);
+    return await acquired.json() as { path: string; leaseId: string };
+  };
+  const interrupted = await lease("interrupted add");
+  const holdingWork = await lease("holds work");
+  for (const { leaseId } of [interrupted, holdingWork]) {
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId } });
+    expect(returned.ok()).toBe(true);
+  }
+
+  // What an interrupted `git worktree add` leaves: a registration locked `initializing`.
+  const locked = (path: string) => join(dirname(indexLockOf(path)), "locked");
+  writeFileSync(locked(interrupted.path), "initializing\n");
+  writeFileSync(locked(holdingWork.path), "initializing\n");
+  const notes = join(holdingWork.path, "notes.md");
+  writeFileSync(notes, "not committed anywhere\n");
+  withDaemonDb(daemon, (db) => {
+    for (const path of [interrupted.path, holdingWork.path]) {
+      const changed = db.prepare(
+        `UPDATE worktree_slots
+            SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+                quarantine_reason = 'slot Git registration is bare, locked, or prunable', last_error = NULL
+          WHERE path = ? AND state = 'available'`,
+      ).run(Date.now(), path);
+      expect(Number(changed.changes)).toBe(1);
+    }
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const slot = dashboard.locator(".wt-slot", { hasText: interrupted.path });
+  await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(slot).toContainText("slot Git registration is bare, locked, or prunable");
+  await expect(slot.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  // The cards sit below the pool's settings, in a scrolling pane, so the card is brought into frame.
+  await dashboard.setViewportSize({ width: 1280, height: 1100 });
+  await slot.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "11-slot-card-repair");
+  await slot.getByRole("button", { name: "Repair", exact: true }).click();
+
+  const preview = dashboard.getByRole("dialog", { name: "repair worktree preview" });
+  await expect(preview.getByRole("heading", { name: "Repair worktree" })).toBeVisible();
+  await expect(preview.getByText("Removes the initializing lock an interrupted git worktree add left, with git worktree unlock.")).toBeVisible();
+  await expect(preview.getByText('A slot that holds work is not reset: it stays quarantined as "registration repaired; holds work", for Recover.')).toBeVisible();
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "12-repair-preview");
+
+  // Cancel changes nothing: the lock stays where it was.
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(preview).toHaveCount(0);
+  expect(existsSync(locked(interrupted.path))).toBe(true);
+
+  await slot.getByRole("button", { name: "Repair", exact: true }).click();
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(slot.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(slot.getByRole("button", { name: "Repair", exact: true })).toHaveCount(0);
+  expect(existsSync(locked(interrupted.path))).toBe(false);
+
+  const kept = dashboard.locator(".wt-slot", { hasText: holdingWork.path });
+  await kept.getByRole("button", { name: "Repair", exact: true }).click();
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(kept).toContainText("registration repaired; holds work", { timeout: EXECUTES_MS });
+  await expect(kept).toContainText("notes.md");
+  await expect(kept.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(kept.getByRole("button", { name: "Repair", exact: true })).toHaveCount(0);
+  await expect(kept.getByRole("button", { name: "Recover", exact: true })).toBeVisible();
+  expect(existsSync(locked(holdingWork.path))).toBe(false);
+  expect(readFileSync(notes, "utf8")).toBe("not committed anywhere\n");
+  await shoot(dashboard, "13-repaired-holds-work");
 });
 
 test("Recover keeps a warm install: it names an ignored path the default would overwrite, and asks nothing once it would not", async ({
