@@ -694,7 +694,11 @@ test("a preview taken while the listing fails is blocked and names the failed re
   const preview = await service.preview({ action: "repair", slotId: slot.slotId });
 
   assert.equal(preview.allowed, false);
-  assert.ok(preview.blockers.includes(`Git has no fix for this slot: ${LISTING_FAILED}.`), preview.blockers.join("; "));
+  assert.ok(
+    preview.blockers.includes(`The slot's Git registration could not be read; try again: ${LISTING_FAILED}.`),
+    preview.blockers.join("; "),
+  );
+  assert.equal(preview.blockers.some((line) => line.startsWith("Git has no fix")), false, "a failed read is not Git's answer");
   assert.equal(existsSync(join(slot.administrative, "locked")), true);
 });
 

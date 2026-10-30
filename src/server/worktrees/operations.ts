@@ -1485,10 +1485,11 @@ export class WorktreeOperationsService {
     }
     risks.push(risk("quarantined", "The slot is quarantined", false));
     if (diagnosis === null) blockers.push("The pool's repository identity cannot be proven.");
-    else if (diagnosis.status === "refused") blockers.push(`Git has no fix for this slot: ${diagnosis.reason}.`);
-    else if (diagnosis.status === "fixable") {
-      for (const fix of diagnosis.fixes) consequences.push(`${describeRegistrationFix(fix)}.`);
-      if (diagnosis.fixes.includes("repairGitFile")) {
+    else if (!diagnosis.ok) blockers.push(`The slot's Git registration could not be read; try again: ${diagnosis.reason}.`);
+    else if (diagnosis.value.status === "refused") blockers.push(`Git has no fix for this slot: ${diagnosis.value.reason}.`);
+    else if (diagnosis.value.status === "fixable") {
+      for (const fix of diagnosis.value.fixes) consequences.push(`${describeRegistrationFix(fix)}.`);
+      if (diagnosis.value.fixes.includes("repairGitFile")) {
         consequences.push("Git takes no path for that fix, so it also rewrites any other worktree's broken .git file in this repository.");
       }
     } else {

@@ -879,9 +879,11 @@ The operations have deliberately narrow meanings:
     the registration may be in use there, and Repair refuses.
 
   A bare registration, a folder that is gone, a `.git` that is not a file, and a registration no
-  administrative directory can be traced to all refuse, and the card shows why. Moving a folder
-  aside to register it again never happens here. After a fix, Repair reads the registration
-  again instead of trusting Git's exit code, then takes automatic recovery's checks and reset. The
+  administrative directory can be traced to all refuse, and the card shows why. A `git worktree
+  list` that fails says nothing about the slot, so its preview asks you to try again, and nothing
+  runs. Moving a folder aside to register it again never happens here. After a fix, Repair reads
+  the registration again instead of trusting Git's exit code, then takes automatic recovery's
+  checks and reset. The
   preview names each fix, and Execute refuses a registration or an occupant that changed after
   it. Repair asks for no acknowledgement, because it never discards work.
 

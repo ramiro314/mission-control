@@ -2970,13 +2970,15 @@ export class WorktreeManager {
     return { outcome: result.outcomeUnknown ? "outcomeUnknown" : "refused", reason: result.reason };
   }
 
-  /** What Repair would do to this slot now, for its preview. Null when the pool cannot be proven. */
-  async slotRegistrationDiagnosis(slot: WorktreeSlotRow): Promise<RegistrationDiagnosis | null> {
+  /**
+   * What Repair would do to this slot now, for its preview, or the read that failed, which says
+   * nothing about the slot. Null when the pool cannot be proven.
+   */
+  async slotRegistrationDiagnosis(slot: WorktreeSlotRow): Promise<GitResult<RegistrationDiagnosis> | null> {
     const pool = this.store.poolForSlot(slot.id);
     const identity = pool ? this.identity(pool.mainCheckoutRoot) : null;
     if (!pool || !identity) return null;
-    const diagnosis = await this.readRegistration(pool, identity, slot);
-    return diagnosis.ok ? diagnosis.value : { status: "refused", reason: diagnosis.reason };
+    return this.readRegistration(pool, identity, slot);
   }
 
   /**
