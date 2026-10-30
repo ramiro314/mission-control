@@ -123,7 +123,8 @@ occupied, dirty or off its target commit (one whose read failed waits for the ne
 and complete it), a dirty available slot, an available slot whose HEAD moved or that carries an active lease identity, an incomplete identity, a leased slot whose owner is positively
 gone, a reset or verification that failed, and a pool identity or marker that is missing,
 malformed or belongs to another pool. A process inside an available slot is not a fault: the slot
-stays available, acquisition passes over it, and its card lists the process. A reservation that a
+stays available, acquisition passes over it, and its card lists the process as an
+[orphan process](#orphan-processes) with **Kill**. A reservation that a
 read refused before anything in the slot changed - its occupancy became unknown, or a process
 entered it, before the reset - goes back to available as it was, and the acquisition reports it
 as not acquired, so a task falls back as it does for any refusal. One whose mutation outcome is
@@ -871,31 +872,37 @@ The operations have deliberately narrow meanings:
   offered on an available slot's card and, as **Warm idle slots**, among a pool's maintenance
   actions. It never touches a leased or quarantined slot. See [Warm](#warm).
 - **Kill** stops one orphan process: a process still running inside a tree whose owner has
-  finished. It is offered on the process's row in the slot card, behind a confirmation. With
+  finished, or inside an available slot, which has no owner. It is offered on the process's row in the slot card, behind a confirmation. With
   more than one listed, **Kill all** confirms every one of them in a single dialog. See
   [Orphan processes](#orphan-processes).
 
 #### Orphan processes
 
 A tree whose owner has finished is one a completed task still owes a return, a check lease left in
-`returning`, a quarantined slot, or an unreferenced folder the [orphan tree sweep](#orphan-tree-sweep)
-left in place because it is kept or occupied. After each maintenance pass (`MISSION_WORKTREE_SWEEP_MS`,
+`returning`, or a quarantined slot. An available slot with no lease, and an unreferenced folder the
+[orphan tree sweep](#orphan-tree-sweep) left in place because it is kept or occupied, have no owner
+at all and count the same way. After each maintenance pass (`MISSION_WORKTREE_SWEEP_MS`,
 5 minutes by default), and whenever Settings > Storage is opened, Mission Control runs the same
 occupancy inspection the return guard uses (`ps` plus one batched `lsof`, with its one retry)
 over every such tree.
 Only pool slots and children of `worktrees/` and `check-worktrees/` are inspected. A pool slot
-counts only while it holds the finished owner's own lease, or no lease and is quarantined. A
-completed task can keep owing a return after its slot was reset and leased to a live task, a
-quarantine can keep a live lease, and an available slot with no lease can be running a Warm or a
-dependency claim, and none of those processes are orphans. An owner still finishing is skipped too:
-a task whose session closure is still taking its agent down, and a check lease this daemon still
+counts only while it holds the finished owner's own lease, or holds no lease and is quarantined or
+available. A completed task can keep owing a return after its slot was reset and leased to a live
+task, and a quarantine can keep a live lease, and none of those processes are orphans. A Warm holds
+its slot under a lease, so a Warm's processes are never listed. A slot a dependency claim is running
+in is skipped too, and the trees are listed again once the inspection answers, so a claim that
+started during the inspection is not reported. A claim step that outlives its claim, such as one a
+daemon restart left behind, has no claim running any more and is an orphan. An owner still
+finishing is skipped too: a task whose session closure is still taking its agent down, and a check lease this daemon still
 owns or is working on. Each process
 found is reported as a bannered `orphan-process` problem in Settings > Storage, with its PID,
 parent PID, command, start time and tree. Its id is
 `orphan-process:<tree>:<pid>:<start time>`, so it survives a daemon restart. A pass that cannot
 inspect a tree keeps the last report for it rather than dropping it.
 
-Such a process blocks the tree's return, because the return guard refuses an occupied tree.
+Such a process blocks the tree's return, because the return guard refuses an occupied tree. In an
+available slot, which has no return, it keeps the slot from being leased, because acquisition
+passes over an occupied slot. Its problem says the tree is one no task or check owns.
 The Storage problem's Open slot link lands on the slot's card, which lists each orphan process
 with **Kill**. The confirmation names the process and what happens. When the card lists more
 than one, **Kill all** opens one confirmation naming every listed process and sends one guarded
@@ -911,7 +918,8 @@ unless all of these hold:
 
 It then sends `SIGTERM`, and `SIGKILL` 5 seconds later if the same process (same start time) is
 still running. It retries the tree's pending task or check return at once, skipping that
-return's backoff, and scans again, so the problem clears with the next `storage_health` event.
+return's backoff (an available slot has none, and the next acquisition screens it afresh), and
+scans again, so the problem clears with the next `storage_health` event.
 For an unreferenced folder the retry is another orphan tree sweep. A refusal answers 409 with its
 reason. A tree that is not a pool slot has no slot card, so its Storage link, Open tree, lands on
 its row under [Unowned trees](#unowned-trees), which lists the same processes with the same Kill.
@@ -1008,6 +1016,15 @@ obligations resume after discovery, with refused returns retried at a bounded ca
 completed before this policy keep their existing retained checkouts and 30-day activity window;
 upgrade never infers return permission from an old done status or session-closure record.
 Another live session or process always blocks automatic return.
+
+A cancelled or failed task can leave that window early. When a session ends inside a tree such a
+task holds, Mission Control reclaims all of the task's trees at once if they hold no work and no
+session or process remains in any of them, the same check a restart runs. A tree with work stays
+for the 30 days and is listed in **Settings > Storage**. A process still inside keeps the trees
+too, and the session's exit does not ask again, so they then wait for **Clean up**, a restart or
+the 30 days. A task that was still running when its agent left is not reclaimed by that exit: it
+settles as failed and keeps its trees. A managed Pipeline task is left out, because its provider
+owns the outcome.
 
 A return that keeps being refused is recorded rather than silent. A completed task's owed
 return and a check's lease return each record when their return was first refused and the
