@@ -230,7 +230,7 @@ test("a process holding an unreferenced folder keeps it from any discard, is rep
 
   const retried: string[] = [];
   const monitor = new OrphanProcessMonitor({
-    trees: () => finishedTrees({ slots: [], taskReturns: [], returningChecks: [], unownedTrees: sweep.unreferenced() }),
+    trees: () => finishedTrees({ slots: [], claimRunning: () => false, taskReturns: [], returningChecks: [], unownedTrees: sweep.unreferenced() }),
     retryReturn: async (owner) => {
       retried.push(owner.kind);
       await sweep.sweep();

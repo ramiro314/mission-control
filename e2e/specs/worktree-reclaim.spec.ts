@@ -36,7 +36,8 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
  * its link lands on the slot card, and Kill there goes through its confirmation to the guarded
  * route and comes back as the process gone and the row cleared over `storage_health`. With more
  * than one, Kill all confirms every listed process in one dialog and stops them all; any the
- * daemon refuses stay in that dialog with its reason.
+ * daemon refuses stay in that dialog with its reason. A process in an available slot, which has
+ * no owner at all, is an orphan process too: the slot stays available and its card offers Kill.
  *
  * Unowned trees: a folder under `worktrees/` that no task, check or slot names has no slot card,
  * so its fixes live in Worktrees > Unowned trees. A process holding one is reported and killed
@@ -705,6 +706,63 @@ test("Kill, from a Storage problem link, stops an orphan process in a quarantine
     await shoot(dashboard, "04-orphan-killed");
   } finally {
     orphan?.kill("SIGKILL");
+  }
+});
+
+test("a stray process in an available slot is listed on its card with Kill, and the slot stays available", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "stray process" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+
+  let stray: ChildProcess | null = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: lease.path, stdio: "ignore",
+  });
+  await once(stray, "spawn");
+  const pid = stray.pid!;
+  stray.once("exit", () => { stray = null; });
+
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+    const problem = dashboard.getByRole("list", { name: "Storage problems" })
+      .getByRole("listitem").filter({ hasText: `Process ${pid}` });
+    await expect(problem.getByText("Orphan process", { exact: true })).toBeVisible();
+    await expect(problem).toContainText(`${lease.path}, which no task or check owns`);
+    await problem.getByRole("button", { name: "Open slot" }).click();
+
+    const slot = dashboard.locator(".wt-slot", { hasText: lease.path });
+    await expect(slot).toBeInViewport();
+    await expect(slot.getByText("available", { exact: true })).toBeVisible();
+    const orphans = slot.getByRole("region", { name: /Orphan processes in slot/ });
+    await expect(orphans).toContainText(`PID ${pid}`);
+    await shoot(dashboard, "09-available-slot-orphan");
+
+    const kill = orphans.getByRole("button", { name: `Kill process ${pid}` });
+    await expect(kill).toHaveAccessibleDescription(/keeps this slot from being leased/);
+    await kill.click();
+    const confirm = dashboard.getByRole("dialog", { name: "Kill orphan process" });
+    await expect(confirm).toContainText(lease.path);
+    await shoot(dashboard, "10-available-slot-kill-confirmation");
+    const killed = dashboard.waitForResponse((response) => response.url().endsWith("/api/worktrees/processes/kill"));
+    await confirm.getByRole("button", { name: "Kill process" }).click();
+    expect((await killed).status()).toBe(200);
+    await expect(confirm).toHaveCount(0);
+    await expect.poll(() => alive(pid)).toBe(false);
+    await expect(orphans).toHaveCount(0);
+    await expect(slot.getByRole("region", { name: /^Processes in slot/ })).toHaveCount(0);
+    await expect(slot.getByText("available", { exact: true })).toBeVisible();
+    await shoot(dashboard, "11-available-slot-orphan-killed");
+  } finally {
+    stray?.kill("SIGKILL");
   }
 });
 

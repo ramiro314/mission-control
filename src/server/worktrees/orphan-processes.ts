@@ -23,10 +23,12 @@ export type FinishedTreeOwner =
   | { kind: "task"; taskId: string }
   | { kind: "check"; attemptId: string }
   | { kind: "slot"; slotId: string }
+  /** An available slot with no lease has no owner at all, and no return to wait on. */
+  | { kind: "available-slot"; slotId: string }
   /** An unreferenced folder the orphan tree sweep left in place. Its "return" is the next sweep. */
   | { kind: "unowned" };
 
-/** A tree whose owner has finished or is gone, so any process still inside it is an orphan. */
+/** A tree whose owner has finished or is gone, or that has none, so any process still inside it is an orphan. */
 export interface FinishedTree {
   path: string;
   /** The pool slot at this path, or null for a tree under `worktrees/` or `check-worktrees/`. */
@@ -36,18 +38,21 @@ export interface FinishedTree {
 
 /**
  * Every tree whose owner has finished: a task's pending return, a check lease stuck in
- * `returning`, a quarantined slot, and an unreferenced folder under `worktrees/` or
- * `check-worktrees/` that the orphan tree sweep left in place. One path can be several of
- * these; the scan merges them.
+ * `returning`, a quarantined slot, an available slot with no lease, and an unreferenced folder
+ * under `worktrees/` or `check-worktrees/` that the orphan tree sweep left in place. One path
+ * can be several of these; the scan merges them.
  *
  * A pool slot is a finished tree for an owner only while it holds that owner's own lease, or no
  * lease at all and is quarantined. A completed task can keep owing a return after its slot was
- * reset and leased to a live task (the return is then retained as "task ownership changed"), a
- * quarantine can keep a live lease, and an available slot with no lease can be running a Warm
- * or a dependency claim. Inspecting any of those would offer a live owner's processes for Kill.
+ * reset and leased to a live task (the return is then retained as "task ownership changed"), and
+ * a quarantine can keep a live lease. Inspecting either would offer a live owner's processes for
+ * Kill. A Warm holds its slot under a lease, so only a claim can be running in an available slot
+ * with none, and only for the moment before it unregisters; that slot is skipped.
  */
 export function finishedTrees(input: {
   slots: readonly WorktreeSlotRow[];
+  /** Whether a dependency claim is running in this slot right now. */
+  claimRunning: (slotId: string) => boolean;
   taskReturns: ReadonlyArray<{ taskId: string; trees: ReadonlyArray<{ path: string; leaseId: string | null }> }>;
   returningChecks: ReadonlyArray<{ attemptId: string; path: string; leaseId: string | null }>;
   /** Unreferenced folders, which no slot, task or check owns. */
@@ -73,6 +78,11 @@ export function finishedTrees(input: {
     ...input.slots.filter((slot) => slot.state === "quarantined" && slot.activeLeaseId === null).map((slot) => ({
       path: slot.path, slotId: slot.id, owner: { kind: "slot", slotId: slot.id } as const,
     })),
+    ...input.slots
+      .filter((slot) => slot.state === "available" && slot.activeLeaseId === null && !input.claimRunning(slot.id))
+      .map((slot) => ({
+        path: slot.path, slotId: slot.id, owner: { kind: "available-slot", slotId: slot.id } as const,
+      })),
     ...(input.unownedTrees ?? []).filter((path) => !slotAt.has(path)).map((path) => ({
       path, slotId: null, owner: { kind: "unowned" } as const,
     })),
@@ -93,7 +103,7 @@ export type OrphanKillResult =
 
 export interface OrphanProcessDeps {
   trees: () => FinishedTree[];
-  /** Retry the return a finished owner is waiting on. A slot owner has none. */
+  /** Retry the return a finished owner is waiting on. A slot, in either state, has none. */
   retryReturn: (owner: FinishedTreeOwner) => unknown;
   /** After a scan or a kill, so the storage aggregate recomputes. */
   changed?: () => void;
@@ -132,8 +142,8 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Orphan processes: a process still inside a tree whose owner has finished (D8). Each
- * maintenance pass scans every such tree with the existing occupancy inspection and reports
+ * Orphan processes: a process still inside a tree whose owner has finished, or that has no
+ * owner (D8). Each maintenance pass scans every such tree with the existing occupancy inspection and reports
  * each process as an `orphan-process` storage problem.
  *
  * Kill only signals a process this monitor reported, and only after a fresh inspection still
@@ -170,7 +180,7 @@ export class OrphanProcessMonitor {
         "orphan-process",
         `${entry.tree}:${occupant.pid}`,
         occupant.startMs,
-        entry.owners.every((owner) => owner.kind === "unowned")
+        entry.owners.every((owner) => owner.kind === "unowned" || owner.kind === "available-slot")
           ? `Process ${occupant.pid} (${occupant.command}) is still running in ${entry.tree}, which no task or check owns`
           : `Process ${occupant.pid} (${occupant.command}) is still running in ${entry.tree}, whose owner has finished`,
         entry.slotId ? { target: "slot", slotId: entry.slotId } : { target: "unowned-tree", path: entry.tree },
@@ -235,16 +245,18 @@ export class OrphanProcessMonitor {
   }
 
   private async runScan(): Promise<void> {
-    const candidates = await this.candidates();
+    const inspected = await this.candidates();
     let occupancy: Map<string, WorktreeOccupancy>;
     try {
-      occupancy = await this.occupancy([...candidates.keys()]);
+      occupancy = await this.occupancy([...inspected.keys()]);
     } catch (error) {
       console.warn(`[worktrees] orphan process scan failed: ${errorMessage(error)}`);
       occupancy = new Map();
     }
     const next = new Map<string, ReportedTree>();
-    for (const [tree, entry] of candidates) {
+    // Listed again now that the inspection answered: an available slot reserved in the meantime
+    // may have a claim running, and whatever the inspection saw there is not an orphan.
+    for (const [tree, entry] of await this.candidates()) {
       const state = occupancy.get(tree);
       // A pass that could not see a tree keeps what the last one saw there, so a timed-out
       // `lsof` neither clears a real report nor changes its id.
