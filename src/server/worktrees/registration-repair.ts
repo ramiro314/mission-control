@@ -8,7 +8,7 @@ import { slotGitDirectory } from "./index-lock.ts";
  * - `repairGitFile`: `git worktree repair`, for a `.git` file that is missing or wrong while an
  *   administrative directory still names this path;
  * - `repairPath`: `git worktree repair <path>`, for a `.git` file that names an administrative
- *   directory whose `gitdir` names somewhere else;
+ *   directory whose `gitdir` names a folder that is gone;
  * - `unlock`: `git worktree unlock`, for the `initializing` lock of an interrupted `worktree add`.
  */
 export type RegistrationFix = "repairGitFile" | "repairPath" | "unlock";
@@ -85,8 +85,9 @@ export async function diagnoseRegistration(input: {
     if (!pointed || !directories.includes(pointed)) {
       return refused("no Git registration names this path, so it has to be registered again");
     }
+    // The folder, not its `.git`: a checkout that lost only that file is still the one registered.
     const elsewhere = recorded[directories.indexOf(pointed)];
-    if (elsewhere && (await lstat(elsewhere).catch(() => null))) {
+    if (elsewhere && (await lstat(dirname(elsewhere)).catch(() => null))) {
       return refused(`the slot's Git registration names ${dirname(elsewhere)}, which still exists`);
     }
     administrative = pointed;

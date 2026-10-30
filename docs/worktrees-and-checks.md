@@ -870,13 +870,15 @@ The operations have deliberately narrow meanings:
   - a registration locked `initializing`, which an interrupted `git worktree add` leaves, is
     unlocked with `git worktree unlock`. Any other lock is someone's, and refuses Repair;
   - a `.git` file that is missing or wrong, while an administrative directory under
-    `<common>/worktrees/` still names this path, is fixed with `git worktree repair`. Git has no
-    form of that fix that takes a path, so it also rewrites any other worktree's `.git` file in
-    the repository that is already broken;
+    `<common>/worktrees/` still names this path, is fixed with `git worktree repair`;
   - a `.git` file naming an administrative directory whose `gitdir` points elsewhere is fixed
     with `git worktree repair <path>` from the main checkout. A pass reads this as a missing
-    registration, because Git lists it under the path it names. If that other path still exists,
-    the registration may be in use there, and Repair refuses.
+    registration, because Git lists it under the path it names. If the folder it names still
+    exists, even without its `.git`, the registration may belong to that checkout, and Repair
+    refuses.
+
+  Neither form of `git worktree repair` stops at one worktree: each also rewrites any other
+  worktree's `.git` file in the repository that is already broken, and the preview says so.
 
   A bare registration, a folder that is gone, a `.git` that is not a file, and a registration no
   administrative directory can be traced to all refuse, and the card shows why. A `git worktree

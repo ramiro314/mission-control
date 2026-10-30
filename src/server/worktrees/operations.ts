@@ -1489,8 +1489,8 @@ export class WorktreeOperationsService {
     else if (diagnosis.value.status === "refused") blockers.push(`Git has no fix for this slot: ${diagnosis.value.reason}.`);
     else if (diagnosis.value.status === "fixable") {
       for (const fix of diagnosis.value.fixes) consequences.push(`${describeRegistrationFix(fix)}.`);
-      if (diagnosis.value.fixes.includes("repairGitFile")) {
-        consequences.push("Git takes no path for that fix, so it also rewrites any other worktree's broken .git file in this repository.");
+      if (diagnosis.value.fixes.some((fix) => fix !== "unlock")) {
+        consequences.push("git worktree repair covers the whole repository, so it also rewrites any other worktree's broken .git file.");
       }
     } else {
       consequences.push("Git's registration of this slot already reads healthy, so no Git fix runs.");

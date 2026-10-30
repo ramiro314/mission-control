@@ -442,10 +442,10 @@ export class NativeWorktreeGit implements WorktreeGit {
   }
 
   /**
-   * Git's own registration repair, from the main checkout. With `path` it points a registration
-   * back at that folder, reading the folder's `.git` file. Without one it rewrites the `.git`
-   * file of every registered worktree whose file is missing or wrong: Git has no form that
-   * rewrites one, and only a `.git` file already broken is touched.
+   * Git's own registration repair, from the main checkout. With `path` it first points a
+   * registration back at that folder, reading the folder's `.git` file. Either form then rewrites
+   * the `.git` file of every registered worktree whose file is missing or wrong: no form is
+   * scoped to one worktree, and only a `.git` file already broken is touched.
    */
   async repair(identity: WorktreeRepositoryIdentity, path?: string): Promise<GitResult<void>> {
     const result = await this.execute(

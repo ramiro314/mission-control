@@ -289,6 +289,13 @@ test("Repair leaves re-registration and every other cause to the operator", asyn
   writeFileSync(join(stolen.administrative, "gitdir"), `${join(other, ".git")}\n`);
   await refuses(stolen, /names .*still-there, which still exists/);
 
+  // A checkout that lost only its `.git` is still the one registered, and Git would take it over.
+  const orphaned = await quarantinedSlot(m, clone, sha, "task-repair-orphaned", REGISTRATION_OR_IDENTITY.missingRegistration);
+  const checkout = join(clone, "..", "lost-its-dot-git");
+  mkdirSync(checkout);
+  writeFileSync(join(orphaned.administrative, "gitdir"), `${join(checkout, ".git")}\n`);
+  await refuses(orphaned, /names .*lost-its-dot-git, which still exists/);
+
   const missing = await quarantinedSlot(m, clone, sha, "task-repair-folder");
   rmSync(missing.path, { recursive: true });
   await refuses(missing, /folder is gone/);
@@ -964,8 +971,25 @@ test("the card repairs a registration whose gitdir names elsewhere, through its 
 
   assert.equal(preview.allowed, true, preview.blockers.join("; "));
   assert.ok(preview.consequences.includes("Points the registration back at this path with git worktree repair <path>."));
-  assert.equal(preview.consequences.some((line) => line.includes("any other worktree's broken .git file")), false);
+  assert.ok(preview.consequences.some((line) => line.includes("any other worktree's broken .git file")));
   assert.equal((await operations.execute(preview.token, [])).ok, true);
   assert.equal(readFileSync(join(slot.administrative, "gitdir"), "utf8").trim(), join(slot.path, ".git"));
   assertRecovered(manager, slot);
+});
+
+test("git worktree repair <path> reaches every broken .git file, so its preview warns and an unlock's does not", async () => {
+  const { clone, sha } = repository("mission-repair-whole-repository-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-repair-whole-target", REGISTRATION_OR_IDENTITY.missingRegistration);
+  const sibling = await quarantinedSlot(manager, clone, sha, "task-repair-whole-sibling");
+  lockInitializing(sibling.administrative);
+
+  const unlocking = await operations.preview({ action: "repair", slotId: sibling.slotId });
+  assert.equal(unlocking.consequences.some((line) => line.includes("any other worktree's broken .git file")), false);
+
+  rmSync(join(sibling.path, ".git"));
+  writeFileSync(join(slot.administrative, "gitdir"), "/gone/from/here/.git\n");
+  const repaired = await manager.repairSlot({ slotId: slot.slotId });
+
+  assert.equal(repaired.outcome, "recovered");
+  assert.equal(readFileSync(join(sibling.path, ".git"), "utf8").trim(), `gitdir: ${sibling.administrative}`);
 });
