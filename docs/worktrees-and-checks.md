@@ -1030,7 +1030,9 @@ repositories and the repositories of tasks and checks), it reads `git worktree l
 and removes only the `prunable` registrations whose path is under the state home and no longer
 exists. It never runs an unscoped `git worktree prune`, so the operator's own worktrees
 elsewhere are untouched. A missing path that a task, check lease or native slot row still names
-keeps its registration, because that owner's own cleanup or reconciliation decides it.
+keeps its registration, because that owner's own cleanup or reconciliation decides it. A check
+lease that deleted a [tree Git no longer recognizes](#check-leases) runs the same scoped prune
+once the lease has settled.
 
 #### Unowned trees
 
@@ -1082,6 +1084,29 @@ authoritative above the generic slot record. Cleanup first proves the process gr
 conditionally returns the exact native lease. A missing, stale, occupied, or uncertain lease is
 kept for startup or maintenance reconciliation rather than guessed away. Native check leak
 reclamation runs on the native maintenance cadence after slot startup reconciliation.
+
+A Git fallback tree that Git no longer recognizes is deleted rather than retried forever. Once a
+tree's `.git` file is gone, `git worktree remove --force` refuses it with "validation failed",
+and the orphan tree sweep leaves it because the lease still names it. So when that return fails,
+the check lease deletes the folder itself, provided all of these hold:
+
+- the folder is a real directory, not a symlink, named for its attempt, whose real path is a
+  child of `check-worktrees/`;
+- its `.git` file is missing, or names a Git directory that is gone or that belongs to another
+  tree;
+- the attempt's process group is proven empty;
+- a fresh occupancy read of the folder is known and empty.
+
+The folder is deleted without following symlinks, then the lease settles `returned`, which
+clears its `stuck-return` problem, then the [scoped prune](#orphan-tree-sweep) removes the
+registration in the same pass. A prune that fails is left to the next sweep, since no row names
+the path any more. A deletion that fails, or any condition that does not hold, keeps the lease
+`returning` with the reason recorded. A folder that is already gone, after a run cut off between
+the deletion and the settle or a tree removed by hand, still completes its lease: usually through
+the ordinary return, because Git removes an absent tree's registration without complaint, and
+otherwise when the recorded path's parent resolves to `check-worktrees/` and nothing, not even a
+symlink, exists at the path. A tree Git still recognizes keeps the ordinary failed return, and so
+does a native check slot, which is a pool slot that Recover handles.
 
 #### The dependency claim in a check lease
 

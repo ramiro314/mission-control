@@ -229,6 +229,23 @@ function run(
 
 // ---- the gate actually runs ------------------------------------------------
 
+test("a finished check's release carries the runtime's own group recovery", { skip: !SUPPORTED }, async () => {
+  // Without it, a Git fallback tree that Git no longer recognizes could never be deleted at
+  // check end: the lease's default seam refuses (S11).
+  const f = fixture();
+  const handed: unknown[] = [];
+  const release = f.leases.releaseForAttempt.bind(f.leases);
+  f.leases.releaseForAttempt = async (attemptId, recovery) => {
+    handed.push(recovery);
+    return release(attemptId, recovery);
+  };
+  const { result } = run(f);
+
+  assert.equal((await result).kind, "exited");
+  assert.equal(handed.length, 1);
+  assert.equal(handed[0], f.runtime.groupRecovery);
+});
+
 test("a failing command fails with its own output, and its tree goes back", { skip: !SUPPORTED }, async () => {
   const f = fixture();
   const { ref, result } = run(f, { command: FAILS });

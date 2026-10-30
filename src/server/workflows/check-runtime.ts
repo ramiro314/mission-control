@@ -611,7 +611,7 @@ export class CheckRuntime {
     }
     let released: CheckLeaseRelease;
     try {
-      released = await this.leases.releaseForAttempt(attemptId);
+      released = await this.leases.releaseForAttempt(attemptId, this.groupRecovery);
     } catch (err) {
       // Ownership is dropped in `releaseForAttempt`'s own `finally`, but a throw before that is
       // reached would leave this attempt looking like a check still running - which is the one

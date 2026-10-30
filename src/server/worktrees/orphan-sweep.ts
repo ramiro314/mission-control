@@ -298,6 +298,24 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     return this.exclusive(() => this.discardNow(path));
   }
 
+  /**
+   * The scoped prune alone, outside a pass. A check lease that deleted a tree Git no longer
+   * recognized calls this once the lease has settled, so its registration goes in the same pass.
+   */
+  pruneRegistrations(): Promise<string[]> {
+    return this.exclusive(() => this.prune(this.referencedSet()));
+  }
+
+  /** Every path a row names, in both its resolved and canonical spellings. */
+  private referencedSet(): Set<string> {
+    const referenced = new Set<string>();
+    for (const path of this.deps.referencedPaths()) {
+      referenced.add(resolve(path));
+      referenced.add(canonicalWorktreePath(path));
+    }
+    return referenced;
+  }
+
   private exclusive<T>(work: () => Promise<T>): Promise<T> {
     const next = this.queue.then(work);
     this.queue = next.catch(() => {});
@@ -380,11 +398,7 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
 
   private async pass(): Promise<OrphanSweepResult> {
     const result: OrphanSweepResult = { removed: [], kept: [], skipped: [], pruned: [] };
-    const referenced = new Set<string>();
-    for (const path of this.deps.referencedPaths()) {
-      referenced.add(resolve(path));
-      referenced.add(canonicalWorktreePath(path));
-    }
+    const referenced = this.referencedSet();
     const isReferenced = (path: string) => [...referenced].some((named) => pathContains(path, named));
 
     const candidates: Array<{ path: string; inode: number }> = [];

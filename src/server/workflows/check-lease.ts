@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { lstat, readFile, realpath, rm } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import type { WorktreeProvider } from "@shared/types.ts";
 import { parseWorktreeReturnRefusal, type WorktreeReturnRefusal } from "@shared/storage-health.ts";
 import { CHECK_WORKTREES_DIR } from "../config.ts";
@@ -19,6 +20,7 @@ import {
 import { LegacyTreehouseService } from "../worktrees/legacy-treehouse.ts";
 import type { WorktreeClaimWarning } from "../worktrees/claim.ts";
 import { WorktreeManager } from "../worktrees/manager.ts";
+import { inspectWorktreeOccupancy, type WorktreeOccupancy } from "../worktrees/occupancy.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 
 function checkHolderToken(attemptId: string): string {
@@ -752,6 +754,70 @@ export interface CheckLeaseDeps {
   now?: () => number;
   /** How many leaked rows one reclamation pass may work through. */
   maxReclaimPerPass?: number;
+  /** Who is inside a tree. A Git check tree is deleted only after a fresh, known, empty read. */
+  occupancy?: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
+  /** Deletes a Git check tree that Git no longer recognizes. Never follows a symlink. */
+  removeTree?: (path: string) => Promise<void>;
+  /**
+   * The orphan sweep's scoped prune, run once such a tree's lease has settled. Omitted, the
+   * registration waits for the sweep that ends the same maintenance pass.
+   */
+  pruneRegistrations?: () => Promise<unknown>;
+}
+
+/**
+ * What the Git check provider's failed hand-back left behind, judged for deletion (S11).
+ *
+ *  - `recognized` - Git still knows the tree, so the failure is an ordinary one.
+ *  - `refused`    - Git does not know it, but deleting it is not proven safe.
+ *  - `present`    - Git does not know it, and the folder at `path` may be deleted.
+ *  - `absent`     - nothing exists at the recorded path, inside the check worktrees directory.
+ */
+type UnrecognizedCheckTree =
+  | { kind: "recognized" }
+  | { kind: "refused"; reason: string }
+  | { kind: "present"; path: string; inode: number }
+  | { kind: "absent" };
+
+function errorCode(err: unknown): string | undefined {
+  return (err as NodeJS.ErrnoException | null)?.code;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Whether Git still recognizes the tree at `tree` through its `.git` file. Unrecognized means
+ * the file is missing, or names a Git directory that is gone or that names another tree. A
+ * `.git` directory, symlink or unreadable file returns the refusal as a string.
+ */
+async function gitRecognition(tree: string): Promise<"recognized" | "unrecognized" | string> {
+  const marker = join(tree, ".git");
+  try {
+    const stat = await lstat(marker);
+    if (!stat.isFile()) return `${marker} is not a file`;
+  } catch (err) {
+    if (errorCode(err) === "ENOENT") return "unrecognized";
+    return `${marker} could not be read: ${errorMessage(err)}`;
+  }
+  let gitdir: string;
+  try {
+    const match = /^gitdir: (.+)$/m.exec(await readFile(marker, "utf8"));
+    if (!match) return `${marker} names no Git directory`;
+    gitdir = resolve(tree, match[1]!.trim());
+  } catch (err) {
+    return `${marker} could not be read: ${errorMessage(err)}`;
+  }
+  try {
+    // `worktree.useRelativePaths` writes this back-pointer relative to the Git directory, so it
+    // is resolved there, never against the daemon's cwd.
+    const back = resolve(gitdir, (await readFile(join(gitdir, "gitdir"), "utf8")).trim());
+    return canonicalWorktreePath(back) === canonicalWorktreePath(marker) ? "recognized" : "unrecognized";
+  } catch (err) {
+    if (errorCode(err) === "ENOENT" || errorCode(err) === "ENOTDIR") return "unrecognized";
+    return `${join(gitdir, "gitdir")} could not be read: ${errorMessage(err)}`;
+  }
 }
 
 /** The first retry delay after a failed return; doubled per consecutive failure. */
@@ -764,6 +830,9 @@ export class CheckLeaseManager {
   private readonly verifyBase: (repoRoot: string, baseSha: string) => Promise<string>;
   private readonly now: () => number;
   private readonly maxReclaimPerPass: number;
+  private readonly occupancy: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
+  private readonly removeTree: (path: string) => Promise<void>;
+  private readonly pruneRegistrations: () => Promise<unknown>;
 
   /**
    * Paths pinned in memory, added SYNCHRONOUSLY the moment acquire returns a path and
@@ -810,6 +879,11 @@ export class CheckLeaseManager {
     this.verifyBase = deps.verifyBase ?? verifyPinnedBase;
     this.now = deps.now ?? Date.now;
     this.maxReclaimPerPass = deps.maxReclaimPerPass ?? 8;
+    this.occupancy = deps.occupancy ?? inspectWorktreeOccupancy;
+    // `rm` unlinks a symlink inside the tree rather than following it, and the tree itself is
+    // proven a real directory before this is called.
+    this.removeTree = deps.removeTree ?? ((path) => rm(path, { recursive: true }));
+    this.pruneRegistrations = deps.pruneRegistrations ?? (async () => {});
     this.treehouse = new LegacyTreehouseCheckTreeProvider(
       deps.legacy ?? new LegacyTreehouseService(db),
     );
@@ -1094,8 +1168,15 @@ export class CheckLeaseManager {
    * is never returned. Without that rule, a daemon recovering from a crash between a
    * successful return and the row's deletion would return a tree the pool has since leased
    * to someone else, terminating their processes and hard-resetting their work.
+   *
+   * `recovery` is asked only when a Git check tree's hand-back fails because Git no longer
+   * recognizes it: deleting that folder needs the attempt's group proven empty. The refusing
+   * default keeps such a tree.
    */
-  async releaseForAttempt(attemptId: string): Promise<CheckLeaseRelease> {
+  async releaseForAttempt(
+    attemptId: string,
+    recovery: CheckGroupRecovery = refusingGroupRecovery,
+  ): Promise<CheckLeaseRelease> {
     const row = this.store.get(attemptId);
     // No row, or an already-terminal one: the prior return is accounted for. Complete
     // cleanup without invoking the recorded provider, because there is nothing left to return
@@ -1109,7 +1190,7 @@ export class CheckLeaseManager {
       // From the ROW, never from a fresh probe of this machine - see `providerFor`. Inside the
       // try so a refusal still drops this process's claim on the way out.
       const provider = this.providerFor(row);
-      return await provider.withLock(row.repoRoot, () => this.resolveLocked(row, provider));
+      return await provider.withLock(row.repoRoot, () => this.resolveLocked(row, provider, recovery));
     } finally {
       this.busy.delete(attemptId);
       this.owned.delete(attemptId);
@@ -1125,6 +1206,7 @@ export class CheckLeaseManager {
   private async resolveLocked(
     row: CheckLeaseRow,
     provider: CheckTreeReleaseProvider,
+    recovery: CheckGroupRecovery,
   ): Promise<CheckLeaseRelease> {
     const owner = await provider.ownership(row);
     if (owner.state === "unreadable") {
@@ -1163,10 +1245,109 @@ export class CheckLeaseManager {
     }
     const returned = await provider.handBack(row);
     if (returned.code !== 0) {
-      return this.failedReturn(row, commandFailureText(returned), returned.processes);
+      const reason = commandFailureText(returned);
+      // Only a disposable Git tree. A native check slot is a pool slot, which Recover or Repair
+      // handles, and a legacy Treehouse tree belongs to its own pool.
+      if (provider.kind === "git") return this.completeUnrecognizedTree(row, recovery, reason, returned.processes);
+      return this.failedReturn(row, reason, returned.processes);
     }
     this.settle(row, "returned");
     return { outcome: "returned" };
+  }
+
+  /**
+   * A Git check tree whose `git worktree remove --force` failed (S11). Once its `.git` is gone
+   * Git refuses with "validation failed" on every pass, and the orphan sweep leaves the folder
+   * because this lease still names it, so without this the tree holds its disk forever.
+   *
+   * When Git no longer recognizes the tree and deleting it is proven safe, the folder is
+   * deleted, then the lease settles `returned` (clearing `stuck-return`), then the scoped prune
+   * removes the registration. That order is load-bearing: the prune skips a path a live lease
+   * names, so it can act only after the settle. A failed prune is left to the next sweep, since
+   * no row names the path any more. A failed deletion keeps the lease `returning`.
+   *
+   * A folder that is already gone - a run cut off between the deletion and the settle, or a
+   * tree removed by hand - settles the same way when its parent is the check worktrees
+   * directory. A tree Git still recognizes keeps the ordinary failed return.
+   */
+  private async completeUnrecognizedTree(
+    row: CheckLeaseRow,
+    recovery: CheckGroupRecovery,
+    reason: string,
+    processes: WorktreeReturnRefusal["processes"] | undefined,
+  ): Promise<CheckLeaseRelease> {
+    const tree = await this.unrecognizedTree(row, recovery);
+    if (tree.kind === "recognized") return this.failedReturn(row, reason, processes);
+    if (tree.kind === "refused") {
+      return this.failedReturn(row, `${reason}; the tree was not deleted: ${tree.reason}`, processes);
+    }
+    if (tree.kind === "present") {
+      try {
+        // The same folder the checks above judged, never a symlink swapped in since.
+        const stat = await lstat(tree.path);
+        if (!stat.isDirectory() || stat.ino !== tree.inode) {
+          return this.failedReturn(row, `${reason}; the tree was not deleted: ${tree.path} changed while it was checked`);
+        }
+        await this.removeTree(tree.path);
+      } catch (err) {
+        return this.failedReturn(row, `${reason}; deleting the tree failed: ${errorMessage(err)}`);
+      }
+    }
+    this.settle(row, "returned");
+    try {
+      await this.pruneRegistrations();
+    } catch (err) {
+      console.warn(
+        `[mission-control] could not prune the registration of ${row.leasePath}; the next sweep will:`,
+        errorMessage(err),
+      );
+    }
+    return { outcome: "returned" };
+  }
+
+  /**
+   * Every condition S11 puts on deleting a Git check tree, checked in the order that refuses
+   * cheapest. The folder must be a real directory, named for its attempt, whose realpath is a
+   * child of the check worktrees directory; Git must no longer recognize it; and its process
+   * group and a fresh occupancy read must both be proven empty. A missing folder is contained
+   * through its parent instead, because a missing path has no realpath.
+   */
+  private async unrecognizedTree(row: CheckLeaseRow, recovery: CheckGroupRecovery): Promise<UnrecognizedCheckTree> {
+    const refused = (reason: string): UnrecognizedCheckTree => ({ kind: "refused", reason });
+    const path = row.leasePath;
+    const root = await realpath(CHECK_WORKTREES_DIR).catch(() => null);
+    if (root === null) return refused(`${CHECK_WORKTREES_DIR} cannot be resolved`);
+    if (basename(path) !== row.attemptId) return refused(`${path} is not named for attempt ${row.attemptId}`);
+
+    let stat;
+    try {
+      stat = await lstat(path);
+    } catch (err) {
+      if (errorCode(err) !== "ENOENT") return refused(`${path} could not be read: ${errorMessage(err)}`);
+      // Nothing at the path, not even a symlink. Only its parent can say where it was.
+      const parent = await realpath(dirname(path)).catch(() => null);
+      return parent === root ? { kind: "absent" } : refused(`the parent of ${path} does not resolve to ${root}`);
+    }
+    if (stat.isSymbolicLink()) return refused(`${path} is a symlink`);
+    if (!stat.isDirectory()) return refused(`${path} is not a directory`);
+
+    const recognition = await gitRecognition(path);
+    if (recognition === "recognized") return { kind: "recognized" };
+    if (recognition !== "unrecognized") return refused(recognition);
+
+    const real = await realpath(path).catch(() => null);
+    if (real !== path || dirname(real) !== root) return refused(`${path} does not resolve to a child of ${root}`);
+
+    const group = await recovery(row.attemptId);
+    if (group !== "empty") {
+      return refused(group === "not-empty" ? "its check process group is still running" : "its check process-group state is unknown");
+    }
+    const occupied = (await this.occupancy([path])).get(path);
+    if (!occupied || occupied.status === "unknown") {
+      return refused(`its processes could not be inspected: ${occupied?.reason ?? "occupancy is unknown"}`);
+    }
+    if (occupied.occupants.length > 0) return refused(`${occupied.occupants.length} process(es) still use it`);
+    return { kind: "present", path, inode: stat.ino };
   }
 
   /**
@@ -1264,15 +1445,15 @@ export class CheckLeaseManager {
    */
   private async resolveRecovered(row: CheckLeaseRow, recovery: CheckGroupRecovery): Promise<void> {
     if (row.cleanupState === "returning") {
-      await this.releaseForAttempt(row.attemptId);
+      await this.releaseForAttempt(row.attemptId, recovery);
       return;
     }
     if (row.supervisorPid === NO_SUPERVISOR_PID && row.supervisorStartTicks === NO_SUPERVISOR_TICKS) {
-      await this.releaseForAttempt(row.attemptId);
+      await this.releaseForAttempt(row.attemptId, recovery);
       return;
     }
     if ((await recovery(row.attemptId)) === "empty") {
-      await this.releaseForAttempt(row.attemptId);
+      await this.releaseForAttempt(row.attemptId, recovery);
     }
   }
 
@@ -1325,11 +1506,14 @@ export class CheckLeaseManager {
    * Retry one `returning` lease now, skipping its backoff. Called after an orphan process
    * blocking its return was killed. A lease this process is working on is left alone.
    */
-  async retryReturning(attemptId: string): Promise<CheckLeaseRelease | null> {
+  async retryReturning(
+    attemptId: string,
+    recovery: CheckGroupRecovery = refusingGroupRecovery,
+  ): Promise<CheckLeaseRelease | null> {
     const row = this.store.get(attemptId);
     if (row?.cleanupState !== "returning" || this.owned.has(attemptId) || this.busy.has(attemptId)) return null;
     this.backoff.delete(attemptId);
-    return await this.releaseForAttempt(attemptId);
+    return await this.releaseForAttempt(attemptId, recovery);
   }
 
   /**
@@ -1394,7 +1578,7 @@ export class CheckLeaseManager {
         }
       }
       const provider = this.providerFor(row);
-      return await provider.withLock(row.repoRoot, () => this.resolveLocked(row, provider));
+      return await provider.withLock(row.repoRoot, () => this.resolveLocked(row, provider, recovery));
     } finally {
       this.busy.delete(attemptId);
       this.owned.delete(attemptId);
