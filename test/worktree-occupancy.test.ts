@@ -720,6 +720,11 @@ test("an IDE helper is named by its executable, and its children are not", async
   ]);
 });
 
+test("a parent-link loop in the table ends the walk and names nothing", async () => {
+  const named = await labels([process(500, 501), process(501, 500)], [session]);
+  assert.deepEqual([...named.entries()], [[500, null], [501, null]]);
+});
+
 test("a named process stays an occupant", async () => {
   const { one } = fixture();
   const result = await inspectWorktreeOccupancy([one], {

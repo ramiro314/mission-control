@@ -429,10 +429,14 @@ test("the inventory lists at most 16 occupants per slot, clips each command to 5
   // A two-byte character straddles byte 512, so a clip that is not character-aware would split it.
   const straddling = `${"a".repeat(511)}é and the rest`;
   const exact = "b".repeat(512);
+  // "Session a" leaves an odd number of bytes, so the last two-byte character straddles the limit.
+  const longName = `Session a${"é".repeat(2_000)}`;
+  const exactName = "n".repeat(WORKTREE_INVENTORY_LIMITS.textBytes);
   occupants = Array.from({ length: 17 }, (_, index) => ({
     ...occupant(held.path, index === 0 ? straddling : index === 1 ? exact : `node worker-${index}.js`),
     pid: 6000 + index,
     startMs: 1_000 + index,
+    knownOwner: index === 3 ? longName : index === 4 ? exactName : null,
   }));
   const view = await inventorySlot(m, held.slotId);
   assert.equal(WORKTREE_INVENTORY_LIMITS.occupantsPerSlot, 16);
@@ -443,6 +447,9 @@ test("the inventory lists at most 16 occupants per slot, clips each command to 5
   assert.deepEqual(view.occupants[2], { pid: 6002, command: "node worker-2.js", startedAt: 1_002, knownOwner: null });
   assert.equal(view.occupants[0]!.command, "a".repeat(511), "the straddling character is dropped whole");
   assert.equal(view.occupants[1]!.command, exact, "a command of exactly 512 bytes is kept whole");
+  assert.equal(WORKTREE_INVENTORY_LIMITS.textBytes, 2_048);
+  assert.equal(view.occupants[3]!.knownOwner, `Session a${"é".repeat(1_019)}`, "the straddling character is dropped whole");
+  assert.equal(view.occupants[4]!.knownOwner, exactName, "a name of exactly the limit is kept whole");
   for (const each of view.occupants) assert.ok(Buffer.byteLength(each.command, "utf8") <= 512);
 
   occupants = [];
