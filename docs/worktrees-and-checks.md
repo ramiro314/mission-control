@@ -726,12 +726,14 @@ The operations have deliberately narrow meanings:
   for no acknowledgement and the reset keeps each file where it is. The preview names each entry
   that is work and why, such as "ignored .idea/ (the target tracks .idea/codeStyles/Project.xml)".
   The check writes nothing in the slot. It reads a bounded listing of the default's tracked paths
-  and a `.gitignore` diff, and only when a `.gitignore` differs evaluates the default's rules with
+  and a `.gitignore` diff, and only when a `.gitignore` differs, or the slot has a `.gitignore`
+  of its own that is changed, staged or untracked, evaluates the default's rules with
   `git check-ignore` in a private temporary repository, holding the default's `.gitignore` files,
   the common directory's `info/exclude`, and the slot's `core.excludesFile` and `core.ignorecase`.
   Any of those steps that fails, overflows or times out counts the entries it could not clear as
   work. The reset checks the work set again once it has fetched its own target, and Execute
-  refuses when the default moved to a commit whose work set differs from the preview's. Safe Kill
+  refuses when the default moved to a commit whose work set differs from the preview's. The
+  preview names at most 20 entries, but that comparison covers every one. Safe Kill
   and the other return checks keep the stricter rule, which counts every ignored file outside the
   regenerable directories.
 

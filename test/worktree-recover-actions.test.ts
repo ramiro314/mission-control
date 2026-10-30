@@ -225,17 +225,14 @@ test("Recover's execute refuses when the default moved to a target whose work se
   advance({ "src/unrelated.ts": "export {};\n" });
   const acknowledged = await operations.preview({ action: "recover", slotId: lease.slotId });
   assert.deepEqual(acknowledged.requiredAcknowledgements, ["dirty"]);
+  const previewed = worktreeResetWorkKey(await manager.slotResetWork(manager.store.slot(lease.slotId)!));
   advance({ "src/another.ts": "export {};\n" });
   const recovered = await manager.recoverSlot({
     slotId: lease.slotId,
     expectedVersion: manager.store.slot(lease.slotId)!.version,
     allowDirty: true,
     automatic: false,
-    expectedWork: worktreeResetWorkKey({
-      status: "work",
-      entries: [{ kind: "ignored", path: ".env", because: "another reason, which is not part of the set" }],
-      more: false,
-    }),
+    expectedWork: previewed,
   });
   assert.equal(recovered.outcome, "recovered");
   assert.equal(existsSync(join(lease.path, ".env")), false, "the acknowledged .env was discarded");
@@ -249,6 +246,7 @@ test("Recover's execute hands the preview's work set to the reset, which refuses
   assert.deepEqual(preview.requiredAcknowledgements, ["dirty"]);
   assert.ok(preview.consequences.includes("Discards the slot's work: ignored .env (the target's .gitignore files no longer ignore it)."));
 
+  const previewed = worktreeResetWorkKey(await manager.slotResetWork(manager.store.slot(lease.slotId)!));
   // The default moves once execute has rebuilt the preview, before the reset fetches its target:
   // .env is ignored again, so the reset would discard nothing the operator acknowledged.
   const original = manager.recoverSlot.bind(manager);
@@ -263,11 +261,7 @@ test("Recover's execute hands the preview's work set to the reset, which refuses
   } finally {
     manager.recoverSlot = original;
   }
-  assert.deepEqual(received, [worktreeResetWorkKey({
-    status: "work",
-    entries: [{ kind: "ignored", path: ".env", because: null }],
-    more: false,
-  })]);
+  assert.deepEqual(received, [previewed]);
   assert.equal(manager.store.slot(lease.slotId)?.state, "quarantined");
   assert.ok(existsSync(join(lease.path, ".env")), "nothing was discarded");
 });

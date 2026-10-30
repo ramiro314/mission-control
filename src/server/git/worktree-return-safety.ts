@@ -1,4 +1,5 @@
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isConductorScratchPath } from "../pipelines/conductor/scratch.ts";
@@ -185,10 +186,13 @@ export interface WorktreeResetWorkEntry extends WorktreeWorkEntry {
   because: string | null;
 }
 
-/** Every entry the reset rule counts, bounded to `RESET_WORK_LIMIT` with `more` saying so. */
+/**
+ * Every entry the reset rule counts. `entries` is bounded to `RESET_WORK_LIMIT` for naming,
+ * with `more` saying so; `key` identifies the whole set, past the bound included.
+ */
 export type WorktreeResetWork =
   | { status: "clean" }
-  | { status: "work"; entries: WorktreeResetWorkEntry[]; more: boolean }
+  | { status: "work"; entries: WorktreeResetWorkEntry[]; more: boolean; key: string }
   | { status: "unknown"; reason: string };
 
 export const RESET_WORK_LIMIT = 20;
@@ -206,13 +210,13 @@ export function describeWorktreeResetWork(entry: WorktreeResetWorkEntry): string
 }
 
 /**
- * The work set's identity, for comparing two reads of it: the entries by kind and path, and
- * whether the list was cut short. Why an entry counts is left out, so a target that discards
- * the same entries for another reason is the same work set.
+ * The work set's identity, for comparing two reads of it: every entry by kind and path, not
+ * only the ones `entries` names, so an entry past the bound still changes it. Why an entry
+ * counts is left out, so a target that discards the same entries for another reason is the
+ * same work set.
  */
 export function worktreeResetWorkKey(work: WorktreeResetWork): string {
-  if (work.status !== "work") return work.status;
-  return JSON.stringify([work.entries.map(({ kind, path }) => [kind, path]), work.more]);
+  return work.status === "work" ? work.key : work.status;
 }
 
 /**
@@ -241,33 +245,43 @@ export async function worktreeResetWork(path: string, options: ResetRuleOptions)
   const read = await readStatus(git, path, options.fetch);
   if (!Array.isArray(read)) return read;
   const isRegenerable = options.regenerable ?? regenerableDirectory;
-  const entries: WorktreeResetWorkEntry[] = [];
-  let more = false;
-  const add = (entry: WorktreeResetWorkEntry) => {
-    if (entries.length < RESET_WORK_LIMIT) entries.push(entry);
-    else more = true;
-  };
+  const all: WorktreeResetWorkEntry[] = [];
   try {
     const ignored: string[] = [];
     for (const entry of read) {
       if (entry.code === "!!") {
         if (!isRegenerable(entry.path)) ignored.push(entry.path);
       } else if (!(entry.code === "??" && await conductorScratch(path, entry.path))) {
-        add({ kind: entryKind(entry.code), path: entry.path, because: null });
+        all.push({ kind: entryKind(entry.code), path: entry.path, because: null });
       }
     }
     const unpublished = await hasUnpublishedCommits(git);
     if (unpublished === null) return unknownWork("commits could not be compared against origin");
-    if (unpublished) add({ kind: "unpushed", path: "HEAD", because: null });
-    const discarded = await resetDiscards(git, execute, path, options.targetCommit, ignored);
+    if (unpublished) all.push({ kind: "unpushed", path: "HEAD", because: null });
+    // Status classified `!!` under the working tree's ignore files. When any of them is not
+    // HEAD's (changed, staged, untracked, or itself ignored), HEAD's rules say nothing about
+    // what is ignored now, so the `.gitignore` diff cannot clear an entry.
+    const localIgnoreFiles = read.some((entry) => isIgnoreFile(entry.path));
+    const discarded = await resetDiscards(git, execute, path, options.targetCommit, ignored, localIgnoreFiles);
     for (const entry of ignored) {
       const because = discarded.get(entry);
-      if (because) add({ kind: "ignored", path: entry, because });
+      if (because) all.push({ kind: "ignored", path: entry, because });
     }
   } catch {
     return unknownWork("checkout safety could not be verified");
   }
-  return entries.length === 0 ? { status: "clean" } : { status: "work", entries, more };
+  if (all.length === 0) return { status: "clean" };
+  return {
+    status: "work",
+    entries: all.slice(0, RESET_WORK_LIMIT),
+    more: all.length > RESET_WORK_LIMIT,
+    key: createHash("sha256").update(JSON.stringify(all.map(({ kind, path: entry }) => [kind, entry]))).digest("hex"),
+  };
+}
+
+/** A path whose last segment is `.gitignore` in any letter case. */
+function isIgnoreFile(file: string): boolean {
+  return fold(file.slice(file.lastIndexOf("/") + 1)) === ".gitignore";
 }
 
 /** An untracked conductor scratch file, proven a regular file under real directories. */
@@ -297,6 +311,7 @@ async function resetDiscards(
   path: string,
   target: string,
   ignored: readonly string[],
+  localIgnoreFiles: boolean,
 ): Promise<Map<string, string>> {
   if (ignored.length === 0) return new Map();
   const unresolved = (entries: readonly string[], because: string) => new Map(entries.map((entry) => [entry, because]));
@@ -315,7 +330,9 @@ async function resetDiscards(
   const discarded = trackedOverlaps(tracked, ignored);
   const remaining = ignored.filter((entry) => !discarded.has(entry));
   if (remaining.length === 0) return discarded;
-  const unignored = await unignoredByTarget(git, execute, path, head.stdout.trim(), commit.stdout.trim(), tracked, remaining);
+  const unignored = await unignoredByTarget(
+    git, execute, path, head.stdout.trim(), commit.stdout.trim(), tracked, remaining, localIgnoreFiles,
+  );
   for (const [entry, because] of unignored) discarded.set(entry, because);
   return discarded;
 }
@@ -357,8 +374,9 @@ function trackedOverlaps(tracked: readonly string[], ignored: readonly string[])
 
 /**
  * Each ignored entry the target's `.gitignore` files no longer ignore. `info/exclude` and
- * `core.excludesFile` do not change with the commit, so when no `.gitignore` differs between
- * HEAD and the target, nothing ignored now becomes un-ignored. When one does, the target's
+ * `core.excludesFile` do not change with the commit, so when the working tree's `.gitignore`
+ * files are HEAD's (`localIgnoreFiles` false) and none differs between HEAD and the target,
+ * nothing ignored now becomes un-ignored. Otherwise the target's
  * rules are evaluated in a private temporary repository: its `.gitignore` blobs at their
  * paths, the common directory's `info/exclude`, the slot's effective `core.excludesFile` and
  * `core.ignorecase`, and an empty file or directory per entry so directory-only patterns
@@ -372,12 +390,14 @@ async function unignoredByTarget(
   target: string,
   tracked: readonly string[],
   entries: readonly string[],
+  localIgnoreFiles: boolean,
 ): Promise<Map<string, string>> {
   const unresolved = (because: string) => new Map(entries.map((entry) => [entry, because]));
-  const isIgnoreFile = (file: string) => fold(file.slice(file.lastIndexOf("/") + 1)) === ".gitignore";
-  const diff = await git(["diff", "--name-only", "-z", "--no-renames", head, target, "--", ":(glob,icase)**/.gitignore"]);
-  if (failed(diff)) return unresolved("the target's .gitignore files could not be compared");
-  if (!diff.stdout.split("\0").some((file) => file && isIgnoreFile(file))) return new Map();
+  if (!localIgnoreFiles) {
+    const diff = await git(["diff", "--name-only", "-z", "--no-renames", head, target, "--", ":(glob,icase)**/.gitignore"]);
+    if (failed(diff)) return unresolved("the target's .gitignore files could not be compared");
+    if (!diff.stdout.split("\0").some((file) => file && isIgnoreFile(file))) return new Map();
+  }
 
   const ignoreFiles = tracked.filter(isIgnoreFile);
   if (ignoreFiles.some((file) => !file.endsWith("/.gitignore") && file !== ".gitignore")) {

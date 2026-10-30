@@ -314,6 +314,13 @@ function snapshot(root: string): Map<string, string> {
 const resetWork = (work: WorktreeResetWork) =>
   work.status === "work" ? work.entries.map(({ kind, path }) => `${kind} ${path}`) : work.status;
 
+/** A read's named entries, without the key that identifies the whole set. */
+const named = (work: WorktreeResetWork) => {
+  if (work.status !== "work") return work;
+  const { key: _key, ...rest } = work;
+  return rest;
+};
+
 test("reset rule: ignored files a target keeps ignored are not work, and the check writes nothing", async (t) => {
   const repo = resetFixture(t);
   for (const file of [".yarn/install-state.gz", ".idea/workspace.xml", "apps/personal-loans/tsconfig.tsbuildinfo", ".env", ".evidence/shot.png", "node_modules/pkg/index.js"]) {
@@ -450,7 +457,7 @@ for (const ignoreCase of [true, false, undefined]) {
     const repo = resetFixture(t, { ignoreCase });
     repo.put(".idea/workspace.xml");
     const target = repo.target({ ".Idea/x": "x\n" });
-    assert.deepEqual(await worktreeResetWork(repo.path, { targetCommit: target }), {
+    assert.deepEqual(named(await worktreeResetWork(repo.path, { targetCommit: target })), {
       status: "work",
       entries: [{ kind: "ignored", path: ".idea/", because: "the target tracks .Idea/x" }],
       more: false,
@@ -478,7 +485,7 @@ test("reset rule: a listing or evaluation that fails, overflows or times out cou
   // Without a stub the target keeps both ignored, so each refusal below is the failure's alone.
   assert.deepEqual(await worktreeResetWork(repo.path, { targetCommit: target }), { status: "clean" });
   for (const each of failures) {
-    assert.deepEqual(await worktreeResetWork(repo.path, { targetCommit: target, execute: each.execute }), {
+    assert.deepEqual(named(await worktreeResetWork(repo.path, { targetCommit: target, execute: each.execute })), {
       status: "work",
       entries: [
         { kind: "ignored", path: ".env", because: each.because },
@@ -487,17 +494,21 @@ test("reset rule: a listing or evaluation that fails, overflows or times out cou
       more: false,
     }, each.name);
   }
-  assert.deepEqual(await worktreeResetWork(repo.path, { targetCommit: "0".repeat(40) }), {
+  assert.deepEqual(named(await worktreeResetWork(repo.path, { targetCommit: "0".repeat(40) })), {
     status: "work",
     entries: [".env", ".yarn/install-state.gz"].map((path) => ({ kind: "ignored", path, because: "the reset target could not be read" })),
     more: false,
   });
 });
 
-test("reset rule: the work set's key ignores why an entry counts, and the description names it", () => {
-  const work = (because: string): WorktreeResetWork => ({ status: "work", entries: [{ kind: "ignored", path: ".env", because }], more: false });
-  assert.equal(worktreeResetWorkKey(work("a")), worktreeResetWorkKey(work("b")));
-  assert.notEqual(worktreeResetWorkKey(work("a")), worktreeResetWorkKey({ status: "clean" }));
+test("reset rule: the work set's key ignores why an entry counts, and the description names it", async (t) => {
+  const repo = resetFixture(t);
+  repo.put(".env");
+  const tracks = await worktreeResetWork(repo.path, { targetCommit: repo.target({ ".env": "SHARED=1\n" }) });
+  const unignores = await worktreeResetWork(repo.path, { targetCommit: repo.target({ ".gitignore": repo.ignore.replace(".env\n", "") }) });
+  assert.notDeepEqual(named(tracks), named(unignores), "the two targets discard .env for different reasons");
+  assert.equal(worktreeResetWorkKey(tracks), worktreeResetWorkKey(unignores));
+  assert.notEqual(worktreeResetWorkKey(tracks), worktreeResetWorkKey({ status: "clean" }));
   assert.equal(
     describeWorktreeResetWork({ kind: "ignored", path: ".idea/", because: "the target tracks .Idea/x" }),
     "ignored .idea/ (the target tracks .Idea/x)",
@@ -516,4 +527,62 @@ test("reset rule: the work set stops at RESET_WORK_LIMIT entries and says there 
   assert.equal(over.status === "work" && over.entries.length, RESET_WORK_LIMIT);
   assert.equal(over.status === "work" && over.more, true);
   assert.notEqual(worktreeResetWorkKey(over), worktreeResetWorkKey(full), "an entry past the limit still changes the work set");
+});
+
+test("reset rule: an ignored entry past RESET_WORK_LIMIT that a moved default would discard still changes the key", async (t) => {
+  const repo = resetFixture(t);
+  for (let index = 0; index <= RESET_WORK_LIMIT; index += 1) repo.put(`notes/${String(index).padStart(2, "0")}.md`);
+  repo.put(".env");
+  const keeps = await worktreeResetWork(repo.path, { targetCommit: repo.target() });
+  const deletes = await worktreeResetWork(repo.path, { targetCommit: repo.target({ ".gitignore": repo.ignore.replace(".env\n", "") }) });
+  assert.deepEqual(named(keeps), named(deletes), "the named entries and their bound are identical");
+  assert.notEqual(worktreeResetWorkKey(keeps), worktreeResetWorkKey(deletes), ".env, past the bound, is in one set and not the other");
+});
+
+test("reset rule: an entry ignored only by the working tree's own .gitignore edits is work when the reset restores HEAD's", async (t) => {
+  const cases: Array<{ name: string; plant: (repo: ReturnType<typeof resetFixture>) => void; work: string[] }> = [
+    {
+      name: "a tracked .gitignore edit",
+      plant: (repo) => {
+        writeFileSync(join(repo.path, ".gitignore"), `${repo.ignore}.agent-notes/\n`);
+        repo.put(".agent-notes/plan.md");
+      },
+      work: ["tracked .gitignore", "ignored .agent-notes/"],
+    },
+    {
+      name: "a staged new .gitignore",
+      plant: (repo) => {
+        mkdirSync(join(repo.path, "apps", "x"), { recursive: true });
+        writeFileSync(join(repo.path, "apps", "x", ".gitignore"), "scratch/\n");
+        repo.git("add", "apps/x/.gitignore");
+        repo.put("apps/x/scratch/plan.md");
+      },
+      work: ["tracked apps/x/.gitignore", "ignored apps/x/scratch/"],
+    },
+    {
+      name: "an untracked .gitignore",
+      plant: (repo) => {
+        mkdirSync(join(repo.path, "apps", "y"), { recursive: true });
+        writeFileSync(join(repo.path, "apps", "y", ".gitignore"), "scratch/\n");
+        repo.put("apps/y/scratch/plan.md");
+      },
+      work: ["untracked apps/y/.gitignore", "ignored apps/y/scratch/"],
+    },
+  ];
+  for (const each of cases) {
+    const repo = resetFixture(t);
+    repo.put(".yarn/install-state.gz");
+    // The target's .gitignore files are HEAD's, so a HEAD-to-target diff alone would clear them.
+    const target = repo.target({ "src/new.ts": "export {};\n" });
+    each.plant(repo);
+    const before = snapshot(repo.path);
+    const work = await worktreeResetWork(repo.path, { targetCommit: target });
+    assert.deepEqual(resetWork(work), each.work, each.name);
+    assert.equal(
+      work.status === "work" && work.entries.at(-1)?.because,
+      "the target's .gitignore files no longer ignore it",
+      each.name,
+    );
+    assert.deepEqual(snapshot(repo.path), before, `${each.name}: the slot's files are unchanged`);
+  }
 });
