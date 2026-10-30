@@ -8,11 +8,7 @@ import {
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit, type WorktreeGit } from "../src/server/worktrees/git.ts";
-import {
-  isLeaseObservationFailure,
-  OBSERVATION_FAILURE_REASONS,
-  RESERVATION_NOT_HANDED_BACK,
-} from "../src/server/worktrees/quarantine-reasons.ts";
+import { OBSERVATION_FAILURE_REASONS, RESERVATION_NOT_HANDED_BACK } from "../src/server/worktrees/quarantine-reasons.ts";
 import { run, type RunResult } from "../src/server/util/exec.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { nativeWorktreeOwnerReferenced } from "../src/server/worktrees/owners.ts";
@@ -990,11 +986,9 @@ test("a failed-read quarantine goes back to its referenced owner untouched, even
   const prior = manager.store.slot(lease.slotId)!;
   const logged = t.mock.method(console, "log", () => {});
 
-  // Every failed-read reason taken on a granted lease qualifies, the older build's suffixed one
+  // Every reason in the shared set qualifies on a granted lease, the older build's suffixed one
   // included.
-  const reasons = [...OBSERVATION_FAILURE_REASONS, "Git worktree registrations are unknown: exit 1"]
-    .filter(isLeaseObservationFailure);
-  assert.ok(reasons.length > 0);
+  const reasons = [...OBSERVATION_FAILURE_REASONS, "Git worktree registrations are unknown: exit 1"];
   for (const [index, reason] of reasons.entries()) {
     quarantineForFailedRead(lease.slotId, reason);
     await manager.reconcile();
@@ -1179,28 +1173,69 @@ test("a manual reservation an earlier build quarantined before its grant is not 
     }),
   );
   const logged = t.mock.method(console, "log", () => {});
+  const leasedAt = manager.store.slot(lease.slotId)!.leasedAt!;
 
-  for (const reason of [
-    "slot occupancy became unknown before reset",
-    "slot occupancy became unknown before it was warmed",
-    "slot occupancy became unknown before it was seeded from",
-  ]) {
-    quarantineForFailedRead(lease.slotId, reason);
-    const before = manager.store.slot(lease.slotId)!;
-    await manager.reconcile();
-    const slot = manager.store.slot(lease.slotId)!;
-    assert.equal(slot.state, "quarantined", reason);
-    assert.equal(slot.version, before.version, reason);
-    assert.equal(slot.quarantineReason, reason, reason);
-    assert.equal(slot.activeLeaseId, lease.leaseId, reason);
+  // `finalizeLease` never ran: a new slot's row has no `last_used_at`, and a reused slot's is from
+  // before this reservation. Earlier builds took these reasons in any state, so none proves a grant.
+  for (const lastUsedAt of [null, leasedAt - 1]) {
+    db.prepare("UPDATE worktree_slots SET last_used_at = ? WHERE id = ?").run(lastUsedAt, lease.slotId);
+    for (const reason of [
+      "slot occupancy became unknown before reset",
+      "slot occupancy is unknown",
+      "slot process occupancy is unknown",
+      "slot Git state is unknown",
+      "Git worktree registrations are unknown: exit 1",
+    ]) {
+      quarantineForFailedRead(lease.slotId, reason);
+      const before = manager.store.slot(lease.slotId)!;
+      await manager.reconcile();
+      const slot = manager.store.slot(lease.slotId)!;
+      assert.equal(slot.state, "quarantined", reason);
+      assert.equal(slot.version, before.version, reason);
+      assert.equal(slot.quarantineReason, reason, reason);
+      assert.equal(slot.activeLeaseId, lease.leaseId, reason);
+    }
   }
   assert.equal(logged.mock.callCount(), 0, "no restore is logged");
 
-  // The same owner under a reason taken on a granted lease does come back.
-  quarantineForFailedRead(lease.slotId, "slot occupancy is unknown");
+  // The same row with its grant recorded, even in the reservation's own millisecond, comes back.
+  db.prepare("UPDATE worktree_slots SET last_used_at = ? WHERE id = ?").run(leasedAt, lease.slotId);
   await manager.reconcile();
   assert.equal(manager.store.slot(lease.slotId)?.state, "leased");
   assert.equal(logged.mock.callCount(), 1);
+});
+
+test("an interrupted return restored to its owner finishes through the owner's ordinary return", async (t) => {
+  t.mock.method(console, "log", () => {});
+  for (const resetRan of [false, true]) {
+    const repository = repo(`mission-reconcile-restore-return-${resetRan}-`);
+    const referenced = new Set<string>();
+    const manager = harness({ referenced });
+    const lease = acquired(
+      await manager.acquire({
+        repositoryPath: repository.clone,
+        baseSha: repository.sha,
+        owner: { kind: "task", key: `task-restore-return-${resetRan}:0` },
+      }),
+    );
+    referenced.add(lease.leaseId);
+    // No row field tells this from a live lease: the return's target is all `markReturning` leaves.
+    const target = "a".repeat(40);
+    const slot = manager.store.slot(lease.slotId)!;
+    assert.ok(manager.store.markReturning(slot.id, slot.version, target, Date.now()));
+    quarantineForFailedRead(lease.slotId, "slot Git state is unknown");
+
+    await manager.reconcile();
+    const restored = manager.store.slot(lease.slotId)!;
+    assert.equal(restored.state, "leased");
+    assert.equal(restored.requestedHeadSha, target, "the row keeps it, and nothing reads it as the lease's base");
+
+    // Whether or not the reset had run, the owner's own return proves and finishes it.
+    referenced.delete(lease.leaseId);
+    assert.equal((await manager.release({ ...lease, slotVersion: restored.version })).outcome, "released");
+    assert.equal(manager.store.slot(lease.slotId)?.state, "available");
+    assert.equal(gitIn(lease.path, "rev-parse", "HEAD"), repository.sha);
+  }
 });
 
 test("a restore that loses its compare-and-swap reports the race and restores nothing", async (t) => {

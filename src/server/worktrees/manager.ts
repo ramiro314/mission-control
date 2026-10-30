@@ -53,7 +53,7 @@ import {
 import { ensureWorktreePoolMarker, observeWorktreePoolMarker, readWorktreePoolMarker } from "./marker.ts";
 import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observation-retry.ts";
 import {
-  isLeaseObservationFailure,
+  isObservationFailure,
   OBSERVATION_FAILURE,
   observationFailureText,
   RESERVATION_NOT_HANDED_BACK,
@@ -556,6 +556,15 @@ function activeReference(slot: WorktreeSlotRow): WorktreeOwnerReference | null |
     slot.activeOwnerKind,
     slot.activeOwnerKey,
   );
+}
+
+/**
+ * Whether this slot's active lease reached its owner. A reservation stamps `leased_at`, and only
+ * `finalizeLease` then stamps `last_used_at`. A failed-read reason cannot say so: earlier builds
+ * took those in any state, and a manual lease's row answers for itself as its owner.
+ */
+function leaseGranted(slot: WorktreeSlotRow): boolean {
+  return slot.leasedAt !== null && slot.lastUsedAt !== null && slot.lastUsedAt >= slot.leasedAt;
 }
 
 function exactSlotPath(
@@ -3155,11 +3164,11 @@ export class WorktreeManager {
             // identity, names an owner that never received it. Withdraw that identity only when
             // the owner is positively proven not to reference it.
             if (this.store.withdrawQuarantinedLease(slot.id, slot.version, owner.leaseId, now)) this.publish();
-          } else if (owner && isLeaseObservationFailure(slot.quarantineReason)) {
+          } else if (owner && leaseGranted(slot) && isObservationFailure(slot.quarantineReason)) {
             // An earlier build quarantined this live lease only because a read failed. Everything
             // has now read, so the lease resumes as it stands, dirty and occupied included, as a
-            // live lease may be. Nothing on disk is touched. A reservation quarantined before its
-            // grant never reaches here: a manual owner answers for itself, but nobody holds it.
+            // live lease may be. Nothing on disk is touched. An interrupted return looks the same
+            // and resumes too: its owner's return is what finishes it, as it would from here.
             if (this.store.restoreLease(slot.id, slot.version, owner.leaseId, now)) {
               this.publish();
               console.log(oneLine(

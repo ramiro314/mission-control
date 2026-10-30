@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { lockCausedQuarantine } from "../src/server/worktrees/index-lock.ts";
 import {
-  isLeaseObservationFailure,
   isObservationFailure,
   OBSERVATION_FAILURE,
   OBSERVATION_FAILURE_REASONS,
@@ -45,27 +44,6 @@ test("a proven fault, or a reason that mixed one in, is not an observation failu
     RESERVATION_NOT_HANDED_BACK,
     "slot Git state is unknown, really",
   ]) assert.equal(isObservationFailure(reason), false, String(reason));
-});
-
-test("a failed read counts as taken on a granted lease unless only a reservation could write it", () => {
-  for (const reason of [
-    "slot occupancy became unknown before reset",
-    "slot occupancy became unknown before it was warmed",
-    "slot occupancy became unknown before it was seeded from",
-  ]) {
-    assert.equal(isObservationFailure(reason), true, reason);
-    assert.equal(isLeaseObservationFailure(reason), false, reason);
-    assert.equal(isLeaseObservationFailure(`${reason}: ps timed out`), false, `${reason}, suffixed`);
-  }
-  for (const reason of [
-    "slot occupancy is unknown",
-    "slot Git state is unknown",
-    "leased domain ownership is unknown",
-    "Git worktree registrations are unknown: git worktree list failed: exit 1",
-  ]) assert.equal(isLeaseObservationFailure(reason), true, reason);
-  for (const reason of [null, "return reset failed", "slot Git state is unknown, really", RESERVATION_NOT_HANDED_BACK]) {
-    assert.equal(isLeaseObservationFailure(reason), false, String(reason));
-  }
 });
 
 test("the failed-read note sits in front of a quarantine's detail, is replaced in place, and clears to it", () => {
