@@ -720,6 +720,20 @@ The operations have deliberately narrow meanings:
   process-group recovery. Manual Return uses the exact durable lease. A successful native Return
   resets to the freshly fetched remote default - the branch the remote advertises now, proved the
   same way dispatch proves it - leaves the slot detached and clean, and keeps the warm slot.
+
+  A quarantined slot whose active owner is still referenced offers Return too, since the owner's
+  own return accepts a quarantined lease. Its card names the owner (the task's title, the check,
+  or the manual lease with the label `make session --label` gave it) and says "Its owner's return
+  brings this slot back." The preview is that owner's ordinary Return preview, so a task Return
+  still lists every tree the task holds. It is refused while any process is inside the
+  quarantined slot, the task's own agent included, and when the owner's reference is gone or
+  unknown. An owner that is gone leaves the slot to Recover instead.
+
+  A `warm` lease is the one owner neither Return nor Destroy can act on, whatever its state. While
+  its seed runs, the preview says the seed returns the slot when its copy ends. A seed interrupted
+  by a restart is not coming back: reconcile returns its lease, the preview says so until then,
+  and if the lease cannot be returned the slot is quarantined with that dead owner still on it.
+  Its preview then points at Recover, which clears it.
 - **Prune** removes only the clean, merged, process-free, unreferenced available slots enumerated in
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.
@@ -1016,11 +1030,21 @@ settle-and-retain rule for clean trees only:
   keeps them, warm install included. The reset judges the rule again against the commit it
   fetched, so a default that moved after the check keeps the slot, with every file unchanged, and
   the task is listed with that reset's own refusal.
-- **Any other tree's folder is removed**, so **clean** means nothing uncommitted, untracked or
-  unpushed, and no ignored file except under the regenerable directories `node_modules/`,
-  `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/` and `.next/`, at any depth. Any other
-  ignored file is work here: workflow evidence under `.evidence/` or `e2e/.artifacts/`, or a
-  local `.env`.
+- **A tree that is deleted takes the delete rule.** A disposable Git worktree or a Treehouse lease
+  is removed rather than reset, so **clean** means nothing uncommitted, untracked or unpushed, and
+  no ignored file except under the regenerable directories `node_modules/`, `dist/`, `build/`,
+  `coverage/`, `.cache/`, `.turbo/` and `.next/`, at any depth, or what its pool claim's
+  `seed.paths` bring back (see "Seeding" under [Dependency claims](#dependency-claims)), matched as
+  repository-relative patterns exactly as a seed matches them. In a pool whose seed paths list
+  `.yarn/install-state.gz`, a tree holding it is still clean, while `.idea/` and `.env` stay
+  work, as does workflow evidence under `.evidence/` or `e2e/.artifacts/`. A path `seed.exclude`
+  could reach is not regenerable: a seed strips it from every clone, so it never comes back. That
+  covers an excluded path, anything inside one, and a directory an exclusion could match under,
+  so `**` in an exclusion takes a seeded directory out of the set (the built-in directories stay
+  in it). An exclusion with a group spanning a slash, such as `.yarn/{secrets/*,keys/*}`, takes
+  every seed path out. The tree is mapped to its pool by the Git common directory its `.git` file
+  names. A pool with no claim or no seed, and a folder with no repository, get only the built-in
+  directories.
 - A clean task whose trees no process occupies is reclaimed through the same path as **Clean
   up**, keeping its status and outcome.
 - **Anything else keeps the 30-day window.** So does a tree Git cannot read. The task is listed as a `dirty-settled-tree` problem in **Settings > Storage**, named
@@ -1077,10 +1101,14 @@ maintenance starts, after startup reconciliation, and again on every maintenance
 - A folder some process is working in, or whose occupancy cannot be read, is skipped.
 - A **husk**, a folder holding nothing but empty directories and a `.git` file whose Git
   directory is gone, is removed.
-- A **clean** worktree is removed with `git worktree remove --force`. Clean means nothing
-  uncommitted, untracked or unpushed, and no ignored file outside the regenerable directories
-  (`node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/` and `.next/`). Its
-  `harness/*` branch is deleted only when a remote branch contains it.
+- A **clean** worktree is removed with `git worktree remove --force`. Clean is the delete rule:
+  nothing uncommitted, untracked or unpushed, and no ignored file outside the regenerable set.
+  That set is the regenerable directories (`node_modules/`, `dist/`, `build/`, `coverage/`,
+  `.cache/`, `.turbo/` and `.next/`) plus the `seed.paths` of the pool whose Git common
+  directory the tree's `.git` file names, so a tree holding only its pool's installed state is
+  removed. A path `seed.exclude` could reach stays work. A pool with no claim or no seed gets the
+  directories alone. Its `harness/*` branch is
+  deleted only when a remote branch contains it.
 - Anything else is kept: a dirty or unpushed worktree, one whose safety cannot be read, and a
   folder that is not a worktree but still holds files, such as a tree whose `.git` file was
   lost. **Settings > Storage** lists each one as a bannered `dirty-orphan-folder` problem, with
@@ -1115,15 +1143,19 @@ Each Storage problem's **Open tree** link lands on that tree's row.
 - A kept folder offers **Discard and remove**. Its preview, the `removeUnowned` worktree action,
   names the path and the work it discards: the reason it was kept, any unpublished commits, and up
   to ten of the paths it deletes (changed, untracked and ignored ones for a worktree, files for
-  any other folder). Execute needs the discard acknowledgement. Cancel leaves the row and the
-  folder in place.
+  any other folder). The work it names follows the sweep's delete rule, so an ignored path in the
+  regenerable set, the pool's seed paths included, is never called work: it is listed as
+  `(regenerable)`, since it is deleted too but loses nothing. Execute needs the discard
+  acknowledgement. Cancel leaves the row and the folder in place.
 - Only a folder the sweep keeps right now can be previewed. Any other path, a pool slot, a live
   task's tree or `$HOME`, is answered 404 before anything on disk is inspected.
 - On Execute, Mission Control rebuilds the preview and refuses one that changed. A preview is
   bound to the size and modification time of every entry under the folder, not just the paths it
   names, so any write after it, such as another edit to a file already listed as changed, refuses
   the run. The walk stops at regenerable directories (`node_modules/`, `dist/` and the rest of
-  that list), which count by their own entry only, since they are deleted either way. An entry
+  that list) and at the pool's seed paths, which count by their own entry only, since they are
+  deleted either way. It goes on through a seed path `seed.exclude` could reach, so a later write
+  to an excluded file refuses the run. An entry
   that vanishes or cannot be read during the walk makes the tree read as changed. The sweep then
   checks again under its own pass lock that it still keeps the folder, with the same inode, that
   no row names it, that nothing is creating it, and that no process is in it. A worktree is

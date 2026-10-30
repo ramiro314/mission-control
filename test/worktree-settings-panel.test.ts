@@ -709,6 +709,24 @@ test("a lock refusal names the lock path, and a detail equal to the reason is no
   assert.doesNotMatch(html, /Processes in slot 1/);
 });
 
+test("a quarantined slot whose owner is referenced names it and offers its Return; a leased one says nothing more", () => {
+  const base = overCapacityPool.slots[0]!;
+  const card = (slot: Partial<typeof base>) => render({
+    inventory: { ...inventory, repositories: [{ ...overCapacityPool, slots: [{ ...base, ...slot }] }] },
+  });
+  const sentence = /<p class="wt-owner">Its owner&#x27;s return brings this slot back\.<\/p>/;
+  const owned = card({ state: "quarantined", quarantineReason: "worktree reset failed", actions: ["return", "destroy"] });
+  assert.match(owned, /<p class="wt-owner"><span>task<\/span> Ship Worktrees<\/p>/);
+  assert.match(owned, sentence);
+  assert.match(owned, />Return<\/button>/);
+  // The daemon withholds Return when the owner is gone or unknown, and then the card does not
+  // promise it.
+  const gone = card({ state: "quarantined", quarantineReason: "worktree reset failed", actions: ["destroy", "recover"] });
+  assert.doesNotMatch(gone, sentence);
+  assert.doesNotMatch(gone, />Return<\/button>/);
+  assert.doesNotMatch(card({}), sentence);
+});
+
 test("a slot whose last observation failed says so on its own line, in whatever state it kept", () => {
   const base = overCapacityPool.slots[0]!;
   const failure = "slot Git state is unknown (git status timed out after 15 s, and after 30 s on retry)";

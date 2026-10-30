@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isConductorScratchPath } from "../pipelines/conductor/scratch.ts";
 import { run } from "../util/exec.ts";
+import { NO_SEED, seedRegenerates, type RegenerableSeed } from "../worktrees/seed.ts";
 
 /** Ignored directories an install or build recreates, discounted at any depth by `regenerableIgnored`. */
 export const REGENERABLE_IGNORED_PATHS = ["node_modules/", "dist/", "build/", "coverage/", ".cache/", ".turbo/", ".next/"] as const;
@@ -48,11 +49,14 @@ export function worktreeWorkBlocker(work: WorktreeWork): string | null {
 }
 
 /**
- * An ignored entry that is a regenerable directory itself, which is how `--ignored=matching`
- * reports one. A file merely under a tracked `build/` (`!! build/.env`) is not, nor is a non-ignored entry.
+ * Whether an ignored entry, as Git's status names it, is regenerable: a directory on the
+ * built-in list itself, at any depth, which is how `--ignored=matching` reports one (a file
+ * merely under a tracked `build/`, `!! build/.env`, is not), or a path
+ * the owning pool claim's seed regenerates (`seedRegenerates`). The caller has already
+ * established that the entry is ignored.
  */
-function regenerable(entry: StatusEntry): boolean {
-  return entry.code === "!!" && regenerableDirectory(entry.path);
+export function regenerableIgnoredPath(path: string, seed: RegenerableSeed = NO_SEED): boolean {
+  return regenerableDirectory(path) || seedRegenerates(path, seed);
 }
 
 /** The built-in regenerable set, as a predicate on an ignored entry's status path. */
@@ -85,10 +89,16 @@ function entryKind(code: string): WorktreeWorkKind {
   return "tracked";
 }
 
-/** The return rule's options: Kill, reclaim and sweep, which `worktreeReturnBlocker` serves. */
+/**
+ * The return rule's options: Kill, reclaim and sweep, which `worktreeReturnBlocker` serves.
+ * `regenerableIgnored` is for reclaim and sweep only. `seed` widens that discount to what the
+ * owning pool claim's seed regenerates, which is the delete rule an action that removes the
+ * folder applies (`treeSeed` resolves it); it has no effect without `regenerableIgnored`.
+ */
 interface ReturnRuleOptions {
   fetch?: boolean;
   regenerableIgnored?: boolean;
+  seed?: RegenerableSeed;
   execute?: typeof run;
 }
 
@@ -132,7 +142,8 @@ export async function worktreeWork(path: string, options: WorktreeWorkOptions = 
   const read = await readStatus(git, path, options.fetch);
   if (!Array.isArray(read)) return read;
   try {
-    const blocking = read.find((entry) => !(options.regenerableIgnored && regenerable(entry)));
+    const blocking = read.find((entry) =>
+      !(options.regenerableIgnored && entry.code === "!!" && regenerableIgnoredPath(entry.path, options.seed)));
     if (blocking) return { status: "work", entry: { kind: entryKind(blocking.code), path: blocking.path } };
     const unpublished = await hasUnpublishedCommits(git);
     if (unpublished === null) return unknownWork("commits could not be compared against origin");
@@ -468,7 +479,7 @@ async function unignoredByTarget(
  */
 export async function worktreeDiscardedWork(
   path: string,
-  options: { regenerableIgnored?: boolean; execute?: typeof run } = {},
+  options: Omit<ReturnRuleOptions, "fetch"> = {},
 ): Promise<Array<typeof UNCOMMITTED_WORK | typeof UNPUBLISHED_COMMITS>> {
   const first = await worktreeReturnBlocker(path, options);
   if (first === UNPUBLISHED_COMMITS) return [UNPUBLISHED_COMMITS];

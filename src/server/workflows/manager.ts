@@ -233,6 +233,7 @@ import {
   type CiObservation,
   type WaitForCiMergeability,
 } from "@shared/wait-for-ci.ts";
+import type { CiStrictness } from "@shared/ci-checks.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
@@ -349,6 +350,11 @@ interface PreparedWorkflowRun extends WorkflowSubmitResult {
 export interface WorkflowManagerOptions {
   /** Foreman's CI preference, read only when preparing a new PR action packet. */
   trackCiFailures?: () => boolean;
+  /**
+   * Fork (ci-strictness): Foreman's "Which failures count", read with `trackCiFailures` and
+   * frozen with the packet. Absent reads as `all`.
+   */
+  ciStrictness?: () => CiStrictness;
   /** Foreman's merge-conflict preference, read only when preparing a new PR action packet. */
   trackMergeConflicts?: () => boolean;
   /**
@@ -5533,6 +5539,12 @@ export class WorkflowManager {
       skillCommand = required.command;
     }
 
+    // Off when a Wait for CI node follows this action: the node owns CI then, and an
+    // agent chasing it too would push while the node judges the head it was given. Its
+    // strictness is read only when the policy rides the packet, and frozen with it.
+    const pullRequestCi = snapshot.completion.kind === "pull_request"
+      && this.options.trackCiFailures?.() === true
+      && !waitForCiFollows(version.graph, attempt.nodeId);
     const rendered = renderSessionAction({
       origin: {
         kind: "run",
@@ -5548,15 +5560,12 @@ export class WorkflowManager {
       promptMarkdown: snapshot.promptMarkdown,
       skillCommand,
       workflowEvidence: versionSupportsWorkflowEvidence(version),
-      // Off when a Wait for CI node follows this action: the node owns CI then, and an
-      // agent chasing it too would push while the node judges the head it was given.
       // Only an action that completes on a pull request grants creating one; an authored
       // action of any other completion kind may only update the PR the task already has.
       pullRequestGrant: snapshot.completion.kind === "pull_request",
       baseBranch: bindingBaseBranch(this.registry, binding, session),
-      pullRequestCi: snapshot.completion.kind === "pull_request"
-        && this.options.trackCiFailures?.() === true
-        && !waitForCiFollows(version.graph, attempt.nodeId),
+      pullRequestCi,
+      pullRequestCiStrictness: pullRequestCi ? this.options.ciStrictness?.() ?? "all" : undefined,
       // Its own setting, under the same rule: a Wait for CI node after the action fails on a
       // conflict itself and starts a repair round.
       pullRequestConflicts: snapshot.completion.kind === "pull_request"

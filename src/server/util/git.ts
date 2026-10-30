@@ -232,6 +232,24 @@ export function worktreeRepositoryIdentity(
 }
 
 /**
+ * The physical Git common directory a tree's own top-level `.git` names, keyed exactly as
+ * `worktreeRepositoryIdentity` keys a pool, or null when the tree has no `.git` of its own.
+ * Never walks up: a folder with no repository is never read as its parent's.
+ */
+export function treeGitCommonDirectory(tree: string): string | null {
+  const dotGit = join(tree, ".git");
+  try {
+    if (statSync(dotGit).isDirectory()) return realPath(dotGit);
+    const match = readFileSync(dotGit, "utf8").match(/^gitdir:\s*(.+)$/m);
+    if (!match) return null;
+    const gitDir = match[1]!.trim();
+    return realPath(commonDir(isAbsolute(gitDir) ? gitDir : resolve(tree, gitDir)));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve the git directory (where HEAD lives) and the worktree root that holds
  * it, by walking up from a working dir. A normal checkout has a `.git`
  * DIRECTORY; a linked worktree or submodule has a `.git` FILE whose `gitdir:`

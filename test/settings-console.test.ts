@@ -271,6 +271,7 @@ const FOREMAN_CONFIG: ForemanConfig = {
   wrapup: "ask",
       trackReviewFeedback: true,
       trackCiFailures: true,
+      ciStrictness: "all",
       trackMergeConflicts: true,
       keepShipTasksMoving: true,
       shipRecoveryMinutes: 20,

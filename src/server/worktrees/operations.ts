@@ -319,8 +319,46 @@ function ownerView(
       ? `Check ${key}`
       : kind === "warm"
         ? isWarmOperation(key) ? "Warming this slot ahead of time" : "Seeding another slot's dependencies"
-        : `Manual lease ${key.slice(0, 8)}`,
+        : manualLabel(key),
   };
+}
+
+/** A manual lease named by `make session --label`, or by its key alone. */
+function manualLabel(key: string): string {
+  const separator = key.indexOf(":");
+  const label = separator === -1 ? "" : key.slice(separator + 1);
+  return label ? `Manual lease ${key.slice(0, 8)}: ${label}` : `Manual lease ${key.slice(0, 8)}`;
+}
+
+/**
+ * A quarantined slot its active owner still references. That owner's ordinary Return brings it
+ * back, so the card names the owner and offers Return. A `warm` lease is the seed's own, and the
+ * seed returns it when its copy ends.
+ */
+function ownerReturns(status: NativeSlotStatus, owner: WorktreeOwnerView | null): boolean {
+  return status.slot.state === "quarantined" && status.ownerReferenced === true &&
+    owner !== null && owner.kind !== "warm";
+}
+
+function ownerGoneBlocker(status: NativeSlotStatus): string {
+  return `Slot ${status.slot.ordinal}'s owner no longer references it; Recover it instead.`;
+}
+
+function ownerUnknownBlocker(status: NativeSlotStatus): string {
+  return `Whether slot ${status.slot.ordinal}'s owner still references it is unknown.`;
+}
+
+/**
+ * Why a slot under a `warm` lease cannot be acted on, and what gets it back. A seed interrupted
+ * by a restart is not coming back: reconcile returns its lease, and when it cannot, the slot is
+ * quarantined with the dead owner still on it, which Recover clears.
+ */
+function warmOwnerBlocker(status: NativeSlotStatus): string {
+  if (status.ownerReferenced === true) return "A dependency seed holds this slot and returns it when its copy ends.";
+  if (status.ownerReferenced === null) return ownerUnknownBlocker(status);
+  return status.slot.state === "quarantined"
+    ? ownerGoneBlocker(status)
+    : `The seed that held slot ${status.slot.ordinal} is gone; Reconcile returns its lease.`;
 }
 
 /**
@@ -566,6 +604,10 @@ export class WorktreeOperationsService {
             if (entry.slot.activeOwnerKind !== "warm") actions.push("return", "destroy");
           }
           else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
+            // A quarantine whose owner is still referenced comes back through that owner's own
+            // return, which accepts a quarantined lease. The preview refuses it while a process
+            // is inside.
+            if (ownerReturns(entry, owner)) actions.push("return");
             actions.push("destroy");
           }
           // Recover is for a quarantine nobody is still working in: its owner, if it had one,
@@ -1010,7 +1052,11 @@ export class WorktreeOperationsService {
       blockers.push(slot.occupancy.reason);
     } else if (slot.occupancy.occupants.length > 0) {
       risks.push(risk("occupied", `${slot.occupancy.occupants.length} process(es) occupy a target path`, false));
-      if (owner?.kind !== "task") {
+      if (action === "return" && slot.slot.state === "quarantined") {
+        // Stopping its agent is how a task returns a live lease. A quarantined slot's process
+        // may be anything, so its owner's return waits for it to leave.
+        blockers.push(`Slot ${slot.slot.ordinal} is quarantined with ${slot.occupancy.occupants.length} process(es) inside; they must exit before its owner can return it.`);
+      } else if (owner?.kind !== "task") {
         blockers.push("Known processes must exit before this action can run.");
       } else {
         consequences.push(
@@ -1026,7 +1072,12 @@ export class WorktreeOperationsService {
       blockers.push(`Slot ${slot.slot.ordinal} already has a cleanup queued; wait for it to finish or leave it out of this action.`);
     }
     if (slot.slot.state === "quarantined") risks.push(risk("quarantined", "A target slot is quarantined", false));
-    if (action === "return" && slot.slot.state !== "leased") {
+    if (action === "return" && slot.slot.state === "quarantined") {
+      // An owned quarantine returns through its owner. With no active owner at all, the
+      // blocker below already says so.
+      if (owner && slot.ownerReferenced === false) blockers.push(ownerGoneBlocker(slot));
+      else if (owner && slot.ownerReferenced === null) blockers.push(ownerUnknownBlocker(slot));
+    } else if (action === "return" && slot.slot.state !== "leased") {
       blockers.push(`Slot ${slot.slot.ordinal} is ${slot.slot.state}, not leased.`);
     }
     if (action === "destroy" && !["leased", "available", "quarantined"].includes(slot.slot.state)) {
@@ -1044,6 +1095,10 @@ export class WorktreeOperationsService {
         const check = await this.deps.checks.previewOperatorRecovery(owner.key, this.deps.checkRecovery);
         if (!check.allowed) blockers.push(check.reason ?? "Check cleanup is not currently safe.");
         consequences.push("Uses check process-group recovery and the recorded provider before releasing the lease.");
+      } else if (owner.kind === "warm") {
+        // Execute refuses every `warm` owner; saying so here keeps a preview from promising a
+        // manual return. Only a live seed comes back for its slot, so the way out depends on it.
+        blockers.push(warmOwnerBlocker(slot));
       } else {
         consequences.push("Returns the exact durable manual lease before any slot removal.");
       }

@@ -221,11 +221,15 @@ check, and stores it with the pull request, keyed to that commit. Nothing polls 
 time for it. For each check the query also reads `isRequired(pullRequestNumber:)`, whether GitHub
 marks it required on this pull request, and for the head it reads `contexts.totalCount`, the
 number of checks GitHub reports, which can exceed the first 100 the query reads. Both are stored
-with the snapshot; a snapshot stored before they existed reads as nothing marked required. Two
+with the snapshot; a snapshot stored before they existed reads as nothing marked required. Three
 things read the snapshot:
 
 - A workflow's [Wait for CI](workflows.md#wait-for-ci) node, which decides from it whether the
   pull request's CI passed, failed, or never reported.
+- Foreman, when **Which failures count** is set to Required checks
+  ([Keeping a PR on track](work-queues.md#keeping-a-pr-on-track)). It reads only the head the
+  snapshot was taken on and the required checks' rollup, through the session's Inspector
+  summary, and makes no GitHub call of its own.
 - The review itself. When the head carries a ["Flaky tests" check](flaky-tests.md#the-flaky-tests-check),
   the review prompt lists its flaky tests - name, file, job, message, history issue - fenced as
   untrusted data and capped at 20. Flakes are informational: the Inspector raises one only

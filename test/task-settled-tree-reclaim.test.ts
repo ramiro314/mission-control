@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -13,6 +13,8 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { StorageHealthService } = await import("../src/server/storage-health.ts");
 const { databaseBackupStatusFrom } = await import("../src/shared/database-backups.ts");
+const { setWorktreesConfig } = await import("../src/server/worktrees/config.ts");
+const { WorktreeClaimSchema } = await import("../src/shared/protocol.ts");
 
 type Manager = InstanceType<typeof TaskManager>;
 
@@ -23,7 +25,7 @@ after(() => {
 });
 
 /** Real git: the clean rule is about what git reports, so nothing here is stubbed. */
-const IGNORED = ["node_modules/", "dist/", ".evidence/", "e2e/.artifacts/", ".env"].join("\n");
+const IGNORED = ["node_modules/", "dist/", ".evidence/", "e2e/.artifacts/", ".env", ".yarn/install-state.gz"].join("\n");
 
 /**
  * A pushed `.gitignore` in a fresh origin, and a `harness/*` worktree of it at origin's head,
@@ -70,6 +72,7 @@ function restartWith(id: string, tree: Tree, options: {
   attached?: Tree;
   occupancy?: StartupDeps["occupancy"];
   returnBlocker?: StartupDeps["returnBlocker"];
+  provider?: "git" | "mission" | "treehouse";
 } = {}): {
   registry: InstanceType<typeof Registry>;
   manager: Manager;
@@ -84,7 +87,7 @@ function restartWith(id: string, tree: Tree, options: {
     repoRoot: tree.repoRoot,
     worktreePath: tree.worktree,
     branch: tree.branch,
-    provider: "git",
+    provider: options.provider ?? "git",
     sessionId: `proc:${id}`,
     extraRepos: options.attached
       ? [{
@@ -291,4 +294,67 @@ test("a kept tree reclaimed by hand takes its problem and first-seen entry with 
   assert.ok(changes() > before, "storage health is asked again once the tree is gone");
   assert.equal(health(manager, record, 2_000).problems.some((each) => each.id.startsWith(`${subject}:`)), false);
   assert.equal(record[subject], undefined, "a gone subject drops its first-seen entry at once");
+});
+
+/** Give the pool that owns `tree` a claim whose seed lists the yarn install state. */
+function claimSeeds(tree: Tree): void {
+  setWorktreesConfig({
+    repositories: {
+      [realpathSync(join(tree.repoRoot, ".git"))]: {
+        claim: WorktreeClaimSchema.parse({ steps: [{ argv: ["yarn", "install"] }], seed: { paths: ["node_modules", ".yarn/install-state.gz"] } }),
+      },
+    },
+  });
+}
+
+test("a disposable tree holding its pool's seed path is reclaimed; one also holding .env is listed", async () => {
+  const seeded = settledWorktree("seed-path");
+  claimSeeds(seeded);
+  write(seeded.worktree, ".yarn/install-state.gz");
+  const { registry, manager } = restartWith("settled-seed-path", seeded);
+  await until(() => registry.getTask("settled-seed-path")?.worktreePath === null, "the seed-path tree was not reclaimed");
+  assert.equal(existsSync(seeded.worktree), false);
+  assert.equal(listed(manager, "settled-seed-path"), false);
+
+  const env = settledWorktree("seed-path-env");
+  claimSeeds(env);
+  write(env.worktree, ".yarn/install-state.gz");
+  write(env.worktree, ".env", "TOKEN=1\n");
+  const kept = restartWith("settled-seed-path-env", env);
+  await until(() => listed(kept.manager, "settled-seed-path-env"), "the tree holding .env was never listed");
+  assert.equal(kept.registry.getTask("settled-seed-path-env")?.worktreePath, env.worktree);
+  assert.equal(existsSync(join(env.worktree, ".env")), true);
+  const [problem] = health(kept.manager, {}, 9_000).problems
+    .filter((each) => each.id.startsWith("dirty-settled-tree:settled-seed-path-env:"));
+  assert.equal(problem!.kind, "dirty-settled-tree");
+});
+
+test("a tree whose pool has no claim keeps its install state as work", async () => {
+  const tree = settledWorktree("no-claim");
+  write(tree.worktree, ".yarn/install-state.gz");
+  const { registry, manager } = restartWith("settled-no-claim", tree);
+  await until(() => listed(manager, "settled-no-claim"), "the tree was never listed");
+  assert.equal(registry.getTask("settled-no-claim")?.worktreePath, tree.worktree);
+});
+
+test("a disposable or Treehouse tree takes the delete rule's seed paths; a pool slot keeps its folder and never does", async () => {
+  for (const provider of ["git", "treehouse", "mission"] as const) {
+    const tree = settledWorktree(`rule-${provider}`);
+    claimSeeds(tree);
+    const asked: Array<Parameters<NonNullable<StartupDeps["returnBlocker"]>>[1]> = [];
+    const id = `settled-rule-${provider}`;
+    const { manager } = restartWith(id, tree, {
+      provider,
+      returnBlocker: async (path, options) => {
+        // Earlier cases' tasks persist in this file's database and are settled here too.
+        if (path === tree.worktree) asked.push(options);
+        return "checkout has uncommitted, untracked or ignored work";
+      },
+    });
+    await until(() => listed(manager, id), `the ${provider} tree was never listed`);
+    // A pool slot takes the reset rule through its manager, so the delete rule's probe never runs.
+    assert.deepEqual(asked, provider === "mission"
+      ? []
+      : [{ regenerableIgnored: true, seed: { paths: ["node_modules", ".yarn/install-state.gz"], exclude: [] } }]);
+  }
 });

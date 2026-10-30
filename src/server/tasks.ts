@@ -139,6 +139,7 @@ import {
 } from "./task-resource-generation.ts";
 import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
 import { worktreeReturnBlocker } from "./git/worktree-return-safety.ts";
+import { treeSeed } from "./worktrees/config.ts";
 import { storageProblem, type StorageProblemLink } from "@shared/storage-health.ts";
 import type { StorageProblemObservation } from "./storage-health.ts";
 import { inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
@@ -6879,8 +6880,9 @@ export class TaskManager {
   /**
    * The first of a settled task's trees holding work, by the rule of what reclaiming it does.
    * A pool slot keeps its folder and takes a reset, so it is judged by the reset rule and only
-   * what that reset discards counts. Any other tree's folder is removed, so the return rule
-   * counts every ignored file outside the regenerable directories.
+   * what that reset discards counts. Any other tree's folder is removed, so it takes the delete
+   * rule: every ignored file counts unless a regenerable directory or the owning pool claim's
+   * seed brings it back.
    */
   private async settledTreeWork(task: Task): Promise<{ path: string; reason: string } | null> {
     const probe = this.startupDeps.returnBlocker ?? worktreeReturnBlocker;
@@ -6888,7 +6890,7 @@ export class TaskManager {
       if (!path) continue;
       const reason = provider === "mission"
         ? await this.worktrees.slotResetBlocker(path)
-        : await probe(path, { regenerableIgnored: true });
+        : await probe(path, { regenerableIgnored: true, seed: treeSeed(path) });
       if (reason) return { path, reason };
     }
     return null;
