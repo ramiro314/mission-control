@@ -704,7 +704,18 @@ The operations have deliberately narrow meanings:
   operator. It recovers the slot when the lock is gone, or when the lock is more than 10 minutes
   old and the same no-Git-process and no-holder check passes, and only when the slot is clean
   with regenerable ignored files discounted. A slot holding any other work stays quarantined, with
-  that work intact, until someone runs Recover and reads its preview.
+  that work intact, until someone runs Recover and reads its preview. Each refusal is recorded
+  with the exact path that blocked it: the first entry the reset would discard, with its kind
+  (an uncommitted change, an untracked file, an ignored file or unpushed commits on `HEAD`), or
+  the slot's `index.lock` for a lock-caused refusal. The record is kept in memory for the
+  quarantine it judged, so a restart drops it until the next pass, which runs at startup.
+
+  A slot's card shows why it is in its state, each fact on its own line: the quarantine reason,
+  the detail behind it (such as Git's own error), why its processes are unknown, the last
+  automatic-recovery refusal with the path that blocked it, and the processes inside the slot
+  with PID, command and start time. The inventory carries at most 16 of those processes per slot,
+  each command bounded to 512 bytes, and the card counts the rest. A process already listed with
+  its own Kill is not listed twice.
 
   A quarantined slot raises the bannered storage problem `quarantined-slot:<slot id>:<entered>`,
   where the entry time is the slot's own `quarantined_at` column, so the id survives a daemon

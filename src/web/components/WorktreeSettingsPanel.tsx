@@ -9,6 +9,7 @@ import type {
   WorktreeClaimVariableSource,
   WorktreeClaimVariableView,
   WorktreeOperationView,
+  WorktreeRecoveryRefusalView,
   WorktreeRepositoryView,
   WorktreeRiskKey,
   WorktreeSlotDependenciesView,
@@ -769,9 +770,7 @@ function SlotCard({
       )}
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
       {stuckReturn && <p className="wt-diagnostic wt-stuck-return">{stuckReturn.message}</p>}
-      {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
-        <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>
-      )}
+      <SlotDiagnosis slot={slot} orphans={orphans} />
       <OrphanList
         label={`Orphan processes in slot ${slot.ordinal}`}
         orphans={orphans}
@@ -829,6 +828,73 @@ function SlotCard({
       </div>
       {(copy.error || openError) && <p className="settings-error">{copy.error ?? openError}</p>}
     </article>
+  );
+}
+
+/** How a recovery refusal's blocking path is introduced, by the kind of entry it is. */
+const BLOCKING_KIND: Record<NonNullable<WorktreeRecoveryRefusalView["blocking"]>["kind"], string> = {
+  tracked: "uncommitted change",
+  untracked: "untracked file",
+  ignored: "ignored file",
+  unpushed: "unpushed commits on",
+  lock: "lock file",
+};
+
+/**
+ * Why a slot is in its state, one fact per line, so no fact hides another: the reason, the
+ * detail behind it, why its processes are unknown, the last automatic-recovery refusal with the
+ * exact path that blocked it, and the processes inside it. A process the orphan list already
+ * names, with its Kill, is not listed twice.
+ */
+function SlotDiagnosis({
+  slot,
+  orphans,
+}: {
+  slot: NativeWorktreeSlotView;
+  orphans: readonly OrphanProcess[];
+}): React.JSX.Element | null {
+  const detail = slot.diagnostic !== slot.quarantineReason ? slot.diagnostic : null;
+  const refusal = slot.recoveryRefusal;
+  const killable = new Set(orphans.map((orphan) => orphan.pid));
+  const occupants = slot.occupants.filter((occupant) => !killable.has(occupant.pid));
+  const unlisted = Math.max(0, (slot.processes.count ?? 0) - slot.occupants.length);
+  const facts = Boolean(slot.quarantineReason || detail || slot.processes.reason || refusal);
+  if (!facts && occupants.length === 0 && unlisted === 0) return null;
+  return (
+    <>
+      {facts && (
+        <section className="wt-why" aria-label={`Why slot ${slot.ordinal} is ${slot.state}`}>
+          <dl>
+            {slot.quarantineReason && <div><dt>Reason</dt><dd>{slot.quarantineReason}</dd></div>}
+            {detail && <div><dt>Detail</dt><dd>{detail}</dd></div>}
+            {slot.processes.reason && <div><dt>Processes</dt><dd>{slot.processes.reason}</dd></div>}
+            {refusal && (
+              <div>
+                <dt>Last automatic recovery</dt>
+                <dd>Refused {startedLabel(refusal.at)}: {refusal.reason}</dd>
+                {refusal.blocking && (
+                  <dd>Blocked by {BLOCKING_KIND[refusal.blocking.kind]} <code>{refusal.blocking.path}</code></dd>
+                )}
+              </div>
+            )}
+          </dl>
+        </section>
+      )}
+      {(occupants.length > 0 || unlisted > 0) && (
+        <section className="wt-occupants" aria-label={`Processes in slot ${slot.ordinal}`}>
+          <h5>Processes inside</h5>
+          <ul>
+            {occupants.map((occupant) => (
+              <li key={`${occupant.pid}:${occupant.startedAt}`}>
+                <code>{occupant.command}</code>
+                <span>PID {occupant.pid} · started {startedLabel(occupant.startedAt)}</span>
+              </li>
+            ))}
+            {unlisted > 0 && <li><span>and {unlisted} more not listed</span></li>}
+          </ul>
+        </section>
+      )}
+    </>
   );
 }
 

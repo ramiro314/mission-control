@@ -8,8 +8,11 @@ import {
   REGENERABLE_IGNORED_PATHS,
   UNCOMMITTED_WORK,
   UNPUBLISHED_COMMITS,
+  describeWorktreeWork,
   worktreeDiscardedWork,
   worktreeReturnBlocker,
+  worktreeWork,
+  type WorktreeWork,
 } from "../src/server/git/worktree-return-safety.ts";
 
 function fixture(t: TestContext) {
@@ -157,4 +160,86 @@ test("the discard list names uncommitted work and unpushed commits together, whe
   assert.deepEqual(await worktreeDiscardedWork(path), [UNCOMMITTED_WORK, UNPUBLISHED_COMMITS]);
   // An unreadable tree states nothing: the discard list is never a refusal.
   assert.deepEqual(await worktreeDiscardedWork(join(path, "missing")), []);
+});
+
+/**
+ * The rule as `worktreeReturnBlocker` applied it before `worktreeWork` existed, kept here as the
+ * oracle: any ignored entry that is a regenerable directory is discounted, every other `-z`
+ * field is work, and only a tree with none is compared against origin.
+ */
+function previousRule(path: string, regenerableIgnored: boolean): "work" | "unpushed" | "clean" {
+  const run = (...args: string[]) => execFileSync("git", ["--no-optional-locks", "-C", path, ...args], { encoding: "utf8" });
+  const status = run("status", "--porcelain", "-z", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none");
+  const regenerable = (entry: string) => entry.startsWith("!! ") &&
+    REGENERABLE_IGNORED_PATHS.some((dir) => `/${entry.slice(3)}`.endsWith(`/${dir}`));
+  if (status.split("\0").filter((entry) => entry.trim()).some((entry) => !(regenerableIgnored && regenerable(entry)))) return "work";
+  return run("rev-list", "--count", "HEAD", "--not", "--remotes=origin").trim() === "0" ? "clean" : "unpushed";
+}
+
+const decision = (work: WorktreeWork) => work.status === "work" ? work.entry.kind === "unpushed" ? "unpushed" : "work" : work.status;
+
+test("worktreeWork names the first blocking entry by path and kind, and decides exactly as the previous rule", async (t) => {
+  const cases: Array<{ name: string; plant: (repo: ReturnType<typeof ignoringFixture>) => void; entry: WorktreeWork }> = [
+    { name: "clean", plant: () => {}, entry: { status: "clean" } },
+    {
+      name: "a tracked change",
+      plant: ({ path }) => writeFileSync(join(path, "tracked"), "edited\n"),
+      entry: { status: "work", entry: { kind: "tracked", path: "tracked" } },
+    },
+    {
+      name: "a staged rename, whose source field is not a second entry",
+      plant: ({ git }) => git("mv", "tracked", "renamed"),
+      entry: { status: "work", entry: { kind: "tracked", path: "renamed" } },
+    },
+    {
+      name: "an untracked file with a space in its name",
+      plant: ({ put }) => put("notes/draft one.md"),
+      entry: { status: "work", entry: { kind: "untracked", path: "notes/draft one.md" } },
+    },
+    {
+      name: "an ignored file outside the regenerable list",
+      plant: ({ put }) => { put("node_modules/pkg/index.js"); put(".env"); },
+      entry: { status: "work", entry: { kind: "ignored", path: ".env" } },
+    },
+    {
+      name: "an unpushed commit",
+      plant: ({ path, git }) => { writeFileSync(join(path, "tracked"), "local\n"); git("commit", "-qam", "local only"); },
+      entry: { status: "work", entry: { kind: "unpushed", path: "HEAD" } },
+    },
+    {
+      name: "only regenerable ignored directories",
+      plant: ({ put }) => { put("node_modules/pkg/index.js"); put("packages/app/dist/out.js"); },
+      entry: { status: "clean" },
+    },
+  ];
+  for (const each of cases) {
+    const repo = ignoringFixture(t);
+    each.plant(repo);
+    assert.deepEqual(await worktreeWork(repo.path, { fetch: true, regenerableIgnored: true }), each.entry, each.name);
+    for (const regenerableIgnored of [false, true]) {
+      const work = await worktreeWork(repo.path, { regenerableIgnored });
+      assert.equal(decision(work), previousRule(repo.path, regenerableIgnored), `${each.name}, regenerableIgnored ${regenerableIgnored}`);
+      const blocker = await worktreeReturnBlocker(repo.path, { regenerableIgnored });
+      assert.equal(blocker, work.status === "clean" ? null : work.status === "work" && work.entry.kind === "unpushed" ? UNPUBLISHED_COMMITS : UNCOMMITTED_WORK);
+    }
+  }
+  // Without the discount, a regenerable directory is the first ignored entry Git lists.
+  const repo = ignoringFixture(t);
+  repo.put("node_modules/pkg/index.js");
+  assert.deepEqual(await worktreeWork(repo.path), { status: "work", entry: { kind: "ignored", path: "node_modules/" } });
+});
+
+test("worktreeWork reports a failed read as unknown, never as clean", async (t) => {
+  const { path } = fixture(t);
+  assert.deepEqual(await worktreeWork(join(path, "missing")), { status: "unknown", reason: "checkout identity could not be verified" });
+  assert.deepEqual(await worktreeWork(path, { execute: async (_cmd, args) => ({
+    code: args.includes("status") ? 1 : 0, stderr: "", outcomeUnknown: false, overflowed: false, stdout: path,
+  }) }), { status: "unknown", reason: "working tree could not be read" });
+});
+
+test("each blocking kind reads as a phrase naming its path", () => {
+  assert.equal(describeWorktreeWork({ kind: "tracked", path: "src/a.ts" }), "uncommitted change to src/a.ts");
+  assert.equal(describeWorktreeWork({ kind: "untracked", path: "notes.md" }), "untracked notes.md");
+  assert.equal(describeWorktreeWork({ kind: "ignored", path: ".env" }), "ignored .env");
+  assert.equal(describeWorktreeWork({ kind: "unpushed", path: "HEAD" }), "unpushed commits on HEAD");
 });

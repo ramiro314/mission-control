@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
 import {
@@ -16,6 +16,11 @@ import {
 } from "../src/server/worktrees/index-lock.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
 import { quarantinedSlotProblems } from "../src/server/worktrees/storage-problems.ts";
+import { describeWorktreeWork } from "../src/server/git/worktree-return-safety.ts";
+import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
+import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
+import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
+import { WORKTREE_INVENTORY_LIMITS } from "../src/shared/worktrees.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const db = openDb();
@@ -161,12 +166,12 @@ test("Recover never removes index.lock while a Git process works in the slot or 
   holders = [5150];
   assert.deepEqual(
     await m.recoverSlot({ slotId: slot.id, allowDirty: false, automatic: false }),
-    { outcome: "refused", reason: "index.lock is held open by pid 5150" },
+    { outcome: "refused", reason: "index.lock is held open by pid 5150", blocking: { kind: "lock", path: lock } },
   );
   holders = null;
   assert.deepEqual(
     await m.recoverSlot({ slotId: slot.id, allowDirty: false, automatic: false }),
-    { outcome: "refused", reason: "lsof could not tell whether a process holds index.lock" },
+    { outcome: "refused", reason: "lsof could not tell whether a process holds index.lock", blocking: { kind: "lock", path: lock } },
   );
   assert.equal(existsSync(lock), true);
   assert.equal(m.store.slot(slot.id)?.state, "quarantined");
@@ -176,10 +181,11 @@ test("Recover fails closed on unknown occupancy, any other process, and an unpro
   const { clone, sha } = repository("mission-recover-fail-closed-");
   const m = manager();
   const { held, lock, slot } = await lockQuarantined(m, clone, sha, "task-recover-fail-closed");
-  const refusal = async (reason: string) => {
+  // A lock refusal names the lock it judged; the others have no single path to name.
+  const refusal = async (reason: string, blocking?: { kind: "lock"; path: string }) => {
     assert.deepEqual(
       await m.recoverSlot({ slotId: slot.id, allowDirty: false, automatic: false }),
-      { outcome: "refused", reason },
+      blocking ? { outcome: "refused", reason, blocking } : { outcome: "refused", reason },
     );
     assert.equal(existsSync(lock), true, `${reason}: the lock stays`);
     assert.equal(m.store.slot(slot.id)?.state, "quarantined", `${reason}: the slot stays quarantined`);
@@ -187,7 +193,7 @@ test("Recover fails closed on unknown occupancy, any other process, and an unpro
 
   // Unknown occupancy cannot prove that no Git process is still writing the index.
   occupancyUnknown = "cwd listing failed: exit 1";
-  await refusal("process occupancy is unknown, so a Git process may still be using the worktree");
+  await refusal("process occupancy is unknown, so a Git process may still be using the worktree", { kind: "lock", path: lock });
   occupancyUnknown = null;
 
   // A process that is not Git does not hold the lock, but the reset would pull the tree out
@@ -218,10 +224,16 @@ test("the automatic pass recovers a clean slot once its lock is gone or older th
   // A lock younger than 10 minutes may belong to a Git command that is about to finish.
   assert.deepEqual(
     await m.recoverSlot({ slotId: fresh.slot.id, allowDirty: false, automatic: true }),
-    { outcome: "refused", reason: "index.lock is younger than 10 minutes" },
+    { outcome: "refused", reason: "index.lock is younger than 10 minutes", blocking: { kind: "lock", path: fresh.lock } },
   );
   await m.recoverLockQuarantines();
   assert.equal(m.store.slot(fresh.slot.id)?.state, "quarantined");
+  // The pass records each refusal with the lock path that blocked it, for the slot card.
+  assert.deepEqual(m.recoveryRefusal(m.store.slot(fresh.slot.id)!), {
+    at: now,
+    reason: "index.lock is younger than 10 minutes",
+    blocking: { kind: "lock", path: fresh.lock },
+  });
   assert.equal(existsSync(fresh.lock), true);
   assert.equal(m.store.slot(gone.slot.id)?.state, "quarantined", "both locks are still there");
 
@@ -229,6 +241,7 @@ test("the automatic pass recovers a clean slot once its lock is gone or older th
   unlinkSync(gone.lock);
   await m.recoverLockQuarantines();
   assert.equal(m.store.slot(gone.slot.id)?.state, "available");
+  assert.equal(m.recoveryRefusal(m.store.slot(gone.slot.id)!), null, "a recovered slot keeps no refusal");
   assert.equal(existsSync(join(gone.held.path, "node_modules", "cache.txt")), true);
   assert.equal(m.store.slot(fresh.slot.id)?.state, "quarantined");
 
@@ -243,19 +256,27 @@ test("the automatic pass leaves a slot holding work quarantined with that work i
   const { clone, sha } = repository("mission-recover-work-");
   const m = manager();
   const old = (Date.now() - INDEX_LOCK_STALE_MS * 2) / 1_000;
-  const cases: Array<{ name: string; plant: (path: string) => void; intact: (path: string) => boolean }> = [
+  const cases: Array<{
+    name: string;
+    plant: (path: string) => void;
+    intact: (path: string) => boolean;
+    blocking: { kind: "tracked" | "untracked" | "ignored" | "unpushed"; path: string };
+  }> = [
     {
       name: "an uncommitted change",
+      blocking: { kind: "tracked", path: "keep.txt" },
       plant: (path) => writeFileSync(join(path, "keep.txt"), "edited\n"),
       intact: (path) => readFileSync(join(path, "keep.txt"), "utf8") === "edited\n",
     },
     {
       name: "an untracked file",
+      blocking: { kind: "untracked", path: "notes.md" },
       plant: (path) => writeFileSync(join(path, "notes.md"), "draft\n"),
       intact: (path) => existsSync(join(path, "notes.md")),
     },
     {
       name: "an unpushed commit",
+      blocking: { kind: "unpushed", path: "HEAD" },
       plant: (path) => {
         writeFileSync(join(path, "keep.txt"), "committed\n");
         gitIn(path, "-c", "user.email=t@test", "-c", "user.name=t", "commit", "-qam", "local only");
@@ -264,6 +285,7 @@ test("the automatic pass leaves a slot holding work quarantined with that work i
     },
     {
       name: "a non-regenerable ignored file",
+      blocking: { kind: "ignored", path: ".env" },
       plant: (path) => writeFileSync(join(path, ".env"), "TOKEN=1\n"),
       intact: (path) => existsSync(join(path, ".env")),
     },
@@ -280,10 +302,17 @@ test("the automatic pass leaves a slot holding work quarantined with that work i
   }
 
   await m.recoverLockQuarantines();
+  const inventory = (await m.status()).flatMap((pool) => pool.slots);
   for (const each of planted) {
+    // The pass recorded the entry that blocked it, and inventory carries it to the slot card.
+    const recorded = m.recoveryRefusal(m.store.slot(each.slot.id)!);
+    assert.deepEqual(recorded?.blocking, each.blocking, each.name);
+    assert.equal(recorded?.reason, `the slot holds work Recover would discard: ${describeWorktreeWork(each.blocking)}`);
+    assert.deepEqual(inventory.find((entry) => entry.slot.id === each.slot.id)?.recoveryRefusal, recorded);
     const refused = await m.recoverSlot({ slotId: each.slot.id, allowDirty: false, automatic: true });
     assert.equal(refused.outcome, "refused");
     assert.match((refused as { reason: string }).reason, /^the slot holds work Recover would discard: /, each.name);
+    assert.deepEqual((refused as { blocking?: unknown }).blocking, each.blocking, each.name);
     assert.equal(m.store.slot(each.slot.id)?.state, "quarantined", `${each.name} keeps the slot quarantined`);
     assert.equal(each.intact(each.held.path), true, `${each.name} is intact`);
     assert.equal(existsSync(each.lock), true, `${each.name}: the automatic pass removes nothing`);
@@ -299,6 +328,8 @@ test("the automatic pass leaves a slot holding work quarantined with that work i
     (await m.recoverSlot({ slotId: first!.slot.id, allowDirty: true, automatic: false })).outcome,
     "recovered",
   );
+  // Leaving the quarantine retires its refusal: a later quarantine is judged afresh.
+  assert.equal(m.recoveryRefusal(m.store.slot(first!.slot.id)!), null);
   assert.equal(readFileSync(join(first!.held.path, "keep.txt"), "utf8"), "base\n");
 });
 
@@ -342,4 +373,126 @@ test("a quarantined slot raises one bannered problem keyed by its durable entry 
   const [again] = quarantinedSlotProblems(m.store.slots());
   assert.equal(again?.id, `quarantined-slot:${slot.id}:${reentered}`);
   assert.notEqual(again?.id, problem!.id);
+});
+
+/** The slot as the Settings inventory serves it: the view the card renders, after every bound. */
+async function inventorySlot(m: WorktreeManager, slotId: string) {
+  const operations = new WorktreeOperationsService(m, {
+    legacy: new LegacyTreehouseService(db),
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks: new CheckLeaseManager(db, { manager: m, legacy: new LegacyTreehouseService(db) }),
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async () => 1024,
+  });
+  const inventory = await operations.inventory();
+  const slot = inventory.repositories.flatMap((repo) => repo.slots).find((each) => each.id === slotId);
+  assert.ok(slot, "the slot is in the inventory");
+  return slot;
+}
+
+/** A lock-caused quarantine whose stale lock is old enough for the automatic pass to judge its work. */
+async function agedLockQuarantine(m: WorktreeManager, clone: string, sha: string, key: string, plant: (path: string) => void) {
+  const quarantined = await lockQuarantined(m, clone, sha, key);
+  unlinkSync(quarantined.lock);
+  plant(quarantined.held.path);
+  writeFileSync(quarantined.lock, "");
+  const old = (Date.now() - INDEX_LOCK_STALE_MS * 2) / 1_000;
+  utimesSync(quarantined.lock, old, old);
+  return quarantined;
+}
+
+test("the inventory carries a recorded refusal to the slot view, with its blocking path exactly as Git listed it", async () => {
+  const { clone, sha } = repository("mission-recover-view-");
+  const m = manager();
+  const { slot } = await agedLockQuarantine(m, clone, sha, "task-view", (path) => {
+    mkdirSync(join(path, "notes"));
+    writeFileSync(join(path, "notes", "draft  one.md"), "draft\n");
+  });
+  await m.recoverLockQuarantines();
+  const recorded = m.recoveryRefusal(m.store.slot(slot.id)!);
+  assert.ok(recorded);
+  const view = await inventorySlot(m, slot.id);
+  assert.deepEqual(view.recoveryRefusal, {
+    at: recorded.at,
+    // The reason is prose and is compacted like every other inventory sentence...
+    reason: "the slot holds work Recover would discard: untracked notes/draft one.md",
+    // ...but the path is what an operator goes to find, so its whitespace is never collapsed.
+    blocking: { kind: "untracked", path: "notes/draft  one.md" },
+  });
+});
+
+test("the inventory lists at most 16 occupants per slot, clips each command to 512 bytes, and lists none when occupancy is unknown", async () => {
+  const { clone, sha } = repository("mission-recover-occupants-");
+  const m = manager();
+  const held = await leased(m, clone, sha, "task-occupants");
+  // A two-byte character straddles byte 512, so a clip that is not character-aware would split it.
+  const straddling = `${"a".repeat(511)}é and the rest`;
+  const exact = "b".repeat(512);
+  occupants = Array.from({ length: 17 }, (_, index) => ({
+    ...occupant(held.path, index === 0 ? straddling : index === 1 ? exact : `node worker-${index}.js`),
+    pid: 6000 + index,
+    startMs: 1_000 + index,
+  }));
+  const view = await inventorySlot(m, held.slotId);
+  assert.equal(WORKTREE_INVENTORY_LIMITS.occupantsPerSlot, 16);
+  assert.equal(WORKTREE_INVENTORY_LIMITS.occupantCommandBytes, 512);
+  assert.equal(view.occupants.length, 16, "the 17th occupant is counted, not listed");
+  assert.deepEqual(view.processes, { state: "known", count: 17, reason: null });
+  assert.deepEqual(view.occupants.map((each) => each.pid), Array.from({ length: 16 }, (_, index) => 6000 + index));
+  assert.deepEqual(view.occupants[2], { pid: 6002, command: "node worker-2.js", startedAt: 1_002 });
+  assert.equal(view.occupants[0]!.command, "a".repeat(511), "the straddling character is dropped whole");
+  assert.equal(view.occupants[1]!.command, exact, "a command of exactly 512 bytes is kept whole");
+  for (const each of view.occupants) assert.ok(Buffer.byteLength(each.command, "utf8") <= 512);
+
+  occupants = [];
+  occupancyUnknown = "process listing timed out";
+  const unknown = await inventorySlot(m, held.slotId);
+  assert.deepEqual(unknown.occupants, []);
+  assert.deepEqual(unknown.processes, { state: "unknown", count: null, reason: "process listing timed out" });
+});
+
+test("a recorded refusal is shown only for the quarantine it judged", async () => {
+  const { clone, sha } = repository("mission-recover-refusal-version-");
+  const m = manager();
+  const { slot } = await agedLockQuarantine(m, clone, sha, "task-refusal-version", (path) => {
+    writeFileSync(join(path, ".env"), "TOKEN=1\n");
+  });
+  await m.recoverLockQuarantines();
+  const judged = m.store.slot(slot.id)!;
+  assert.deepEqual(m.recoveryRefusal(judged)?.blocking, { kind: "ignored", path: ".env" });
+
+  // Still quarantined, but quarantined again: the version moved, so the old refusal no longer
+  // describes it, and neither the manager nor the inventory shows it.
+  const requarantined = m.store.quarantine(slot.id, "slot Git state is unknown", "git status timed out", Date.now(), judged.version);
+  assert.ok(requarantined);
+  assert.equal(requarantined.state, "quarantined");
+  assert.equal(m.recoveryRefusal(requarantined), null);
+  assert.equal((await inventorySlot(m, slot.id)).recoveryRefusal, null);
+  assert.equal((await m.status()).flatMap((pool) => pool.slots).find((each) => each.slot.id === slot.id)?.recoveryRefusal, null);
+
+  // A row carrying the judged version still matches the record, so the version alone retired it;
+  // the next pass, for which this slot is no longer a candidate, then drops the record itself.
+  assert.ok(m.recoveryRefusal(judged));
+  await m.recoverLockQuarantines();
+  assert.equal(m.recoveryRefusal(judged), null, "a slot that is no longer a candidate keeps no record");
+});
+
+test("a work check that cannot read the slot refuses Recover as unreadable, never as work, and names no path", async () => {
+  const { clone, sha } = repository("mission-recover-unreadable-");
+  const m = manager();
+  const { held, lock, slot } = await lockQuarantined(m, clone, sha, "task-unreadable");
+  unlinkSync(lock);
+  // A corrupt index makes `git status` fail while the checkout's identity still reads.
+  writeFileSync(join(dirname(lock), "index"), "not an index");
+  assert.equal(gitIn(held.path, "rev-parse", "--show-toplevel"), held.path);
+
+  const reason = "the slot's work could not be read: working tree could not be read";
+  assert.deepEqual(
+    await m.recoverSlot({ slotId: slot.id, allowDirty: false, automatic: false }),
+    { outcome: "refused", reason },
+  );
+  await m.recoverLockQuarantines();
+  assert.deepEqual(m.recoveryRefusal(m.store.slot(slot.id)!), { at: m.recoveryRefusal(m.store.slot(slot.id)!)!.at, reason, blocking: null });
+  assert.equal(m.store.slot(slot.id)?.state, "quarantined");
 });
