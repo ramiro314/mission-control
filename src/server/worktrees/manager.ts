@@ -3152,7 +3152,7 @@ export class WorktreeManager {
     }
     // The cause replaces `last_error`, so an old lock error cannot make what is left a candidate for
     // automatic recovery.
-    const intent = this.store.quarantine(slot.id, INTERRUPTED_FORGET, bounded(cause), this.deps.now(), slot.version);
+    const intent = this.store.quarantine(slot.id, INTERRUPTED_FORGET, bounded(cause), this.deps.now(), slot.version, false, "operator");
     if (!intent) return { outcome: "refused", reason: "slot changed after it was observed" };
     this.publish();
     try {
@@ -3178,7 +3178,7 @@ export class WorktreeManager {
     const after = await this.registrationsNaming(identity, slot.path);
     if (!after.ok) return { outcome: "outcomeUnknown", reason: after.reason };
     if (after.value.length > 0) return { outcome: "outcomeUnknown", reason: "Git still lists a registration for the slot's path" };
-    if (!this.store.forget(intent.id, intent.version)) {
+    if (!this.store.forget(intent.id, intent.version, this.deps.now())) {
       return { outcome: "outcomeUnknown", reason: "the forgotten slot's row could not be settled" };
     }
     console.log(oneLine(`[worktrees] forgot ${this.slotLabel(slot)}: ${cause}`));

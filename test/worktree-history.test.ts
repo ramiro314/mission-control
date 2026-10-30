@@ -191,6 +191,24 @@ test("every slot transition writes exactly one row with the states either side o
   assert.equal(historyOf(pruning.id).length, 10, "the row went and its history stayed");
 });
 
+test("Forget names the operator on its intent and its removal, and the row goes while its history stays", () => {
+  const slot = leased();
+  const quarantined = store.quarantine(slot.id, "slot path or Git registration is missing", null, 300)!;
+  const { result: intent, row: began } = oneRowFrom(() => store.quarantine(
+    quarantined.id, "a Forget was cut off before its folder was gone", "the slot's folder is gone", 310, quarantined.version, false, "operator",
+  )!);
+  assert.deepEqual([began.fromState, began.toState, began.actor], ["quarantined", "quarantined", "operator"]);
+  assert.equal(began.reason, "a Forget was cut off before its folder was gone");
+  assert.equal(began.detail, "the slot's folder is gone");
+
+  const { row: gone } = oneRowFrom(() => assert.equal(store.forget(intent.id, intent.version, 320), true));
+  assert.deepEqual([gone.fromState, gone.toState, gone.actor, gone.reason], ["quarantined", null, "operator", "slot forgotten"]);
+  assert.equal(gone.at, 320);
+  assert.equal(store.slot(intent.id), null);
+  assert.ok(historyOf(intent.id).length > 2, "the row went and its history stayed");
+  assert.equal(store.pool(slot.poolId)?.ordinalHighWater, slot.ordinal, "the ordinal is never reused");
+});
+
 test("a reservation handed back is recorded against the owner it was reserved for", () => {
   const slot = leased();
   const returning = store.markReturning(slot.id, slot.version, "b".repeat(40), 300)!;
@@ -236,6 +254,7 @@ test("a compare-and-swap that misses writes no row", () => {
   noRowFrom(() => assert.equal(store.restoreLease(slot.id, slot.version, "lease-slot-a", 1), null));
   noRowFrom(() => assert.equal(store.withdrawQuarantinedLease(slot.id, slot.version, "lease-slot-a", 1), null));
   noRowFrom(() => assert.equal(store.removePruned(slot.id, slot.version), false));
+  noRowFrom(() => assert.equal(store.forget(slot.id, slot.version), false));
   noRowFrom(() => assert.equal(store.quarantine("no-such-slot", "reason", null, 1), null));
   noRowFrom(() => assert.equal(store.reserveAvailable({
     slotId: slot.id, version: slot.version, leaseId: "l", ownerKind: "task", ownerKey: "k", requestedHeadSha: "x", now: 1,
@@ -256,6 +275,8 @@ test("a transition whose history row cannot be written does not happen", () => {
   const returning = store.markReturning(granted.id, granted.version, "b".repeat(40), 300)!;
   const free = store.completeRelease(returning.id, returning.version, "b".repeat(40), 400)!;
   const pruning = store.markPruning(free.id, free.version, 500)!;
+  const reservation = reserved(slot.poolId, "slot-forget");
+  const forgotten = store.quarantine(reservation.id, "reason", null, 505)!;
   db.exec(`
     CREATE TEMP TRIGGER refuse_history BEFORE INSERT ON main.worktree_slot_history
     BEGIN SELECT RAISE(ABORT, 'history refused'); END;
@@ -265,6 +286,7 @@ test("a transition whose history row cannot be written does not happen", () => {
   assert.throws(() => store.markReturning(slot.id, slot.version, "b".repeat(40), 300), /history refused/);
   assert.throws(() => reserved(slot.poolId, "slot-b"), /history refused/);
   assert.throws(() => store.removePruned(pruning.id, pruning.version, 510, "operator"), /history refused/);
+  assert.throws(() => store.forget(forgotten.id, forgotten.version, 515), /history refused/);
   assert.throws(
     () => store.noteLastError(slot.id, slot.version, withObservationFailure(null, "a failed read"), 520),
     /history refused/,
@@ -273,6 +295,7 @@ test("a transition whose history row cannot be written does not happen", () => {
   assert.deepEqual(store.slot(slot.id), slot, "the slot row is exactly as it was");
   assert.equal(store.slot("slot-b"), null);
   assert.deepEqual(store.slot(pruning.id), pruning, "a removal that cannot be recorded leaves its row in place");
+  assert.deepEqual(store.slot(forgotten.id), forgotten, "nor does a Forget that cannot be recorded lose its row");
   assert.equal(rowCount(), rows);
 });
 

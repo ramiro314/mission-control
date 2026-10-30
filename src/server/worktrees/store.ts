@@ -278,7 +278,7 @@ export class WorktreeStore {
    * One slot transition: `write` changes the row, and its one history row commits with it. A
    * compare-and-swap that misses writes no row, and a row that cannot be written rolls the
    * transition back, so history cannot drift from the slot. Every write that raises `version`
-   * comes through here, or through `reserveNew` and `removePruned`, which record the same way.
+   * comes through here, or through `reserveNew`, `removePruned` and `forget`, which record the same way.
    */
   private transition(
     slotId: string,
@@ -753,6 +753,7 @@ export class WorktreeStore {
     now: number,
     expectedVersion?: number,
     withdrawGrant = false,
+    actor: WorktreeHistoryActor = "automatic",
   ): WorktreeSlotRow | null {
     const where = expectedVersion === undefined ? "id = ?" : "id = ? AND version = ?";
     const args = expectedVersion === undefined
@@ -774,7 +775,7 @@ export class WorktreeStore {
              quarantine_reason = ?, last_error = ?, updated_at = ? WHERE ${where}`,
         )
         .run(...args),
-      () => ({ reason, detail: error, actor: "automatic" }),
+      () => ({ reason, detail: error, actor }),
     );
   }
 
@@ -1010,13 +1011,27 @@ export class WorktreeStore {
 
   /**
    * Delete a quarantined slot's row for good, once Forget has removed its folder and registration.
-   * The pool's high-water mark is left alone, so the ordinal is never reused.
+   * The pool's high-water mark is left alone, so the ordinal is never reused. Its history stays, as
+   * `removePruned`'s does, and names the operator, because only a slot card reaches this.
    */
-  forget(slotId: string, version: number): boolean {
-    const changed = this.db
-      .prepare(`DELETE FROM worktree_slots WHERE id = ? AND state = 'quarantined' AND version = ?`)
-      .run(slotId, version);
-    return Number(changed.changes) === 1;
+  forget(slotId: string, version: number, now: number = Date.now()): boolean {
+    return this.transact(() => {
+      const before = this.slot(slotId);
+      const changed = this.db
+        .prepare(`DELETE FROM worktree_slots WHERE id = ? AND state = 'quarantined' AND version = ?`)
+        .run(slotId, version);
+      if (!before || Number(changed.changes) !== 1) return false;
+      this.record(before, {
+        at: now,
+        kind: "transition",
+        fromState: before.state,
+        toState: null,
+        reason: "slot forgotten",
+        actor: "operator",
+        meta: { version: before.version, head: before.currentHeadSha },
+      });
+      return true;
+    });
   }
 
   recordReconciliation(poolId: string, now: number, error: string | null): void {
