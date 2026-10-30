@@ -931,7 +931,8 @@ tree the task holds. This amends the earlier settle-and-retain rule for clean tr
   work. A path `seed.exclude` could reach is not regenerable: a seed strips it from every clone,
   so it never comes back. That covers an excluded path, anything inside one, and a directory an
   exclusion could match under, so `**` in an exclusion takes a seeded directory out of the set
-  (the built-in directories stay in it). The tree is mapped to its pool by the Git common directory its `.git` file names. A pool
+  (the built-in directories stay in it). An exclusion with a group spanning a slash, such as
+  `.yarn/{secrets/*,keys/*}`, takes every seed path out. The tree is mapped to its pool by the Git common directory its `.git` file names. A pool
   with no claim or no seed, and a folder with no repository, get only the list above. A pool slot
   keeps its folder and is checked against the list above only.
 - **Anything else keeps the 30-day window.** Any other ignored file is work here: workflow

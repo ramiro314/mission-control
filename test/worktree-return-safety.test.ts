@@ -377,6 +377,18 @@ test("a path any seed exclusion could reach, at, above or under it, is never reg
   assert.equal(seedRegenerates(".yarn/cache/x.zip", { paths: [".yarn"], exclude: [".yarn/secrets/*"] }), true);
 });
 
+test("an exclusion whose group spans a slash cannot be split by segment, so it reaches every seeded path", () => {
+  for (const glob of [".yarn/{secrets/*,keys/*}", ".yarn/@(secrets/*|keys/*)", ".yarn/!(cache/x|y)", ".yarn/[a/b]", ".yarn/{secrets/*"]) {
+    const seed = { paths: [".yarn"], exclude: [glob] };
+    assert.equal(seedRegenerates(".yarn/secrets/token", seed), false, glob);
+    assert.equal(seedRegenerates(".yarn/install-state.gz", seed), false, `${glob}: it cannot be told apart, so nothing is discounted`);
+  }
+  // A group that stays inside one segment still matches segment by segment.
+  const seed = { paths: [".yarn"], exclude: [".yarn/{secrets,keys}/*"] };
+  assert.equal(seedRegenerates(".yarn/keys/token", seed), false);
+  assert.equal(seedRegenerates(".yarn/install-state.gz", seed), true);
+});
+
 test("delete rule: an ignored file the seed excludes stays work", async (t) => {
   const { tree, put, claimed } = linkedTree(t);
   const seed = treeSeed(tree, claimed([".yarn/install-state.gz", ".idea"], [".idea/workspace.xml"]));

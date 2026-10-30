@@ -89,6 +89,21 @@ export interface RegenerableSeed {
 export const NO_SEED: RegenerableSeed = { paths: [], exclude: [] };
 
 /**
+ * Whether a `/` falls inside a brace, extglob or bracket group, or after one left open, as in
+ * `.yarn/{secrets/*,keys/*}`. Such a glob cannot be split into segments, so `exclusionReaches`
+ * could not judge it.
+ */
+function groupSpansSlash(glob: string): boolean {
+  let depth = 0;
+  for (const char of glob) {
+    if ("{([".includes(char)) depth += 1;
+    else if ("})]".includes(char)) depth = Math.max(0, depth - 1);
+    else if (char === "/" && depth > 0) return true;
+  }
+  return false;
+}
+
+/**
  * Whether an exclusion glob could match `names` itself, one of its ancestors, or, for a
  * `directory`, anything under it. Deliberately generous, so the answer is never "no" when the
  * seed's own `matchesGlob` over a whole path could say "yes": a segment holding `**` stands for
@@ -112,7 +127,8 @@ function exclusionReaches(names: readonly string[], segments: readonly string[],
  * matched segment by segment exactly as `expandSeedPaths` matches them in a slot, and no
  * `exclude` glob could match it, an ancestor, or anything under it. A seed strips excluded
  * paths from every clone, so those are local to each tree and never come back; a path any
- * exclusion might reach is therefore never called regenerable. A trailing slash, which Git's
+ * exclusion might reach is therefore never called regenerable, and a glob whose group spans a
+ * slash might reach any of them. A trailing slash, which Git's
  * status prints for a directory, says the path is one. Pure: nothing on disk is read.
  */
 export function seedRegenerates(path: string, seed: RegenerableSeed): boolean {
@@ -122,7 +138,7 @@ export function seedRegenerates(path: string, seed: RegenerableSeed): boolean {
     const segments = glob.split("/");
     return segments.length <= names.length && segments.every((segment, index) => seedSegmentMatches(names[index]!, segment));
   });
-  return seeded && !seed.exclude.some((glob) => exclusionReaches(names, glob.split("/"), directory));
+  return seeded && !seed.exclude.some((glob) => groupSpansSlash(glob) || exclusionReaches(names, glob.split("/"), directory));
 }
 
 /** One path a seed path glob matched, repository-relative, and whether it is a directory. */
