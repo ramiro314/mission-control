@@ -31,6 +31,7 @@ function mark(over: Partial<FollowupMark> = {}): FollowupMark {
     prKey: KEY,
     findingsRound: null,
     ciNudged: false,
+    ciHead: null,
     conflictHead: "C",
     conflictNudges: 3,
     conflictNudgedAt: 1,
