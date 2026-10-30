@@ -71,6 +71,12 @@ import {
 
 const TOKEN_TTL_MS = 2 * 60_000;
 
+/**
+ * How long Execute's safety rebuild waits for its slots' current lock holders. A maintenance
+ * pass holds each slot only briefly; a holder still there after this is a real change.
+ */
+const SLOT_SETTLE_MS = 10_000;
+
 /** The most often a running Warm's output tail bumps the worktrees revision. */
 const WARM_TAIL_INTERVAL_MS = 1_000;
 /** An operation id as it may name a log file. */
@@ -1843,6 +1849,10 @@ export class WorktreeOperationsService {
     operationId: string | null = null,
     removed: (target: WorktreeActionAffected) => void = () => {},
   ): Promise<WorktreeActionExecuteResult> {
+    await this.manager.slotsSettled(
+      held.preview.affected.filter((target) => target.provider === "mission").map((target) => target.id),
+      SLOT_SETTLE_MS,
+    );
     const observed = await this.observe();
     const rebuilt = await this.buildPreview(held.preview.request, observed, operationId);
     const currentFingerprint = previewFingerprint(rebuilt);
@@ -2003,7 +2013,10 @@ export class WorktreeOperationsService {
       entry.slots.some((slot) => slot.slot.id === slotId));
     if (!pool || !pool.identityValid || !pool.markerValid) return null;
     const slot = pool.slots.find((entry) => entry.slot.id === slotId);
-    return slot?.nativePath && slot.registered === true && slot.repositoryMatches === true
+    // A busy slot's own Git is not read, so its repository match is unknown. Opening a shell
+    // writes nothing, and its exact pool path and Git registration still prove the folder.
+    const repositoryProven = slot?.repositoryMatches === true || (slot?.busy != null && slot.repositoryMatches === null);
+    return slot?.nativePath && slot.registered === true && repositoryProven
       ? slot.slot.path
       : null;
   }

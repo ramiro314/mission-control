@@ -800,6 +800,32 @@ export class WorktreeManager {
     return this.slotHolders.get(slotId)?.holder ?? null;
   }
 
+  /**
+   * Wait until every slot lock held or queued right now on these slots is released, for at most
+   * `timeoutMs`. Takes no lock, and does not wait on a running claim, which may last for hours.
+   * Execute's safety rebuild calls this so a short holder, such as a maintenance pass's
+   * reconciliation, does not read as a changed slot.
+   */
+  async slotsSettled(slotIds: readonly string[], timeoutMs: number): Promise<void> {
+    const pending = slotIds
+      .filter((slotId) => !this.claims.has(slotId))
+      .map((slotId) => this.queues.get(`slot:${slotId}`))
+      .filter((tail): tail is Promise<void> => tail !== undefined)
+      .map((tail) => tail.catch(() => {}));
+    if (pending.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all(pending),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private deliverPublish(publishChanged: () => void = this.deps.publishChanged): void {
     try {
       publishChanged();

@@ -1013,6 +1013,14 @@ test("a slot held by a running claim shows busy and names the claim until it fin
     await held.scrollIntoViewIfNeeded();
     await shoot(dashboard, "10-slot-busy-with-claim");
 
+    // A busy slot still opens a terminal: opening a shell writes nothing. The fake cmux records it.
+    const launches = () => readdirSync(daemon.recordDir).filter((name) => name.startsWith("cmux-")).length;
+    const before = launches();
+    await held.getByLabel("Terminal backend for slot 2").selectOption("cmux");
+    await held.getByRole("button", { name: "Open terminal" }).click();
+    await expect.poll(launches).toBe(before + 1);
+    await expect(held.getByText(/not found/)).toHaveCount(0);
+
     // Once the claim finishes, the slot is read again: leased, and no longer busy.
     writeFileSync(gate, "0");
     await expect(held.getByText("busy", { exact: true })).toHaveCount(0, { timeout: 45_000 });

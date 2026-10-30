@@ -144,6 +144,8 @@ test("inventory runs no Git in a slot whose lock is held, and shows it busy with
     const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: lease.slotId } });
     assert.equal(preview.allowed, false);
     assert.match(preview.blockers.join("\n"), /is busy with Return; preview again once it finishes/);
+    // Opening a shell writes nothing, so it still resolves the exact registered path.
+    assert.equal(await operations.slotPath(lease.slotId), lease.path);
   } finally {
     finish();
   }
@@ -181,6 +183,23 @@ test("a slot whose claim has not reached a step is busy reading its fingerprint,
   }
   assert.equal((await view())?.busy, null);
   assert.ok(read.includes(slot!.path), "a slot whose claim ended is read again");
+});
+
+test("Execute's safety rebuild waits out a short slot lock holder instead of failing as changed", async () => {
+  const [slot] = await availableSlots("mission-worktree-bg-settle-", 1);
+  const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: slot!.slotId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  // A maintenance pass holding the slot for its reconciliation while Execute rebuilds.
+  const held = manager as unknown as {
+    acquireSlotLock(slotId: string, holder: string): Promise<() => void>;
+  };
+  const release = await held.acquireSlotLock(slot!.slotId, "reconciliation");
+  assert.equal(manager.slotBusy(slot!.slotId), "reconciliation");
+  const accepted = operations.submit(preview.token, []);
+  setTimeout(release, 300);
+  await operations.idle();
+  assert.deepEqual((await operations.inventory()).operations, [], `no failure was reported for ${accepted.operation.id}`);
+  assert.equal(manager.store.slot(slot!.slotId), null, "the slot was removed once the holder let go");
 });
 
 test("a token is claimed synchronously, so a stale or reused one is refused before queueing", async () => {
