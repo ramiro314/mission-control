@@ -27,7 +27,7 @@ const {
   getTask,
 } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
+const { TaskManager, MISSION_SESSION_CLOSURE_RETRY_MS } = await import("./helpers/task-manager-fixture.ts");
 const { WorktreeTeardownError } = await import("../src/server/dispatcher.ts");
 const {
   TaskWorktreeRetentionObserver,
@@ -1273,7 +1273,13 @@ test("only a cancelled or failed task is reclaimed by a session leaving", async 
   assert.deepEqual(w.state.teardowns, []);
 });
 
-test("a session leaving while the task's cleanup is queued is not lost", async () => {
+test("a session leaving while the task's cleanup is queued is retried by the armed sweep alone", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  /** Let a sweep's `finally`, which holds the retry, run after its timer fires. */
+  const fire = async (ms: number): Promise<void> => {
+    t.mock.timers.tick(ms);
+    for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
   const id = uid("queued");
   let hold: (() => void) | null = null;
   const reading = new Promise<void>((resolve) => { hold = resolve; });
@@ -1295,6 +1301,7 @@ test("a session leaving while the task's cleanup is queued is not lost", async (
   );
   await w.ready();
   w.registry.applyDiscovery([]);
+  await fire(1);
   const first = arrive(w, uid("session"), "/pool/a");
   eviction(w).beginEviction(first);
   eviction(w).remove(first.id);
@@ -1303,13 +1310,15 @@ test("a session leaving while the task's cleanup is queued is not lost", async (
   const second = arrive(w, uid("session"), "/pool/a");
   eviction(w).beginEviction(second);
   eviction(w).remove(second.id);
-  // A sweep with the job still running is refused again. It has to return, because the job
-  // cannot finish until this synchronous retry gives the event loop back.
-  await w.tasks.sweepMissionSessionClosures();
+  // `session_remove`'s own prompt sweep finds the job still running and is refused too. That
+  // sweep has to return, because the job cannot finish until its synchronous retry gives the
+  // event loop back, and it has to arm the next one, because its own re-arm counts no reclaim.
+  await fire(1);
+  assert.equal(reads, 1, "the refused retry did not start a second job");
   hold!();
   await w.tasks.settleWorktreeReturns();
   assert.deepEqual(w.state.teardowns, [], "the first attempt saw the occupant");
-  await w.tasks.sweepMissionSessionClosures();
+  await fire(MISSION_SESSION_CLOSURE_RETRY_MS);
   await w.tasks.settleWorktreeReturns();
   assert.deepEqual(w.state.teardowns, [id], "the refused event was retried");
 });
