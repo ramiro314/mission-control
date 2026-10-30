@@ -23,6 +23,14 @@ async function shoot(page: Page, target: Locator, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/settings-worktree-seed/${name}.png`);
 }
 
+/** A slot card whole: at the default viewport its upper half sits under the page's chrome. */
+async function shootCard(page: Page, card: Locator, name: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  await page.setViewportSize({ width: 1600, height: 2000 });
+  await card.scrollIntoViewIfNeeded();
+  await shoot(page, card, name);
+}
+
 async function openEditor(page: Page, daemon: DaemonHandle): Promise<Locator> {
   await page.goto(`${daemon.baseURL}/#/settings/worktrees`);
   const pool = page.locator(".wt-pool", { hasText: "demo-repo" });
@@ -200,8 +208,7 @@ test("a slot seeded from a quarantined sibling shows that source in its timings 
   const seedEntry = history.getByRole("listitem").filter({ hasText: `quarantined slot ${row.ordinal}` });
   await expect(seedEntry).toHaveCount(1);
   await expect(seedEntry).toContainText("Seed: ");
-  await seeded.scrollIntoViewIfNeeded();
-  await shoot(dashboard, seeded, "03-seeded-from-a-quarantined-slot");
+  await shootCard(dashboard, seeded, "03-seed-from-a-quarantined-slot-on-this-disk");
 
   // The source is still quarantined, as it was, with its install in place.
   await expect(pool.getByRole("article", { name: `Slot ${row.ordinal}`, exact: true })).toContainText("return reset failed");
@@ -225,4 +232,5 @@ test("a slot seeded from a quarantined sibling shows that source in its timings 
   await dashboard.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(timings.getByRole("definition").nth(2)).toHaveText(`from quarantined slot ${row.ordinal} in 12s`);
   await expect(history.getByRole("listitem").filter({ hasText: `Seed: from quarantined slot ${row.ordinal} in 12s` })).toHaveCount(1);
+  await shootCard(dashboard, seeded, "04-seed-placed-from-a-quarantined-slot");
 });
