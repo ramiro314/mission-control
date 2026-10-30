@@ -1122,11 +1122,13 @@ function arrive(w: ReturnType<typeof world>, id: string, cwd: string) {
   return session;
 }
 
-/** `Registry.beginEviction`'s whole sequence, without waiting out its linger. */
+/** The two halves of `Registry.beginEviction`'s sequence, without waiting out its linger. */
+const eviction = (w: ReturnType<typeof world>) =>
+  w.registry as unknown as { beginEviction(s: unknown): void; remove(id: string): void };
+
 async function leave(w: ReturnType<typeof world>, session: ReturnType<typeof mkSession>): Promise<void> {
-  const evicting = w.registry as unknown as { beginEviction(s: unknown): void; remove(id: string): void };
-  evicting.beginEviction(session);
-  evicting.remove(session.id);
+  eviction(w).beginEviction(session);
+  eviction(w).remove(session.id);
   await w.tasks.settleWorktreeReturns();
 }
 
@@ -1293,15 +1295,14 @@ test("a session leaving while the task's cleanup is queued is not lost", async (
   );
   await w.ready();
   w.registry.applyDiscovery([]);
-  const evicting = w.registry as unknown as { beginEviction(s: unknown): void; remove(id: string): void };
   const first = arrive(w, uid("session"), "/pool/a");
-  evicting.beginEviction(first);
-  evicting.remove(first.id);
+  eviction(w).beginEviction(first);
+  eviction(w).remove(first.id);
   await firstRead;
   // The first attempt read a process that has since gone, and the queue holds one job per task.
   const second = arrive(w, uid("session"), "/pool/a");
-  evicting.beginEviction(second);
-  evicting.remove(second.id);
+  eviction(w).beginEviction(second);
+  eviction(w).remove(second.id);
   // A sweep with the job still running is refused again. It has to return, because the job
   // cannot finish until this synchronous retry gives the event loop back.
   await w.tasks.sweepMissionSessionClosures();
@@ -1312,3 +1313,97 @@ test("a session leaving while the task's cleanup is queued is not lost", async (
   await w.tasks.settleWorktreeReturns();
   assert.deepEqual(w.state.teardowns, [id], "the refused event was retried");
 });
+
+for (const [work, blocker] of [["clean", null], ["dirty", "uncommitted changes"]] as const) {
+  test(`a session leaving /pool/10 leaves the ${work} tree at /pool/1 alone`, async () => {
+    const id = uid("prefix");
+    const w = reclaimWorld(
+      [baseTask({ id, status: "cancelled", worktreePath: "/pool/1", provider: "mission", dispatchedAt: 1 })],
+      { returnBlocker: async () => blocker },
+    );
+    await w.ready();
+    await leave(w, arrive(w, uid("session"), "/pool/10"));
+    assert.deepEqual(w.state.teardowns, [], "the wrong slot was reclaimed");
+    assert.deepEqual(w.tasks.dirtySettledTreeProblems().firstSeen ?? [], [], "the wrong slot was listed");
+  });
+}
+
+test("a session exiting reclaims nothing until session_remove", async () => {
+  const id = uid("exit-only");
+  let reads = 0;
+  const w = reclaimWorld(
+    [baseTask({ id, status: "cancelled", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+    { occupancy: async (paths) => { reads += 1; return occupancy()(paths); } },
+  );
+  await w.ready();
+  const session = arrive(w, uid("session"), "/pool/a");
+  eviction(w).beginEviction(session);
+  await w.tasks.settleWorktreeReturns();
+  assert.equal(w.registry.getSession(session.id)?.state, "exited", "the session is lingering, not removed");
+  assert.deepEqual(w.state.teardowns, [], "an exit is not a removal");
+  assert.equal(reads, 0, "and it did not even ask");
+
+  eviction(w).remove(session.id);
+  await w.tasks.settleWorktreeReturns();
+  assert.deepEqual(w.state.teardowns, [id]);
+});
+
+/** What can happen to a queued reclaim's task while the job waits, and whether it still runs. */
+const whileQueued: [string, (w: ReturnType<typeof world>, id: string) => void, boolean][] = [
+  ["nothing happens", () => {}, true],
+  ["its task is removed", (w, id) => w.registry.removeTask(id), false],
+  ["its task is dispatched again", (w, id) => {
+    w.registry.upsertTask({ ...w.registry.getTask(id)!, status: "running" });
+  }, false],
+  // The one status only the job's own check refuses: the reclaim itself accepts any finished task.
+  ["its task completes", (w, id) => {
+    w.registry.upsertTask({ ...w.registry.getTask(id)!, status: "done" });
+  }, false],
+  ["another cleanup reserves its task", (w, id) => {
+    (w.tasks as unknown as { cleanupReservations: Set<string> }).cleanupReservations.add(id);
+  }, false],
+];
+
+for (const [change, apply, reclaimed] of whileQueued) {
+  test(`a queued reclaim re-reads its task when ${change}`, async () => {
+    const blocking = uid("blocking");
+    const id = uid("waiting");
+    const repoRoot = "/repo/shared";
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let started: (() => void) | null = null;
+    const holding = new Promise<void>((resolve) => { started = resolve; });
+    const inspected: string[] = [];
+    const w = reclaimWorld(
+      [
+        baseTask({ id: blocking, status: "cancelled", repoRoot, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 }),
+        baseTask({ id, status: "cancelled", repoRoot, worktreePath: "/pool/b", provider: "mission", dispatchedAt: 1 }),
+      ],
+      {
+        occupancy: async (paths) => {
+          inspected.push(...paths);
+          if (!paths.includes("/pool/a")) return occupancy()(paths);
+          started!();
+          await held;
+          return occupancy(["/pool/a"])(paths);
+        },
+      },
+    );
+    await w.ready();
+    const first = arrive(w, uid("session"), "/pool/a");
+    eviction(w).beginEviction(first);
+    eviction(w).remove(first.id);
+    await holding;
+    // Same repository, so this job waits behind the one holding its occupancy read.
+    const second = arrive(w, uid("session"), "/pool/b");
+    eviction(w).beginEviction(second);
+    eviction(w).remove(second.id);
+    assert.equal(w.tasks.pendingCleanupJobs, 2, "the second job is queued, not refused");
+
+    apply(w, id);
+    release!();
+    await w.tasks.settleWorktreeReturns();
+    assert.deepEqual(w.state.teardowns, reclaimed ? [id] : []);
+    assert.equal(inspected.includes("/pool/b"), reclaimed, "a stale job reads no processes");
+  });
+}
