@@ -1562,6 +1562,10 @@ export class WorktreeManager {
       if (!pool || !identity || identity.gitCommonDirectory !== pool.gitCommonDirectory || identity.poolPath !== pool.poolPath) {
         return { outcome: "refused", reason: "the pool's repository identity can no longer be proven" };
       }
+      const marker = await readWorktreePoolMarker(pool.poolPath);
+      if (marker?.poolId !== pool.id) {
+        return { outcome: "refused", reason: "native pool marker is missing or does not match" };
+      }
       const screened = await this.screenIdleSlots(pool, identity, [slot]);
       const idle = screened.ok ? screened.idle.find((entry) => entry.slot.id === slotId) ?? null : null;
       if (!idle) return { outcome: "refused", reason: notIdleReason(screened, slotId) };
@@ -1611,6 +1615,29 @@ export class WorktreeManager {
         const reason = bounded(String(error));
         this.quarantineReservation(reservation, "as-is lease outcome is unknown", reason);
         return { outcome: "outcomeUnknown", reason };
+      }
+    });
+  }
+
+  /**
+   * Give back a `leaseAsIs` lease nothing used, because the launcher refused before it tried.
+   * Nothing touched the slot, so unlike a return this neither fetches nor resets: it takes the
+   * ordinary two transitions at the HEAD the lease recorded. False when the slot moved on since,
+   * so the lease stands. Cut off between the two, the slot is an interrupted return, which
+   * reconcile already finishes.
+   */
+  async handBackAsIs(lease: NativeWorktreeLease): Promise<boolean> {
+    return this.withSlot(lease.slotId, async () => {
+      try {
+        const returning = this.store.markReturning(lease.slotId, lease.slotVersion, lease.baseSha, this.deps.now());
+        if (!returning) return false;
+        const returned = this.store.completeRelease(returning.id, returning.version, lease.baseSha, this.deps.now());
+        if (!returned) return false;
+        this.publish();
+        return true;
+      } catch (error) {
+        console.error(`[worktrees] could not hand back the lease on slot ${lease.slotId}:`, error);
+        return false;
       }
     });
   }

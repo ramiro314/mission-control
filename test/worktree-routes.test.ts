@@ -2,7 +2,7 @@ import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -18,6 +18,7 @@ import { WorktreeManager } from "../src/server/worktrees/manager.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
+import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import { nativeWorktreeOwnerReferenced } from "../src/server/worktrees/owners.ts";
 import { OBSERVATION_FAILURE, RESERVATION_NOT_HANDED_BACK } from "../src/server/worktrees/quarantine-reasons.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
@@ -69,6 +70,7 @@ const operations = new WorktreeOperationsService(manager, {
 });
 const launched: TerminalLaunchSpec[] = [];
 let launchError: string | null = null;
+let launchStatus = 502;
 /** Set to run what the route asked for as a real process and wait for it, as a closed terminal ends. */
 let shellExits: Array<number | null> | null = null;
 const launch = async (_backend: TerminalBackendId, spec: TerminalLaunchSpec) => {
@@ -79,7 +81,7 @@ const launch = async (_backend: TerminalBackendId, spec: TerminalLaunchSpec) => 
     shellExits.push(code);
   }
   return launchError
-    ? { ok: false, label: "Test terminal", homeName: null, status: 502, error: launchError }
+    ? { ok: false, label: "Test terminal", homeName: null, status: launchStatus, error: launchError }
     : { ok: true, label: "Test terminal", homeName: null, status: 200 };
 };
 const app = buildApp({
@@ -483,6 +485,23 @@ const NO_LEASE_CASES: Array<{
     quarantineReason: "as-is lease outcome is unknown",
   },
   {
+    name: "the pool's marker is missing",
+    stage: (_t, slot) => rmSync(join(poolPath(slot), WORKTREE_POOL_MARKER)),
+    status: 409,
+    error: "native pool marker is missing or does not match",
+    state: "available",
+  },
+  {
+    name: "the pool's marker names another pool",
+    stage: (_t, slot) => {
+      const marker = join(poolPath(slot), WORKTREE_POOL_MARKER);
+      writeFileSync(marker, readFileSync(marker, "utf8").replace(slot.poolId, "another-pool"));
+    },
+    status: 409,
+    error: "native pool marker is missing or does not match",
+    state: "available",
+  },
+  {
     name: "the screening cannot read occupancy",
     stage: () => occupancyReads.push({ status: "unknown", reason: "ps timed out after 15 s" }),
     status: 409,
@@ -512,6 +531,10 @@ const NO_LEASE_CASES: Array<{
     state: "available",
   },
 ];
+
+function poolPath(slot: Slot): string {
+  return manager.store.pool(slot.poolId)!.poolPath;
+}
 
 function repoint(t: TestContext, slot: Slot, root: string): void {
   const update = db.prepare("UPDATE worktree_pools SET main_checkout_root = ? WHERE id = ?");
@@ -585,6 +608,59 @@ test("a lease Open terminal took outlives its shell and is flagged stale like an
   assert.equal(row().state, "leased");
   assert.equal(row().activeLeaseId, leaseId);
   assert.equal(gitIn(path, "rev-parse", "HEAD"), head);
+});
+
+for (const status of [404, 409]) {
+  test(`a launcher that refuses with ${status} gets the lease back with the slot exactly as it was`, async (t) => {
+    const { clone, head, path, open, row } = await availableSlot();
+    appendFileSync(join(clone, ".git/info/exclude"), "local-cache/\n");
+    mkdirSync(join(path, "local-cache"));
+    writeFileSync(join(path, "local-cache/warm"), "kept\n");
+    const inode = statSync(join(path, "local-cache/warm")).ino;
+    const reset = t.mock.method(NativeWorktreeGit.prototype, "reset");
+    const launches = launched.length;
+    launchError = "wezterm is not installed";
+    launchStatus = status;
+    try {
+      const refused = await open();
+      assert.equal(refused.status, status);
+      assert.deepEqual((await refused.json() as { error: string }).error, "wezterm is not installed");
+    } finally {
+      launchError = null;
+      launchStatus = 502;
+    }
+    assert.equal(launched.length, launches + 1);
+    assert.equal(row().state, "available");
+    assert.equal(row().activeLeaseId, null);
+    assert.equal(row().currentHeadSha, head);
+    assert.equal(reset.mock.callCount(), 0, "nothing was reset to give the lease back");
+    assert.equal(gitIn(path, "rev-parse", "HEAD"), head);
+    assert.equal(statSync(join(path, "local-cache/warm")).ino, inode);
+
+    // Back in the pool, and the next open leases it as usual.
+    assert.equal((await open()).status, 200);
+    assert.equal(row().state, "leased");
+  });
+}
+
+test("a refused launch keeps the lease when the slot moved on and cannot be handed back", async (t) => {
+  const { open, row } = await availableSlot();
+  t.mock.method(manager.store, "markReturning", () => null);
+  launchError = "wezterm is not installed";
+  launchStatus = 409;
+  try {
+    const refused = await open();
+    assert.equal(refused.status, 409);
+    assert.equal(
+      (await refused.json() as { error: string }).error,
+      "wezterm is not installed. The slot stays leased, so Return it from its card.",
+    );
+  } finally {
+    launchError = null;
+    launchStatus = 502;
+  }
+  assert.equal(row().state, "leased");
+  assert.ok(row().activeLeaseId);
 });
 
 test("a failed launch on a slot that took no lease reports the launcher's own error", async () => {

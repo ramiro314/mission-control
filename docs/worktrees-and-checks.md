@@ -686,8 +686,10 @@ this order:
   available, and one that is dirty is quarantined, as acquisition would leave it. A slot attached
   to a branch is refused too, since only a reset can undo that. On a leased or quarantined slot
   Open terminal opens a shell and takes no lease. Closing the shell does not return the lease, as
-  with any manual lease, and [Stale live leases](#stale-live-leases) applies to it. A launcher that
-  fails may still have opened a shell, so the lease stands and the error says to Return it.
+  with any manual lease, and [Stale live leases](#stale-live-leases) applies to it. A terminal that
+  is unknown or unavailable is refused before anything is launched, so the lease is given back with
+  no fetch or reset and the slot is available again as it was. A launcher that tried and failed may
+  still have opened a shell, so that lease stands and the error says to Return it.
 
   The group states loading, empty, and unavailable separately, and never renders a heading over
   nothing. An inventory that could not be observed says so and offers Refresh; it is never drawn as

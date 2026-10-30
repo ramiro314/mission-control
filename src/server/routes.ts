@@ -599,7 +599,7 @@ import {
   SessionFileError,
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
-import { agentHostUnavailable, terminalTargetViews, launchManagedAgentTerminal, launchTerminal } from "./terminal/targets.ts";
+import { agentHostUnavailable, terminalTargetViews, launchManagedAgentTerminal, launchNotAttempted, launchTerminal } from "./terminal/targets.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -2054,8 +2054,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       cwd,
       argv: [process.env.SHELL || FIXED_OS_EXECUTABLES.sh, "-l"],
     });
-    // A launcher that failed or timed out may still have opened a shell, so its lease stands.
-    const error = result.error && leased
+    // A launcher that refused never tried, so the slot goes back as it was. One that failed or
+    // timed out may still have opened a shell, so its lease stands.
+    const leaseStands = leased && !(launchNotAttempted(result) && await worktreeOperations.manager.handBackAsIs(taken.lease));
+    const error = result.error && leaseStands
       ? `${result.error}. The slot stays leased, so Return it from its card.`
       : result.error;
     const body = {

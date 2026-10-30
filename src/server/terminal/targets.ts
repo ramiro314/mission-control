@@ -369,6 +369,11 @@ async function cleanupDetachedFailure(
  * whole failure. The availability check is re-run rather than trusted from the view, since
  * the browser caches those for 60s and a terminal can be uninstalled inside that window.
  */
+/** The launcher refused before trying: an unknown or unavailable terminal, so nothing can have opened. */
+export function launchNotAttempted(outcome: TerminalLaunchOutcome): boolean {
+  return outcome.status === 404 || outcome.status === 409;
+}
+
 export async function launchTerminal(
   backend: TerminalBackendId,
   spec: TerminalLaunchSpec,

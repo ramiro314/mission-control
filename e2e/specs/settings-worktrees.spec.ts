@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { TerminalTargetView } from "../../src/shared/terminal.ts";
 import type { WorktreeActionPreview, WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
@@ -215,6 +216,47 @@ test("Open terminal refuses a slot that is not idle, leases an idle one as it st
   await expect(preview).toHaveCount(0);
   await expect(slot.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
   await expect(slot.getByText("Terminal from Settings")).toHaveCount(0);
+});
+
+test("a terminal that went away after the page cached it gives the slot back as it was", async ({ dashboard, daemon }) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "stale terminal target" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string; baseSha: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+
+  // Only the page's cached list is stale. The daemon that refuses the launch is the real one.
+  const { targets } = await (await dashboard.request.get(`${daemon.baseURL}/api/terminal-targets`)).json() as {
+    targets: TerminalTargetView[];
+  };
+  const gone = targets.find((target) => target.unavailable !== null);
+  if (!gone?.unavailable) throw new Error("the fixture daemon reports no unavailable terminal to go stale");
+  await dashboard.route("**/api/terminal-targets", (route) => route.fulfill({
+    json: { targets: targets.map((target) => target.id === gone.id ? { ...target, unavailable: null } : target) },
+  }));
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = pool.getByRole("article", { name: "Slot 1" });
+  await slot.getByLabel("Terminal backend for slot 1").selectOption(gone.id);
+  const opened = dashboard.waitForResponse((response) => response.url().endsWith("/open"));
+  await slot.getByRole("button", { name: "Open terminal" }).click();
+  expect((await opened).status()).toBe(409);
+
+  await expect(slot.getByText(gone.unavailable, { exact: true })).toBeVisible();
+  await expect(slot.getByText("available", { exact: true })).toBeVisible();
+  await expect(slot.getByText("Terminal from Settings")).toHaveCount(0);
+  await expect(slot.getByRole("button", { name: "Return", exact: true })).toHaveCount(0);
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  expect(inventory.repositories.flatMap((entry) => entry.slots).find((entry) => entry.path === lease.path))
+    .toMatchObject({ state: "available", owner: null, head: lease.baseSha });
+  await shoot(dashboard, "18-open-terminal-launcher-refused");
 });
 
 test("Settings Worktrees configures, inventories, previews, blocks, launches, and stays bounded", async ({
