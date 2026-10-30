@@ -1,8 +1,9 @@
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { openDb } from "../src/server/db.ts";
 import { Registry } from "../src/server/registry.ts";
 import { ReviewManager } from "../src/server/reviews.ts";
@@ -82,6 +83,14 @@ async function hand(leaseId: string): Promise<void> {
   assert.equal(returned.status, 200);
 }
 
+async function waitUntil(ready: () => boolean): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (!ready()) {
+    assert.ok(Date.now() < deadline, "timed out waiting for the claim step to start");
+    await sleep(20);
+  }
+}
+
 /** A slot in a pool of its own, leased once and handed back, so it is idle and available. */
 async function availableSlot() {
   const { clone } = mkOriginAndClone("mission-worktree-open-");
@@ -90,7 +99,6 @@ async function availableSlot() {
     repositoryPath: clone,
     baseSha: head,
     owner: { kind: "manual", key: "open-route" },
-    runClaim: true,
   });
   assert.equal(acquired.outcome, "acquired");
   if (acquired.outcome !== "acquired") throw new Error("the slot could not be acquired");
@@ -300,28 +308,87 @@ test("Open terminal leases an idle available slot as it stands, and refuses one 
   assert.equal(row().activeLeaseId, null);
 });
 
-test("Open terminal runs no claim and leaves the slot's dependency state alone", async () => {
+test("Open terminal runs no claim on a slot whose next claim would really run", async () => {
   const ran = join(mkdtempSync(join(tmpdir(), "mission-worktree-open-claim-")), "ran");
+  // Configured only now, so the slot has no fingerprint that would let a claim skip its step.
+  const { clone, head, slotId, open, row } = await availableSlot();
   poolClaim = WorktreeClaimSchema.parse({
     steps: [{ argv: [process.execPath, "-e", `require("node:fs").appendFileSync(${JSON.stringify(ran)}, "ran\\n")`] }],
   });
   try {
-    const { slotId, open, row } = await availableSlot();
-    assert.equal(readFileSync(ran, "utf8"), "ran\n", "the pool's claim really runs for a lease that asks for it");
     const dependencies = () => {
       const { depsState, depsFingerprint, depsFingerprintSha, depsClaimedAt, depsLastError } = row();
       return { depsState, depsFingerprint, depsFingerprintSha, depsClaimedAt, depsLastError };
     };
     const before = dependencies();
-    assert.equal(before.depsState, "current");
+    assert.equal(before.depsState, null);
 
     assert.equal((await open()).status, 200);
-    assert.equal(manager.store.slot(slotId)?.state, "leased");
-    assert.equal(readFileSync(ran, "utf8"), "ran\n", "the step did not run again");
+    assert.equal(row().state, "leased");
+    assert.equal(existsSync(ran), false, "the step did not run");
     assert.deepEqual(dependencies(), before);
+
+    // The control: this same slot, handed back, does run the step for a lease that asks for it.
+    await hand(row().activeLeaseId!);
+    const claimed = await manager.acquire({
+      repositoryPath: clone,
+      baseSha: head,
+      owner: { kind: "manual", key: "claim-control" },
+      runClaim: true,
+    });
+    assert.equal(claimed.outcome, "acquired");
+    assert.equal(row().id, slotId);
+    assert.equal(readFileSync(ran, "utf8"), "ran\n");
+    assert.notEqual(row().depsState, null);
   } finally {
     poolClaim = undefined;
   }
+});
+
+test("Open terminal answers at once while a running claim holds the slot lock", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-worktree-open-held-"));
+  const started = join(dir, "started");
+  const release = join(dir, "release");
+  // Bounded by its own exit as well, so a test that fails before releasing it leaks no process.
+  const step = `
+    const fs = require("node:fs");
+    fs.writeFileSync(${JSON.stringify(started)}, "");
+    setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) process.exit(0); }, 20);
+    setTimeout(() => process.exit(1), 60_000);
+  `;
+  poolClaim = WorktreeClaimSchema.parse({ steps: [{ argv: [process.execPath, "-e", step] }] });
+  const { clone } = mkOriginAndClone("mission-worktree-open-");
+  const ownerKey = "claim-holds-the-lock";
+  const acquisition = manager.acquire({
+    repositoryPath: clone,
+    baseSha: gitIn(clone, "rev-parse", "HEAD"),
+    owner: { kind: "manual", key: ownerKey },
+    runClaim: true,
+  });
+  try {
+    await waitUntil(() => existsSync(started));
+    const { id: slotId } = db
+      .prepare("SELECT id FROM worktree_slots WHERE active_owner_key = ? AND state = 'provisioning'")
+      .get(ownerKey) as { id: string };
+    const launches = launched.length;
+    // Not awaited on its own: a request queued on the lock would wait out the step this test holds.
+    let timer: NodeJS.Timeout | undefined;
+    const answer = await Promise.race([
+      openSlot(slotId),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 10_000); }),
+    ]);
+    clearTimeout(timer);
+    assert.ok(answer, "the request answered while the claim still held the slot lock");
+    assert.equal(answer.status, 409);
+    assert.deepEqual(await answer.json(), { error: "the slot is provisioning" });
+    assert.equal(launched.length, launches);
+    assert.equal(manager.store.slot(slotId)?.activeOwnerKey, ownerKey, "the claim's reservation is untouched");
+    assert.equal(existsSync(release), false, "the step was still running when the route answered");
+  } finally {
+    writeFileSync(release, "");
+    poolClaim = undefined;
+  }
+  assert.equal((await acquisition).outcome, "acquired");
 });
 
 type Slot = Awaited<ReturnType<typeof availableSlot>>;
