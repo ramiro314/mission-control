@@ -728,6 +728,12 @@ The operations have deliberately narrow meanings:
   still lists every tree the task holds. It is refused while any process is inside the
   quarantined slot, the task's own agent included, and when the owner's reference is gone or
   unknown. An owner that is gone leaves the slot to Recover instead.
+
+  A `warm` lease is the one owner neither Return nor Destroy can act on, whatever its state. While
+  its seed runs, the preview says the seed returns the slot when its copy ends. A seed interrupted
+  by a restart is not coming back: reconcile returns its lease, the preview says so until then,
+  and if the lease cannot be returned the slot is quarantined with that dead owner still on it.
+  Its preview then points at Recover, which clears it.
 - **Prune** removes only the clean, merged, process-free, unreferenced available slots enumerated in
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.

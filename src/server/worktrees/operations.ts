@@ -334,6 +334,27 @@ function ownerReturns(status: NativeSlotStatus, owner: WorktreeOwnerView | null)
     owner !== null && owner.kind !== "warm";
 }
 
+function ownerGoneBlocker(status: NativeSlotStatus): string {
+  return `Slot ${status.slot.ordinal}'s owner no longer references it; Recover it instead.`;
+}
+
+function ownerUnknownBlocker(status: NativeSlotStatus): string {
+  return `Whether slot ${status.slot.ordinal}'s owner still references it is unknown.`;
+}
+
+/**
+ * Why a slot under a `warm` lease cannot be acted on, and what gets it back. A seed interrupted
+ * by a restart is not coming back: reconcile returns its lease, and when it cannot, the slot is
+ * quarantined with the dead owner still on it, which Recover clears.
+ */
+function warmOwnerBlocker(status: NativeSlotStatus): string {
+  if (status.ownerReferenced === true) return "A dependency seed holds this slot and returns it when its copy ends.";
+  if (status.ownerReferenced === null) return ownerUnknownBlocker(status);
+  return status.slot.state === "quarantined"
+    ? ownerGoneBlocker(status)
+    : `The seed that held slot ${status.slot.ordinal} is gone; Reconcile returns its lease.`;
+}
+
 /**
  * A warm slot carries its dependency install, so a full `du` is routinely seconds per path -
  * measured at seven on a 1.3 GiB checkout - and it used to sit in front of every preview
@@ -1046,11 +1067,8 @@ export class WorktreeOperationsService {
     if (action === "return" && slot.slot.state === "quarantined") {
       // An owned quarantine returns through its owner. With no active owner at all, the
       // blocker below already says so.
-      if (owner && slot.ownerReferenced === false) {
-        blockers.push(`Slot ${slot.slot.ordinal}'s owner no longer references it; Recover it instead.`);
-      } else if (owner && slot.ownerReferenced === null) {
-        blockers.push(`Whether slot ${slot.slot.ordinal}'s owner still references it is unknown.`);
-      }
+      if (owner && slot.ownerReferenced === false) blockers.push(ownerGoneBlocker(slot));
+      else if (owner && slot.ownerReferenced === null) blockers.push(ownerUnknownBlocker(slot));
     } else if (action === "return" && slot.slot.state !== "leased") {
       blockers.push(`Slot ${slot.slot.ordinal} is ${slot.slot.state}, not leased.`);
     }
@@ -1070,8 +1088,9 @@ export class WorktreeOperationsService {
         if (!check.allowed) blockers.push(check.reason ?? "Check cleanup is not currently safe.");
         consequences.push("Uses check process-group recovery and the recorded provider before releasing the lease.");
       } else if (owner.kind === "warm") {
-        // Execute refuses it too; saying so here keeps a preview from promising a manual return.
-        blockers.push("A dependency seed holds this slot and returns it when its copy ends.");
+        // Execute refuses every `warm` owner; saying so here keeps a preview from promising a
+        // manual return. Only a live seed comes back for its slot, so the way out depends on it.
+        blockers.push(warmOwnerBlocker(slot));
       } else {
         consequences.push("Returns the exact durable manual lease before any slot removal.");
       }

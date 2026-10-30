@@ -633,7 +633,7 @@ test("an owned quarantine names its owner, offers the owner's own Return, and re
   assert.equal(existsSync(primary.lease.path), true, "the slot is kept as warm capacity");
 });
 
-test("a quarantined slot a live seed holds offers no Return, and its Return preview is refused", async () => {
+test("a quarantined slot under a warm lease offers no Return, and the preview names the way out for a live seed or a dead one", async () => {
   const seedManager = new WorktreeManager(db, {
     occupancy,
     resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
@@ -670,6 +670,38 @@ test("a quarantined slot a live seed holds offers no Return, and its Return prev
   assert.equal(preview.allowed, false);
   assert.ok(preview.blockers.includes("A dependency seed holds this slot and returns it when its copy ends."), preview.blockers.join("; "));
   assert.equal(preview.consequences.some((line) => line.includes("manual lease")), false);
+
+  // A restart ends the seed, so nothing is coming back for the slot: the preview must not say
+  // it is. Destroy stays refused, as execute refuses every `warm` owner, and points at Recover.
+  (seedManager as unknown as { liveWarmOwners: Set<string> }).liveWarmOwners.delete("warm-op-1");
+  const gone = "owner no longer references it; Recover it instead.";
+  const card = (await seeded.inventory()).repositories.flatMap((repo) => repo.slots)
+    .find((slot) => slot.id === acquired.lease.slotId)!;
+  assert.deepEqual(card.actions, ["destroy", "recover"]);
+  for (const request of [
+    { action: "destroy", target: { kind: "slot", slotId: acquired.lease.slotId } },
+    { action: "return", slotId: acquired.lease.slotId },
+  ] as const) {
+    const refused = await seeded.preview(request);
+    assert.equal(refused.allowed, false);
+    assert.deepEqual(refused.blockers.filter((line) => line.includes(gone)).length, 1, refused.blockers.join("; "));
+    assert.equal(refused.blockers.some((line) => line.includes("dependency seed holds")), false);
+  }
+
+  // Before reconcile judges it, the slot is still leased and has no Recover to point at.
+  db.prepare("UPDATE worktree_slots SET state = 'leased', quarantine_reason = NULL, quarantined_at = NULL WHERE id = ?")
+    .run(acquired.lease.slotId);
+  const leased = await seeded.preview({ action: "destroy", target: { kind: "slot", slotId: acquired.lease.slotId } });
+  assert.equal(leased.allowed, false);
+  assert.match(leased.blockers.join(" "), /The seed that held slot \d+ is gone; Reconcile returns its lease\./);
+  assert.equal(leased.blockers.join(" ").includes("Recover"), false);
+
+  // An incomplete lease identity is unknown, not a seed at work.
+  db.prepare("UPDATE worktree_slots SET active_lease_id = NULL WHERE id = ?").run(acquired.lease.slotId);
+  const unknown = await seeded.preview({ action: "destroy", target: { kind: "slot", slotId: acquired.lease.slotId } });
+  assert.equal(unknown.allowed, false);
+  assert.match(unknown.blockers.join(" "), /Whether slot \d+'s owner still references it is unknown\./);
+  assert.equal(unknown.blockers.some((line) => line.includes("dependency seed holds")), false);
 });
 
 test("a manual lease is named by its label", async () => {
