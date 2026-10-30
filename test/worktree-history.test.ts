@@ -1208,6 +1208,38 @@ test("an automatic outcome left unknown records failed once per reason, and one 
   }
 });
 
+test("a different outcome between two passes makes the same failure a new entry", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-between-");
+  const m = realManager();
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const quarantine = () => assert.ok(
+    m.store.quarantine(slotId!, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+  );
+  quarantine();
+  const failure = "git checkout timed out after 60 s";
+  const refusal = "one or more processes still occupy the worktree";
+  const failing: WorktreeManager["recoverSlot"] = async () => {
+    quarantine();
+    return { outcome: "outcomeUnknown", reason: failure };
+  };
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    m.recoverSlot = failing;
+    await m.recoverQuarantines();
+    m.recoverSlot = async () => ({ outcome: "refused", reason: refusal });
+    await m.recoverQuarantines();
+    m.recoverSlot = failing;
+    await m.recoverQuarantines();
+  } finally {
+    warned.mock.restore();
+  }
+  assert.deepEqual(operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason]), [
+    ["recover", "failed", "automatic", failure],
+    ["recover", "refused", "automatic", refusal],
+    ["recover", "failed", "automatic", failure],
+  ]);
+});
+
 test("a slot that left its quarantine forgets its failure, so the same reason later is a new entry", async () => {
   const { clone, sha } = repository("mission-history-op-auto-forget-");
   const m = realManager();
