@@ -741,3 +741,125 @@ test("acquisition does not lease a slot whose Git read failed twice, and leaves 
   assert.equal(third.slotId, first.slotId, "proven idle once its read answers");
   await manager.release(third);
 });
+
+test("idle screening leaves available slots in place when `git worktree list` fails twice", async () => {
+  const repository = repo("mission-screen-list-unknown-");
+  let failList = false;
+  const git = new NativeWorktreeGit(
+    async (bin, args, opts) => failList && args.includes("list") ? timedOut(opts?.timeoutMs) : run(bin, args, opts),
+    async () => {},
+  );
+  const manager = harness({ git, policy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }) });
+  const first = acquired(
+    await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha, owner: { kind: "task", key: "task-screen-list-1" } }),
+  );
+  assert.equal((await manager.release(first)).outcome, "released");
+  const before = manager.store.slot(first.slotId)!;
+  failList = true;
+
+  const refused = await manager.acquire({
+    repositoryPath: repository.clone,
+    baseSha: repository.sha,
+    owner: { kind: "task", key: "task-screen-list-2" },
+  });
+  assert.equal(refused.outcome, "notAcquired");
+  const after = manager.store.slot(first.slotId)!;
+  assert.equal(after.state, "available", "not leased, and not quarantined");
+  assert.equal(after.version, before.version);
+  assert.equal(after.quarantineReason, null);
+  assert.equal(after.activeLeaseId, null);
+  assert.match(after.lastError ?? "", /^Last observation failed: Git worktree registrations are unknown \(git worktree list timed out/);
+
+  failList = false;
+  const third = acquired(
+    await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha, owner: { kind: "task", key: "task-screen-list-3" } }),
+  );
+  assert.equal(third.slotId, first.slotId, "leased once its listing answers");
+  await manager.release(third);
+});
+
+test("idle screening leaves an available slot in place when its occupancy is unknown", async () => {
+  const repository = repo("mission-screen-occupancy-unknown-");
+  const occupancy = new Map<string, WorktreeOccupancy>();
+  const manager = harness({ occupancy, policy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }) });
+  const first = acquired(
+    await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha, owner: { kind: "task", key: "task-screen-occ-1" } }),
+  );
+  assert.equal((await manager.release(first)).outcome, "released");
+  const before = manager.store.slot(first.slotId)!;
+  occupancy.set(first.path, { status: "unknown", reason: "lsof timed out" });
+
+  const refused = await manager.acquire({
+    repositoryPath: repository.clone,
+    baseSha: repository.sha,
+    owner: { kind: "task", key: "task-screen-occ-2" },
+  });
+  assert.equal(refused.outcome, "notAcquired");
+  const after = manager.store.slot(first.slotId)!;
+  assert.equal(after.state, "available");
+  assert.equal(after.version, before.version);
+  assert.equal(after.quarantineReason, null);
+  assert.equal(after.lastError, "Last observation failed: slot process occupancy is unknown (lsof timed out)");
+
+  occupancy.delete(first.path);
+  await manager.reconcile();
+  assert.equal(manager.store.slot(first.slotId)?.lastError, null, "the next good pass clears it");
+});
+
+test("an owner lookup that throws on both attempts leaves leased and available slots in their state", async () => {
+  const repository = repo("mission-reconcile-owner-unknown-");
+  const throwing = new Set<string>();
+  const referenced = new Set<string>();
+  const manager = new WorktreeManager(db, {
+    resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
+    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])),
+    ownerReferenced: async (reference) => {
+      if (throwing.has(reference.leaseId)) throw new Error("database is locked");
+      return referenced.has(reference.leaseId);
+    },
+    pause: async () => {},
+  });
+  const take = async (key: string) => acquired(
+    await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha, owner: { kind: "task", key } }),
+  );
+  const leased = await take("task-owner-unknown-leased");
+  const released = await take("task-owner-unknown-released");
+  referenced.add(leased.leaseId);
+  assert.equal((await manager.release(released)).outcome, "released");
+  throwing.add(leased.leaseId);
+  throwing.add(released.leaseId);
+  const before = new Map([leased, released].map((lease) => [lease.slotId, manager.store.slot(lease.slotId)!]));
+
+  await manager.reconcile();
+  const failure = "database is locked, and again on retry";
+  const leasedRow = manager.store.slot(leased.slotId)!;
+  assert.equal(leasedRow.state, "leased");
+  assert.equal(leasedRow.version, before.get(leased.slotId)!.version);
+  assert.equal(leasedRow.quarantineReason, null);
+  assert.equal(leasedRow.lastError, `Last observation failed: leased domain ownership is unknown (Error: ${failure})`);
+  const availableRow = manager.store.slot(released.slotId)!;
+  assert.equal(availableRow.state, "available");
+  assert.equal(availableRow.version, before.get(released.slotId)!.version);
+  assert.equal(availableRow.quarantineReason, null);
+  assert.equal(availableRow.lastError, `Last observation failed: last-released domain ownership is unknown (Error: ${failure})`);
+
+  // Acquisition screens the same available slot, cannot prove its last owner gone, and does not
+  // lease it; capacity is full, so nothing is leased at all.
+  const refused = await manager.acquire({
+    repositoryPath: repository.clone,
+    baseSha: repository.sha,
+    owner: { kind: "task", key: "task-owner-unknown-next" },
+  });
+  assert.equal(refused.outcome, "notAcquired");
+  assert.equal(manager.store.slot(released.slotId)?.state, "available");
+  assert.equal(manager.store.slot(released.slotId)?.quarantineReason, null);
+  assert.equal(manager.store.slot(released.slotId)?.activeLeaseId, null);
+
+  throwing.clear();
+  await manager.reconcile();
+  assert.equal(manager.store.slot(leased.slotId)?.state, "leased");
+  assert.equal(manager.store.slot(leased.slotId)?.lastError, null, "the next good pass clears it");
+  assert.equal(manager.store.slot(released.slotId)?.state, "available");
+  assert.equal(manager.store.slot(released.slotId)?.lastError, null);
+  await manager.release(leased);
+});
