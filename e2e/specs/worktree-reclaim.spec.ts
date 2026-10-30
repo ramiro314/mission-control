@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Page } from "@playwright/test";
 import type { StorageView } from "../../src/shared/storage-health.ts";
@@ -28,7 +28,9 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
  * Recover: a slot quarantined by a stale `index.lock` reaches Storage as a problem whose link
  * lands on that slot's card, and the card's Recover runs through the preview the daemon builds
  * (naming the lock and the work it discards) to a real reset on disk, after which the slot
- * reads available and the problem is gone.
+ * reads available and the problem is gone. An ignored file the remote default keeps ignored and
+ * untracked is not work: a slot holding only a warm install recovers without acknowledgement,
+ * and one the default would overwrite is named by its path.
  *
  * Orphan processes: a process still inside a tree whose owner has finished is listed in Storage,
  * its link lands on the slot card, and Kill there goes through its confirmation to the guarded
@@ -349,7 +351,7 @@ test("a Storage problem link opens the quarantined slot, whose Recover previews 
   const preview = dashboard.getByRole("dialog", { name: "recover worktree preview" });
   await expect(preview.getByRole("heading", { name: "Recover worktree" })).toBeVisible();
   await expect(preview.getByText(`Removes the stale lock ${lock}.`)).toBeVisible();
-  await expect(preview.getByText(/^Discards the slot's work: checkout has uncommitted, untracked or ignored work\./)).toBeVisible();
+  await expect(preview.getByText("Discards the slot's work: untracked scratch-notes.md.")).toBeVisible();
   await expectContentClearsBorder(preview);
   const execute = preview.getByRole("button", { name: "Execute" });
   await expect(execute).toBeDisabled();
@@ -381,6 +383,92 @@ test("a Storage problem link opens the quarantined slot, whose Recover previews 
   await expect(dashboard.getByText("No storage problems.")).toBeVisible();
   await expect(banner).toHaveCount(0);
   await shoot(dashboard, "05-storage-cleared");
+});
+
+test("Recover keeps a warm install: it names an ignored path the default would overwrite, and asks nothing once it would not", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  // The repository ignores what a monorepo slot carries, and origin's default says so.
+  const repo = (...args: string[]) => execFileSync("git", ["-C", daemon.repo, ...args], { stdio: "pipe" }).toString().trim();
+  repo("config", "user.name", "Spec");
+  repo("config", "user.email", "spec@example.com");
+  writeFileSync(join(daemon.repo, ".gitignore"), ".yarn/install-state.gz\nnode_modules/\n.idea/\n");
+  repo("add", ".gitignore");
+  repo("commit", "-qm", "ignore the install");
+  repo("push", "-q", "origin", "main");
+
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "warm install fixture" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+
+  // The warm install and an IDE folder, all ignored, then the stale lock that quarantines it.
+  const kept = [".yarn/install-state.gz", "node_modules/pkg/index.js", ".idea/workspace.xml"];
+  for (const file of kept) {
+    mkdirSync(join(lease.path, file, ".."), { recursive: true });
+    writeFileSync(join(lease.path, file), "installed\n");
+  }
+  const inodes = kept.map((file) => statSync(join(lease.path, file)).ino);
+  const lock = indexLockOf(lease.path);
+  writeFileSync(lock, "");
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+              quarantine_reason = 'return reset failed',
+              last_error = ?
+        WHERE path = ? AND state = 'available'`,
+    ).run(Date.now(), `git checkout --detach failed: fatal: Unable to create '${lock}': File exists.`, lease.path);
+    expect(Number(changed.changes)).toBe(1);
+  });
+
+  // Origin's default starts tracking a file inside the ignored .idea/, which the reset would write.
+  mkdirSync(join(daemon.repo, ".idea", "codeStyles"), { recursive: true });
+  writeFileSync(join(daemon.repo, ".idea", "codeStyles", "Project.xml"), "<code_scheme/>\n");
+  repo("add", "-f", ".idea/codeStyles/Project.xml");
+  repo("commit", "-qm", "share the code style");
+  repo("push", "-q", "origin", "main");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const slot = dashboard.locator(".wt-slot", { hasText: lease.path });
+  await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
+  await slot.getByRole("button", { name: "Recover", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "recover worktree preview" });
+  await expect(preview.getByText(
+    "Discards the slot's work: ignored .idea/ (the target tracks .idea/codeStyles/Project.xml).",
+  )).toBeVisible();
+  await expect(preview.getByLabel(/I understand: Uncommitted, untracked, unpushed or ignored work will be discarded/)).toBeVisible();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await shoot(dashboard, "07-recover-names-blocking-path");
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(preview).toHaveCount(0);
+
+  // Once the default stops tracking it, every ignored file stays ignored: nothing to acknowledge.
+  repo("rm", "-q", "--cached", ".idea/codeStyles/Project.xml");
+  repo("commit", "-qm", "unshare the code style");
+  repo("push", "-q", "origin", "main");
+  await slot.getByRole("button", { name: "Recover", exact: true }).click();
+  await expect(preview.getByText(
+    "Keeps every ignored file the remote default still ignores and does not track, such as node_modules/ and .yarn/install-state.gz.",
+  )).toBeVisible();
+  await expect(preview.getByText(/^Discards the slot's work/)).toHaveCount(0);
+  await expect(preview.getByLabel(/I understand/)).toHaveCount(0);
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "08-recover-keeps-warm-install");
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+
+  await expect(slot.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  expect(existsSync(lock)).toBe(false);
+  expect(kept.map((file) => statSync(join(lease.path, file)).ino), "the install kept every inode").toEqual(inodes);
+  await shoot(dashboard, "09-recovered-with-install");
 });
 
 function alive(pid: number): boolean {

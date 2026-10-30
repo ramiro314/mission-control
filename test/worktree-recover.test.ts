@@ -488,10 +488,12 @@ test("a work check that cannot read the slot refuses Recover as unreadable, neve
   assert.equal(gitIn(held.path, "rev-parse", "--show-toplevel"), held.path);
 
   const reason = "the slot's work could not be read: working tree could not be read";
-  assert.deepEqual(
-    await m.recoverSlot({ slotId: slot.id, allowDirty: false, automatic: false }),
-    { outcome: "refused", reason },
-  );
+  // An operator's Recover reads its work once the reset has fetched and validated its target,
+  // and that validation is the first read to find the index unreadable.
+  const manual = await m.recoverSlot({ slotId: slot.id, allowDirty: false, automatic: false });
+  assert.equal(manual.outcome, "refused");
+  assert.match((manual as { reason: string }).reason, /git status failed: .*index/);
+  assert.equal("blocking" in manual, false);
   await m.recoverLockQuarantines();
   assert.deepEqual(m.recoveryRefusal(m.store.slot(slot.id)!), { at: m.recoveryRefusal(m.store.slot(slot.id)!)!.at, reason, blocking: null });
   assert.equal(m.store.slot(slot.id)?.state, "quarantined");
