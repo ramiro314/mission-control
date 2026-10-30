@@ -234,14 +234,44 @@ async function runToCiWait(page: Page, daemon: DaemonHandle, name: string): Prom
   return { runId, head };
 }
 
-/** What the Inspector's poll would store for the pull request: CI on one head. */
-function seedCi(daemon: DaemonHandle, head: string, checkRuns: unknown[], flakeReport: unknown = null): void {
+/**
+ * What the Inspector's poll would store for the pull request: CI on one head, observed at
+ * `observedAt`. The node measures its quiet period between observations, so a spec backdates
+ * the first sighting instead of waiting real minutes for the second.
+ */
+function seedCi(
+  daemon: DaemonHandle,
+  head: string,
+  checkRuns: unknown[],
+  flakeReport: unknown = null,
+  observedAt = Date.now(),
+): void {
   withDaemonDb(daemon, (db) => {
     const changed = db.prepare("UPDATE inspector_prs SET observed_ci_json = ? WHERE key = ?")
-      .run(JSON.stringify({ headSha: head, observedAt: Date.now(), checkRuns, flakeReport }), PR_KEY);
+      .run(JSON.stringify({ headSha: head, observedAt, checkRuns, flakeReport }), PR_KEY);
     if (Number(changed.changes) !== 1) throw new Error("the adopted pull request row is missing");
   });
 }
+
+/** The waiting Wait for CI attempt's state, as the daemon last wrote it. */
+function waitingCiState(daemon: DaemonHandle): { id: string; state: Record<string, unknown> } | null {
+  return withDaemonDb(daemon, (db) => {
+    const row = db.prepare(
+      "SELECT id, output_json FROM workflow_node_attempts WHERE node_id = 'ci-node' AND state = 'waiting'",
+    ).get() as { id: string; output_json: string } | undefined;
+    return row ? { id: row.id, state: JSON.parse(row.output_json) as Record<string, unknown> } : null;
+  });
+}
+
+/** Wait until the daemon's own sweep has started the quiet clock on the waiting attempt. */
+async function quietStarted(daemon: DaemonHandle, at: number): Promise<void> {
+  await expect.poll(() => waitingCiState(daemon)?.state.quietSince ?? null, {
+    message: "the node never started its quiet period on settled CI",
+    timeout: 60_000,
+  }).toBe(at);
+}
+
+const QUIET_MS = 3 * 60_000;
 
 const check = (name: string, state: "pending" | "passing" | "failing", extra: Record<string, unknown> = {}) => ({
   name,
@@ -293,13 +323,17 @@ test("a run waits for CI, then returns a failing check to the session by name", 
   if (process.env.MC_E2E_EVIDENCE) await card.screenshot({ path: `${EVIDENCE}03-ci-failed-card.png` });
 });
 
-test("a run passes green CI with a flake, and lists the flake with its history", async ({ dashboard, daemon }) => {
+test("a run waits out the quiet period on green CI, then passes it and lists the flake with its history", async ({
+  dashboard,
+  daemon,
+}) => {
   test.setTimeout(360_000);
   const { runId, head } = await runToCiWait(dashboard, daemon, "ci-pass");
-  seedCi(daemon, head, [
+  const checks = [
     check("unit (node 24)", "passing"),
     check("Flaky tests", "passing", { conclusion: "NEUTRAL", title: "1 flaky test" }),
-  ], {
+  ];
+  const report = {
     version: 1,
     commit: head,
     ref: "e2e/ci-pass",
@@ -309,7 +343,30 @@ test("a run passes green CI with a flake, and lists the flake with its history",
     failures: [],
     errors: [],
     issues: [{ key: "00000000000000aa", number: 12, url: "https://github.com/owner/repo/issues/12", occurrences: 2, actionable: false }],
-  });
+  };
+  // One settled observation: the quiet period starts, and the sweep alone never passes it.
+  const firstSeen = Date.now() - QUIET_MS - 60_000;
+  seedCi(daemon, head, checks, report, firstSeen);
+  await quietStarted(daemon, firstSeen);
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const ciRow = dashboard.locator('[aria-label="Workflow run pipeline"]')
+    .locator("li.wf-pipeline-reviewer", { hasText: "Wait for CI" });
+  // The chip keeps saying what the node is doing; only the panel headline names the quiet period.
+  await expect(ciRow).toContainText("Waiting for CI");
+  await ciRow.click();
+  const waitingCard = dashboard.locator("article.wf-run-attempt", { hasText: "Wait for CI" });
+  await expect(waitingCard.locator(".wf-run-ci-headline")).toHaveText(
+    `Every counted check has settled on PR #77 at ${head.slice(0, 12)}. `
+    + "Passing once nothing changes for 3 min (0 of 3 so far).",
+  );
+  await shoot(dashboard, "04a-run-ci-quiet-period");
+  if (process.env.MC_E2E_EVIDENCE) await waitingCard.screenshot({ path: `${EVIDENCE}04a-ci-quiet-card.png` });
+  await expect(ciRow).toContainText("Waiting for CI");
+  expect((await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status).toBe("running");
+
+  // The Inspector's next poll, a quiet period later, with nothing changed: it passes.
+  seedCi(daemon, head, checks, report);
   await expect.poll(async () =>
     (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status, {
     message: "green CI with a flake did not complete the run",
@@ -317,8 +374,6 @@ test("a run passes green CI with a flake, and lists the flake with its history",
   }).toBe("completed");
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
-  const ciRow = dashboard.locator('[aria-label="Workflow run pipeline"]')
-    .locator("li.wf-pipeline-reviewer", { hasText: "Wait for CI" });
   await expect(ciRow).toContainText("CI passed");
   await ciRow.click();
   const card = dashboard.locator("article.wf-run-verdict", { hasText: "Wait for CI" });
@@ -344,32 +399,54 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.setViewportSize({ width: 1440, height: 900 });
 }
 
-test("a run blocked by Wait for CI says why in plain words, and offers to wait again", async ({ dashboard, daemon }) => {
+test("a run an older build blocked for a missing Flaky tests check says so, and waiting again passes green CI", async ({
+  dashboard,
+  daemon,
+}) => {
   test.setTimeout(360_000);
-  const { runId, head } = await runToCiWait(dashboard, daemon, "ci-block");
+  const { runId, head } = await runToCiWait(dashboard, daemon, "ci-legacy-block");
 
-  // Every check green, no "Flaky tests" check. The node starts its grace period on the first
-  // sighting; backdating that start by six minutes lets the daemon's own sweep reach the block
-  // through the real decision, instead of this spec waiting five minutes of wall clock.
-  seedCi(daemon, head, [check("unit (node 24)", "passing"), check("lint", "passing")]);
-  await expect.poll(() => withDaemonDb(daemon, (db) => {
-    const row = db.prepare(
-      "SELECT output_json FROM workflow_node_attempts WHERE node_id = 'ci-node' AND state = 'waiting'",
-    ).get() as { output_json: string } | undefined;
-    return row ? (JSON.parse(row.output_json) as { greenWithoutReportSince: number | null }).greenWithoutReportSince : null;
-  }), { message: "the node never saw green CI without a report" }).not.toBeNull();
+  // Reach a real block through the daemon's own sweep: nothing ever appears on the head, and the
+  // wait is backdated past its timeout, so the node blocks as `ci_missing`.
+  const waiting = waitingCiState(daemon)!;
   withDaemonDb(daemon, (db) => {
-    const row = db.prepare(
-      "SELECT id, output_json FROM workflow_node_attempts WHERE node_id = 'ci-node' AND state = 'waiting'",
-    ).get() as { id: string; output_json: string };
-    const state = JSON.parse(row.output_json) as { greenWithoutReportSince: number };
-    state.greenWithoutReportSince -= 6 * 60_000;
-    db.prepare("UPDATE workflow_node_attempts SET output_json = ? WHERE id = ?").run(JSON.stringify(state), row.id);
+    const state = { ...waiting.state, waitingSince: Number(waiting.state.waitingSince) - 46 * 60_000 };
+    db.prepare("UPDATE workflow_node_attempts SET output_json = ? WHERE id = ?").run(JSON.stringify(state), waiting.id);
   });
   await expect.poll(async () => (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.currentPhase, {
-    message: "the missing report never blocked the run",
+    message: "the backdated wait never blocked the run",
     timeout: 60_000,
-  }).toBe("ci_flake_report_missing");
+  }).toBe("ci_missing");
+
+  // Then make it the block an earlier build wrote when CI was green without "Flaky tests":
+  // the run phase, its detail, the attempt's state with the retired grace timestamp, and the
+  // event, exactly as that build stored them.
+  const green = [check("unit (node 24)", "passing"), check("lint", "passing")];
+  const detail = 'Every check passed, but no "Flaky tests" check appeared on the head commit.';
+  withDaemonDb(daemon, (db) => {
+    const attempt = db.prepare(
+      "SELECT id, output_json FROM workflow_node_attempts WHERE id = ?",
+    ).get(waiting.id) as { id: string; output_json: string };
+    const blocked = { code: "ci_flake_report_missing", detail };
+    const state = {
+      ...(JSON.parse(attempt.output_json) as Record<string, unknown>),
+      checkRuns: green,
+      observedAt: Date.now() - 60_000,
+      greenWithoutReportSince: Date.now() - 6 * 60_000,
+      blocked,
+    };
+    delete state.quietSince;
+    db.prepare("UPDATE workflow_node_attempts SET output_json = ?, error = ? WHERE id = ?")
+      .run(JSON.stringify(state), `ci_flake_report_missing: ${detail}`, attempt.id);
+    const gate = JSON.stringify({ nodeId: "ci-node", attemptId: attempt.id, ...blocked });
+    db.prepare("UPDATE workflow_runs SET current_phase = 'ci_flake_report_missing', gate_state_json = ? WHERE id = ?")
+      .run(gate, runId);
+    db.prepare("UPDATE workflow_events SET payload_json = ? WHERE run_id = ? AND event_kind = 'wait_for_ci_blocked'")
+      .run(gate, runId);
+  });
+  // Green CI is on the head now; the old block stays until somebody waits again.
+  const firstSeen = Date.now() - QUIET_MS - 60_000;
+  seedCi(daemon, head, green, null, firstSeen);
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const ciRow = dashboard.locator('[aria-label="Workflow run pipeline"]')
@@ -379,9 +456,8 @@ test("a run blocked by Wait for CI says why in plain words, and offers to wait a
   const card = dashboard.locator("article.wf-run-attempt", { hasText: "Wait for CI" });
   const reason = card.locator(".wf-run-ci-headline");
   await expect(reason).toHaveText(
-    'Every CI check passed, but no "Flaky tests" check appeared on the head commit. Rerun CI '
-    + "and wait for CI again, or add the flake report to this repository's CI (see Flaky tests "
-    + "in CI) and start a new round.",
+    'Blocked under an earlier rule that required a "Flaky tests" check. Wait for CI again to '
+    + "judge this run under the current rules.",
   );
   await expect(reason).not.toContainText("Waiting for CI on");
   await expect(card.getByRole("link", { name: PR_KEY })).toHaveAttribute("href", PR_URL);
@@ -389,13 +465,23 @@ test("a run blocked by Wait for CI says why in plain words, and offers to wait a
   await expect(dashboard.getByText("no Flaky tests check").first()).toBeVisible();
   const again = dashboard.getByRole("button", { name: "Wait for CI again" });
   await expect(again).toBeVisible();
-  await shoot(dashboard, "05-run-ci-blocked");
-  if (process.env.MC_E2E_EVIDENCE) await card.screenshot({ path: `${EVIDENCE}05-ci-blocked-card.png` });
+  expect((await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.currentPhase).toBe("ci_flake_report_missing");
+  await shoot(dashboard, "05-run-ci-legacy-block");
+  if (process.env.MC_E2E_EVIDENCE) await card.screenshot({ path: `${EVIDENCE}05-ci-legacy-block-card.png` });
 
-  // Waiting again reopens the same head with a fresh timeout.
+  // Waiting again judges the same head under the current rules: the green snapshot starts the
+  // quiet period, and the next poll with nothing changed passes the run.
   await again.click();
   await expect.poll(async () => (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status, {
     message: "Wait for CI again did not reopen the run",
   }).toBe("running");
   await expect(ciRow).toContainText("Waiting for CI");
+  await quietStarted(daemon, firstSeen);
+  expect(waitingCiState(daemon)?.state.greenWithoutReportSince).toBeNull();
+  seedCi(daemon, head, green);
+  await expect.poll(async () => (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status, {
+    message: "the re-judged run did not pass green CI",
+    timeout: 60_000,
+  }).toBe("completed");
+  await expect(ciRow).toContainText("CI passed");
 });

@@ -47,9 +47,9 @@ const headline = (html: string): string =>
 // What each sentence must say, in words a person acts on - pinned per code so two sentences
 // swapped between codes fail here.
 const SAYS: Record<WaitForCiBlockCode, RegExp[]> = {
-  ci_flake_report_missing: [/Every CI check passed/, /no "Flaky tests" check appeared/, /start a new round/],
+  ci_flake_report_missing: [/earlier rule that required a "Flaky tests" check/, /Wait for CI again to judge this run under the current rules/],
   ci_missing: [/No CI check appeared/, /before the timeout/, /GitHub Inspector is on/],
-  ci_timeout: [/still running when the timeout ran out/, /Wait for CI again/],
+  ci_timeout: [/still running, or had not stayed settled for the quiet period, when the timeout ran out/, /Wait for CI again/],
   ci_pull_request_unknown: [/could not tell which commit to watch/, /Start a new round/],
 };
 
@@ -89,6 +89,38 @@ test("the other headlines: waiting with elapsed and limit, pass, fail, and disab
   assert.match(waitForCiHeadline(waiting({ outcome: "pass", disabled: true }), NOW), /Disabled for this run/);
   // Before the Inspector has read anything, the card says so rather than showing an empty list.
   assert.match(render(waiting()), /GitHub Inspector has not read CI for this head yet/);
+});
+
+test("the quiet period reads in the headline, measured between observations, while the chip stays Waiting for CI", async () => {
+  const green = [{ name: "unit", state: "passing" as const, conclusion: "SUCCESS", detailsUrl: null, title: null, summary: null }];
+  const head = HEAD.slice(0, 12);
+  const quiet = (observedAt: number) => waiting({ checkRuns: green, quietSince: NOW + 60_000, observedAt });
+  assert.equal(
+    waitForCiHeadline(quiet(NOW + 60_000), NOW + 30 * 60_000),
+    `Every counted check has settled on PR #77 at ${head}. Passing once nothing changes for 3 min (0 of 3 so far).`,
+    "the clock reads observations, so wall time alone never advances it",
+  );
+  assert.match(waitForCiHeadline(quiet(NOW + 60_000 + 90_000), NOW), /\(1 of 3 so far\)\.$/);
+  assert.match(render(quiet(NOW + 60_000)), /Every counted check has settled on PR #77/);
+  // Pending again: back to the waiting headline.
+  assert.match(waitForCiHeadline(waiting({ checkRuns: green, quietSince: null, observedAt: NOW }), NOW), /^Waiting for CI on PR #77/);
+  const { memberPipelineStatus } = await import("../src/web/workflows/run-model.ts");
+  assert.equal(memberPipelineStatus("wait_for_ci", "waiting").label, "Waiting for CI");
+});
+
+test("a pass shows the flake line only when CI published a flake report, and every failing check is listed", () => {
+  const plain = render(waiting({ outcome: "pass" }));
+  assert.doesNotMatch(plain, /flaky test/i, "a repository with no flake report has nothing to say about flakes");
+  const reported = render(waiting({
+    outcome: "pass",
+    flakeReport: { version: 1, commit: HEAD, ref: "f", pullRequest: 77, runUrl: "https://ci/run", flakes: [], failures: [], errors: [], issues: [] },
+  }));
+  assert.match(reported, /No flaky tests in this run\./);
+  const failed = render(waiting({
+    outcome: "fail",
+    checkRuns: [{ name: "Flaky tests", state: "failing", conclusion: "FAILURE", detailsUrl: null, title: null, summary: null }],
+  }));
+  assert.match(failed, /Failing checks[\s\S]*<strong>Flaky tests<\/strong>/, "Flaky tests is an ordinary check");
 });
 
 test("any other attempt renders nothing", () => {

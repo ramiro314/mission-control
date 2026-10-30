@@ -155,9 +155,9 @@ the job summary, and uploads the merged report as the `flake-report` artifact.
 On a docs-only pull request (every changed path under `docs/`), the unit and E2E jobs are
 skipped and upload no reports. `flake report` is deliberately not skipped with them: its
 `!cancelled()` condition runs it after skipped needs, it reads zero reports, and it publishes
-"Flaky tests" with conclusion `success` and title "No flaky tests". That keeps Mission Control's
-Wait for CI passing, since it requires a "Flaky tests" check on every run. See the
-"Docs-only pull requests" comment at the top of `.github/workflows/ci.yml`.
+"Flaky tests" with conclusion `success` and title "No flaky tests", so a docs-only run still
+records its (empty) flake report. See the "Docs-only pull requests" comment at the top of
+`.github/workflows/ci.yml`.
 
 The Node 26 unit shards run only on pushes to `main`, tags and manual runs, so on every pull
 request they are skipped and upload no reports, and "Flaky tests" covers the Node 24 shards and
@@ -227,17 +227,16 @@ Mission Control reads the check through the GitHub Inspector's pull request quer
 the head commit's check runs with the pull request. `parseFlakeSummary` parses the report from
 the full summary before anything is trimmed, so the marker at its end survives.
 
-- **[Wait for CI](workflows.md#wait-for-ci)** passes a pull request whose checks are all green
-  and which carries this check, flakes or not, and records the flake list on the run. Every
-  check green without this check blocks the run as `ci_flake_report_missing`: a repository that
-  does not publish the report cannot tell a flake from a pass. The check's own conclusion never
-  fails the node.
+- **[Wait for CI](workflows.md#wait-for-ci)** treats "Flaky tests" as an ordinary check: it
+  is not required, and a repository without it passes once every check has passed and stayed
+  settled for the quiet period. When the check is present, the node records its flake list on
+  a pass and shows it on the run.
 - **The Inspector's review** lists the flakes and raises one only when the pull request touched
   the flaky test's file or plausibly introduced the flakiness. See
   [CI and flaky tests](inspector-and-shipping.md#ci-and-flaky-tests).
 
-A fork pull request whose token could not publish the check reads as a missing report, so Wait
-for CI blocks with that code rather than passing.
+A fork pull request whose token could not publish the check has no flake report, so Wait for CI
+judges its other checks and passes without a flake list.
 
 ## The report format (v1)
 

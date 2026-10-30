@@ -29,7 +29,7 @@ name: CI
 # condition below. What a docs change can break still runs:
 # `docs checks` (the doc-link check and every test matched by its discovery pattern,
 # `grep -l '\.\./docs/' test/*.test.ts`), and `flake report`, which reads zero reports and
-# publishes "Flaky tests: No flaky tests", the check Mission Control's Wait for CI requires.
+# publishes "Flaky tests: No flaky tests", so the docs-only run still publishes its flake report.
 #
 # This rests on nothing outside `test/` reading `docs/`: typecheck, lint, build, smoke, E2E and
 # packaging do not today. A change that makes one of them read `docs/` must remove the gate or
@@ -712,7 +712,7 @@ jobs:
   #
   # Never gated on `changes`. On a docs-only run the test jobs it needs were skipped, which
   # `!cancelled()` still runs after; it reads zero reports and publishes "Flaky tests: No flaky
-  # tests", without which Mission Control's Wait for CI would block the pull request.
+  # tests", so the docs-only run still publishes its flake report.
   flake-report:
     name: flake report
     needs: [unit-node-24, unit-node-26, e2e]

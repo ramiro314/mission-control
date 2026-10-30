@@ -235,10 +235,10 @@ request, so it comes once Mission Control's publish instruction has opened it:
    **Flaky tests** appears on the pull request's head commit, with conclusion `success` or
    `neutral`. Report its link. If it does not appear, read the publish job's log: a missing
    `checks: write` or `issues: write` (GitHub answers 403), a publish job skipped because a test
-   job was cancelled, or a fork pull request with a read-only token are the usual causes. A
-   repository whose CI does not publish this check makes the Wait for CI node block with
-   `ci_flake_report_missing`; CI that never starts blocks with `ci_missing`, and one still
-   running at its limit with `ci_timeout`.
+   job was cancelled, or a fork pull request with a read-only token are the usual causes.
+   Without this check the Wait for CI node still passes green CI, but its runs show no flake
+   list; CI that never starts blocks with `ci_missing`, and one still running at its limit
+   with `ci_timeout`.
 
 ## Stored mode
 
