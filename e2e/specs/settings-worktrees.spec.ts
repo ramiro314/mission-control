@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorktreeActionPreview, WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { Page } from "@playwright/test";
@@ -961,4 +962,63 @@ test("bulk selection stops at 128 slots and says so", async ({ dashboard, daemon
   await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
   await shoot(dashboard, "24-bulk-preview-all-selected-gone");
   await preview.getByRole("button", { name: "Cancel" }).click();
+});
+
+/**
+ * A slot whose lock is held is shown busy, naming what holds it, and inventory reads none of
+ * its Git meanwhile. The holder is real: a pool claim whose one step waits on a gate file this
+ * spec writes, so the second lease's slot stays held by that claim until the spec lets it go.
+ */
+test("a slot held by a running claim shows busy and names the claim until it finishes", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const gateDir = mkdtempSync(join(tmpdir(), "mc-e2e-busy-gate-"));
+  const gate = join(gateDir, "gate");
+  try {
+    // A lease taken before any claim exists creates the pool, and is answered at once.
+    const first = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label: "creates the pool" },
+    });
+    expect(first.status()).toBe(201);
+    const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+    const pool = inventory.repositories.find((repo) => repo.name === "demo-repo");
+    expect(pool).toBeTruthy();
+    const step = `const f = process.argv[1]; const w = () => require("fs").existsSync(f) ? process.exit(0) : setTimeout(w, 50); w();`;
+    const saved = await dashboard.request.put(`${daemon.baseURL}/api/worktrees/config`, {
+      data: { repositories: { [pool!.commonDirectory]: { claim: { steps: [{ argv: [process.execPath, "-e", step, gate] }], timeoutMinutes: 5 } } } },
+    });
+    expect(saved.status()).toBe(200);
+
+    // With a claim, the lease is acquired in the background, and its claim holds slot 2.
+    const second = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label: "held by its claim" },
+    });
+    expect(second.status()).toBe(202);
+
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const held = repo.getByRole("article", { name: "Slot 2" });
+    await expect(held.getByText("busy", { exact: true })).toBeVisible({ timeout: 45_000 });
+    await expect(held.getByText(
+      "Busy with dependency claim, step 1 of 1. Its Git is not read until that finishes, so these are its last recorded facts.",
+    )).toBeVisible();
+    // A free sibling is read as usual and carries no busy chip.
+    const free = repo.getByRole("article", { name: "Slot 1" });
+    await expect(free.getByText("leased", { exact: true })).toBeVisible();
+    await expect(free.getByText("busy", { exact: true })).toHaveCount(0);
+    await held.scrollIntoViewIfNeeded();
+    await shoot(dashboard, "10-slot-busy-with-claim");
+
+    // Once the claim finishes, the slot is read again: leased, and no longer busy.
+    writeFileSync(gate, "0");
+    await expect(held.getByText("busy", { exact: true })).toHaveCount(0, { timeout: 45_000 });
+    await expect(held.getByText("leased", { exact: true })).toBeVisible();
+    await expect(held.getByText(/^Busy with /)).toHaveCount(0);
+  } finally {
+    rmSync(gateDir, { recursive: true, force: true });
+  }
 });

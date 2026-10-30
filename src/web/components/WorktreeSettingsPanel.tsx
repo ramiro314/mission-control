@@ -734,6 +734,7 @@ function SlotCard({
         <strong>Slot {slot.ordinal}</strong>
         <StateChip label={slot.state} tone={tone} />
         {pending && <StateChip label={`${ACTION_VERBS[pending.request.action].toLowerCase()} ${pending.state === "running" ? "in progress" : "queued"}`} tone="working" />}
+        {slot.busy && <StateChip label="busy" tone="working" />}
         {slot.dirty === true && <StateChip label="dirty" tone="danger" />}
         {slot.staleSince !== null && (
           <Tooltip label={`Still leased, with no Git-visible change since ${new Date(slot.staleSince).toLocaleDateString()}. Listed in Settings > Storage; never reclaimed automatically.`}>
@@ -769,6 +770,11 @@ function SlotCard({
       )}
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
       {stuckReturn && <p className="wt-diagnostic wt-stuck-return">{stuckReturn.message}</p>}
+      {slot.busy && (
+        <p className="wt-busy">
+          Busy with {slot.busy}. Its Git is not read until that finishes, so these are its last recorded facts.
+        </p>
+      )}
       {(slot.quarantineReason || slot.diagnostic || slot.processes.reason) && (
         <p className="wt-diagnostic">{slot.quarantineReason ?? slot.diagnostic ?? slot.processes.reason}</p>
       )}

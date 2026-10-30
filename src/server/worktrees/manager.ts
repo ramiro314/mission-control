@@ -177,8 +177,23 @@ export type NativeLeaseLookup =
   | { state: "missing" }
   | { state: "mismatch"; reason: string };
 
+/** The operation holding a slot lock, as the slot card names it. */
+type SlotLockHolder =
+  | "lease acquisition"
+  | "seed source lease"
+  | "Warm"
+  | "Return"
+  | "Recover"
+  | "Destroy"
+  | "reconciliation";
+
 export interface NativeSlotStatus {
   slot: WorktreeSlotRow;
+  /**
+   * What held this slot when inventory looked, or null. A busy slot's Git is not read: its
+   * Git facts are null and `observedHead` is the last durable HEAD.
+   */
+  busy: string | null;
   nativePath: boolean;
   registered: boolean | null;
   repositoryMatches: boolean | null;
@@ -659,6 +674,8 @@ export class WorktreeManager {
   readonly store: WorktreeStore;
   private readonly deps: WorktreeManagerDeps;
   private readonly queues = new Map<string, Promise<void>>();
+  /** What holds each slot lock right now, by slot id. Inventory names it instead of reading Git. */
+  private readonly slotHolders = new Map<string, { holder: SlotLockHolder }>();
   private stopped = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private maintenance: Promise<void> | null = null;
@@ -748,12 +765,39 @@ export class WorktreeManager {
     return this.withLock(`pool:${commonDirectory}`, operation);
   }
 
-  private withSlot<T>(slotId: string, operation: () => Promise<T>): Promise<T> {
-    return this.withLock(`slot:${slotId}`, operation);
+  private async withSlot<T>(slotId: string, holder: SlotLockHolder, operation: () => Promise<T>): Promise<T> {
+    const release = await this.acquireSlotLock(slotId, holder);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
-  private acquireSlotLock(slotId: string): Promise<() => void> {
-    return this.acquireLock(`slot:${slotId}`);
+  /** The holder is recorded once the lock is held, never while it is only queued for. */
+  private async acquireSlotLock(slotId: string, holder: SlotLockHolder): Promise<() => void> {
+    const release = await this.acquireLock(`slot:${slotId}`);
+    const hold = { holder };
+    this.slotHolders.set(slotId, hold);
+    return () => {
+      if (this.slotHolders.get(slotId) === hold) this.slotHolders.delete(slotId);
+      release();
+    };
+  }
+
+  /**
+   * What makes a slot busy, or null when nothing does: a running dependency claim, or whatever
+   * holds its slot lock. A claim is registered before its acquisition takes the lock, so it
+   * counts from that moment. Read without taking the lock, which observation never does.
+   */
+  slotBusy(slotId: string): string | null {
+    const claim = this.claims.get(slotId);
+    if (claim) {
+      return claim.step
+        ? `dependency claim, step ${claim.step.step} of ${claim.step.stepCount}`
+        : "dependency claim, reading its fingerprint";
+    }
+    return this.slotHolders.get(slotId)?.holder ?? null;
   }
 
   private deliverPublish(publishChanged: () => void = this.deps.publishChanged): void {
@@ -1174,7 +1218,7 @@ export class WorktreeManager {
       return { outcome: "outcomeUnknown", reason: STOPPING_REASON };
     }
     const unfollow = claimControl ? followSignal(input.signal, claimControl) : () => {};
-    return this.withSlot(reservation.id, async () => {
+    return this.withSlot(reservation.id, "lease acquisition", async () => {
       try {
         if (!created) {
           const entered = await this.enteredSinceReservation(reservation, "reset");
@@ -1624,7 +1668,7 @@ export class WorktreeManager {
     }
     if (!reservation) return null;
     const reserved = reservation;
-    return this.withSlot(reserved.id, async () => {
+    return this.withSlot(reserved.id, "seed source lease", async () => {
       try {
         if (await this.enteredSinceReservation(reserved, "it was seeded from")) return null;
         const leased = this.store.finalizeLease(reserved.id, reserved.version, candidate.head, this.deps.now());
@@ -1864,7 +1908,7 @@ export class WorktreeManager {
       }
       const unfollow = followSignal(input.signal, control);
       try {
-        return await this.withSlot(reserved.id, () => this.warmHeld({
+        return await this.withSlot(reserved.id, "Warm", () => this.warmHeld({
           reservation: reserved,
           head: idle.head,
           leaseId,
@@ -2334,7 +2378,7 @@ export class WorktreeManager {
   ): Promise<WorktreeReleaseResult> {
     if (lease.provider !== "mission") return { outcome: "refused", reason: "lease provider is not mission" };
     if (!this.store.poolForSlot(lease.slotId)) return { outcome: "refused", reason: "native slot no longer exists" };
-    return this.withSlot(lease.slotId, () => this.releaseLocked(lease, options));
+    return this.withSlot(lease.slotId, "Return", () => this.releaseLocked(lease, options));
   }
 
   /** `release`, for a caller that already holds this slot's lock. */
@@ -2520,7 +2564,7 @@ export class WorktreeManager {
     automatic: boolean;
   }): Promise<WorktreeRecoverResult> {
     if (!this.store.poolForSlot(input.slotId)) return { outcome: "refused", reason: "native slot no longer exists" };
-    return this.withSlot(input.slotId, () => this.recoverLocked(input));
+    return this.withSlot(input.slotId, "Recover", () => this.recoverLocked(input));
   }
 
   private async recoverLocked(input: Parameters<WorktreeManager["recoverSlot"]>[0]): Promise<WorktreeRecoverResult> {
@@ -2702,7 +2746,7 @@ export class WorktreeManager {
     const failPool = async (reason: string) => {
       for (const original of slots) {
         if (skipClaiming(original)) continue;
-        const releaseSlot = await this.acquireSlotLock(original.id);
+        const releaseSlot = await this.acquireSlotLock(original.id, "reconciliation");
         try {
           const slot = this.store.slot(original.id);
           if (slot) this.markInterruptedClaim(slot, now);
@@ -2745,7 +2789,7 @@ export class WorktreeManager {
     const errors: string[] = [];
     for (const original of slots) {
       if (skipClaiming(original)) continue;
-      const releaseSlot = await this.acquireSlotLock(original.id);
+      const releaseSlot = await this.acquireSlotLock(original.id, "reconciliation");
       try {
         const current = this.store.slot(original.id);
         if (current) this.markInterruptedClaim(current, now);
@@ -2986,8 +3030,12 @@ export class WorktreeManager {
       // Each slot's reads are independent Git processes, so a pool of sixteen slots is
       // observed concurrently rather than as sixteen serial waits. Order is preserved.
       const slots = await mapBounded(allSlots.filter((candidate) => candidate.poolId === pool.id), SLOT_OBSERVATION_CONCURRENCY, async (slot): Promise<NativeSlotStatus> => {
+        // A slot whose lock is held is mid-operation: its Git is read by that operation, not
+        // here, so inventory never races a reset or a claim for the index. Asked per slot, at
+        // the moment its reads would start.
+        const busy = this.slotBusy(slot.id);
         let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>> | null = null;
-        if (existsSync(slot.path)) {
+        if (!busy && existsSync(slot.path)) {
           try {
             inspection = await this.deps.git.inspect(slot.path);
           } catch {
@@ -3019,6 +3067,7 @@ export class WorktreeManager {
         }
         return {
           slot,
+          busy,
           nativePath,
           registered: listed?.ok === true
             ? Boolean(registration && !registration.bare && !registration.locked && !registration.prunable)
@@ -3028,7 +3077,7 @@ export class WorktreeManager {
               inspection.value.path === slot.path &&
               inspection.value.commonDirectory === pool.gitCommonDirectory
             : null,
-          observedHead: inspection?.ok === true ? inspection.value.head : null,
+          observedHead: inspection?.ok === true ? inspection.value.head : busy ? slot.currentHeadSha : null,
           dirty: inspection?.ok === true ? inspection.value.dirty : null,
           occupancy: occupancy.get(slot.path) ?? { status: "unknown", reason: "path is missing" },
           ownerReferenced: referenced,
@@ -3095,7 +3144,7 @@ export class WorktreeManager {
     // `occupancyBlocker`). The Git removal itself is not under it: a slow `git worktree
     // remove` must never make an unrelated preview wait. Lock order is slot, then
     // observation; nothing holding the observation lock takes a slot lock.
-    return this.withSlot(input.slotId, async () => {
+    return this.withSlot(input.slotId, "Destroy", async () => {
       const slot = this.store.slot(input.slotId);
       if (!slot) return { outcome: "alreadyRemoved" };
       if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {

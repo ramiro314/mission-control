@@ -592,6 +592,7 @@ export class WorktreeOperationsService {
             // saturating disk and holding the page for seconds. A destructive preview
             // measures only the fixed paths it is about to show.
             diskBytes: null,
+            busy: entry.busy,
             quarantineReason: compact(entry.slot.quarantineReason),
             diagnostic: compact(entry.slot.lastError),
             actions,
@@ -971,6 +972,7 @@ export class WorktreeOperationsService {
       }),
       diskBytes: null,
     });
+    if (slot.busy) blockers.push(`Slot ${slot.slot.ordinal} is busy with ${slot.busy}; preview again once it finishes.`);
     if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
     else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
     if (slot.mergedIntoDefault === false) {

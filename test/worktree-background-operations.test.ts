@@ -85,6 +85,77 @@ test("Execute is accepted at once and the removal finishes in the background", a
   assert.deepEqual(measured, [], "the safety rebuild never measures disk size");
 });
 
+test("inventory runs no Git in a slot whose lock is held, and shows it busy with its holder", async (t) => {
+  const { clone } = mkOriginAndClone("mission-worktree-bg-busy-");
+  const base = gitIn(clone, "rev-parse", "HEAD");
+  const acquired = await manager.acquire({
+    repositoryPath: clone,
+    baseSha: base,
+    owner: { kind: "manual", key: "busy-slot" },
+  });
+  assert.equal(acquired.outcome, "acquired");
+  if (acquired.outcome !== "acquired") throw new Error("acquire failed");
+  const { lease } = acquired;
+  // Every per-slot Git read inventory makes goes through these two.
+  const read: string[] = [];
+  const inspect = NativeWorktreeGit.prototype.inspect;
+  const mergedInto = NativeWorktreeGit.prototype.mergedInto;
+  t.mock.method(NativeWorktreeGit.prototype, "inspect", function (this: NativeWorktreeGit, path: string) {
+    read.push(path);
+    return inspect.call(this, path);
+  });
+  t.mock.method(NativeWorktreeGit.prototype, "mergedInto", function (this: NativeWorktreeGit, path: string, sha: string) {
+    read.push(path);
+    return mergedInto.call(this, path, sha);
+  });
+  const view = async () => (await operations.inventory()).repositories
+    .flatMap((repo) => repo.slots)
+    .find((slot) => slot.id === lease.slotId);
+
+  // Return holds the slot lock while its policy recheck waits.
+  let entered = (): void => {};
+  const holding = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let finish = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const returned = manager.release(lease, {
+    ownerAuthorized: true,
+    requireClean: true,
+    beforeReset: async () => {
+      entered();
+      await gate;
+      return null;
+    },
+  });
+  await holding;
+  // Return read the slot itself before it held; only what inventory runs from here counts.
+  read.length = 0;
+  try {
+    const busy = await view();
+    assert.equal(busy?.busy, "Return");
+    assert.deepEqual(read.filter((path) => path === lease.path), [], "no Git ran in the busy slot");
+    assert.equal(busy?.state, "leased", "its durable state is shown as recorded");
+    assert.equal(busy?.head, base, "HEAD is the last recorded one");
+    assert.equal(busy?.dirty, null);
+    assert.equal(busy?.defaultRelation, "unknown");
+    const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: lease.slotId } });
+    assert.equal(preview.allowed, false);
+    assert.match(preview.blockers.join("\n"), /is busy with Return; preview again once it finishes/);
+  } finally {
+    finish();
+  }
+  assert.equal((await returned).outcome, "released");
+
+  const free = await view();
+  assert.equal(free?.busy, null);
+  assert.equal(free?.state, "available");
+  assert.equal(free?.dirty, false);
+  assert.ok(read.includes(lease.path), "a free slot is read again");
+});
+
 test("a token is claimed synchronously, so a stale or reused one is refused before queueing", async () => {
   const [slot] = await availableSlots("mission-worktree-bg-claim-", 1);
   const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: slot!.slotId } });

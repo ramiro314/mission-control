@@ -608,6 +608,13 @@ this order:
   [Dependency claims](#dependency-claims). Each slot carries its exact manager path, observed HEAD, relationship to the remote
   default, cleanliness, process count, disk estimate, and owner, and in a pool with a claim, its
   dependency state. **Copy path** stays in the browser.
+  A slot that an operation or a dependency claim holds when the page looks is marked **busy**,
+  and its card names the holder: a running dependency claim and its step, or the lease
+  acquisition, seed source lease, Warm, Return, Recover, Destroy or reconciliation holding its
+  slot lock. The inventory runs no Git in a busy slot, so it never races that operation for the
+  index: the card shows the slot's last recorded state, owner and HEAD, and its cleanliness and
+  default relationship read unknown until the slot is free. A preview that names a busy slot is
+  blocked until it is free.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
   manager-known path.
 
@@ -698,7 +705,11 @@ The operations have deliberately narrow meanings:
   unknown owner, any process inside it, or a lock it cannot prove free is refused. Recover is the
   way out of the stale-lock quarantine: a Git command that dies holding `index.lock` makes the
   next reset fail with Git's "Unable to create '...index.lock': File exists", and the slot is
-  quarantined with that text as its last error.
+  quarantined with that text as its last error. Watching a slot never takes that lock: every Git
+  read the allocator observes with (`status`, `rev-parse`, `symbolic-ref`, `worktree list`,
+  `merge-base` and the remote-default reads) passes `--no-optional-locks` before its subcommand,
+  so a read killed mid-way cannot leave `index.lock` behind. The mutations (`worktree add` and
+  `remove`, `checkout`, `reset`, `clean` and Return's `fetch`) take their locks as usual.
 
   Each maintenance pass also retries every quarantine whose last error is that text, with no
   operator. It recovers the slot when the lock is gone, or when the lock is more than 10 minutes

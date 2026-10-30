@@ -44,6 +44,7 @@ const overCapacityPool: WorktreeRepositoryView = {
     dirty: true,
     processes: { state: "known", count: 1, reason: null },
     diskBytes: 4096,
+    busy: null,
     quarantineReason: null,
     diagnostic: null,
     actions: ["return", "destroy"],
@@ -145,6 +146,20 @@ test("Policy edits the stale-lease threshold, and only a stale live lease carrie
   });
   assert.match(stale, /value="3"/);
   assert.match(stale, /<span class="wt-chip wt-chip-attention">stale<\/span>/);
+});
+
+test("a busy slot carries the busy chip and names its holder beside its last recorded facts", () => {
+  assert.doesNotMatch(render(), /wt-chip-working">busy</);
+  const [slot] = overCapacityPool.slots;
+  const html = render({
+    inventory: {
+      ...inventory,
+      repositories: [{ ...overCapacityPool, slots: [{ ...slot!, busy: "Return", dirty: null, defaultRelation: "unknown" }] }],
+    },
+  });
+  assert.match(html, /<span class="wt-chip wt-chip-working">busy<\/span>/);
+  assert.match(html, /Busy with Return\. Its Git is not read until that finishes, so these are its last recorded facts\./);
+  assert.match(html, new RegExp(`<code>${"b".repeat(9)}`), "the last recorded HEAD is still shown");
 });
 
 test("only a whole number of days from 1 to 90 is a threshold the input will save", () => {

@@ -163,6 +163,12 @@ export interface NativeWorktreeSlotView {
   dirty: boolean | null;
   processes: WorktreeProcessSummary;
   diskBytes: number | null;
+  /**
+   * The operation or dependency claim holding this slot's lock when inventory looked, or null.
+   * Inventory runs no Git in a busy slot: `head` is its last recorded HEAD, and `dirty` and
+   * `defaultRelation` are unknown until it is free.
+   */
+  busy: string | null;
   quarantineReason: string | null;
   diagnostic: string | null;
   /**

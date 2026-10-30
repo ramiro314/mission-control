@@ -58,6 +58,16 @@ export interface WorktreeGit {
   remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean): Promise<GitResult<void>>;
 }
 
+/**
+ * Global options for a Git read that observation uses, placed before the subcommand.
+ *
+ * Without it `git status` may take `index.lock` to write back a refreshed index, and a status
+ * killed mid-refresh can leave that lock behind: the slot's next reset then fails with "File
+ * exists". A read never needs the lock, so none of them takes it. Mutations (`worktree add`,
+ * `worktree remove`, `checkout`, `reset`, `clean`, `fetch`) never carry it.
+ */
+export const OBSERVATION_GIT_OPTIONS = ["--no-optional-locks"] as const;
+
 function failure(step: string, result: Awaited<ReturnType<typeof run>>): GitResult<never> {
   return {
     ok: false,
@@ -118,7 +128,7 @@ export class NativeWorktreeGit implements WorktreeGit {
   async list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>> {
     const result = await this.execute(
       "git",
-      ["-C", identity.mainCheckoutRoot, "worktree", "list", "--porcelain"],
+      ["-C", identity.mainCheckoutRoot, ...OBSERVATION_GIT_OPTIONS, "worktree", "list", "--porcelain"],
       { timeoutMs: 30_000 },
     );
     if (commandFailed(result)) return failure("git worktree list", result);
@@ -139,7 +149,7 @@ export class NativeWorktreeGit implements WorktreeGit {
    * transition and "we did not find out" must not read as "detached".
    */
   private async detachedAt(path: string): Promise<GitResult<boolean>> {
-    const probe = await this.execute("git", ["-C", path, "symbolic-ref", "--quiet", "HEAD"], {
+    const probe = await this.execute("git", ["-C", path, ...OBSERVATION_GIT_OPTIONS, "symbolic-ref", "--quiet", "HEAD"], {
       timeoutMs: 15_000,
     });
     if (probe.outcomeUnknown || probe.overflowed) return failure("git symbolic-ref HEAD", probe);
@@ -152,7 +162,7 @@ export class NativeWorktreeGit implements WorktreeGit {
 
   private async status(path: string): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
     const status = await this.execute(
-      "git", ["-C", path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      "git", ["-C", path, ...OBSERVATION_GIT_OPTIONS, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
       { timeoutMs: 15_000 },
     );
     if (commandFailed(status)) return failure("git status", status);
@@ -190,7 +200,7 @@ export class NativeWorktreeGit implements WorktreeGit {
       return { ok: false, reason: `${path} is not a provable linked worktree`, outcomeUnknown: false };
     }
     const [head, status, detached] = await Promise.all([
-      this.execute("git", ["-C", path, "rev-parse", "HEAD"], { timeoutMs: 15_000 }),
+      this.execute("git", ["-C", path, ...OBSERVATION_GIT_OPTIONS, "rev-parse", "HEAD"], { timeoutMs: 15_000 }),
       this.status(path),
       this.detachedAt(path),
     ]);
@@ -306,13 +316,15 @@ export class NativeWorktreeGit implements WorktreeGit {
   }
 
   async observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>> {
-    const target = await remoteDefaultRef(identity.mainCheckoutRoot);
+    const root = identity.mainCheckoutRoot;
+    const target = await remoteDefaultRef(root, (args) =>
+      this.execute("git", ["-C", root, ...OBSERVATION_GIT_OPTIONS, ...args], { timeoutMs: 15_000 }));
     if (!target) {
       return { ok: false, reason: "no remote default branch is available", outcomeUnknown: false };
     }
     const resolved = await this.execute(
       "git",
-      ["-C", identity.mainCheckoutRoot, "rev-parse", target],
+      ["-C", root, ...OBSERVATION_GIT_OPTIONS, "rev-parse", target],
       { timeoutMs: 15_000 },
     );
     if (commandFailed(resolved)) return failure(`git rev-parse ${target}`, resolved);
@@ -340,7 +352,7 @@ export class NativeWorktreeGit implements WorktreeGit {
   async mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>> {
     const result = await this.execute(
       "git",
-      ["-C", path, "merge-base", "--is-ancestor", "HEAD", targetSha],
+      ["-C", path, ...OBSERVATION_GIT_OPTIONS, "merge-base", "--is-ancestor", "HEAD", targetSha],
       { timeoutMs: 15_000 },
     );
     if (result.outcomeUnknown || result.overflowed) {

@@ -254,8 +254,10 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   })).fetchDefaultSha(identity);
   assertUnknown(resolved, /git rev-parse refs\/remotes\/origin\/main/);
 
-  const observed = await new NativeWorktreeGit(async () => unknown(`${sha}\n`))
-    .observedDefaultSha(identity);
+  // The default ref is read through the same executor, so it answers and the rev-parse dies.
+  const observed = await new NativeWorktreeGit(async (_bin, args) =>
+    args.includes("symbolic-ref") ? known("origin/main\n") : unknown(`${sha}\n`)
+  ).observedDefaultSha(identity);
   assertUnknown(observed, /git rev-parse origin\//);
 
   const merged = await new NativeWorktreeGit(async () => unknown()).mergedInto(clone, sha);
