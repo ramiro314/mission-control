@@ -66,6 +66,8 @@ export interface WorktreeTimingView {
   reason: string | null;
   /** The sibling a seed copied from. Null on every other row, and on a seed that had none. */
   sourceOrdinal: number | null;
+  /** Whether that sibling was quarantined, so the seed held its slot lock rather than a lease. */
+  sourceQuarantined: boolean;
 }
 
 export interface WorktreeSlotTimingsView {

@@ -1410,9 +1410,10 @@ function ClaimEditor({
         <FieldErrors id={`${base}-seed-exclude-errors`} messages={errors.seedExclude} />
         <p className="wt-claim-note">
           A cold slot (new, never claimed, failed or interrupted) clones these ignored paths
-          copy-on-write from an idle sibling before its steps run. A slot whose last claim succeeded
-          seeds only when it is stale and a sibling matches its commit exactly. Where the disk
-          cannot clone, there is no seed. With no seed paths, a slot never seeds.
+          copy-on-write from an idle sibling, or a quarantined one when none is idle, before its
+          steps run. A slot whose last claim succeeded seeds only when it is stale and a sibling
+          matches its commit exactly. Where the disk cannot clone, there is no seed. With no seed
+          paths, a slot never seeds.
         </p>
       </div>
       <FieldErrors id={`${base}-general`} messages={errors.general} />

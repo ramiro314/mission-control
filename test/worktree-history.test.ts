@@ -993,9 +993,9 @@ test("a slot's timings are the newest of each kind, each with its duration and o
     kind: "claim", at: 4, durationMs: 50, outcome: "failed", reason: "step 1 of 1 exited", detail: "yarn install", actor: "owner",
   });
   assert.deepEqual(store.slotTimings("slot-a"), {
-    provisioning: { at: 2, outcome: "reused", durationMs: 2_000, reason: null, sourceOrdinal: null },
-    claim: { at: 4, outcome: "failed", durationMs: 50, reason: "step 1 of 1 exited", sourceOrdinal: null },
-    seed: { at: 3, outcome: "placed", durationMs: 40, reason: null, sourceOrdinal: 7 },
+    provisioning: { at: 2, outcome: "reused", durationMs: 2_000, reason: null, sourceOrdinal: null, sourceQuarantined: false },
+    claim: { at: 4, outcome: "failed", durationMs: 50, reason: "step 1 of 1 exited", sourceOrdinal: null, sourceQuarantined: false },
+    seed: { at: 3, outcome: "placed", durationMs: 40, reason: null, sourceOrdinal: 7, sourceQuarantined: false },
   });
   const claim = historyOf("slot-a")[0]!;
   assert.deepEqual([claim.kind, claim.durationMs, claim.detail, claim.toState], ["claim", 50, "yarn install", null]);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { cp, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1452,4 +1452,399 @@ test("the cold check fallback seeds its disposable tree from an idle slot and sk
   assert.equal(readFileSync(join(tree, "deps", "marker"), "utf8"), slotAt(m, 1).path);
   assert.equal(runCount(tree), 0, "the source matched this commit, so no step ran");
   assert.equal(slotAt(m, 1).state, "available");
+});
+
+// Seeding from a quarantined sibling. Every test below leaves no idle sibling to prefer, unless
+// it says otherwise, and proves a source by the path the clone was handed.
+
+const QUARANTINE = "return reset failed";
+
+function quarantineSlot(m: WorktreeManager, ordinal: number, reason = QUARANTINE) {
+  const slot = slotAt(m, ordinal);
+  const quarantined = m.store.quarantine(slot.id, reason, null, Date.now(), slot.version);
+  assert.ok(quarantined, `slot ${ordinal} is quarantined`);
+  return quarantined;
+}
+
+/** Every file under `root` with what would show a change to it, `.git` left out. */
+function snapshot(root: string): Array<[string, number, number, string]> {
+  const listed = readdirSync(root, { recursive: true, encoding: "utf8" })
+    .filter((path) => path !== ".git" && !path.startsWith(".git/"))
+    .sort();
+  return listed.flatMap((path): Array<[string, number, number, string]> => {
+    const stat = statSync(join(root, path));
+    return stat.isFile() ? [[path, stat.ino, stat.mtimeMs, readFileSync(join(root, path), "utf8")]] : [];
+  });
+}
+
+function quarantineFields(m: WorktreeManager, slotId: string) {
+  const slot = m.store.slot(slotId)!;
+  return [slot.state, slot.version, slot.quarantineReason, slot.lastError, slot.depsState, slot.depsFingerprint];
+}
+
+/** A clone that waits at `gate` before it copies, and says when it got there. */
+function gatedClone(sources: string[]): { clone: CloneTree; reached: Promise<void>; open: () => void } {
+  let open!: () => void;
+  let reach!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const reached = new Promise<void>((resolve) => {
+    reach = resolve;
+  });
+  const copy = recordingClone(sources);
+  return {
+    clone: async (request) => {
+      reach();
+      await gate;
+      return copy(request);
+    },
+    reached,
+    open,
+  };
+}
+
+/** Wait for the clone, failing rather than hanging when the lease ends without one. */
+async function untilCloning(gated: { reached: Promise<void> }, acquiring: Promise<WorktreeAcquireResult>): Promise<void> {
+  await Promise.race([
+    gated.reached,
+    acquiring.then((result) => assert.fail(`the lease ended without a clone: ${JSON.stringify(result)}`)),
+  ]);
+}
+
+test("with no idle sibling, a qualifying quarantined sibling seeds a new slot and stays quarantined with its files unchanged", async () => {
+  const fixture = repository("mission-seed-quarantined-");
+  const claim = claimWith(SEED);
+  const sources: string[] = [];
+  const gated = gatedClone(sources);
+  const m = manager(claim, { cloneTree: gated.clone });
+  await warmPool(m, fixture.clone, fixture.sha, 2, "quarantined");
+  const older = quarantineSlot(m, 1);
+  const source = quarantineSlot(m, 2);
+  setDeps(older.id, older.depsFingerprint!, 1);
+  setDeps(source.id, source.depsFingerprint!, 2);
+  const filesBefore = snapshot(source.path);
+  const fieldsBefore = quarantineFields(m, source.id);
+
+  const acquiring = acquire(m, fixture.clone, fixture.sha, "quarantined:target");
+  await untilCloning(gated, acquiring);
+
+  // The seed holds the slot lock for the clone. Anything that takes that lock waits for it.
+  let lockTaken = false;
+  const queued = m.handBackAsIs({
+    slotId: source.id,
+    poolId: source.poolId,
+    path: source.path,
+    provider: "mission",
+    leaseId: "not-a-lease",
+    owner: { kind: "task", key: "not-an-owner" },
+    baseSha: fixture.sha,
+    slotVersion: 0,
+  }).then(() => {
+    lockTaken = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(lockTaken, false, "the source's slot lock is held while it is cloned");
+
+  // Nothing can act on the source meanwhile, and none of it waits on a clone that can run for
+  // minutes: this test would hang here if one did.
+  const refusal = /a seed is copying from this slot/;
+  const recovered = await m.recoverSlot({ slotId: source.id, allowDirty: true, automatic: false });
+  assert.equal(recovered.outcome, "refused");
+  assert.match((recovered as { reason: string }).reason, refusal);
+  const repaired = await m.repairSlot({ slotId: source.id });
+  assert.equal(repaired.outcome, "refused");
+  assert.match((repaired as { reason: string }).reason, refusal);
+  const removed = await m.removeSlot({ slotId: source.id, allowDirty: true, allowUnmerged: true });
+  assert.equal(removed.outcome, "refused");
+  assert.match((removed as { reason: string }).reason, refusal);
+  await m.reconcile();
+  await m.recoverQuarantines();
+  assert.deepEqual(quarantineFields(m, source.id), fieldsBefore);
+
+  gated.open();
+  const target = leased(await acquiring);
+  await queued;
+
+  assert.equal(target.lease.path, slotAt(m, 3).path, "a new slot");
+  assert.deepEqual(sources, [join(source.path, "deps"), join(source.path, "more")]);
+  assert.equal(readFileSync(join(target.lease.path, "deps", "marker"), "utf8"), source.path, "the install came from the source");
+  assert.equal(runCount(target.lease.path), 0, "a complete seed inherits the fingerprint, so the steps were skipped");
+  assert.equal(slotAt(m, 3).depsFingerprint, source.depsFingerprint);
+
+  assert.deepEqual(quarantineFields(m, source.id), fieldsBefore, "the source is still quarantined, untouched");
+  assert.deepEqual(snapshot(source.path), filesBefore, "the source's files are unchanged");
+
+  const timing = m.store.slotTimings(target.lease.slotId).seed!;
+  assert.deepEqual([timing.outcome, timing.sourceOrdinal, timing.sourceQuarantined], ["placed", source.ordinal, true]);
+
+  // The hold ended with the clone, so the source can be acted on again.
+  assert.doesNotMatch(
+    JSON.stringify(await m.recoverSlot({ slotId: source.id, allowDirty: true, automatic: false })),
+    refusal,
+  );
+  await m.release(target.lease);
+});
+
+test("an idle available sibling is preferred to a quarantined one, even one that matches the commit", async () => {
+  const fixture = repository("mission-seed-quarantined-preferred-");
+  const claim = claimWith(SEED);
+  const sources: string[] = [];
+  const m = manager(claim, { cloneTree: recordingClone(sources) });
+  await warmPool(m, fixture.clone, fixture.sha, 3, "preferred");
+  makeCold(slotAt(m, 1).id);
+  const idle = slotAt(m, 2);
+  // Nothing but coming first can choose it: it matches nothing, and the other one matches.
+  setDeps(idle.id, "a-different-fingerprint", 1);
+  quarantineSlot(m, 3);
+
+  const target = leased(await acquire(m, fixture.clone, fixture.sha, "preferred:target"));
+  assert.equal(target.lease.path, slotAt(m, 1).path);
+  assert.deepEqual(sources, [join(idle.path, "deps"), join(idle.path, "more")]);
+  assert.equal(m.store.slotTimings(target.lease.slotId).seed!.sourceQuarantined, false);
+  assert.equal(slotAt(m, 3).state, "quarantined");
+  await m.release(target.lease);
+});
+
+test("an idle sibling that cannot be used falls through to a quarantined one", async () => {
+  const fixture = repository("mission-seed-quarantined-fallthrough-");
+  const claim = claimWith(SEED);
+  const sources: string[] = [];
+  const entered = new Set<string>();
+  const m = manager(claim, {
+    cloneTree: recordingClone(sources),
+    occupancy: async (paths) => new Map(paths.map((path) => [path, {
+      status: "known" as const,
+      occupants: entered.has(path) ? [{ pid: 4242, command: "vim" }] : [],
+    } as WorktreeOccupancy])),
+  });
+  await warmPool(m, fixture.clone, fixture.sha, 3, "fallthrough");
+  makeCold(slotAt(m, 1).id);
+  entered.add(slotAt(m, 2).path);
+  const quarantined = quarantineSlot(m, 3);
+
+  const target = leased(await acquire(m, fixture.clone, fixture.sha, "fallthrough:target"));
+  assert.deepEqual(sources, [join(quarantined.path, "deps"), join(quarantined.path, "more")]);
+  await m.release(target.lease);
+});
+
+/** A pool of `count` claimed slots, every one quarantined, for a new slot to seed beside. */
+async function quarantinedPool(m: WorktreeManager, fixture: { clone: string; sha: string }, count: number, prefix: string) {
+  await warmPool(m, fixture.clone, fixture.sha, count, prefix);
+  for (let ordinal = 1; ordinal <= count; ordinal += 1) quarantineSlot(m, ordinal);
+  return slotAt(m, count);
+}
+
+/** The manager of a pool whose one quarantined slot `refuse` disqualifies, and what followed. */
+async function neverASource(
+  prefix: string,
+  refuse: (m: WorktreeManager, slot: ReturnType<typeof slotAt>) => void | Promise<void>,
+  deps: (state: { slotPath: string | null; slotId: string | null }) => Partial<WorktreeManagerDeps> = () => ({}),
+): Promise<string> {
+  const fixture = repository(prefix);
+  const sources: string[] = [];
+  const state = { slotPath: null as string | null, slotId: null as string | null };
+  const m = manager(claimWith(SEED), { cloneTree: recordingClone(sources), ...deps(state) }, 2);
+  const slot = await quarantinedPool(m, fixture, 1, "never");
+  state.slotPath = slot.path;
+  state.slotId = slot.id;
+  await refuse(m, slot);
+  const fields = quarantineFields(m, slot.id);
+  const target = leased(await acquire(m, fixture.clone, fixture.sha, "never:target"));
+  assert.deepEqual(sources, [], "the sibling was not a source");
+  assert.equal(runCount(target.lease.path), 1, "the steps ran instead");
+  assert.deepEqual(quarantineFields(m, slot.id), fields);
+  const seed = m.store.slotTimings(target.lease.slotId).seed!;
+  assert.equal(seed.outcome, "none");
+  assert.equal(seed.sourceOrdinal, null);
+  await m.release(target.lease);
+  return seed.reason ?? "";
+}
+
+test("a quarantined slot with an occupant is never a source", async () => {
+  const reason = await neverASource("mission-seed-never-occupant-", () => {}, (state) => ({
+    occupancy: async (paths) => new Map(paths.map((path) => [path, {
+      status: "known" as const,
+      occupants: path === state.slotPath ? [{ pid: 4242, command: "vim" }] : [],
+    } as WorktreeOccupancy])),
+  }));
+  assert.match(reason, /slot 1: one or more processes still occupy the worktree/);
+});
+
+test("a quarantined slot whose occupancy is unknown is never a source", async () => {
+  const reason = await neverASource("mission-seed-never-unknown-occupancy-", () => {}, (state) => ({
+    occupancy: async (paths) => new Map(paths.map((path) => [path, path === state.slotPath
+      ? { status: "unknown" as const, reason: "ps timed out after 15 s" }
+      : { status: "known" as const, occupants: [] }] as [string, WorktreeOccupancy])),
+  }));
+  assert.match(reason, /slot 1: ps timed out after 15 s/);
+});
+
+test("a quarantined slot whose last-released owner is referenced is never a source", async () => {
+  const reason = await neverASource("mission-seed-never-last-owner-", () => {}, (state) => ({
+    ownerReferenced: async (reference) => reference.slotId === state.slotId,
+  }));
+  assert.match(reason, /a live task owner references this slot/);
+});
+
+test("a quarantined slot whose active owner is referenced is never a source", async () => {
+  const reason = await neverASource("mission-seed-never-active-owner-", (_m, slot) => {
+    db.prepare("UPDATE worktree_slots SET active_lease_id = 'active-lease', active_owner_kind = 'task', active_owner_key = 'live' WHERE id = ?")
+      .run(slot.id);
+  }, () => ({
+    ownerReferenced: async (reference) => reference.leaseId === "active-lease",
+  }));
+  assert.match(reason, /a live task owner references this slot/);
+});
+
+test("a quarantined slot whose owner cannot be read is never a source", async () => {
+  const reason = await neverASource("mission-seed-never-unknown-owner-", () => {}, (state) => ({
+    pause: async () => {},
+    ownerReferenced: async (reference) => {
+      if (reference.slotId === state.slotId) throw new Error("the task row could not be read");
+      return false;
+    },
+  }));
+  assert.match(reason, /domain ownership is unknown/);
+});
+
+test("a quarantined slot with an incomplete identity is never a source", async () => {
+  const reason = await neverASource("mission-seed-never-invalid-identity-", (_m, slot) => {
+    db.prepare("UPDATE worktree_slots SET last_released_owner_key = NULL WHERE id = ?").run(slot.id);
+  });
+  assert.match(reason, /lease identity is incomplete/);
+});
+
+for (const state of ["failed", "interrupted", "claiming", "seeding", null]) {
+  test(`a quarantined slot whose install is ${state ?? "unrecorded"}, not current, is never a source`, async () => {
+    const reason = await neverASource(`mission-seed-never-deps-${state ?? "none"}-`, (_m, slot) => {
+      db.prepare("UPDATE worktree_slots SET deps_state = ? WHERE id = ?").run(state, slot.id);
+    });
+    assert.equal(reason, "no idle sibling holds a current install");
+  });
+}
+
+test("a quarantined slot whose path is not the exact one its pool owns is never a source", async () => {
+  const reason = await neverASource("mission-seed-never-inexact-", (_m, slot) => {
+    const elsewhere = mkdtempSync(join(tmpdir(), "mission-seed-elsewhere-"));
+    db.prepare("UPDATE worktree_slots SET path = ? WHERE id = ?").run(elsewhere, slot.id);
+  });
+  assert.match(reason, /slot path is not the exact path owned by its native pool/);
+});
+
+test("a quarantined slot whose folder is a symlink out of the pool is never a source", async () => {
+  const reason = await neverASource("mission-seed-never-symlink-", (_m, slot) => {
+    const elsewhere = mkdtempSync(join(tmpdir(), "mission-seed-elsewhere-"));
+    rmrf(elsewhere);
+    renameSync(slot.path, elsewhere);
+    symlinkSync(elsewhere, slot.path);
+  });
+  assert.match(reason, /slot path is not an exact physical directory/);
+});
+
+test("a quarantined slot whose folder is gone is never a source", async () => {
+  const reason = await neverASource("mission-seed-never-gone-", (_m, slot) => rmrf(slot.path));
+  assert.match(reason, /slot path could not be physically verified/);
+});
+
+test("a quarantined slot with a running claim is never a source", async () => {
+  const fixture = repository("mission-seed-never-claim-");
+  const sources: string[] = [];
+  const m = manager(claimWith(SEED), { cloneTree: recordingClone(sources) }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 1, "claim");
+  const slot = quarantineSlot(m, 1);
+  const running = m.claims.register(slot.id, { kind: "task", key: "claim:running" }, Date.now())!;
+  const target = leased(await acquire(m, fixture.clone, fixture.sha, "claim:target"));
+  m.claims.unregister(slot.id, running);
+  assert.deepEqual(sources, []);
+  assert.equal(m.store.slotTimings(target.lease.slotId).seed!.outcome, "none");
+  await m.release(target.lease);
+});
+
+test("a second seed never takes or waits on a source another seed holds", async () => {
+  const fixture = repository("mission-seed-quarantined-second-");
+  const sources: string[] = [];
+  const gated = gatedClone(sources);
+  const m = manager(claimWith(SEED), { cloneTree: gated.clone }, 3);
+  const source = await quarantinedPool(m, fixture, 1, "second");
+
+  const first = acquire(m, fixture.clone, fixture.sha, "second:first");
+  await untilCloning(gated, first);
+  // This one finishes while the first is held at its clone, so it cannot have waited for it.
+  const second = leased(await acquire(m, fixture.clone, fixture.sha, "second:second"));
+  const seed = m.store.slotTimings(second.lease.slotId).seed!;
+  assert.deepEqual([seed.outcome, seed.sourceOrdinal], ["none", null]);
+  assert.match(seed.reason ?? "", /slot 1: another seed is copying from it/);
+
+  gated.open();
+  const placed = leased(await first);
+  assert.equal(m.store.slotTimings(placed.lease.slotId).seed!.sourceOrdinal, source.ordinal);
+  await m.release(placed.lease);
+  await m.release(second.lease);
+});
+
+test("a stale slot seeds from a quarantined sibling only on an exact match", async () => {
+  const fixture = repository("mission-seed-quarantined-stale-");
+  const claim = claimWith(SEED);
+  const sources: string[] = [];
+  const m = manager(claim, { cloneTree: recordingClone(sources) });
+  await warmPool(m, fixture.clone, fixture.sha, 2, "stale");
+  const next = advance(fixture, "lock.txt", "v2\n");
+  const quarantined = quarantineSlot(m, 2);
+
+  // The quarantined sibling holds the old commit's fingerprint, so it is no source.
+  const inPlace = leased(await acquire(m, fixture.clone, next, "stale:in-place"));
+  assert.equal(inPlace.lease.path, slotAt(m, 1).path);
+  assert.deepEqual(sources, []);
+  assert.equal((await m.release(inPlace.lease)).outcome, "released");
+
+  // Once it matches the new commit exactly, a stale slot takes it.
+  const nextFingerprint = await fingerprintAt(fixture.clone, claim, next);
+  setDeps(slotAt(m, 1).id, "c".repeat(64), 1);
+  setDeps(quarantined.id, nextFingerprint, 1);
+  const seeded = leased(await acquire(m, fixture.clone, next, "stale:seeded"));
+  assert.equal(seeded.lease.path, slotAt(m, 1).path);
+  assert.deepEqual(sources, [join(quarantined.path, "deps"), join(quarantined.path, "more")]);
+  assert.equal(slotAt(m, 2).state, "quarantined");
+  await m.release(seeded.lease);
+});
+
+test("a failed clone ends the hold, and the source is still quarantined", async () => {
+  const fixture = repository("mission-seed-quarantined-failed-");
+  const m = manager(claimWith(SEED), {
+    cloneTree: async () => ({ outcome: "failed", reason: "this disk cannot clone" }),
+  }, 2);
+  const source = await quarantinedPool(m, fixture, 1, "failed");
+  const fields = quarantineFields(m, source.id);
+
+  const target = leased(await acquire(m, fixture.clone, fixture.sha, "failed:target"));
+  const seed = m.store.slotTimings(target.lease.slotId).seed!;
+  assert.deepEqual([seed.outcome, seed.sourceOrdinal, seed.sourceQuarantined], ["abandoned", source.ordinal, true]);
+  assert.equal(runCount(target.lease.path), 1, "the steps ran");
+  assert.deepEqual(quarantineFields(m, source.id), fields);
+  assert.doesNotMatch(
+    JSON.stringify(await m.repairSlot({ slotId: source.id })),
+    /a seed is copying from this slot/,
+    "the hold ended with the seed",
+  );
+  await m.release(target.lease);
+});
+
+test("a cold check tree can seed from a quarantined sibling too", async () => {
+  const fixture = repository("mission-seed-quarantined-disposable-");
+  const sources: string[] = [];
+  const m = manager(claimWith(SEED), { cloneTree: recordingClone(sources) }, 2);
+  const source = await quarantinedPool(m, fixture, 1, "disposable");
+  const tree = mkdtempSync(join(tmpdir(), "mission-seed-disposable-"));
+  rmrf(tree);
+  gitIn(fixture.clone, "worktree", "add", "-q", "--detach", tree, fixture.sha);
+  const claimed = await m.claimDisposableTree({
+    repositoryPath: fixture.clone,
+    path: tree,
+    baseSha: fixture.sha,
+    owner: { kind: "check", key: "disposable:check" },
+  });
+  assert.equal(claimed.kind, "succeeded", JSON.stringify(claimed));
+  assert.deepEqual(sources, [join(source.path, "deps"), join(source.path, "more")]);
+  assert.equal(slotAt(m, 1).state, "quarantined");
 });

@@ -230,13 +230,15 @@ function historyEntry(row: Record<string, unknown>): WorktreeSlotHistoryEntry {
 
 function timingView(row: Record<string, unknown> | undefined): WorktreeTimingView | null {
   if (!row) return null;
-  const source = parsedMeta(nullableString(row.meta))?.sourceOrdinal;
+  const meta = parsedMeta(nullableString(row.meta));
+  const source = meta?.sourceOrdinal;
   return {
     at: Number(row.at),
     outcome: nullableString(row.outcome),
     durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
     reason: nullableString(row.reason),
     sourceOrdinal: typeof source === "number" ? source : null,
+    sourceQuarantined: meta?.sourceQuarantined === true,
   };
 }
 
