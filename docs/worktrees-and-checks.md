@@ -122,8 +122,10 @@ gone, a reset or verification that failed, and a pool identity or marker that is
 malformed or belongs to another pool. A process inside an available slot is not a fault: the slot
 stays available, acquisition passes over it, and its card lists the process. A reservation that a
 read refused before anything in the slot changed - its occupancy became unknown, or a process
-entered it, before the reset - goes back to available as it was. One whose mutation outcome is
-unknown is still quarantined.
+entered it, before the reset - goes back to available as it was, and the acquisition reports it
+as not acquired, so a task falls back as it does for any refusal. One whose mutation outcome is
+unknown is still quarantined, and so is a reservation that could not be handed back; only those
+report an unknown outcome.
 
 Each quarantine, each recovery, each automatic-recovery refusal and each slot left unchanged
 after a failed read writes one `[worktrees]` line to the daemon's output, naming the pool and

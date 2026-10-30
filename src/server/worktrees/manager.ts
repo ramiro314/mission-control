@@ -908,13 +908,14 @@ export class WorktreeManager {
    * A reservation taken from an available slot was refused before anything in the slot
    * changed, so the slot goes back to available as it was found (`prior`), with `failure`
    * recorded when a read was what refused it. Only if that cannot be recorded is it quarantined.
+   * True when the slot is available again, false when it was quarantined instead.
    */
   private returnReservation(
     reservation: WorktreeSlotRow,
     prior: WorktreeSlotRow,
     reason: string,
     failure: { reason: string; detail: string | null } | null,
-  ): void {
+  ): boolean {
     const text = failure && bounded(observationFailureText(failure.reason, failure.detail));
     let returned: WorktreeSlotRow | null = null;
     try {
@@ -931,12 +932,13 @@ export class WorktreeManager {
     }
     if (!returned) {
       this.quarantineReservation(reservation, reason, failure?.detail ?? null);
-      return;
+      return false;
     }
     this.publish();
     if (failure && text && !sameObservationFailure(splitObservationFailure(prior.lastError).failure, failure.reason)) {
       console.warn(oneLine(`[worktrees] left ${this.slotLabel(prior)} available after a failed read: ${text}`));
     }
+    return true;
   }
 
   /**
@@ -1182,29 +1184,30 @@ export class WorktreeManager {
   /**
    * Null when no process entered a reserved, formerly available slot (`prior`, as it was
    * reserved). Otherwise nothing in the slot has changed yet, so the reservation is undone and
-   * the slot is available again, recording the failed read when that is what refused it, and
-   * the reason is returned. `before` names what the reservation was about to do.
+   * the slot is available again, recording the failed read when that is what refused it. The
+   * reason is returned with `returned`: true when the slot is provably available again, so the
+   * caller knows nothing was acquired; false when it had to be quarantined instead, an outcome
+   * the caller cannot vouch for. `before` names what the reservation was about to do.
    */
   private async enteredSinceReservation(
     reservation: WorktreeSlotRow,
     prior: WorktreeSlotRow,
     before: string,
-  ): Promise<string | null> {
+  ): Promise<{ reason: string; returned: boolean } | null> {
     const fresh = (await this.occupancy([reservation.path])).get(reservation.path);
     if (!fresh || fresh.status === "unknown") {
       const detail = fresh?.status === "unknown" ? fresh.reason : "slot occupancy was not observed";
-      this.returnReservation(
+      const returned = this.returnReservation(
         reservation,
         prior,
         `slot occupancy became unknown before ${before}`,
         { reason: OBSERVATION_FAILURE.occupancy, detail },
       );
-      return detail;
+      return { reason: detail, returned };
     }
     if (fresh.occupants.length > 0) {
       const reason = `a process entered the available slot before ${before}`;
-      this.returnReservation(reservation, prior, reason, null);
-      return reason;
+      return { reason, returned: this.returnReservation(reservation, prior, reason, null) };
     }
     return null;
   }
@@ -1334,7 +1337,9 @@ export class WorktreeManager {
       try {
         if (!created && prior) {
           const entered = await this.enteredSinceReservation(reservation, prior, "reset");
-          if (entered) return { outcome: "outcomeUnknown", reason: entered };
+          // Handed back untouched, nothing was acquired, so the caller may fall back as for any
+          // refusal. Only a reservation that had to be quarantined leaves the outcome in doubt.
+          if (entered) return { outcome: entered.returned ? "notAcquired" : "outcomeUnknown", reason: entered.reason };
         }
 
         const mutation = created
@@ -2063,7 +2068,7 @@ export class WorktreeManager {
   }): Promise<WarmSlotResult> {
     const { reservation, pool, identity, claim, say } = input;
     const entered = await this.enteredSinceReservation(reservation, input.prior, "it was warmed");
-    if (entered) return { outcome: "failed", reason: entered };
+    if (entered) return { outcome: entered.returned ? "skipped" : "failed", reason: entered.reason };
     let leased: WorktreeSlotRow | null;
     try {
       leased = this.store.finalizeLease(reservation.id, reservation.version, input.head, this.deps.now());

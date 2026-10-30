@@ -885,7 +885,7 @@ test("exceptions after reservation return outcomeUnknown and leave a reconcilabl
   assert.equal(reserveManager.store.slots().some((slot) => slot.state === "provisioning"), true);
 });
 
-test("a reused slot refused before its reset goes back to available; an unknown reset outcome is quarantined", async () => {
+test("a reused slot refused before its reset goes back to available, not acquired; an unknown reset outcome is quarantined", async () => {
   const cases: Array<{ name: string; observed: WorktreeOccupancy; reason: string; lastError: string | null }> = [
     {
       name: "unknown",
@@ -929,8 +929,9 @@ test("a reused slot refused before its reset goes back to available; an unknown 
     assert.equal((await m.release(first)).outcome, "released");
     const before = m.store.slot(first.slotId)!;
     reads = 0;
+    // Not `outcomeUnknown`: nothing was acquired, so a task falls back as for any refusal.
     assert.deepEqual(await acquire(m, clone, sha, `task-fresh-${entry.name}-2`), {
-      outcome: "outcomeUnknown",
+      outcome: "notAcquired",
       reason: entry.reason,
     });
     assert.equal(reads, 2, `${entry.name}: the fresh pre-reset occupancy read was reached`);
@@ -943,6 +944,30 @@ test("a reused slot refused before its reset goes back to available; an unknown 
     assert.equal(after.activeOwnerKey, null);
     assert.equal(after.requestedHeadSha, before.requestedHeadSha);
     assert.equal(after.lastReleasedLeaseId, first.leaseId, `${entry.name}: the last owner is kept`);
+    db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;");
+  }
+
+  // A reservation that cannot be handed back is quarantined, and only then is the outcome unknown.
+  {
+    const { clone, sha } = repository("mission-native-fresh-unreturned-");
+    let reads: number | null = null;
+    const m = manager({
+      resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+      occupancy: async (paths) => reads !== null && ++reads === 2
+        ? new Map(paths.map((path) => [path, { status: "unknown" as const, reason: "lsof timed out" }]))
+        : emptyOccupancy(paths),
+    });
+    const first = lease(await acquire(m, clone, sha, "task-fresh-unreturned-1"));
+    assert.equal((await m.release(first)).outcome, "released");
+    m.store.releaseReservation = () => null;
+    reads = 0;
+    assert.deepEqual(await acquire(m, clone, sha, "task-fresh-unreturned-2"), {
+      outcome: "outcomeUnknown",
+      reason: "lsof timed out",
+    });
+    assert.equal(m.store.slot(first.slotId)?.state, "quarantined");
+    assert.equal(m.store.slot(first.slotId)?.quarantineReason, "slot occupancy became unknown before reset");
+    assertNoUngrantedOwner(m);
     db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools;");
   }
 
