@@ -289,6 +289,8 @@ export interface ProcessSnapshot {
   processes: Proc[];
   /** Non-null when either system-wide ps read did not produce a complete answer. */
   unknownReason: string | null;
+  /** The listing was too large to buffer, which asking again cannot change. */
+  overflowed?: boolean;
   /** Non-zombie PIDs owned by the daemon's effective user, whose cwd it can inspect. */
   cwdScopePids: number[];
   /** Completed ps helpers that may appear in their own system-wide snapshot. */
@@ -325,6 +327,7 @@ export async function listProcessesSnapshot(options?: ReadOptions): Promise<Proc
       : effectiveUid === null
         ? "process listing failed: effective user identity is unavailable"
         : null,
+    overflowed: table.failure?.overflowed === true,
     cwdScopePids,
     completedCollectorPids: table.collectorPids,
   };

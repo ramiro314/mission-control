@@ -259,3 +259,11 @@ test("a cwd listing killed at its timeout names the timeout, never `exit 1`", as
   const snapshot = await readProcCwdsSnapshot([11]);
   assert.equal(snapshot.unknownReason, "cwd listing failed: the cwd listing timed out after 60 s");
 });
+
+test("the discovery snapshots mark an overflowed listing so a caller does not retry it", async (t) => {
+  const overflow = { ...stubRun({ stdout: "", stderr: "stdout maxBuffer length exceeded", code: 1 }), overflowed: true };
+  t.mock.method(posixProcessInspector, "listProcesses", async () => ({ rows: [], failure: overflow, collectorPids: [] }));
+  t.mock.method(posixProcessInspector, "readCwds", async () => ({ cwds: new Map(), unreadable: new Set(), result: overflow }));
+  assert.equal((await listProcessesSnapshot()).overflowed, true);
+  assert.equal((await readProcCwdsSnapshot([11])).overflowed, true);
+});

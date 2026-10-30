@@ -16,6 +16,8 @@ export interface ProcCwdSnapshot {
    * from `unknownReason`, which a vanished PID's ordinary "exit 1" also sets.
    */
   unanswered?: boolean;
+  /** The listing was too large to buffer, which asking again cannot change. */
+  overflowed?: boolean;
 }
 
 /**
@@ -50,7 +52,7 @@ export async function readProcCwdsSnapshot(pids: number[], options?: ReadOptions
     res.outcomeUnknown || res.overflowed || (res.code !== 0 && cwds.size === 0)
       ? `cwd listing failed: ${failure}`
       : null;
-  return { cwds, unreadable, unknownReason: unknown, unanswered: res.outcomeUnknown };
+  return { cwds, unreadable, unknownReason: unknown, unanswered: res.outcomeUnknown, overflowed: res.overflowed };
 }
 
 export async function readProcCwds(pids: number[]): Promise<Map<number, string>> {

@@ -90,7 +90,8 @@ process occupancy cannot be proved empty. Startup reconciliation uses the same f
 
 An observation read gets one retry before it counts as unknown. The process and cwd listings
 behind occupancy and an owner lookup that throws each try once more in the same pass, 2 seconds
-later and with double the timeout. So do `git worktree list` and each Git read of a slot
+later and with double the timeout. A listing too large to buffer is not retried, because asking
+again cannot make it smaller. So do `git worktree list` and each Git read of a slot
 inspection when they timed out or were killed; a Git that exited with its own error is answered
 at once, because it would say the same again. A PID that an otherwise healthy cwd listing
 omitted is first re-read on its own, one at a time and stopping at the first re-read that does

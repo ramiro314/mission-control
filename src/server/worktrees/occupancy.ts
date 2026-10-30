@@ -56,10 +56,14 @@ const DEFAULT_DEPS: WorktreeOccupancyDeps = {
   pause: pauseFor,
 };
 
-/** Every in-scope process with its resolved cwd, or why they could not all be resolved. */
+/**
+ * Every in-scope process with its resolved cwd, or why they could not all be resolved.
+ * `overflowed` marks a listing too large to buffer: the retry doubles the timeout, not the
+ * buffer, so asking again would only report the same overflow 2 s later.
+ */
 type Observation =
   | { ok: true; processes: Proc[]; cwds: ReadonlyMap<number, string> }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; overflowed?: boolean };
 
 async function physical(path: string): Promise<string> {
   try {
@@ -118,7 +122,7 @@ export async function inspectWorktreeOccupancy(
   }
 
   let observed = await observe(d, {});
-  if (!observed.ok) {
+  if (!observed.ok && !observed.overflowed) {
     await d.pause(OBSERVATION_RETRY_DELAY_MS);
     const retried = await observe(d, { timeoutScale: OBSERVATION_RETRY_TIMEOUT_SCALE });
     observed = retried.ok ? retried : { ok: false, reason: bothAttempts(observed.reason, retried.reason) };
@@ -169,7 +173,9 @@ async function observe(d: WorktreeOccupancyDeps, options: ReadOptions): Promise<
   } catch (error) {
     return { ok: false, reason: `process listing failed: ${String(error)}` };
   }
-  if (snapshot.unknownReason) return { ok: false, reason: snapshot.unknownReason };
+  if (snapshot.unknownReason) {
+    return { ok: false, reason: snapshot.unknownReason, overflowed: snapshot.overflowed === true };
+  }
 
   // Mission Control is a per-user daemon. macOS exposes other users' processes through ps
   // while withholding their cwd from an unprivileged lsof, so they are outside the process
@@ -237,7 +243,9 @@ async function observe(d: WorktreeOccupancyDeps, options: ReadOptions): Promise<
     } catch (error) {
       return { ok: false, reason: `process disappearance check failed: ${String(error)}` };
     }
-    if (confirmation.unknownReason) return { ok: false, reason: confirmation.unknownReason };
+    if (confirmation.unknownReason) {
+      return { ok: false, reason: confirmation.unknownReason, overflowed: confirmation.overflowed === true };
+    }
     const confirmed = new Map(confirmation.processes.map((process) => [process.pid, process]));
     // Still alive means still in scope, by the same rule the first snapshot used. A short-lived
     // process caught mid-exit - its cwd already released, so the cwd reader omits it - is
@@ -251,7 +259,7 @@ async function observe(d: WorktreeOccupancyDeps, options: ReadOptions): Promise<
     });
   }
   if (unresolved.length > 0) {
-    if (cwdFailure) return { ok: false, reason: cwdFailure };
+    if (cwdFailure) return { ok: false, reason: cwdFailure, overflowed: cwdSnapshot.overflowed === true };
     const unresolvedPids = unresolved.map((process) => process.pid);
     const shown = unresolvedPids.slice(0, 8).join(", ");
     const remainder = unresolvedPids.length > 8 ? ` and ${unresolvedPids.length - 8} more` : "";

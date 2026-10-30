@@ -599,3 +599,41 @@ test("the re-reads stop at the first one that did not answer, so an attempt spen
     reason: "cwd listing omitted 2 ps-listed PIDs: 20, 30, and again on retry",
   });
 });
+
+test("a listing too large to buffer is not retried, because asking again cannot shrink it", async () => {
+  const { one } = fixture();
+  const ps = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [],
+      unknownReason: "process listing failed: the process listing was too large to buffer",
+      overflowed: true,
+      cwdScopePids: [],
+      completedCollectorPids: [],
+    }),
+    pause: async () => assert.fail("an overflow is not retried"),
+  });
+  assert.deepEqual(ps.get(one), {
+    status: "unknown",
+    reason: "process listing failed: the process listing was too large to buffer",
+  });
+
+  let cwdReads = 0;
+  const lsof = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [process(10)],
+      unknownReason: null,
+      cwdScopePids: [10],
+      completedCollectorPids: [],
+    }),
+    readCwds: async () => {
+      cwdReads++;
+      return { cwds: new Map(), unknownReason: "cwd listing failed: the cwd listing was too large to buffer", overflowed: true };
+    },
+    pause: async () => assert.fail("an overflow is not retried"),
+  });
+  assert.equal(cwdReads, 1);
+  assert.deepEqual(lsof.get(one), {
+    status: "unknown",
+    reason: "cwd listing failed: the cwd listing was too large to buffer",
+  });
+});
