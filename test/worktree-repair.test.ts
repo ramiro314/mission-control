@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { after, afterEach, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
@@ -1198,6 +1198,7 @@ test("Forget refuses an occupant, a live or unknown owner and a running claim, i
   assert.equal((await forgetActions(service, slot.slotId)).includes("forget"), false);
   ownerReferenced = async () => { throw new Error("tasks table is unreadable"); };
   await refuses("could not be read", /^domain ownership is unknown/);
+  assert.equal((await forgetActions(service, slot.slotId)).includes("forget"), false, "an unknown owner is not a gone one");
   ownerReferenced = async () => false;
 
   const claim = m.claims.register(slot.slotId, { kind: "task", key: "claiming" }, Date.now())!;
@@ -1364,6 +1365,8 @@ test("a listing that fails blocks Forget's preview and its execute, because a re
   const preview = await service.preview({ action: "forget", slotId: slot.slotId });
   assert.equal(preview.allowed, false);
   assert.ok(preview.blockers.some((line) => line.includes("git worktree list timed out after 30 s")), preview.blockers.join("; "));
+  assert.ok(preview.consequences.includes(`What stands at ${slot.path} could not be read, so nothing runs.`), preview.consequences.join("\n"));
+  assert.equal(preview.consequences.some((line) => line.includes("already gone")), false, "the folder is right there");
   assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), { outcome: "outcomeUnknown", reason: "git worktree list timed out after 30 s" });
   assert.equal(existsSync(slot.path), true);
 });
@@ -1502,4 +1505,94 @@ test("Forget answers for the slot it was given: one that is gone, moved on, or c
   assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), { outcome: "refused", reason: "slot is pruning, not quarantined" });
   assert.equal(existsSync(slot.path), true);
   assert.equal(m.store.slot(slot.slotId)?.state, "pruning");
+});
+
+test("a preview whose pool identity cannot be proven is blocked, and does not guess at the folder", async () => {
+  const { clone, sha } = repository("mission-forget-identity-");
+  const m = managerWith();
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-identity", INTERRUPTED_PRUNE);
+  renameSync(clone, `${clone}-moved`);
+
+  assert.equal((await forgetActions(service, slot.slotId)).includes("forget"), false);
+  const preview = await service.preview({ action: "forget", slotId: slot.slotId });
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes("The pool's repository identity cannot be proven."), preview.blockers.join("; "));
+  assert.ok(preview.consequences.includes(`What stands at ${slot.path} could not be read, so nothing runs.`), preview.consequences.join("\n"));
+  assert.equal((await m.forgetSlot({ slotId: slot.slotId })).outcome, "refused");
+  assert.equal(existsSync(slot.path), true);
+});
+
+test("a slot that is not quarantined is never offered Forget, even with its folder gone", async () => {
+  const { clone, sha } = repository("mission-forget-available-");
+  const m = managerWith();
+  const service = operationsFor(m);
+  const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key: "task-forget-available" } });
+  const held = (acquired as { lease: NativeWorktreeLease }).lease;
+  assert.equal((await m.release(held, { ownerAuthorized: true })).outcome, "released");
+  rmSync(held.path, { recursive: true });
+
+  const ordinal = m.store.slot(held.slotId)!.ordinal;
+  assert.equal((await forgetActions(service, held.slotId)).includes("forget"), false);
+  const preview = await service.preview({ action: "forget", slotId: held.slotId });
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes(`Slot ${ordinal} is available, not quarantined.`), preview.blockers.join("; "));
+  await assert.rejects(service.execute(preview.token, [...FORGET_ACK]), /not quarantined/);
+  assert.equal(m.store.slot(held.slotId)?.state, "available");
+});
+
+test("a bare registration is the repository itself, so Forget never answers for it", async () => {
+  const { clone, sha } = repository("mission-forget-bare-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-forget-bare", INTERRUPTED_PRUNE);
+  const cause = (path: string) => forgetCause({
+    slotPath: path,
+    quarantineReason: INTERRUPTED_PRUNE,
+    commonDirectory: slot.common,
+    registration: registration(path, { bare: true }),
+    inspection: null,
+  });
+  assert.equal(await cause(slot.path), null, "a prune reason does not reach it");
+  assert.equal(await cause(`${slot.path}-gone`), null, "nor does a folder that is gone");
+});
+
+test("a registration Git still lists after its removal keeps the row, and a later Forget finishes", async () => {
+  const { clone, sha } = repository("mission-forget-survives-");
+  let ignoreRemove = true;
+  class IgnoredRemove extends NativeWorktreeGit {
+    override async remove(...args: Parameters<NativeWorktreeGit["remove"]>) {
+      if (ignoreRemove) return { ok: true as const, value: undefined };
+      return super.remove(...args);
+    }
+  }
+  const m = managerWith(new IgnoredRemove());
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-survives", INTERRUPTED_PRUNE);
+  const row = m.store.slot(slot.slotId)!;
+
+  assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), {
+    outcome: "outcomeUnknown", reason: "Git still lists a registration for the slot's path",
+  });
+  assert.deepEqual(m.store.slot(slot.slotId), row);
+  assert.equal(registered(clone, slot.path), true);
+
+  ignoreRemove = false;
+  await service.execute((await service.preview({ action: "forget", slotId: slot.slotId })).token, [...FORGET_ACK]);
+  assert.equal(registered(clone, slot.path), false);
+  assert.equal(m.store.slot(slot.slotId), null);
+});
+
+test("Forget removes every registration that names the path, not only the first", async () => {
+  const { clone, sha } = repository("mission-forget-several-");
+  const m = managerWith();
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-several", REGISTRATION_OR_IDENTITY.missingRegistration);
+  cpSync(slot.administrative, `${slot.administrative}-twin`, { recursive: true });
+  rmSync(slot.path, { recursive: true });
+  const naming = () => gitIn(clone, "worktree", "list", "--porcelain").split("\n")
+    .filter((line) => line === `worktree ${slot.path}`).length;
+  assert.equal(naming(), 2);
+
+  await service.execute((await service.preview({ action: "forget", slotId: slot.slotId })).token, [...FORGET_ACK]);
+  assert.equal(naming(), 0);
+  assert.equal(m.store.slot(slot.slotId), null);
 });

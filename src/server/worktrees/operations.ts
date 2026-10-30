@@ -1590,7 +1590,8 @@ export class WorktreeOperationsService {
     if (facts?.cause) consequences.push(`Repair has no answer here: ${facts.cause}.`);
     if (facts?.directory) consequences.push(`Deletes the folder ${path} and every file in it, without following symlinks.`);
     else if (facts?.present) consequences.push(`Removes what stands at ${path} without following it. It is not a folder.`);
-    else consequences.push(`The folder ${path} is already gone.`);
+    else if (facts) consequences.push(`The folder ${path} is already gone.`);
+    else consequences.push(`What stands at ${path} could not be read, so nothing runs.`);
     if (tree && tree.work.length > 0) consequences.push(`Discards the slot's work: ${tree.work.join("; ")}.`);
     if (tree && tree.files.length > 0) {
       consequences.push(`Files it deletes include: ${tree.files.join(", ")}${tree.moreFiles ? ", and more" : ""}.`);
