@@ -104,6 +104,14 @@ export function registrationRepairQuarantine(reason: string | null): boolean {
   return reasonIn(REGISTRATION_REPAIR_REASONS, reason);
 }
 
+/** A prune that stopped before its slot was gone. Forget is the way out of either. */
+export const INTERRUPTED_PRUNE = "startup found an interrupted prune with filesystem state still present";
+export const UNVERIFIED_REMOVAL = "worktree removal could not be verified";
+
+export function interruptedPruneQuarantine(reason: string | null): boolean {
+  return reason === INTERRUPTED_PRUNE || reason === UNVERIFIED_REMOVAL;
+}
+
 /** A dirty available slot, and the reason older builds gave it before occupied was split off. */
 export const AVAILABLE_SLOT_DIRTY = "available slot is dirty";
 const AVAILABLE_SLOT_OCCUPIED_OR_DIRTY = "available slot is occupied or dirty";

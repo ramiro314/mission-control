@@ -675,6 +675,17 @@ export class WorktreeStore {
     return Number(changed.changes) === 1;
   }
 
+  /**
+   * Delete a quarantined slot's row for good, once Forget has removed its folder and registration.
+   * The pool's high-water mark is left alone, so the ordinal is never reused.
+   */
+  forget(slotId: string, version: number): boolean {
+    const changed = this.db
+      .prepare(`DELETE FROM worktree_slots WHERE id = ? AND state = 'quarantined' AND version = ?`)
+      .run(slotId, version);
+    return Number(changed.changes) === 1;
+  }
+
   recordReconciliation(poolId: string, now: number, error: string | null): void {
     this.db
       .prepare(
