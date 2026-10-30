@@ -785,14 +785,15 @@ test("a slot card's History lists what happened to the slot, newest first, and p
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(toggle).toHaveAccessibleDescription("Hide this slot's history");
 
-  await expect(entries).toHaveCount(4);
+  await expect(entries).toHaveCount(5);
   await expect(entries.nth(0)).toContainText("returning → available");
   await expect(entries.nth(0)).toContainText("returned to the pool");
   await expect(entries.nth(0)).toContainText("by its owner");
   await expect(entries.nth(1)).toContainText("leased → returning");
-  await expect(entries.nth(2)).toContainText("provisioning → leased");
-  await expect(entries.nth(2)).toContainText("lease granted to manual:");
-  await expect(entries.nth(3)).toContainText("new → provisioning");
+  await expect(entries.nth(2)).toContainText("Provisioned: new slot in");
+  await expect(entries.nth(3)).toContainText("provisioning → leased");
+  await expect(entries.nth(3)).toContainText("lease granted to manual:");
+  await expect(entries.nth(4)).toContainText("new → provisioning");
 
   // A real fault, from a real pass: the open list follows the slot without being reopened.
   writeFileSync(join(lease.path, "stray.txt"), "left behind in an available slot\n");
@@ -801,7 +802,7 @@ test("a slot card's History lists what happened to the slot, newest first, and p
   await preview.getByRole("button", { name: "Execute" }).click();
   await expect(preview).toHaveCount(0);
   await expect(slot.getByText("quarantined", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
-  await expect(entries).toHaveCount(5);
+  await expect(entries).toHaveCount(6);
   await expect(entries.nth(0)).toContainText("available → quarantined");
   await expect(entries.nth(0)).toContainText("available slot is dirty");
   await expect(entries.nth(0)).toContainText("automatic");
@@ -824,8 +825,8 @@ test("a slot card's History lists what happened to the slot, newest first, and p
   await expect(history.getByRole("button", { name: "Show older" }))
     .toHaveAccessibleDescription("Load the next older entries of this slot's history");
   await history.getByRole("button", { name: "Show older" }).click();
-  await expect(entries).toHaveCount(65);
-  await expect(entries.nth(64)).toContainText("new → provisioning");
+  await expect(entries).toHaveCount(66);
+  await expect(entries.nth(65)).toContainText("new → provisioning");
   await expect(history.getByRole("button", { name: "Show older" })).toHaveCount(0);
 });
 
@@ -860,18 +861,18 @@ test("an open History picks up a failed read as it starts and as it clears", asy
     };
 
     await history.getByRole("button", { name: "History" }).click();
-    await expect(entries).toHaveCount(2);
+    await expect(entries).toHaveCount(3);
 
     writeFileSync(dotGit, "not a gitdir pointer\n");
     await reconcile();
-    await expect(entries).toHaveCount(3, { timeout: EXECUTES_MS });
+    await expect(entries).toHaveCount(4, { timeout: EXECUTES_MS });
     await expect(entries.nth(0)).toContainText("Failed read");
     await expect(entries.nth(0)).toContainText("slot Git state is unknown");
     await expect(slot.getByText("leased", { exact: true })).toBeVisible();
 
     writeFileSync(dotGit, original);
     await reconcile();
-    await expect(entries).toHaveCount(4, { timeout: EXECUTES_MS });
+    await expect(entries).toHaveCount(5, { timeout: EXECUTES_MS });
     await expect(entries.nth(0)).toContainText("Failed read cleared");
   } finally {
     writeFileSync(dotGit, original);
@@ -915,12 +916,100 @@ test("a closed History reads nothing, and a Return from Settings is recorded as 
   const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
   const entries = history.getByRole("listitem");
   await history.getByRole("button", { name: "History" }).click();
-  await expect(entries).toHaveCount(4);
+  await expect(entries).toHaveCount(5);
   expect(reads).toBe(1);
   await expect(entries.nth(0)).toContainText("returning → available");
   await expect(entries.nth(0)).toContainText("by the operator");
   await expect(entries.nth(1)).toContainText("leased → returning");
   await expect(entries.nth(1)).toContainText("by the operator");
+});
+
+/**
+ * The timings a card and its pool row show, from a real claim and a real new slot. The rows that
+ * prove a seed hit and the ten-slot window are written directly: an idle sibling is leased in
+ * preference to a new slot, so a real hit is a race, and copy-on-write needs a volume that can
+ * clone. `test/worktree-history.test.ts` drives a real seed, and proves the summary's arithmetic.
+ */
+test("a slot card shows its last timings and seed outcome, and the pool row its median and hit rate", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const firstLease = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "timings before a claim" },
+  });
+  expect(firstLease.status()).toBe(201);
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const saved = await dashboard.request.put(`${daemon.baseURL}/api/worktrees/config`, {
+    data: {
+      repositories: {
+        [inventory.repositories.find((pool) => pool.name === "demo-repo")!.commonDirectory]: {
+          claim: { steps: [{ argv: [process.execPath, "-e", "process.exit(0)"], env: [] }], timeoutMinutes: 5, fingerprintPaths: [] },
+        },
+      },
+    },
+  });
+  expect(saved.status()).toBe(200);
+
+  // The first slot is still held, so this lease makes a new one and runs the claim in it.
+  const accepted = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "timings" },
+  });
+  expect(accepted.status()).toBe(202);
+  const { requestId } = await accepted.json() as { requestId: string };
+  let leasePath = "";
+  await expect.poll(async () => {
+    const view = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees/manual/requests/${requestId}`)).json() as
+      { state: string; lease?: { path: string } };
+    leasePath = view.lease?.path ?? "";
+    return view.state;
+  }, { timeout: EXECUTES_MS }).toBe("granted");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const slot = repo.locator(".wt-slot", { hasText: leasePath });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const timings = slot.getByLabel(/^Slot \d+ timings$/);
+  await expect(timings.getByRole("definition").nth(0)).toHaveText(/^new slot in \d+/);
+  await expect(timings.getByRole("definition").nth(1)).toHaveText(/^succeeded in \d+/);
+  await expect(timings.getByRole("definition").nth(2)).toHaveText("none: the pool's claim configures no seed");
+  await expect(repo.getByText(/^Median new slot \d+.* · seed hit rate 0% \(0 of last 2 new slots\)$/)).toBeVisible();
+
+  const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+  await history.getByRole("button", { name: "History" }).click();
+  const entries = history.getByRole("listitem");
+  await expect(entries.nth(0)).toContainText(/Provisioned: new slot in \d+/);
+  await expect(entries.nth(0)).toContainText("by its owner");
+  await expect(entries.filter({ hasText: /Claim: succeeded in \d+/ })).toHaveCount(1);
+  const noSeed = entries.filter({ hasText: "Seed: none" });
+  await expect(noSeed).toContainText("the pool's claim configures no seed");
+
+  withDaemonDb(daemon, (db) => {
+    const row = db.prepare(`SELECT id, pool_id, ordinal FROM worktree_slots WHERE path = ?`).get(leasePath) as
+      { id: string; pool_id: string; ordinal: number };
+    const insert = db.prepare(
+      `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind, outcome, actor, duration_ms, meta)
+       VALUES (?, ?, ?, ?, ?, ?, 'owner', ?, ?)`,
+    );
+    const now = Date.now();
+    for (let index = 1; index <= 10; index += 1) {
+      const slotId = `written-slot-${index}`;
+      if (index <= 3) insert.run(row.pool_id, slotId, 50 + index, now, "seed", "placed", 1_000, null);
+      insert.run(row.pool_id, slotId, 50 + index, now, "provisioning", "new", index * 60_000, null);
+    }
+    insert.run(row.pool_id, row.id, row.ordinal, now, "seed", "placed", 12_000, JSON.stringify({ sourceOrdinal: 7 }));
+  });
+  await dashboard.reload();
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  await expect(timings.getByRole("definition").nth(2)).toHaveText("from slot 7 in 12s");
+  await expect(repo.getByText("Median new slot 5m 30s · seed hit rate 30% (3 of last 10 new slots)")).toBeVisible();
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries.nth(0)).toContainText("Seed: from slot 7 in 12s");
+  await slot.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "26-slot-timings");
+  await repo.getByText("Median new slot 5m 30s").scrollIntoViewIfNeeded();
+  await shoot(dashboard, "27-pool-timings");
 });
 
 /**
@@ -1000,9 +1089,9 @@ test("a refresh that lands during Show older leaves every row in the list once, 
   await held.refresh();
   await held.answerOlder();
 
-  await expect(held.entries).toHaveCount(64);
+  await expect(held.entries).toHaveCount(65);
   expect(await held.pagedRows()).toEqual(Array.from({ length: 60 }, (_, index) => 60 - index));
-  await expect(held.entries.nth(63)).toContainText("new → provisioning");
+  await expect(held.entries.nth(64)).toContainText("new → provisioning");
   await expect(held.older).toHaveCount(0);
 });
 
