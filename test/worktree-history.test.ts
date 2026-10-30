@@ -1017,6 +1017,27 @@ test("a partly done operation records its outcome and says which side of the sto
   assert.equal(operationRows(left!).length, 1);
 });
 
+test("an unexpected error records failed, never a refusal that left the slot as it was", async () => {
+  const { clone, sha } = repository("mission-history-op-crash-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: slotId! } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  m.removeSlot = async () => { throw new Error("the disk went away"); };
+  const quiet = mock.method(console, "error", () => {});
+  try {
+    const { operation } = operations.submit(preview.token, []);
+    await operations.idle();
+    assert.equal((await operations.inventory()).operations.find((entry) => entry.id === operation.id)?.state, "failed");
+  } finally {
+    quiet.mock.restore();
+  }
+  assert.deepEqual(operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason]), [
+    ["destroy", "failed", "operator", "the disk went away"],
+  ]);
+});
+
 test("a Prune that stops partway is partly done on both sides of the stop", async () => {
   const { clone, sha } = repository("mission-history-op-partial-prune-");
   const m = realManager();
@@ -1185,6 +1206,65 @@ test("an automatic outcome left unknown records failed once per reason, and one 
   } finally {
     warned.mock.restore();
   }
+});
+
+test("a slot that left its quarantine forgets its failure, so the same reason later is a new entry", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-forget-");
+  const m = realManager();
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const quarantine = () => assert.ok(
+    m.store.quarantine(slotId!, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+  );
+  const reason = "git checkout timed out after 60 s";
+  const recover = m.recoverSlot.bind(m);
+  const failing: WorktreeManager["recoverSlot"] = async () => {
+    quarantine();
+    return { outcome: "outcomeUnknown", reason };
+  };
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    quarantine();
+    m.recoverSlot = failing;
+    await m.recoverQuarantines();
+    assert.equal(operationRows(slotId!).length, 1);
+
+    // An operator's Recover, outside any pass, so only the next pass can notice it left.
+    assert.equal((await recover({ slotId: slotId!, allowDirty: false, automatic: false })).outcome, "recovered");
+    await m.recoverQuarantines();
+
+    quarantine();
+    await m.recoverQuarantines();
+  } finally {
+    warned.mock.restore();
+  }
+  assert.deepEqual(operationRows(slotId!).map((row) => [row.outcome, row.reason]), [["failed", reason], ["failed", reason]]);
+});
+
+test("a history row lost during an automatic pass changes no recovery, and the pass goes on", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-lost-");
+  const m = realManager();
+  const slotIds = await idleSlots(m, clone, sha, 2);
+  for (const slotId of slotIds) {
+    assert.ok(m.store.quarantine(slotId, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId)!.version));
+  }
+  const record = m.store.recordOperation.bind(m.store);
+  let lost = 0;
+  const failing = mock.method(m.store, "recordOperation", (...args: Parameters<typeof record>) => {
+    if (lost > 0) return record(...args);
+    lost += 1;
+    throw new Error("database is busy");
+  });
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    await m.recoverQuarantines();
+    assert.match(String(warned.mock.calls[0]?.arguments[0]), /history entry was lost: Error: database is busy/);
+  } finally {
+    warned.mock.restore();
+    failing.mock.restore();
+  }
+  assert.equal(failing.mock.callCount(), 2, "the second slot was reached");
+  assert.deepEqual(slotIds.map((slotId) => m.store.slot(slotId)?.state), ["available", "available"]);
+  assert.deepEqual(slotIds.map((slotId) => operationRows(slotId).length).sort(), [0, 1]);
 });
 
 test("an automatic Repair left unknown names Repair", async () => {
