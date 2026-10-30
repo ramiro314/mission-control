@@ -795,6 +795,15 @@ test("a refresh adds what is newer to an open list and keeps its older rows and 
   assert.deepEqual(ids(newer), [12, 11, 10, 9, 8, 7, 6], "every row once, in order");
   assert.equal(newer.nextBefore, 6, "the cursor still continues below the oldest row shown");
 
+  const reaching = refreshedSlotHistory(shown, { entries: [12, 11, 10].map(entry), nextBefore: 10 });
+  assert.deepEqual(ids(reaching), [12, 11, 10, 9, 8, 7, 6], "a page ending on the newest row shown still reaches it");
+  assert.equal(reaching.nextBefore, 6);
+
+  const complete = { entries: shown.entries, nextBefore: null };
+  const stillComplete = refreshedSlotHistory(complete, { entries: [11, 10, 9].map(entry), nextBefore: 9 });
+  assert.deepEqual(ids(stillComplete), [11, 10, 9, 8, 7, 6]);
+  assert.equal(stillComplete.nextBefore, null, "every row is already shown, whatever cursor the new page carries");
+
   const same = refreshedSlotHistory(shown, { entries: [10, 9].map(entry), nextBefore: 9 });
   assert.deepEqual(same, shown);
 

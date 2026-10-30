@@ -21,6 +21,7 @@ import {
   WORKTREE_HISTORY_LIMITS,
 } from "../src/shared/worktrees.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
 
 const db = openDb();
 const store = new WorktreeStore(db);
@@ -493,15 +494,30 @@ test("reconcile finishing an interrupted return or a removal is recorded as auto
   assert.equal(trail(removing.slotId).at(-1), "pruning -> null (automatic)");
 });
 
-test("a Return run from Settings names the operator, whichever domain owns the lease", async () => {
+test("a Return run from Settings names the operator through the manual, task and check routes", async () => {
   const { clone, sha } = repository("mission-history-settings-");
   const m = realManager();
   const legacy = new LegacyTreehouseService(db);
+  const registry = new Registry();
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, undefined, undefined, m);
+  const checks = new CheckLeaseManager(db, { manager: m, legacy });
+  let taskResource: { path: string; leaseId: string } | null = null;
   const operations = new WorktreeOperationsService(m, {
     legacy,
-    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
-    checks: new CheckLeaseManager(db, { manager: m, legacy }),
-    checkRecovery: async () => "unknown",
+    // The view the preview reads is written here. The reclaim is TaskManager's own, which stops
+    // the task and reaches the release through `teardownWorktree`.
+    tasks: {
+      get: (id) => id === "task-settings" && taskResource
+        ? {
+            id,
+            title: "Settings task",
+            resources: [{ position: 0, repoRoot: clone, provider: "mission", branch: null, ...taskResource }],
+          }
+        : null,
+      reclaim: (id) => tasks.reclaim(id),
+    },
+    checks,
+    checkRecovery: async () => "empty",
     notifyChanged: () => {},
     diskBytes: async () => 0,
   });
@@ -511,27 +527,41 @@ test("a Return run from Settings names the operator, whichever domain owns the l
     if (acquired.outcome !== "acquired") throw new Error("not acquired");
     return acquired.lease;
   };
+  const returnFromSettings = async (slotId: string) => {
+    const preview = await operations.preview({ action: "return", slotId });
+    assert.equal(preview.allowed, true, preview.blockers.join("; "));
+    await operations.execute(preview.token, []);
+    assert.deepEqual(trail(slotId).slice(-2), [
+      "leased -> returning (operator)",
+      "returning -> available (operator)",
+    ]);
+  };
 
-  const manual = await take({ kind: "manual", key: "manual-settings" });
-  const preview = await operations.preview({ action: "return", slotId: manual.slotId });
-  assert.equal(preview.allowed, true, preview.blockers.join("; "));
-  await operations.execute(preview.token, []);
-  assert.deepEqual(trail(manual.slotId).slice(-2), [
-    "leased -> returning (operator)",
-    "returning -> available (operator)",
-  ]);
+  await returnFromSettings((await take({ kind: "manual", key: "manual-settings" })).slotId);
 
-  // A task's reclaim goes through its own domain before it reaches the manager.
-  const task = await take({ kind: "task", key: "task-settings" });
-  const reached = await m.runAsOperator(async () => {
-    await Promise.resolve();
-    return await m.release(task, { ownerAuthorized: true });
+  const task = await take({ kind: "task", key: "task-settings:0" });
+  taskResource = { path: task.path, leaseId: task.leaseId };
+  registry.upsertTask(mkTask({
+    id: "task-settings",
+    status: "failed",
+    repoRoot: clone,
+    worktreePath: task.path,
+    provider: "mission",
+    worktreeLeaseId: task.leaseId,
+  }));
+  await returnFromSettings(task.slotId);
+
+  const attemptId = "check-settings";
+  await checks.acquireForAttempt({
+    attemptId,
+    submissionId: "submission-settings",
+    nodeId: "node-settings",
+    repoRoot: clone,
+    headSha: sha,
   });
-  assert.equal(reached.outcome, "released");
-  assert.deepEqual(trail(task.slotId).slice(-2), [
-    "leased -> returning (operator)",
-    "returning -> available (operator)",
-  ]);
+  const check = m.store.slots().find((slot) => slot.activeOwnerKind === "check" && slot.activeOwnerKey === attemptId)!;
+  checks.handOffForReclaim(attemptId);
+  await returnFromSettings(check.id);
 
   const owned = await take({ kind: "task", key: "task-own-return" });
   assert.equal((await m.release(owned, { ownerAuthorized: true })).outcome, "released");
