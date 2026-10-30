@@ -679,6 +679,91 @@ test("a slot card's History lists what happened to the slot, newest first, and p
 });
 
 /**
+ * The states of History that hold no list of real rows. A slot that predates the table is real:
+ * its rows are deleted, as a slot leased before this shipped never had any. A read that fails
+ * cannot be produced from the daemon, so those replies are routed, and each is judged by what the
+ * browser's own schema check and the card do with it.
+ */
+test("History says when a slot has no entries, and when its read or an older page fails", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history states" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const { id: slotId, pool_id: poolId, ordinal } = withDaemonDb(daemon, (db) => {
+    const row = db.prepare(`SELECT id, pool_id, ordinal FROM worktree_slots WHERE path = ?`).get(lease.path) as
+      { id: string; pool_id: string; ordinal: number };
+    db.prepare(`DELETE FROM worktree_slot_history WHERE slot_id = ?`).run(row.id);
+    return row;
+  });
+
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const slot = repo.locator(".wt-slot", { hasText: lease.path });
+    const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+    const toggle = history.getByRole("button", { name: "History" });
+    const entries = history.getByRole("listitem");
+    const unreadable = history.getByText("This slot's history could not be read.");
+    const empty = history.getByText("Nothing recorded for this slot yet.");
+    const reopen = async () => {
+      await toggle.click();
+      await toggle.click();
+    };
+
+    await toggle.click();
+    await expect(empty).toBeVisible();
+    await expect(unreadable).toHaveCount(0);
+
+    const firstPage = (url: URL) => url.pathname.endsWith("/history") && !url.searchParams.has("before");
+    await dashboard.route(firstPage, (route) => route.fulfill({ status: 500, json: { error: "database is busy" } }));
+    await reopen();
+    await expect(unreadable).toBeVisible();
+    await dashboard.unroute(firstPage);
+
+    await dashboard.route(firstPage, (route) => route.fulfill({ json: { entries: "not a list", nextBefore: null } }));
+    await reopen();
+    await expect(unreadable).toBeVisible();
+    await dashboard.unroute(firstPage);
+
+    await reopen();
+    await expect(empty).toBeVisible();
+    await expect(unreadable).toHaveCount(0, { timeout: 5_000 });
+
+    // An older page that fails keeps what is shown, says so, and can be asked for again.
+    withDaemonDb(daemon, (db) => {
+      const insert = db.prepare(
+        `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind, reason, actor)
+         VALUES (?, ?, ?, ?, 'observation', ?, 'automatic')`,
+      );
+      for (let index = 1; index <= 51; index += 1) insert.run(poolId, slotId, ordinal, Date.now(), `paged row ${index}`);
+    });
+    await reopen();
+    await expect(entries).toHaveCount(50);
+    const olderPage = (url: URL) => url.pathname.endsWith("/history") && url.searchParams.has("before");
+    await dashboard.route(olderPage, (route) => route.fulfill({ status: 500, json: { error: "database is busy" } }));
+    const older = history.getByRole("button", { name: "Show older" });
+    await older.click();
+    await expect(unreadable).toBeVisible();
+    await expect(entries).toHaveCount(50);
+    await dashboard.unroute(olderPage);
+    await expect(older).toBeEnabled();
+    await older.click();
+    await expect(entries).toHaveCount(51);
+    await expect(entries.nth(50)).toContainText("paged row 1");
+    await expect(unreadable).toHaveCount(0);
+    await expect(older).toHaveCount(0);
+  } finally {
+    await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } });
+  }
+});
+
+/**
  * The three states the pane used to render as a heading over nothing, plus the one state
  * a number input cannot express.
  *

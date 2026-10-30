@@ -35,7 +35,9 @@ legacy.exec(`
 `);
 legacy.close();
 
-const { closeDb, CURRENT_DATABASE_SCHEMA_VERSION, openDb } = await import("../src/server/db.ts");
+const { closeDb, CURRENT_DATABASE_SCHEMA_VERSION, openDb, upgradeDatabaseToCurrentSchema } = await import(
+  "../src/server/db.ts"
+);
 const db = openDb();
 
 test("a pre-native database gains empty operational tables without rewriting old rows", () => {
@@ -118,5 +120,26 @@ test("a database stamped 10 takes its recovery point, gains slot history, and is
     );
   } finally {
     reopened.prepare("DELETE FROM worktree_slot_history").run();
+  }
+});
+
+test("slot history is not gated by the number: a database already stamped 11 without it gains it", () => {
+  // What a later upstream 11 leaves behind: this fork's entry renumbers, so a database can carry
+  // the stamp without ever having created the table.
+  const stamped = new DatabaseSync(join(home, "stamped-11.db"));
+  try {
+    stamped.exec("PRAGMA user_version = 11;");
+    upgradeDatabaseToCurrentSchema(stamped);
+    assert.deepEqual(
+      (stamped.prepare("PRAGMA index_info(idx_worktree_slot_history_pool_at)").all() as Array<{ name: string }>)
+        .map((row) => row.name),
+      ["pool_id", "at"],
+    );
+    assert.equal(
+      (stamped.prepare("SELECT COUNT(*) AS n FROM worktree_slot_history").get() as { n: number }).n,
+      0,
+    );
+  } finally {
+    stamped.close();
   }
 });

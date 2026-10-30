@@ -213,6 +213,11 @@ test("a compare-and-swap that misses writes no row", () => {
 
 test("a transition whose history row cannot be written does not happen", () => {
   const slot = leased();
+  const spare = reserved(slot.poolId, "slot-removed");
+  const granted = store.finalizeLease(spare.id, spare.version, "a".repeat(40), 200)!;
+  const returning = store.markReturning(granted.id, granted.version, "b".repeat(40), 300)!;
+  const free = store.completeRelease(returning.id, returning.version, "b".repeat(40), 400)!;
+  const pruning = store.markPruning(free.id, free.version, 500)!;
   db.exec(`
     CREATE TEMP TRIGGER refuse_history BEFORE INSERT ON main.worktree_slot_history
     BEGIN SELECT RAISE(ABORT, 'history refused'); END;
@@ -221,9 +226,15 @@ test("a transition whose history row cannot be written does not happen", () => {
   assert.throws(() => store.quarantine(slot.id, "reason", null, 300), /history refused/);
   assert.throws(() => store.markReturning(slot.id, slot.version, "b".repeat(40), 300), /history refused/);
   assert.throws(() => reserved(slot.poolId, "slot-b"), /history refused/);
+  assert.throws(() => store.removePruned(pruning.id, pruning.version, 510, "operator"), /history refused/);
+  assert.throws(
+    () => store.noteLastError(slot.id, slot.version, withObservationFailure(null, "a failed read"), 520),
+    /history refused/,
+  );
   assert.equal(db.isTransaction, false, "every attempt closed its transaction");
   assert.deepEqual(store.slot(slot.id), slot, "the slot row is exactly as it was");
   assert.equal(store.slot("slot-b"), null);
+  assert.deepEqual(store.slot(pruning.id), pruning, "a removal that cannot be recorded leaves its row in place");
   assert.equal(rowCount(), rows);
 });
 
@@ -312,33 +323,34 @@ test("retention drops rows older than 90 days, and a removed slot's rows go only
   assert.deepEqual(historyOf(slot.id), []);
 });
 
-test("retention keeps the newest 2,000 rows of each pool, and only its own", () => {
+test("retention keeps the newest 2,000 rows of each pool, by age, with id breaking a tie", () => {
   const now = 1_000 * DAY_MS;
   const { rowsPerPool } = WORKTREE_HISTORY_LIMITS;
-  const seed = (poolId: string, slotId: string, count: number) => {
-    const insert = db.prepare(
-      `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind) VALUES (?, ?, 1, ?, 'transition')`,
-    );
-    db.exec("BEGIN;");
-    // Out of insertion order, with a tie at the boundary: age decides, and id breaks the tie.
-    for (let index = 0; index < count; index += 1) {
-      insert.run(poolId, slotId, now - Math.floor((count - index - 1) / 2));
-    }
-    db.exec("COMMIT;");
-  };
-  seed("pool-big", "slot-big", rowsPerPool + 5);
-  seed("pool-small", "slot-small", 3);
+  const insert = db.prepare(
+    `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind) VALUES (?, ?, 1, ?, 'transition')`,
+  );
+  // Every row is older than the one inserted before it, so ids run opposite to age, and a cut
+  // by id alone would keep exactly the wrong rows. The rows at `rowsPerPool - 1` and
+  // `rowsPerPool` tie, so the cut falls between them and only the id can decide it.
+  const ageOf = (index: number) => (index === rowsPerPool ? rowsPerPool - 1 : index);
+  const ids: number[] = [];
+  db.exec("BEGIN;");
+  for (let index = 0; index < rowsPerPool + 5; index += 1) {
+    ids.push(Number(insert.run("pool-big", "slot-big", now - ageOf(index)).lastInsertRowid));
+  }
+  for (let index = 0; index < 3; index += 1) insert.run("pool-small", "slot-small", now - index);
+  db.exec("COMMIT;");
 
+  const survivors = () => (db
+    .prepare(`SELECT id FROM worktree_slot_history WHERE pool_id = 'pool-big' ORDER BY id`)
+    .all() as Array<{ id: number }>).map((row) => row.id);
   assert.equal(store.pruneHistory(now), 5);
-  const rows = db
-    .prepare(`SELECT id, at FROM worktree_slot_history WHERE pool_id = 'pool-big' ORDER BY at DESC, id DESC`)
-    .all() as Array<{ id: number; at: number }>;
-  assert.equal(rows.length, rowsPerPool);
-  const newest = db.prepare(`SELECT MAX(id) AS id FROM worktree_slot_history WHERE pool_id = 'pool-big'`).get() as { id: number };
-  assert.equal(rows[0]!.id, newest.id, "the newest stayed");
-  const smallest = Math.min(...rows.map((row) => row.id));
-  assert.equal(smallest, newest.id - rowsPerPool + 1, "the oldest went first, down to the id on a tied time");
-  assert.equal(store.slotHistory("slot-small").entries.length, 3);
+  assert.deepEqual(
+    survivors(),
+    [...ids.slice(0, rowsPerPool - 1), ids[rowsPerPool]!],
+    "the newest by age stay: of the tied pair the higher id stays, and the lower id and everything older go",
+  );
+  assert.equal(store.slotHistory("slot-small").entries.length, 3, "another pool's rows are its own");
   assert.equal(store.pruneHistory(now), 0, "a pass with nothing to drop drops nothing");
 });
 
@@ -453,6 +465,31 @@ test("Recover records who ran it, and a quarantine records why", async () => {
     "quarantined -> returning (automatic)",
     "returning -> available (automatic)",
   ]);
+});
+
+test("reconcile finishing an interrupted return or a removal is recorded as automatic", async () => {
+  const { clone, sha } = repository("mission-history-reconcile-");
+  const m = realManager({ ownerReferenced: async () => true });
+  const take = async (key: string) => {
+    const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key } });
+    assert.equal(acquired.outcome, "acquired");
+    if (acquired.outcome !== "acquired") throw new Error("not acquired");
+    return acquired.lease;
+  };
+  const interrupted = await take("task-interrupted");
+  const removing = await take("task-removing");
+  assert.ok(m.store.markReturning(interrupted.slotId, interrupted.slotVersion, sha, Date.now()));
+  assert.equal((await m.release(removing, { ownerAuthorized: true })).outcome, "released");
+  const free = m.store.slot(removing.slotId)!;
+  assert.ok(m.store.markPruning(free.id, free.version, Date.now()));
+  gitIn(clone, "worktree", "remove", "--force", removing.path);
+
+  await m.reconcile();
+
+  assert.equal(m.store.slot(interrupted.slotId)?.state, "available");
+  assert.equal(trail(interrupted.slotId).at(-1), "returning -> available (automatic)");
+  assert.equal(m.store.slot(removing.slotId), null);
+  assert.equal(trail(removing.slotId).at(-1), "pruning -> null (automatic)");
 });
 
 test("a Warm names the operator, and the return that ends it does too", async () => {
@@ -594,6 +631,25 @@ test("the history route pages newest first, 50 at a time, and survives the slot"
     const refused = await app.request(`/api/worktrees/slot-paged/history${bad}`, { headers });
     assert.equal(refused.status, 400, bad);
   }
+});
+
+test("a page that ends exactly on the last row offers no older page", () => {
+  const size = WORKTREE_HISTORY_LIMITS.pageEntries;
+  const insert = db.prepare(
+    `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind, reason) VALUES ('p', ?, 1, ?, 'transition', ?)`,
+  );
+  for (let index = 1; index <= size; index += 1) insert.run("slot-exact", index, `entry ${index}`);
+  const exact = store.slotHistory("slot-exact");
+  assert.equal(exact.entries.length, size);
+  assert.equal(exact.nextBefore, null, "exactly a page: nothing older to offer");
+
+  for (let index = 1; index <= size + 1; index += 1) insert.run("slot-over", index, `entry ${index}`);
+  const first = store.slotHistory("slot-over");
+  assert.equal(first.entries.length, size);
+  assert.equal(first.nextBefore, first.entries.at(-1)!.id);
+  const second = store.slotHistory("slot-over", first.nextBefore);
+  assert.deepEqual(second.entries.map((entry) => entry.reason), ["entry 1"], "one more page, holding the last entry");
+  assert.equal(second.nextBefore, null);
 });
 
 test("a row a later build wrote reads back as itself, and a broken meta reads as none", () => {
