@@ -602,6 +602,28 @@ test("a Return run from Settings names the operator through the manual, task and
   assert.equal(trail(owned.slotId).at(-1), "returning -> available (owner)", "outside an action it stays the owner's");
 });
 
+test("Open terminal's lease, and handing it back unused, name the operator", async () => {
+  const { clone, sha } = repository("mission-history-terminal-");
+  const m = realManager();
+  const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "manual", key: "m-terminal" } });
+  assert.equal(acquired.outcome, "acquired");
+  if (acquired.outcome !== "acquired") return;
+  assert.equal((await m.release(acquired.lease, { ownerAuthorized: true })).outcome, "released");
+  const before = trail(acquired.lease.slotId).length;
+
+  const taken = await m.leaseAsIs(acquired.lease.slotId, { kind: "manual", key: "terminal-1" });
+  assert.equal(taken.outcome, "leased", JSON.stringify(taken));
+  if (taken.outcome !== "leased") return;
+  assert.equal(await m.handBackAsIs(taken.lease), true);
+
+  assert.deepEqual(trail(acquired.lease.slotId).slice(before), [
+    "available -> provisioning (operator)",
+    "provisioning -> leased (operator)",
+    "leased -> returning (operator)",
+    "returning -> available (operator)",
+  ]);
+});
+
 test("a Warm names the operator, and the return that ends it does too", async () => {
   const { clone, sha } = repository("mission-history-warm-");
   const m = realManager({

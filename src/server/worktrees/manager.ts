@@ -1607,6 +1607,7 @@ export class WorktreeManager {
             ownerKey: owner.key,
             requestedHeadSha: idle.head,
             now: this.deps.now(),
+            actor: "operator",
           }));
       } catch (error) {
         return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
@@ -1615,7 +1616,7 @@ export class WorktreeManager {
       try {
         const entered = await this.enteredSinceReservation(reservation, idle.slot, "it was leased");
         if (entered) return { outcome: entered.returned ? "refused" : "outcomeUnknown", reason: entered.reason };
-        const leased = this.store.finalizeLease(reservation.id, reservation.version, idle.head, this.deps.now());
+        const leased = this.store.finalizeLease(reservation.id, reservation.version, idle.head, this.deps.now(), "operator");
         if (!leased) {
           this.quarantineReservation(reservation, "lease commit lost its slot compare-and-swap");
           return { outcome: "outcomeUnknown", reason: "lease commit could not be proven" };
@@ -1652,9 +1653,9 @@ export class WorktreeManager {
   async handBackAsIs(lease: NativeWorktreeLease): Promise<boolean> {
     return this.withSlot(lease.slotId, async () => {
       try {
-        const returning = this.store.markReturning(lease.slotId, lease.slotVersion, lease.baseSha, this.deps.now());
+        const returning = this.store.markReturning(lease.slotId, lease.slotVersion, lease.baseSha, this.deps.now(), "operator");
         if (!returning) return false;
-        const returned = this.store.completeRelease(returning.id, returning.version, lease.baseSha, this.deps.now());
+        const returned = this.store.completeRelease(returning.id, returning.version, lease.baseSha, this.deps.now(), "operator");
         if (!returned) return false;
         this.publish();
         return true;
