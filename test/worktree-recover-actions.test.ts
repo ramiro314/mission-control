@@ -15,11 +15,13 @@ import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 const db = openDb();
 let occupants: WorktreeOccupant[] = [];
 let referenced = false;
+/** One answer per lock inspection, in order; none left means nothing holds the lock. */
+let lockHolders: number[][] = [];
 const manager = new WorktreeManager(db, {
   occupancy: (paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> =>
     Promise.resolve(new Map(paths.map((path) => [path, { status: "known", occupants }]))),
   ownerReferenced: async () => referenced,
-  fileHolders: async () => [],
+  fileHolders: async () => lockHolders.shift() ?? [],
   resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
 });
 const operations = new WorktreeOperationsService(manager, {
@@ -131,14 +133,15 @@ async function quarantinedSlot(prefix: string) {
   assert.equal(acquired.outcome, "acquired");
   const lease = (acquired as { lease: NativeWorktreeLease }).lease;
   const common = gitIn(lease.path, "rev-parse", "--path-format=absolute", "--git-common-dir");
-  writeFileSync(join((await slotGitDirectory(lease.path, common))!, "index.lock"), "");
+  const lock = join((await slotGitDirectory(lease.path, common))!, "index.lock");
+  writeFileSync(lock, "");
   assert.equal((await manager.release(lease, { ownerAuthorized: true })).outcome, "outcomeUnknown");
   assert.equal(manager.store.slot(lease.slotId)?.state, "quarantined");
   for (const file of KEPT) {
     mkdirSync(join(lease.path, file, ".."), { recursive: true });
     writeFileSync(join(lease.path, file), "local\n");
   }
-  return { lease, advance, clone };
+  return { lease, advance, clone, lock };
 }
 
 test("Recover keeps a warm install: ignored files the default keeps ignored ask no acknowledgement and keep their inodes", async () => {
@@ -197,7 +200,7 @@ test("Recover asks for acknowledgement only for reset-rule work, and names each 
 });
 
 test("Recover's execute refuses when the default moved to a target whose work set differs from the preview's", async () => {
-  const { lease, advance } = await quarantinedSlot("mission-recover-moved-");
+  const { lease, advance, lock } = await quarantinedSlot("mission-recover-moved-");
   const preview = await operations.preview({ action: "recover", slotId: lease.slotId });
   assert.deepEqual(preview.requiredAcknowledgements, []);
   // The default moves after the preview: execute's own rebuild sees the new work and refuses.
@@ -220,6 +223,21 @@ test("Recover's execute refuses when the default moved to a target whose work se
   assert.match((refused as { reason: string }).reason, /the slot's work changed since the preview/);
   assert.equal(manager.store.slot(lease.slotId)?.state, "quarantined");
   assert.ok(existsSync(join(lease.path, ".env")), "nothing was discarded");
+  assert.ok(existsSync(lock), "a refused Recover leaves the lock where it was");
+
+  // Unacknowledged work refuses the same way, naming the entry and keeping the lock.
+  const unacknowledged = await manager.recoverSlot({
+    slotId: lease.slotId,
+    expectedVersion: slot.version,
+    allowDirty: false,
+    automatic: false,
+  });
+  assert.deepEqual(unacknowledged, {
+    outcome: "refused",
+    reason: "the slot holds work Recover would discard: ignored .env (the target's .gitignore files no longer ignore it)",
+    blocking: { kind: "ignored", path: ".env" },
+  });
+  assert.ok(existsSync(lock), "a refused Recover leaves the lock where it was");
 
   // A moved default whose work set is the preview's goes ahead.
   advance({ "src/unrelated.ts": "export {};\n" });
@@ -234,13 +252,14 @@ test("Recover's execute refuses when the default moved to a target whose work se
     automatic: false,
     expectedWork: previewed,
   });
-  assert.equal(recovered.outcome, "recovered");
+  assert.deepEqual(recovered, { outcome: "recovered", removedLock: lock });
+  assert.equal(existsSync(lock), false, "the lock goes once nothing refuses");
   assert.equal(existsSync(join(lease.path, ".env")), false, "the acknowledged .env was discarded");
   assert.ok(existsSync(join(lease.path, "node_modules/pkg/index.js")), "the install was kept");
 });
 
 test("Recover's execute hands the preview's work set to the reset, which refuses a default that moved after execute's own check", async () => {
-  const { lease, advance } = await quarantinedSlot("mission-recover-handoff-");
+  const { lease, advance, lock } = await quarantinedSlot("mission-recover-handoff-");
   advance({ ".gitignore": IGNORE.replace(".env\n", "") });
   const preview = await operations.preview({ action: "recover", slotId: lease.slotId });
   assert.deepEqual(preview.requiredAcknowledgements, ["dirty"]);
@@ -264,6 +283,7 @@ test("Recover's execute hands the preview's work set to the reset, which refuses
   assert.deepEqual(received, [previewed]);
   assert.equal(manager.store.slot(lease.slotId)?.state, "quarantined");
   assert.ok(existsSync(join(lease.path, ".env")), "nothing was discarded");
+  assert.ok(existsSync(lock), "a refused Recover leaves the lock where it was");
 });
 
 test("Recover's preview offers an unreadable slot's discard for acknowledgement, naming why its work could not be read", async () => {
@@ -287,4 +307,20 @@ test("Recover's preview names the first entries of a large work set and says the
   const line = preview.consequences.find((entry) => entry.startsWith("Discards the slot's work:"));
   assert.ok(line?.endsWith("untracked draft-19.md; and more."), line);
   assert.equal(line?.includes("draft-20.md"), false);
+});
+
+test("Recover judges index.lock again after the fetch, and refuses a holder that appeared meanwhile", async () => {
+  const { lease, lock } = await quarantinedSlot("mission-recover-lock-fresh-");
+  // The first check, before the fetch, finds nothing holding the lock. The one after it does.
+  lockHolders = [[], [4242]];
+  const refused = await manager.recoverSlot({ slotId: lease.slotId, allowDirty: true, automatic: false });
+  lockHolders = [];
+  assert.deepEqual(refused, {
+    outcome: "refused",
+    reason: "index.lock is held open by pid 4242",
+    blocking: { kind: "lock", path: lock },
+  });
+  assert.ok(existsSync(lock), "a lock with a holder is never removed");
+  assert.equal(manager.store.slot(lease.slotId)?.state, "quarantined");
+  assert.ok(existsSync(join(lease.path, ".env")), "nothing was discarded");
 });

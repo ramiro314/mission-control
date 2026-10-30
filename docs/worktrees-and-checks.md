@@ -703,10 +703,12 @@ The operations have deliberately narrow meanings:
   every such slot's card, and Settings > Storage lists each quarantined slot as a problem whose
   **Open slot** link jumps to that card. Its preview names the slot's `index.lock` (under the Git
   directory its `.git` file names), any Git process whose working directory is in the slot, and
-  each entry the reset would discard, which must be acknowledged. Execute removes `index.lock` only
-  when no Git process uses the worktree and `lsof` shows nothing holding the lock, then runs the
-  same owner-authorized reset Return ends in, and the slot becomes available. A slot with a live
-  or unknown owner, any process inside it, or a lock it cannot prove free is refused.
+  each entry the reset would discard, which must be acknowledged. Execute runs the same
+  owner-authorized reset Return ends in, and the slot becomes available. It removes `index.lock`
+  as the reset's last check, once the target is fetched and the work check has passed, and only
+  when no Git process uses the worktree and `lsof` shows nothing holding the lock. A slot with a
+  live or unknown owner, any process inside it, or a lock it cannot prove free is refused, and a
+  refusal leaves the lock in place.
 
   Recover keeps the slot's folder, so it counts work by the **reset rule**, against origin's
   default fetched for the preview. A reset runs `checkout --force`, `reset --hard` and

@@ -2539,8 +2539,9 @@ export class WorktreeManager {
   }
 
   /**
-   * Recover one quarantined slot that no live owner references: remove a stale `index.lock`
-   * from its Git directory, then run the owner-authorized reset, and the slot is available.
+   * Recover one quarantined slot that no live owner references: run the owner-authorized reset,
+   * removing a stale `index.lock` from its Git directory as the reset's last check, and the
+   * slot is available. A refusal leaves the lock where it was.
    *
    * The lock goes only when no Git process has its working directory in the slot and `lsof`
    * shows nothing holding it. The automatic pass (`automatic`) further requires the lock to be
@@ -2618,35 +2619,45 @@ export class WorktreeManager {
     if (occupancy.occupants.length > 0) {
       return { outcome: "refused", reason: "one or more processes still occupy the worktree" };
     }
-    if (lock.exists && lock.path) {
+    let removedLock: string | null = null;
+    let blocking: NonNullable<WorktreeRecoveryRefusalView["blocking"]> | undefined;
+    const reset = await this.resetToDefault(pool, identity, slot, async (target) => {
+      const freshBlocker = await this.occupancyBlocker(slot.path);
+      if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
+      if (!input.automatic) {
+        const work = await this.resetWork(slot.path, target);
+        if (input.expectedWork !== undefined && worktreeResetWorkKey(work) !== input.expectedWork) {
+          return {
+            outcome: "refused",
+            reason: `the slot's work changed since the preview, against origin's default at ${target.slice(0, 12)}; preview Recover again`,
+          };
+        }
+        if (!input.allowDirty && work.status === "unknown") {
+          return { outcome: "refused", reason: `the slot's work could not be read: ${work.reason}` };
+        }
+        if (!input.allowDirty && work.status === "work") {
+          const first = work.entries[0]!;
+          blocking = { kind: first.kind, path: first.path };
+          return { outcome: "refused", reason: `the slot holds work Recover would discard: ${describeWorktreeResetWork(first)}` };
+        }
+      }
+      // The lock goes last, so a refusal above leaves the slot exactly as it was. The fetch may
+      // have taken a while, so the lock is judged again right before it is removed.
+      const current = await this.slotIndexLockNow(slot, pool.gitCommonDirectory);
+      const stillBlocked = indexLockBlocker(current, input.automatic);
+      if (stillBlocked) {
+        if (current.path !== null) blocking = { kind: "lock", path: current.path };
+        return { outcome: "refused", reason: stillBlocked };
+      }
+      if (!current.exists || !current.path) return null;
       try {
-        await unlink(lock.path);
+        await unlink(current.path);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
           return { outcome: "refused", reason: `index.lock could not be removed: ${bounded(String(error))}` };
         }
       }
-    }
-    const removedLock = lock.exists ? lock.path : null;
-    let blocking: WorktreeWorkEntry | undefined;
-    const reset = await this.resetToDefault(pool, identity, slot, async (target) => {
-      const freshBlocker = await this.occupancyBlocker(slot.path);
-      if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
-      if (input.automatic) return null;
-      const work = await this.resetWork(slot.path, target);
-      if (input.expectedWork !== undefined && worktreeResetWorkKey(work) !== input.expectedWork) {
-        return {
-          outcome: "refused",
-          reason: `the slot's work changed since the preview, against origin's default at ${target.slice(0, 12)}; preview Recover again`,
-        };
-      }
-      if (input.allowDirty) return null;
-      if (work.status === "unknown") return { outcome: "refused", reason: `the slot's work could not be read: ${work.reason}` };
-      if (work.status === "work") {
-        const first = work.entries[0]!;
-        blocking = { kind: first.kind, path: first.path };
-        return { outcome: "refused", reason: `the slot holds work Recover would discard: ${describeWorktreeResetWork(first)}` };
-      }
+      removedLock = current.path;
       return null;
     });
     if (reset.outcome === "released" || reset.outcome === "alreadyReleased") {
@@ -2671,6 +2682,17 @@ export class WorktreeManager {
       }
     }
     return null;
+  }
+
+  /** The slot's `index.lock` as it stands now, with a fresh occupancy read. */
+  private async slotIndexLockNow(slot: WorktreeSlotRow, commonDirectory: string): Promise<SlotIndexLock> {
+    return inspectSlotIndexLock({
+      slotPath: slot.path,
+      commonDirectory,
+      occupancy: (await this.withObservation(() => this.occupancy([slot.path]))).get(slot.path),
+      now: this.deps.now(),
+      fileHolders: this.deps.fileHolders,
+    });
   }
 
   /** What Recover's preview names about a slot's `index.lock`, read the way Recover reads it. */
