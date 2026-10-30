@@ -730,6 +730,20 @@ The operations have deliberately narrow meanings:
   process-group recovery. Manual Return uses the exact durable lease. A successful native Return
   resets to the freshly fetched remote default - the branch the remote advertises now, proved the
   same way dispatch proves it - leaves the slot detached and clean, and keeps the warm slot.
+
+  A quarantined slot whose active owner is still referenced offers Return too, since the owner's
+  own return accepts a quarantined lease. Its card names the owner (the task's title, the check,
+  or the manual lease with the label `make session --label` gave it) and says "Its owner's return
+  brings this slot back." The preview is that owner's ordinary Return preview, so a task Return
+  still lists every tree the task holds. It is refused while any process is inside the
+  quarantined slot, the task's own agent included, and when the owner's reference is gone or
+  unknown. An owner that is gone leaves the slot to Recover instead.
+
+  A `warm` lease is the one owner neither Return nor Destroy can act on, whatever its state. While
+  its seed runs, the preview says the seed returns the slot when its copy ends. A seed interrupted
+  by a restart is not coming back: reconcile returns its lease, the preview says so until then,
+  and if the lease cannot be returned the slot is quarantined with that dead owner still on it.
+  Its preview then points at Recover, which clears it.
 - **Prune** removes only the clean, merged, process-free, unreferenced available slots enumerated in
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.
