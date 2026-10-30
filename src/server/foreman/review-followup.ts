@@ -14,6 +14,7 @@ import { settledIdle } from "@shared/session.ts";
 import { currentMergeability, mergeConflictResolutionSteps } from "@shared/pr-mergeable.ts";
 import { findingPublication, type FindingPublicationState } from "@shared/inspector-findings.ts";
 import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import type { CiStrictness } from "@shared/ci-checks.ts";
 import { dedupeInspectorFindings, renderInspectorFindings } from "../inspector/findings-text.ts";
 import { utf8Bytes } from "../util/utf8.ts";
 
@@ -84,6 +85,8 @@ export interface ReviewFollowupConfig {
   codeRabbitAutoResolve?: boolean;
   /** Relay failing CI episodes from `ForemanConfig.trackCiFailures`. */
   trackCiFailures: boolean;
+  /** Which failing checks count, from `ForemanConfig.ciStrictness`. Absent reads as `all`. */
+  ciStrictness?: CiStrictness;
   /** Keep conflicting pull requests on track, from `ForemanConfig.trackMergeConflicts`. */
   trackMergeConflicts: boolean;
   /** How long a session must sit idle before its work counts as settled. */
@@ -320,10 +323,16 @@ export function mergeabilityOf(pr: FollowupPr) {
  * session parks. Without a PR head sha on the snapshot this observed-recovery bit is the
  * only thing that can tell a re-failure from the one we already relayed.
  */
-export function advanceFollowupMark(prev: FollowupMark | null, pr: FollowupPr): FollowupMark {
+export function advanceFollowupMark(
+  prev: FollowupMark | null,
+  pr: FollowupPr,
+  ciStrictness: CiStrictness = "all",
+): FollowupMark {
   let mark: FollowupMark = prev && prev.prKey === pr.prKey ? prev : freshMark(pr.prKey);
-  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it.
-  if (mark.ciNudged && pr.checks !== "failing") mark = { ...mark, ciNudged: false };
+  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it. A held
+  // observation says nothing about the episode, so it re-arms nothing.
+  const ci = ciFollowup(pr, ciStrictness);
+  if (mark.ciNudged && ci !== "held" && !ci.failing) mark = { ...mark, ciNudged: false };
   const mergeable = mergeabilityOf(pr);
   if (mergeable === "mergeable") {
     const rearmed = mark.conflictHead === null && mark.conflictNudges === 0 && !mark.conflictEscalated;
@@ -334,12 +343,52 @@ export function advanceFollowupMark(prev: FollowupMark | null, pr: FollowupPr): 
   return mark;
 }
 
+/**
+ * Fork (ci-strictness): whether this pull request's CI counts as failing under `ciStrictness`,
+ * and whether the required checks decided it rather than the whole rollup.
+ *
+ * | strictness | condition                                              | failing when            |
+ * | all        | always                                                 | `checks === "failing"`  |
+ * | required   | the Inspector never adopted the PR, or is off          | `checks === "failing"`  |
+ * | required   | adopted and on, no snapshot for the PR's current head  | never: `held`           |
+ * | required   | snapshot for the head, nothing marked required         | `checks === "failing"`  |
+ * | required   | snapshot for the head, checks marked required          | required rollup failing |
+ *
+ * "Off" is `InspectorConfig.enabled` alone, even when CodeRabbit's poll keeps the snapshot
+ * fresh: every check then counts, so Foreman nudges more, never less. A summary without `ci`
+ * comes from a daemon older than this field and reads as off. `held` neither nudges nor
+ * re-arms: the snapshot cannot say which checks are required on a head it did not read.
+ */
+export function ciFollowup(
+  pr: Pick<FollowupPr, "checks" | "headSha" | "inspector">,
+  ciStrictness: CiStrictness = "all",
+): { failing: boolean; required: boolean } | "held" {
+  const everyCheck = { failing: pr.checks === "failing", required: false };
+  const ci = pr.inspector?.ci;
+  if (ciStrictness === "all" || !ci || !ci.inspectorEnabled) return everyCheck;
+  if (pr.headSha === null || ci.headSha !== pr.headSha) return "held";
+  if (ci.required === null) return everyCheck;
+  return { failing: ci.required === "failing", required: true };
+}
+
+/** The CI half of `Feedback`, for the payload builders outside this file. */
+export function ciFeedback(
+  pr: Pick<FollowupPr, "checks" | "headSha" | "inspector">,
+  cfg: Pick<ReviewFollowupConfig, "trackCiFailures" | "ciStrictness">,
+): Pick<Feedback, "ciFailing" | "ciRequired"> {
+  const ci = cfg.trackCiFailures ? ciFollowup(pr, cfg.ciStrictness) : null;
+  if (ci === null || ci === "held") return { ciFailing: false, ciRequired: false };
+  return { ciFailing: ci.failing, ciRequired: ci.required };
+}
+
 /** What is actionable on one pull request right now. */
 interface Feedback {
   /** The Inspector has unresolved findings, posted on GitHub or not. */
   findings: boolean;
-  /** The PR's CI rollup is failing (as opposed to pending or passing). */
+  /** The PR's CI counts as failing under `ciStrictness` (see `ciFollowup`). */
   ciFailing: boolean;
+  /** The required checks' rollup decided `ciFailing`, so the nudge names required checks. */
+  ciRequired?: boolean;
   /** The PR's current head is observed conflicting with its base. */
   conflicting: boolean;
   codeRabbit?: boolean;
@@ -397,7 +446,7 @@ function feedbackState(
   const cr = pr.inspector?.codeRabbit;
   return {
     findings,
-    ciFailing: cfg.trackCiFailures && pr.checks === "failing",
+    ...ciFeedback(pr, cfg),
     conflicting: cfg.trackMergeConflicts && mergeabilityOf(pr) === "conflicting",
     codeRabbit: !!cfg.codeRabbitAutoResolve && cr?.status === "complete" && cr.pending > 0
       && !!cr.observationId && (cr.freshUntil ?? 0) >= now,
@@ -605,7 +654,7 @@ function describe(pr: FollowupPr, fb: Feedback, read: readonly InspectorComment[
   const where = pr.repoRoot !== null ? ` in ${pr.repoRoot}` : "";
   const parts: string[] = [];
   if (fb.findings) parts.push(`${open} unresolved finding(s)`);
-  if (fb.ciFailing) parts.push("CI failing");
+  if (fb.ciFailing) parts.push(fb.ciRequired ? "required CI failing" : "CI failing");
   if (fb.conflicting) parts.push(`merge conflicts with ${pr.baseRef ?? "its base"}`);
   return `${parts.join(" + ")}${where}`;
 }
@@ -650,7 +699,7 @@ export function buildPayload(
       `GitHub Inspector has ${n} unresolved finding${n === 1 ? "" : "s"} on it (${publicationCounts(relayed)})`,
     );
   }
-  if (fb.ciFailing) problems.push("its CI checks are failing");
+  if (fb.ciFailing) problems.push(fb.ciRequired ? "its required CI checks are failing" : "its CI checks are failing");
   // `baseRefName` rides every poll, so a missing base is a rare race; say so rather than
   // guess `main`.
   if (fb.conflicting) {
@@ -687,15 +736,15 @@ export function buildPayload(
   // By URL rather than number: a bare number makes `gh` pick the repository from the remotes,
   // which on a fork means asking about the parent - and an org enforcing SAML SSO refuses that.
   if (fb.ciFailing) {
-    steps.push(
-      `Look at the failing CI (\`gh pr checks ${pr.url}\`), reproduce it locally, and fix it.`,
-    );
+    steps.push(fb.ciRequired
+      ? `Look at the failing required checks (\`gh pr checks ${pr.url} --required\`), reproduce them locally, and fix them.`
+      : `Look at the failing CI (\`gh pr checks ${pr.url}\`), reproduce it locally, and fix it.`);
   }
   // The merge-in method has one owner, shared with the workflow's conflict repair round.
   if (fb.conflicting) steps.push(...mergeConflictResolutionSteps(pr.baseRef).split("\n"));
   steps.push("Commit and push.");
   steps.push(
-    "Then keep watching the PR until CI is green and the review threads are resolved - " +
+    `Then keep watching the PR until ${fb.ciFailing && fb.ciRequired ? "the required checks are" : "CI is"} green and the review threads are resolved - ` +
       "GitHub Inspector re-reviews each push automatically, so wait for it and answer anything new.",
   );
 

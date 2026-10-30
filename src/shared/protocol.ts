@@ -5,6 +5,7 @@ import { z } from "zod";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "./wait-for-ci.ts";
+import { CI_STRICTNESS } from "./ci-checks.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
@@ -2114,6 +2115,15 @@ export const ForemanConfigSchema = z.object({
    */
   trackCiFailures: z.boolean().default(true),
   /**
+   * Fork (ci-strictness): which failing checks count for `trackCiFailures`. `required` counts
+   * only the checks GitHub marks required on the pull request, read from the GitHub
+   * Inspector's stored snapshot (`InspectorSummary.ci`), and falls back to every check when
+   * the Inspector is off, never adopted the pull request, or nothing is marked required. It
+   * also picks the wording of the Pull Request action's CI instructions. A stored config
+   * without the key reads as `all`, today's behavior.
+   */
+  ciStrictness: z.enum(CI_STRICTNESS).default("all"),
+  /**
    * Whether Foreman keeps a session on track when its OPEN pull request conflicts with its
    * base. Off, a live session's conflict is the operator's: it goes to the attention inbox's
    * Blocked pull requests section as "Foreman can't drive this session".
@@ -2666,6 +2676,11 @@ export const InspectorInspectionSchema = z.object({
     threads: z.array(z.object({ id: z.string(), url: z.string(), path: z.string().nullable() })),
     pending: z.number(),
     delivery: z.string(),
+  }).optional(),
+  // Fork (ci-strictness): `InspectorCiProjection` in `types.ts`, restated likewise.
+  ci: z.object({
+    headSha: z.string().nullable(),
+    required: z.enum(["passing", "failing", "pending"]).nullable(),
   }).optional(),
   openFindings: z.number().int(),
   postedOpenFindings: z.number().int(),

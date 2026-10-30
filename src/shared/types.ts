@@ -3161,8 +3161,28 @@ export type InspectorLegacyPosted = (typeof INSPECTOR_LEGACY_POSTED)[number];
  * Deliberately counts rather than findings: the card says whether to go look, and the
  * PR itself is where you look.
  */
+/**
+ * Fork (ci-strictness): the compact CI facts Foreman's "Which failures count" reads, projected
+ * from the Inspector's stored CI snapshot (`inspector_prs.observed_ci_json`). The check list
+ * itself never travels on the session wire; this is all of it Foreman needs.
+ */
+export interface InspectorCiProjection {
+  /** The head commit the stored snapshot was read on, or null when none is stored. */
+  headSha: string | null;
+  /** `requiredChecksRollup` of that snapshot: null when no check is marked required. */
+  required: PrChecks | null;
+}
+
+/** The projection plus whether the Inspector is on, which `InspectorSummary.ci` carries. */
+export interface InspectorCiSummary extends InspectorCiProjection {
+  /** `InspectorConfig.enabled` when the summary was built. Off means every check counts. */
+  inspectorEnabled: boolean;
+}
+
 export interface InspectorSummary {
   codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
+  /** Fork (ci-strictness): see `InspectorCiSummary`. Absent from an older daemon. */
+  ci?: InspectorCiSummary;
   prKey: string;
   url: string;
   mode: InspectorMode;
@@ -3218,6 +3238,8 @@ export interface RetroSummary {
 /** A ledger row plus its finding tallies - what the settings panel lists. */
 export interface InspectorInspection extends InspectorPr {
   codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
+  /** Fork (ci-strictness): the stored CI snapshot's compact projection. */
+  ci?: InspectorCiProjection;
   openFindings: number;
   postedOpenFindings: number;
   resolvedFindings: number;

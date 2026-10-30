@@ -422,6 +422,7 @@ await worktreeOperations.sweepWarmLogs();
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
   trackCiFailures: () => getForemanConfig().trackCiFailures,
+  ciStrictness: () => getForemanConfig().ciStrictness,
   trackMergeConflicts: () => getForemanConfig().trackMergeConflicts,
   queueManager: queues,
   reviewScheduler,
