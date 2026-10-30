@@ -710,9 +710,10 @@ this order:
     failed, skipped on a matching fingerprint, or stopped by a shutdown. A failed one keeps the
     failing step's command and reason, never its output.
   - A **seed** entry names its source slot and duration. One that placed nothing says why: no idle
-    sibling held a current install, every one was taken first, the clone was abandoned or cut off,
-    or the pool's claim configures no seed. A slot that wants no seed, because its install still
-    matches, adds no entry, so the last seed stays readable.
+    sibling held a current install or matched a stale slot's commit, its siblings could not be read,
+    none could be held, the clone was abandoned or cut off, the paths of an earlier cut-off seed
+    could not be removed, or the pool's claim configures no seed. A slot that wants no seed, because
+    its install still matches, adds no entry, so the last seed stays readable.
 
   The pool row shows the **median new slot** provisioning time and the **seed hit rate** over the
   pool's last 10 new slots, computed from history whenever it is read, so retention can shorten

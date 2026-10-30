@@ -1848,8 +1848,8 @@ export class WorktreeManager {
         say,
       });
       if (seeded) return seeded;
-    } else if (cold || stale) {
-      this.recordNoSeed(reservation, actor, claim.seed ? "native worktrees are disabled" : "the pool's claim configures no seed");
+    } else if (!claim.seed && (cold || stale)) {
+      this.recordNoSeed(reservation, actor, "the pool's claim configures no seed");
     }
 
     const outcome = await runClaimSteps({
