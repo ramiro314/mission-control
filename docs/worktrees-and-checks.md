@@ -86,7 +86,7 @@ where it was, and the reset's clean step still spares ignored files, so warm cac
 Every slot carries a random lease ID and an exact task, check, or manual owner. Task and check
 rows persist that ID before work starts. Cleanup reads the recorded provider and lease ID rather
 than deciding again from current configuration, and refuses a stale lease or any slot whose
-process occupancy cannot be proved empty. Startup reconciliation uses the same fail-closed rules.
+process occupancy cannot be proved empty. Startup reconciliation uses the same rules.
 
 An observation read gets one retry before it counts as unknown. The process and cwd listings
 behind occupancy and an owner lookup that throws each try once more in the same pass, 2 seconds
@@ -100,6 +100,42 @@ leaves occupancy unknown. A read
 that fails twice records both attempts, for example "git status timed out after 15 s, and after
 30 s on retry". A command killed at its timeout is named as a timeout, and one killed by another
 signal names that signal, so neither reads as "exit 1".
+
+A read that still fails proves nothing about a slot, so it never quarantines one. Reconcile,
+including a pool whose `git worktree list` or pool marker cannot be read at all, and the idle
+screening that acquisition, Warm and seed-source selection share leave every slot they could not
+read in the state it was in: leased stays leased, available stays available, quarantined stays
+quarantined. The slot's last error records "Last observation failed: `<reason>`", its card shows
+that on its own line, and the next read that succeeds clears it. A quarantined slot keeps the
+detail of its quarantine under that line. Such a slot is never leased, reset or returned while it
+is unknown: acquisition does not lease a slot it could not prove idle in this pass, and Lease,
+Return, reset, Recover, Prune and Destroy still refuse on unknown, exactly as before. The reasons
+that count as a failed read, including the ones older builds quarantined with, are one exported
+set in `src/server/worktrees/quarantine-reasons.ts`, so rows already in the database qualify
+without a migration.
+
+Only a proven fault quarantines: an inexact path, a missing registration once listing succeeded,
+a bare, locked or prunable registration, a different common directory, an interrupted
+provisioning or prune (judged before any Git or process read, and even when the pool's listing
+or marker cannot be read, so a failed read never keeps one; only a prune whose folder is already
+gone waits for a listing to tell a finished removal from a fault), an interrupted return proven
+occupied, dirty or off its target commit (one whose read failed waits for the next pass to prove
+and complete it), a dirty available slot, an available slot whose HEAD moved or that carries an active lease identity, an incomplete identity, a leased slot whose owner is positively
+gone, a reset or verification that failed, and a pool identity or marker that is missing,
+malformed or belongs to another pool. A process inside an available slot is not a fault: the slot
+stays available, acquisition passes over it, and its card lists the process. A reservation that a
+read refused before anything in the slot changed - its occupancy became unknown, or a process
+entered it, before the reset - goes back to available as it was, and the acquisition reports it
+as not acquired, so a task falls back as it does for any refusal. One whose mutation outcome is
+unknown is still quarantined, and so is a reservation that could not be handed back, as "a
+refused reservation could not be handed back to available"; only those report an unknown
+outcome. That reason is deliberately outside the failed-read set, because whether the hand-back
+landed is unknown.
+
+Each quarantine, each recovery, each automatic-recovery refusal and each slot left unchanged
+after a failed read writes one `[worktrees]` line to the daemon's output, naming the pool and
+slot. A refusal or failed read is logged only when the slot's reason changes, so a pass repeating
+the same one stays quiet.
 
 A reservation quarantined before its lease is granted - a failed or unproven reset, creation,
 setup command, or verification, or a lost lease commit - drops its active owner in the same
@@ -261,7 +297,8 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
 - **The source** is an idle sibling: an available slot of the same pool, with no active lease,
   whose last owner is provably gone, with no process inside, and whose last claim succeeded. It
   is screened by the same code acquisition screens an available slot with, so a sibling
-  acquisition would quarantine is quarantined here too, and is never a source. The first choice
+  acquisition would quarantine is quarantined here too, and is never a source. A sibling whose
+  read failed is left available with the failure recorded, and is not a source this time. The first choice
   is one whose fingerprint matches the leased commit's, and the next is the one most recently
   claimed successfully, including one whose claim recorded no fingerprint. A stale slot takes
   only the first choice. The main checkout is never a source. With no idle sibling
@@ -387,7 +424,8 @@ dies anywhere after that write leaves no fingerprint for a later lease to trust.
 the slot still `provisioning` and quarantines it as an interrupted provisioning intent, exactly
 as it does after a restart during setup, and marks its `deps_state` as `interrupted`, whether it
 found `claiming` or `seeding`. That marking happens on every reconciliation path, including one
-that quarantines the whole pool because its identity or marker cannot be proven. If that slot
+that quarantines the whole pool because its identity or marker cannot be proven, and one that
+leaves every slot as it was because the pool's registrations or marker could not be read. If that slot
 ever returns to the pool, its next claim first removes the pool's seed paths, then starts cold:
 it seeds if a sibling qualifies, and runs every step either way. That recovering claim never
 skips the steps on an inherited fingerprint, even from an exact match. The write-ahead does not
@@ -522,7 +560,8 @@ button and the check each slot gets when its turn comes all apply acquisition's 
 slot that is leased, quarantined, mid-transition, occupied, not proven clean, still referenced by
 its last owner, or already covered by a queued operation is never a target: named directly it
 blocks the preview with the rule's own reason, and in a pool Warm it is left out and counted in
-the preview. A pool with no claim, or with native
+the preview. A slot whose fresh screening fails to read it when its turn comes is skipped, not
+quarantined, and records the failed read. A pool with no claim, or with native
 worktrees disabled, has nothing to warm. Nothing in a Warm discards work, so it asks for no
 acknowledgement.
 
@@ -693,7 +732,8 @@ The operations have deliberately narrow meanings:
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.
 - **Reconcile** re-observes durable state, Git registration, ownership, and processes. It repairs
-  only states whose result is positively proven and keeps uncertainty quarantined.
+  only states whose result is positively proven and quarantines only a proven fault; a slot whose
+  read failed keeps its state and says so on its card (see [Native pools](#native-pools)).
 - **Destroy** removes one exact manager-owned slot, the fixed slot set enumerated for one pool, or
   a bulk selection. Each destroyable slot has a checkbox, and a pool's **Select all slots** adds
   every destroyable slot in it; the selection may span pools. **Destroy selected** previews exactly
@@ -732,7 +772,8 @@ The operations have deliberately narrow meanings:
   quarantine it judged, so a restart drops it until the next pass, which runs at startup.
 
   A slot's card shows why it is in its state, each fact on its own line: the quarantine reason,
-  the detail behind it (such as Git's own error), why its processes are unknown, the last
+  the detail behind it (such as Git's own error), why its last observation failed, why its
+  processes are unknown, the last
   automatic-recovery refusal with the path that blocked it, and the processes inside the slot
   with PID, command and start time. The inventory carries at most 16 of those processes per slot,
   each command bounded to 512 bytes, and the card counts the rest. A process already listed with

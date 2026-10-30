@@ -846,8 +846,8 @@ const BLOCKING_KIND: Record<NonNullable<WorktreeRecoveryRefusalView["blocking"]>
 
 /**
  * Why a slot is in its state, one fact per line, so no fact hides another: the reason, the
- * detail behind it, why its processes are unknown, the last automatic-recovery refusal with the
- * exact path that blocked it, and the processes inside it. A process the orphan list already
+ * detail behind it, why its last observation failed, why its processes are unknown, the last
+ * automatic-recovery refusal with the exact path that blocked it, and the processes inside it. A process the orphan list already
  * names, with its Kill, is not listed twice.
  */
 function SlotDiagnosis({
@@ -862,7 +862,7 @@ function SlotDiagnosis({
   const killable = new Set(orphans.map((orphan) => orphan.pid));
   const occupants = slot.occupants.filter((occupant) => !killable.has(occupant.pid));
   const unlisted = Math.max(0, (slot.processes.count ?? 0) - slot.occupants.length);
-  const facts = Boolean(slot.quarantineReason || detail || slot.processes.reason || refusal);
+  const facts = Boolean(slot.quarantineReason || detail || slot.observationFailure || slot.processes.reason || refusal);
   if (!facts && occupants.length === 0 && unlisted === 0) return null;
   return (
     <>
@@ -871,6 +871,7 @@ function SlotDiagnosis({
           <dl>
             {slot.quarantineReason && <div><dt>Reason</dt><dd>{slot.quarantineReason}</dd></div>}
             {detail && <div><dt>Detail</dt><dd>{detail}</dd></div>}
+            {slot.observationFailure && <div><dt>Last observation failed</dt><dd>{slot.observationFailure}</dd></div>}
             {slot.processes.reason && <div><dt>Processes</dt><dd>{slot.processes.reason}</dd></div>}
             {refusal && (
               <div>

@@ -64,6 +64,7 @@ import {
 } from "./manager.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
+import { splitObservationFailure } from "./quarantine-reasons.ts";
 import type { UnownedTreeDiscards } from "./orphan-sweep.ts";
 import {
   inspectWorktreeOccupancy,
@@ -622,7 +623,8 @@ export class WorktreeOperationsService {
             // measures only the fixed paths it is about to show.
             diskBytes: null,
             quarantineReason: compact(entry.slot.quarantineReason),
-            diagnostic: compact(entry.slot.lastError),
+            diagnostic: compact(splitObservationFailure(entry.slot.lastError).rest),
+            observationFailure: compact(splitObservationFailure(entry.slot.lastError).failure),
             recoveryRefusal: entry.recoveryRefusal && {
               at: entry.recoveryRefusal.at,
               reason: compact(entry.recoveryRefusal.reason)!,
@@ -1181,7 +1183,7 @@ export class WorktreeOperationsService {
     if (!pool) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
 
     if (request.action === "reconcile") {
-      consequences.push("Re-observes durable rows, Git registration, ownership, and processes. Uncertainty remains quarantined.");
+      consequences.push("Re-observes durable rows, Git registration, ownership, and processes. A proven fault quarantines its slot; a read that fails leaves each slot as it was and says so on its card.");
       return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
     }
 
@@ -2072,7 +2074,7 @@ export class WorktreeOperationsService {
       case "recover": return "Quarantined worktree recovered to warm capacity.";
       case "removeUnowned": return "Unowned tree discarded and removed.";
       case "prune": return "Safe candidate set pruned.";
-      case "reconcile": return "Pool re-observed; uncertainty remains quarantined.";
+      case "reconcile": return "Pool re-observed; a slot whose read failed was left as it was.";
       case "destroy": return "Fixed worktree target destroyed.";
       case "legacyReturn": return "Exact legacy lease returned through its domain owner.";
       case "warm": return "Warm finished.";

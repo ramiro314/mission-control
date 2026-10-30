@@ -18,6 +18,7 @@ import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
 import type { CloneTree } from "../src/server/worktrees/seed.ts";
+import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 // Warm, through the real operations service, the real manager, real Git and real claim steps.
@@ -807,6 +808,37 @@ test("the Warm preview, the slot card and acquisition judge idleness by the same
   assert.equal(dirtyRow.quarantineReason, "available slot has dirty or untracked work");
   assert.equal(stillReferenced.store.slot(referenced!.slotId)!.state, "available");
   await stillReferenced.release(acquired.lease, { ownerAuthorized: true });
+});
+
+test("Warm targeting with a failed read skips the slot and quarantines nothing", async () => {
+  const fixture = repository("mission-warm-unreadable-");
+  let unreadable: string | null = null;
+  class UnreadableGit extends NativeWorktreeGit {
+    override async inspect(path: string) {
+      return path === unreadable
+        ? { ok: false as const, reason: "git status timed out after 15 s, and after 30 s on retry", outcomeUnknown: true }
+        : super.inspect(path);
+    }
+  }
+  const m = manager({ claim: claimOf(INSTALL) }, { git: new UnreadableGit() });
+  const [slot] = await idleSlots(m, fixture.clone, fixture.sha, 1);
+  const before = m.store.slot(slot!.slotId)!;
+  unreadable = slot!.path;
+
+  const result = await m.warmSlot({
+    slotId: slot!.slotId,
+    operationId: "warm-unreadable",
+    signal: new AbortController().signal,
+    output: () => {},
+    log: null,
+  });
+  assert.deepEqual(result, { outcome: "skipped", reason: "the slot is not idle: slot Git state is unknown" });
+  const after = m.store.slot(slot!.slotId)!;
+  assert.equal(after.state, "available");
+  assert.equal(after.quarantineReason, null);
+  assert.equal(after.version, before.version);
+  assert.match(after.lastError ?? "", /^Last observation failed: slot Git state is unknown \(git status timed out/);
+  assert.equal(runCount(slot!.path), 0, "no step ran");
 });
 
 // ---- backpressure and bounded reads of the full log ----

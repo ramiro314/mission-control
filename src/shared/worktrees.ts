@@ -192,6 +192,11 @@ export interface NativeWorktreeSlotView {
   diskBytes: number | null;
   quarantineReason: string | null;
   diagnostic: string | null;
+  /**
+   * Why the last observation of this slot failed, even after its retry, until a read
+   * succeeds. A failed read leaves the slot in its state, whatever that is.
+   */
+  observationFailure: string | null;
   /** Only on a quarantined slot, and only for the quarantine it is in now. */
   recoveryRefusal: WorktreeRecoveryRefusalView | null;
   /**

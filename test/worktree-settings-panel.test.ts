@@ -47,6 +47,7 @@ const overCapacityPool: WorktreeRepositoryView = {
     diskBytes: 4096,
     quarantineReason: null,
     diagnostic: null,
+    observationFailure: null,
     recoveryRefusal: null,
     actions: ["return", "destroy"],
     dependencies: null,
@@ -724,4 +725,34 @@ test("a quarantined slot whose owner is referenced names it and offers its Retur
   assert.doesNotMatch(gone, sentence);
   assert.doesNotMatch(gone, />Return<\/button>/);
   assert.doesNotMatch(card({}), sentence);
+});
+
+test("a slot whose last observation failed says so on its own line, in whatever state it kept", () => {
+  const base = overCapacityPool.slots[0]!;
+  const failure = "slot Git state is unknown (git status timed out after 15 s, and after 30 s on retry)";
+  const html = render({
+    inventory: {
+      ...inventory,
+      repositories: [{
+        ...overCapacityPool,
+        slots: [
+          { ...base, state: "leased", occupants: [], observationFailure: failure },
+          {
+            ...base,
+            id: "slot-quarantined",
+            ordinal: 2,
+            state: "quarantined",
+            owner: null,
+            occupants: [],
+            quarantineReason: "worktree reset failed",
+            diagnostic: "fatal: unable to write new index file",
+            observationFailure: failure,
+          },
+        ],
+      }],
+    },
+  });
+  assert.match(html, /aria-label="Why slot 1 is leased"><dl><div><dt>Last observation failed<\/dt><dd>slot Git state is unknown \(git status timed out after 15 s, and after 30 s on retry\)<\/dd><\/div>/);
+  // A quarantine keeps its reason and detail; the failed read is a line of its own beside them.
+  assert.match(html, /<dt>Reason<\/dt><dd>worktree reset failed<\/dd><\/div><div><dt>Detail<\/dt><dd>fatal: unable to write new index file<\/dd><\/div><div><dt>Last observation failed<\/dt>/);
 });
