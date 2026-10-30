@@ -703,6 +703,69 @@ test("an orphan row shows what names its process, and an unnamed one shows no na
   assert.match(html, /aria-label="Kill process 7001"/, "a name does not take the Kill away");
 });
 
+/** A slot card whose orphan list holds a live session's process and `orphans` others. */
+function cardWithSessionProcess(orphans: number): string {
+  const slot = overCapacityPool.slots[0]!;
+  const problem = (pid: number, session: { id: string; name: string } | null) => ({
+    kind: "orphan-process",
+    link: { target: "slot", slotId: slot.id },
+    process: { tree: slot.path, pid, ppid: 1, command: `worker-${pid}`, startedAt: 0, knownOwner: session && `Session ${session.name}`, session },
+  });
+  return renderToStaticMarkup(createElement(WorktreeSettingsPanel, {
+    state: {
+      ...state,
+      inventory: {
+        ...state.inventory!,
+        repositories: [{ ...overCapacityPool, slots: [{ ...slot, occupants: [] }] }],
+      },
+    },
+    storageHealth: {
+      problems: [
+        problem(7000, { id: "session-1", name: "fix the login" }),
+        ...Array.from({ length: orphans }, (_, index) => problem(7001 + index, null)),
+      ],
+    } as unknown as StorageHealth,
+  }));
+}
+
+test("a live session's process stays listed with Open session and no Kill, and Kill all counts only the rest", () => {
+  const two = cardWithSessionProcess(2);
+  assert.match(two, /<strong>Session fix the login<\/strong><code>worker-7000<\/code>/);
+  assert.match(two, />Open session<\/button>/);
+  assert.doesNotMatch(two, /aria-label="Kill process 7000"/);
+  assert.match(two, /aria-label="Kill process 7001"/);
+  assert.match(two, /aria-label="Kill process 7002"/);
+  assert.match(two, />Kill all<\/button>/);
+
+  const one = cardWithSessionProcess(1);
+  assert.match(one, /aria-label="Kill process 7001"/);
+  assert.doesNotMatch(one, />Kill all<\/button>/, "one killable process is its row's Kill alone");
+
+  const none = cardWithSessionProcess(0);
+  assert.match(none, />Open session<\/button>/);
+  assert.doesNotMatch(none, />Kill</);
+});
+
+test("a live session's process inside a leased slot offers Open session too", () => {
+  const slot = overCapacityPool.slots[0]!;
+  const html = render({
+    inventory: {
+      ...inventory,
+      repositories: [{
+        ...overCapacityPool,
+        slots: [{
+          ...slot,
+          occupants: [
+            { pid: 7000, command: "claude", startedAt: 0, knownOwner: "Session fix the login", session: { id: "session-1", name: "fix the login" } },
+            { pid: 7001, command: "vite", startedAt: 0, knownOwner: null, session: null },
+          ],
+        }],
+      }],
+    },
+  });
+  assert.equal(html.match(/>Open session<\/button>/g)?.length, 1);
+});
+
 test("a lock refusal names the lock path, and a detail equal to the reason is not repeated", () => {
   const base = overCapacityPool.slots[0]!;
   const html = render({

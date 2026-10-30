@@ -1182,7 +1182,7 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   padding: 0;
 }
 
-.wt-occupants li { display: grid; gap: 2px; min-width: 0; }
+.wt-occupants li { display: grid; gap: 2px; justify-items: start; min-width: 0; }
 .wt-occupants code { font-size: 11px; overflow-wrap: anywhere; }
 .wt-occupants span { color: var(--dim); font-size: 10px; }
 .wt-occupants strong,
@@ -1232,6 +1232,9 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   gap: 2px;
   min-width: 0;
 }
+
+/* A long command must never squeeze the row's action onto two lines. */
+.wt-orphan .btn { flex: none; white-space: nowrap; }
 
 .wt-orphan code {
   font-size: 11px;
