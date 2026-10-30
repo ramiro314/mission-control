@@ -116,7 +116,9 @@ without a migration.
 
 Only a proven fault quarantines: an inexact path, a missing registration once listing succeeded,
 a bare, locked or prunable registration, a different common directory, an interrupted
-provisioning, prune or return, a dirty available slot, an available slot whose HEAD moved or that
+provisioning or prune (judged before any Git or process read, so a failed read never keeps one),
+an interrupted return proven occupied, dirty or off its target commit (one whose read failed
+waits for the next pass to prove and complete it), a dirty available slot, an available slot whose HEAD moved or that
 carries an active lease identity, an incomplete identity, a leased slot whose owner is positively
 gone, a reset or verification that failed, and a pool identity or marker that is missing,
 malformed or belongs to another pool. A process inside an available slot is not a fault: the slot

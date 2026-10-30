@@ -863,3 +863,46 @@ test("an owner lookup that throws on both attempts leaves leased and available s
   assert.equal(manager.store.slot(released.slotId)?.lastError, null);
   await manager.release(leased);
 });
+
+test("a failed read never keeps an interrupted provisioning or prune; an interrupted return waits for a good read", async () => {
+  const repository = repo("mission-reconcile-transitional-unknown-");
+  const referenced = new Set<string>();
+  let failStatus = false;
+  const git = new NativeWorktreeGit(
+    async (bin, args, opts) => failStatus && args.includes("status") ? timedOut(opts?.timeoutMs) : run(bin, args, opts),
+    async () => {},
+  );
+  const manager = harness({ referenced, git, policy: () => ({ enabled: true, maxSlots: 3, setupArgv: null }) });
+  const take = async (key: string) => acquired(
+    await manager.acquire({ repositoryPath: repository.clone, baseSha: repository.sha, owner: { kind: "task", key } }),
+  );
+  const provisioning = await take("task-transitional-provisioning");
+  const pruning = await take("task-transitional-pruning");
+  const returning = await take("task-transitional-returning");
+  for (const lease of [provisioning, pruning, returning]) referenced.add(lease.leaseId);
+  db.prepare(`UPDATE worktree_slots SET state = 'provisioning' WHERE id = ?`).run(provisioning.slotId);
+  assert.equal((await manager.release(pruning, { ownerAuthorized: true })).outcome, "released");
+  db.prepare(`UPDATE worktree_slots SET state = 'pruning', version = version + 1 WHERE id = ?`).run(pruning.slotId);
+  assert.ok(manager.store.markReturning(returning.slotId, returning.slotVersion, repository.sha, Date.now()));
+  failStatus = true;
+
+  await manager.reconcile();
+  // Both are faults whatever Git says, so a Git read that failed twice does not hold them.
+  assert.equal(manager.store.slot(provisioning.slotId)?.state, "quarantined");
+  assert.equal(manager.store.slot(provisioning.slotId)?.quarantineReason, "startup found an interrupted provisioning intent");
+  assert.equal(manager.store.slot(pruning.slotId)?.state, "quarantined");
+  assert.equal(
+    manager.store.slot(pruning.slotId)?.quarantineReason,
+    "startup found an interrupted prune with filesystem state still present",
+  );
+  // An interrupted return is completed only once it is proven, so it waits for a read.
+  const waiting = manager.store.slot(returning.slotId)!;
+  assert.equal(waiting.state, "returning");
+  assert.match(waiting.lastError ?? "", /^Last observation failed: slot Git state is unknown \(git status timed out/);
+
+  failStatus = false;
+  await manager.reconcile();
+  const completed = manager.store.slot(returning.slotId)!;
+  assert.equal(completed.state, "available", "the next good read completes the proven return");
+  assert.equal(completed.lastError, null);
+});

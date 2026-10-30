@@ -3010,6 +3010,18 @@ export class WorktreeManager {
           reject("slot Git registration is bare, locked, or prunable");
           continue;
         }
+        // Interrupted provisioning and prune are faults whatever Git or the process table say,
+        // so they are judged before those reads: a read that fails must not keep a slot in a
+        // transitional state, holding an owner that never received its lease. An interrupted
+        // return is different: a later pass that reads it can still complete it.
+        if (slot.state === "provisioning") {
+          reject("startup found an interrupted provisioning intent");
+          continue;
+        }
+        if (slot.state === "pruning") {
+          reject("startup found an interrupted prune with filesystem state still present");
+          continue;
+        }
         let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
         try {
           inspection = await this.deps.git.inspect(slot.path);
@@ -3054,14 +3066,6 @@ export class WorktreeManager {
               // Unknown ownership is not proof of absence; the identity stays as it is.
             }
           }
-          continue;
-        }
-        if (slot.state === "provisioning") {
-          reject("startup found an interrupted provisioning intent");
-          continue;
-        }
-        if (slot.state === "pruning") {
-          reject("startup found an interrupted prune with filesystem state still present");
           continue;
         }
         if (slot.state === "returning") {
