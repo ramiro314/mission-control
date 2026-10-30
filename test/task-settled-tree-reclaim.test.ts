@@ -72,7 +72,7 @@ function restartWith(id: string, tree: Tree, options: {
   attached?: Tree;
   occupancy?: StartupDeps["occupancy"];
   returnBlocker?: StartupDeps["returnBlocker"];
-  provider?: "git" | "mission";
+  provider?: "git" | "mission" | "treehouse";
 } = {}): {
   registry: InstanceType<typeof Registry>;
   manager: Manager;
@@ -337,8 +337,8 @@ test("a tree whose pool has no claim keeps its install state as work", async () 
   assert.equal(registry.getTask("settled-no-claim")?.worktreePath, tree.worktree);
 });
 
-test("a pool slot keeps its folder, so its check never takes the delete rule's seed paths", async () => {
-  for (const provider of ["git", "mission"] as const) {
+test("a disposable or Treehouse tree takes the delete rule's seed paths; a pool slot keeps its folder and never does", async () => {
+  for (const provider of ["git", "treehouse", "mission"] as const) {
     const tree = settledWorktree(`rule-${provider}`);
     claimSeeds(tree);
     const asked: Array<Parameters<NonNullable<StartupDeps["returnBlocker"]>>[1]> = [];

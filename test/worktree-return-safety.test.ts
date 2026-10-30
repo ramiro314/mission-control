@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { WorktreesConfigSchema } from "../src/shared/protocol.ts";
 import { treeSeedPaths } from "../src/server/worktrees/config.ts";
+import { treeGitCommonDirectory } from "../src/server/util/git.ts";
 import { withinSeedPaths } from "../src/server/worktrees/seed.ts";
 import {
   REGENERABLE_IGNORED_PATHS,
@@ -325,6 +326,29 @@ test("delete rule: a pool with no claim, and a folder with no repository, get on
   const bare = mkdtempSync(join(tmpdir(), "mission-no-repo-"));
   t.after(() => rmSync(bare, { recursive: true, force: true }));
   assert.deepEqual(treeSeedPaths(bare, claimed([".yarn/install-state.gz"])), [], "no .git of its own, and no walking up");
+});
+
+test("a checkout whose .git is a directory maps to its own pool; a .git file naming no gitdir maps to none", async (t) => {
+  const { path, git } = ignoringFixture(t);
+  writeFileSync(join(path, ".git", "info", "exclude"), ".yarn/install-state.gz\n");
+  const config = WorktreesConfigSchema.parse({
+    repositories: {
+      [realpathSync(join(path, ".git"))]: { claim: { steps: [{ argv: ["yarn"] }], seed: { paths: [".yarn/install-state.gz"] } } },
+    },
+  });
+  // Keyed as `worktreeRepositoryIdentity` keys a pool: the physical common directory.
+  assert.equal(treeGitCommonDirectory(path), realpathSync(git("rev-parse", "--path-format=absolute", "--git-common-dir")));
+  const seedPaths = treeSeedPaths(path, config);
+  assert.deepEqual(seedPaths, [".yarn/install-state.gz"]);
+  mkdirSync(join(path, ".yarn"));
+  writeFileSync(join(path, ".yarn", "install-state.gz"), "state\n");
+  assert.deepEqual(await worktreeWork(path, { regenerableIgnored: true, seedPaths }), { status: "clean" });
+
+  const malformed = mkdtempSync(join(tmpdir(), "mission-malformed-git-"));
+  t.after(() => rmSync(malformed, { recursive: true, force: true }));
+  writeFileSync(join(malformed, ".git"), "not a gitdir pointer\n");
+  assert.equal(treeGitCommonDirectory(malformed), null);
+  assert.deepEqual(treeSeedPaths(malformed, config), []);
 });
 
 test("seed paths match an ignored entry segment by segment, as the seed matches them", () => {
