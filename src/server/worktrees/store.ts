@@ -394,6 +394,13 @@ export class WorktreeStore {
     return { entries, nextBefore: rows.length > size ? entries[size - 1]!.id : null };
   }
 
+  /** The id of a slot's newest history row of any kind, or null when it has none. */
+  lastHistoryId(slotId: string): number | null {
+    const row = this.db.prepare(`SELECT MAX(id) AS id FROM worktree_slot_history WHERE slot_id = ?`).get(slotId) as
+      { id: number | null };
+    return row.id;
+  }
+
   /** The newest provisioning, claim and seed rows of a slot, for its card. */
   slotTimings(slotId: string): WorktreeSlotTimingsView {
     const last = (kind: "provisioning" | "claim" | "seed") =>

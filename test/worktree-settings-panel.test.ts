@@ -56,6 +56,7 @@ const overCapacityPool: WorktreeRepositoryView = {
     dependencies: null,
     warmLog: null,
     timings: { provisioning: null, claim: null, seed: null },
+    lastHistoryId: null,
   }],
 };
 

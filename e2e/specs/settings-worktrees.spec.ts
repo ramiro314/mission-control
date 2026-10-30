@@ -1000,7 +1000,7 @@ test("a slot card shows its last timings and seed outcome, and the pool row its 
     }
     insert.run(row.pool_id, row.id, row.ordinal, now, "seed", "placed", 12_000, JSON.stringify({ sourceOrdinal: 7 }));
   });
-  // These writes moved no slot, so only the timing itself can tell the open list to read again.
+  // These writes moved no slot, so only the newest row's id can tell the open list to read again.
   await dashboard.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(timings.getByRole("definition").nth(2)).toHaveText("from slot 7 in 12s");
   await expect(repo.getByText("Median new slot 5m 30s · seed hit rate 30% (3 of last 10 new slots)")).toBeVisible();

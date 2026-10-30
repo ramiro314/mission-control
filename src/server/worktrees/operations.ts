@@ -689,6 +689,7 @@ export class WorktreeOperationsService {
             }),
             warmLog: this.warmLogView(entry.slot.depsLogPath),
             timings: this.manager.store.slotTimings(entry.slot.id),
+            lastHistoryId: this.manager.store.lastHistoryId(entry.slot.id),
           };
         });
       const counts = {

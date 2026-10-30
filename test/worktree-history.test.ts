@@ -1001,6 +1001,17 @@ test("a slot's timings are the newest of each kind, each with its duration and o
   assert.deepEqual([claim.kind, claim.durationMs, claim.detail, claim.toState], ["claim", 50, "yarn install", null]);
 });
 
+test("a slot's newest history row is the newest of any kind, and only its own", () => {
+  assert.equal(store.lastHistoryId("slot-a"), null);
+  const slot = reserved();
+  assert.equal(store.lastHistoryId(slot.id), historyOf(slot.id)[0]!.id, "a transition");
+  timing(slot.id, "claim", 2, 1, "skipped", slot.poolId);
+  assert.equal(store.lastHistoryId(slot.id), historyOf(slot.id)[0]!.id, "a timing, with no slot change");
+  const newest = store.lastHistoryId(slot.id);
+  timing("slot-other", "claim", 3, 1, "skipped", slot.poolId);
+  assert.equal(store.lastHistoryId(slot.id), newest, "another slot's row changes nothing here");
+});
+
 /**
  * A repository whose `deps/` a claim installs and a seed copies, and a manager whose clock moves
  * only when a step spends time, so every duration below is exact. `occupied` names a path that
@@ -1210,6 +1221,7 @@ test("the inventory carries each slot's last timings and its pool's summary", as
   assert.equal(slot.timings.provisioning!.outcome, "new");
   assert.equal(slot.timings.claim!.durationMs, 60_000);
   assert.equal(slot.timings.seed!.outcome, "none");
+  assert.equal(slot.lastHistoryId, historyOf(granted.slotId)[0]!.id);
 });
 
 

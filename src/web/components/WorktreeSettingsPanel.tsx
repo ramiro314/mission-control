@@ -887,13 +887,7 @@ function SlotCard({
       <SlotHistory
         slotId={slot.id}
         ordinal={slot.ordinal}
-        refreshKey={[
-          slot.version,
-          slot.observationFailure,
-          slot.timings.provisioning?.at,
-          slot.timings.claim?.at,
-          slot.timings.seed?.at,
-        ].join(":")}
+        lastHistoryId={slot.lastHistoryId}
       />
     </article>
   );
@@ -939,17 +933,17 @@ const HISTORY_ACTORS: Record<string, string> = {
 
 /**
  * What happened to this slot, newest first. Read only while open, so a pool of closed cards asks
- * the daemon for nothing, and read again when `refreshKey` says the slot moved on, which keeps
+ * the daemon for nothing, and read again when `lastHistoryId` says a row was written, which keeps
  * the older pages already shown.
  */
 function SlotHistory({
   slotId,
   ordinal,
-  refreshKey,
+  lastHistoryId,
 }: {
   slotId: string;
   ordinal: number;
-  refreshKey: string;
+  lastHistoryId: number | null;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<WorktreeSlotHistoryPage | null>(null);
@@ -967,7 +961,7 @@ function SlotHistory({
       if (page) setList((shown) => refreshedSlotHistory(shown, page));
     });
     return () => controller.abort();
-  }, [open, slotId, refreshKey]);
+  }, [open, slotId, lastHistoryId]);
 
   async function showOlder(): Promise<void> {
     setLoadingOlder(true);

@@ -282,6 +282,8 @@ export interface NativeWorktreeSlotView {
   warmLog: WorktreeWarmLogView | null;
   /** The last provisioning, claim and seed in this slot's history. */
   timings: WorktreeSlotTimingsView;
+  /** This slot's newest history row, which is what tells an open History to read again. */
+  lastHistoryId: number | null;
 }
 
 /** A Warm operation's full log, under the daemon's state directory. */
