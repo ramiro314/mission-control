@@ -65,6 +65,62 @@ function alive(pid: number): boolean {
   }
 }
 
+test("a Warm's card keeps advancing while every inventory read is slower than its revision bumps", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-warm-slow-"));
+  const gate = join(dir, "gate");
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "idle slot" },
+  });
+  expect(acquired.status()).toBe(201);
+  const { leaseId } = await acquired.json() as { leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId } });
+  expect(returned.ok()).toBe(true);
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const saved = await dashboard.request.put(`${daemon.baseURL}/api/worktrees/config`, {
+    data: {
+      repositories: {
+        [inventory.repositories.find((repo) => repo.name === "demo-repo")!.commonDirectory]: {
+          claim: {
+            steps: [{ argv: [process.execPath, "-e", STEP_SCRIPT, gate, join(dir, "pid")], env: [] }],
+            timeoutMinutes: 5,
+            fingerprintPaths: [],
+          },
+        },
+      },
+    },
+  });
+  expect(saved.status()).toBe(200);
+
+  const pool = await openPool(dashboard, daemon);
+  const slotOne = pool.getByRole("article", { name: "Slot 1" });
+  await expect(slotOne.getByRole("button", { name: "Warm", exact: true })).toBeVisible();
+
+  // A loaded machine's inventory read: slower than the once-a-second bump a running Warm's tail
+  // publishes, so a newer read always starts before the last one lands.
+  await dashboard.route("**/api/worktrees", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    await route.continue();
+  });
+
+  await slotOne.getByRole("button", { name: "Warm", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "warm worktree preview" });
+  await dialog.getByRole("button", { name: "Execute" }).click();
+  await expect(dialog).toHaveCount(0);
+
+  const single = dashboard.getByRole("region", { name: "Warm operations" }).getByRole("listitem", { name: "Warm slot 1" });
+  await expect(single).toContainText("in progress", { timeout: WARM_SETTLES_MS });
+  const tail = single.getByLabel("Warm slot 1 output");
+  await expect(tail).toContainText("fetched package 3", { timeout: WARM_SETTLES_MS });
+  await expect(tail).toContainText("fetched package 30", { timeout: WARM_SETTLES_MS });
+
+  writeFileSync(gate, "0");
+  await expect(single).toContainText("finished", { timeout: WARM_SETTLES_MS });
+});
+
 test("Warm and Warm idle slots prepare idle slots with a live tail, Cancel, and a kept log", async ({
   dashboard,
   daemon,

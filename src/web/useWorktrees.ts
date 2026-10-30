@@ -79,6 +79,10 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   const inventoryRef = useRef<WorktreeInventory | null>(null);
   const readSeq = useRef(0);
+  /** The newest read has not landed yet. */
+  const reading = useRef(false);
+  /** Something changed after the newest read began, so it needs one more once it lands. */
+  const changedWhileReading = useRef(false);
   const writeChain = useRef(Promise.resolve());
 
   const setInventory = useCallback((next: WorktreeInventory | null): void => {
@@ -90,10 +94,16 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     if (!enabled) return;
     const seq = ++readSeq.current;
     const controller = new AbortController();
+    reading.current = true;
     setLoading(true);
     const next = await fetchWorktrees(controller.signal);
     if (seq !== readSeq.current) return;
     setLoading(false);
+    reading.current = false;
+    if (changedWhileReading.current) {
+      changedWhileReading.current = false;
+      void refresh();
+    }
     if (!next) {
       // KEEP what we already observed. A refresh can fail for a moment - the daemon is busy
       // shelling out to git for somebody else, a request is aborted - and throwing the last
@@ -114,10 +124,18 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     setSubmitted((current) => current.filter((entry) => entry.readSeq >= seq));
   }, [enabled, setInventory]);
 
+  // A revision bump or the backstop never supersedes a read in flight: only the newest read is
+  // applied, so a Warm's once-a-second bumps against a read slower than that would discard every
+  // response and freeze the panel on what it first showed. They wait for it to land instead, and
+  // however many arrived meanwhile share one more read.
   useEffect(() => {
     if (!enabled) return;
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), BACKSTOP_MS);
+    const read = (): void => {
+      if (reading.current) changedWhileReading.current = true;
+      else void refresh();
+    };
+    read();
+    const timer = window.setInterval(read, BACKSTOP_MS);
     return () => window.clearInterval(timer);
   }, [enabled, refresh, revision]);
 
