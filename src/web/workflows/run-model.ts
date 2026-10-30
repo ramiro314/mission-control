@@ -50,7 +50,12 @@ import {
 } from "@shared/workflow.ts";
 import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
 import { blockedPhaseClause, workflowCaptureFailure, workflowPreparationRecovery } from "@shared/workflow-lifecycle.ts";
-import { readWaitForCiState, type WaitForCiBlockCode, type WaitForCiState } from "@shared/wait-for-ci.ts";
+import {
+  WAIT_FOR_CI_LEGACY_SETTINGS,
+  readWaitForCiState,
+  type WaitForCiBlockCode,
+  type WaitForCiState,
+} from "@shared/wait-for-ci.ts";
 import type { Stage, StageMember } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
@@ -4015,15 +4020,14 @@ export function waitForCiStatus(raw: string | undefined): PipelineStatus {
 /** What each Wait for CI block means to the person who has to clear it. */
 export const WAIT_FOR_CI_BLOCK_SENTENCES: Record<WaitForCiBlockCode, string> = {
   ci_flake_report_missing:
-    "Every CI check passed, but no \"Flaky tests\" check appeared on the head commit. Rerun CI "
-    + "and wait for CI again, or add the flake report to this repository's CI (see Flaky tests "
-    + "in CI) and start a new round.",
+    "Blocked under an earlier rule that required a \"Flaky tests\" check. Wait for CI again to "
+    + "judge this run under the current rules.",
   ci_missing:
     "No CI check appeared on the pull request's head commit before the timeout. Check that CI "
     + "runs on pull requests and that GitHub Inspector is on, then wait for CI again.",
   ci_timeout:
-    "CI was still running when the timeout ran out. Wait for CI again once it finishes, or "
-    + "raise the node's timeout in a new version.",
+    "CI was still running, or had not stayed settled for the quiet period, when the timeout ran "
+    + "out. Wait for CI again once it finishes, or raise the node's timeout in a new version.",
   ci_pull_request_unknown:
     "This node could not tell which commit to watch: the step before it recorded no pull "
     + "request, or the pull request's head could not be identified. Start a new round so the "
@@ -4039,6 +4043,13 @@ export function waitForCiHeadline(state: WaitForCiState, now: number): string {
   if (state.outcome === "fail") return `CI failed on ${pr} at ${head}.`;
   if (state.outcome === "blocked" && state.blocked) {
     return WAIT_FOR_CI_BLOCK_SENTENCES[state.blocked.code];
+  }
+  if (state.outcome === null && state.quietSince != null && state.observedAt !== null) {
+    // Measured the way the node measures it: between observations, never against the clock.
+    const quiet = WAIT_FOR_CI_LEGACY_SETTINGS.quietMinutes;
+    const sofar = Math.min(quiet, Math.max(0, Math.floor((state.observedAt - state.quietSince) / 60_000)));
+    return `Every counted check has settled on ${pr} at ${head}. Passing once nothing changes `
+      + `for ${quiet} min (${sofar} of ${quiet} so far).`;
   }
   const elapsed = Math.max(0, Math.floor((now - state.waitingSince) / 60_000));
   return `Waiting for CI on ${pr} at ${head} · ${elapsed} of ${state.timeoutMinutes} min.`;

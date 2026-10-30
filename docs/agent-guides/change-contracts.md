@@ -986,6 +986,16 @@ A SessionAction is a durable side effect, not an evaluator:
   (`WAIT_FOR_CI_BLOCK_CODES`, append-only, each with a sentence in `run-model.ts` and a
   recovery policy); the submission fails with it so the infrastructure retry can revive it and
   wait again. A block never becomes a repair packet or spends a round.
+- No check name is exempt or required. Every node judges under `WAIT_FOR_CI_LEGACY_SETTINGS`
+  (all checks, a 3-minute quiet period, no expected checks): literals, so a node or attempt
+  that names no setting means exactly that for ever, and never follows a later default.
+- The quiet period is observed, never assumed. `quietSince` is the `observedAt` of the
+  observation that first saw the settled set, and only a later observation of the same set
+  passes the node; the sweep re-deciding one observation cannot. Past the timeout a running
+  quiet period may finish but never restart, bounded by `WAIT_FOR_CI_QUIET_GRACE_MS`.
+- `greenWithoutReportSince` is retired but stays in `WaitForCiStateSchema`, always written as
+  null, so a downgraded daemon still reads new attempt rows. `ci_flake_report_missing` stays in
+  the block codes for runs an earlier build blocked; nothing produces it.
 - Placement is validated (`waitForCiMayFollow`): only after a Pull Request action's
   `complete` route. When one follows an action, that action's packet omits the CI
   follow-through contract (`waitForCiFollows`).

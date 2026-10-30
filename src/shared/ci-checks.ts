@@ -4,6 +4,8 @@
 // (`src/server/pr.ts`) and by Wait for CI (`src/shared/wait-for-ci.ts`), so the two cannot
 // disagree about whether a check failed.
 
+import type { PrChecks } from "./types.ts";
+
 /** CheckRun conclusions that count as a failed check. */
 const FAIL_CONCLUSIONS = new Set([
   "FAILURE",
@@ -40,4 +42,27 @@ export function classifyCheckEntry(entry: unknown): CiCheckEntryState | null {
     return "passing";
   }
   return null;
+}
+
+/**
+ * Which checks a CI gate counts: every check on the head, or only those GitHub marks required
+ * on the pull request. APPEND-ONLY: persisted in workflow graphs and in Foreman config.
+ */
+export const CI_STRICTNESS = ["all", "required"] as const;
+export type CiStrictness = (typeof CI_STRICTNESS)[number];
+
+/**
+ * The rollup of the checks GitHub marks required (`isRequired`), or null when none is marked.
+ * `failing` when any required check fails, `pending` when any is still running, otherwise
+ * `passing`. The one classification shared by Wait for CI and Foreman, so the two cannot
+ * disagree about the required checks.
+ */
+export function requiredChecksRollup(
+  runs: readonly { state: CiCheckEntryState; required?: boolean }[],
+): PrChecks | null {
+  const required = runs.filter((run) => run.required === true);
+  if (required.length === 0) return null;
+  if (required.some((run) => run.state === "failing")) return "failing";
+  if (required.some((run) => run.state === "pending")) return "pending";
+  return "passing";
 }

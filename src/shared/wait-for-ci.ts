@@ -17,13 +17,27 @@ import type { PrMergeable } from "./types.ts";
 export const WAIT_FOR_CI_TIMEOUT_MINUTES = { default: 45, min: 5, max: 240 } as const;
 
 /**
- * How long CI may sit green without a "Flaky tests" check before the node blocks.
- *
- * The report job runs after every test job, so there is a moment when every check that exists
- * has passed and the report's check does not exist yet. Blocking on the first such sighting
- * would block a healthy run; five minutes is several Inspector polls.
+ * What every Wait for CI node judges under: all checks count, a 3-minute quiet period, and no
+ * expected checks. Literals, frozen for ever: a node or attempt that names no setting means
+ * exactly this, never whatever a later default becomes.
  */
-export const WAIT_FOR_CI_FLAKE_REPORT_GRACE_MS = 5 * 60_000;
+export const WAIT_FOR_CI_LEGACY_SETTINGS = {
+  strictness: "all",
+  quietMinutes: 3,
+  expectedChecks: [],
+} as const;
+
+/**
+ * How long a quiet period still running at the timeout may wait for the observation that
+ * decides it, counted from the moment the period would end.
+ *
+ * Past the timeout a quiet period may finish but never start again, and it is decided on the
+ * first new observation at or after its end. The Inspector reviews pull requests one at a
+ * time, and a review can take ten minutes before the next 90-second poll, so that observation
+ * can come minutes late; fifteen minutes covers one review, one poll and the CodeRabbit read
+ * in the same turn. A literal, because this module cannot import the Inspector worker.
+ */
+export const WAIT_FOR_CI_QUIET_GRACE_MS = 15 * 60_000;
 
 /** A check run summary is cut to this many characters when it is stored. */
 export const CI_CHECK_SUMMARY_CHARS = 1_500;
@@ -44,6 +58,11 @@ export const CiCheckRunSchema = z.object({
   detailsUrl: z.string().max(2_000).nullable(),
   title: z.string().max(CI_CHECK_TITLE_CHARS).nullable(),
   summary: z.string().max(CI_CHECK_SUMMARY_CHARS).nullable(),
+  /**
+   * True when GitHub marks the check required on this pull request (`isRequired`). Absent
+   * means not marked, which is how every snapshot stored before the field existed reads.
+   */
+  required: z.boolean().optional(),
 });
 export type CiCheckRun = z.infer<typeof CiCheckRunSchema>;
 
@@ -58,6 +77,11 @@ export const CiObservationSchema = z.object({
   observedAt: z.number(),
   checkRuns: z.array(CiCheckRunSchema).max(CI_CHECK_RUNS_MAX),
   flakeReport: FlakeReportSchema.nullable(),
+  /**
+   * How many checks GitHub reports on the head (`contexts.totalCount`), which can exceed the
+   * `CI_CHECK_RUNS_MAX` stored. Null when GitHub did not say; absent on older snapshots.
+   */
+  totalCount: z.number().int().nullable().optional(),
 });
 export type CiObservation = z.infer<typeof CiObservationSchema>;
 
@@ -68,12 +92,15 @@ function text(value: unknown, max: number): string | null {
 
 /**
  * The head commit's `statusCheckRollup.contexts` nodes as stored check runs, plus the flake
- * report parsed from the "Flaky tests" check. Unknown node shapes are skipped.
+ * report parsed from the "Flaky tests" check and GitHub's `contexts.totalCount` (null unless it
+ * is a non-negative integer). Unknown node shapes are skipped. A node's `isRequired: true` is
+ * stored as `required`; anything else leaves it absent.
  */
 export function ciCheckRunsFromRollup(
   contexts: readonly unknown[],
   parseReport: (summary: string) => FlakeReport | null,
-): { checkRuns: CiCheckRun[]; flakeReport: FlakeReport | null } {
+  totalCount?: unknown,
+): { checkRuns: CiCheckRun[]; flakeReport: FlakeReport | null; totalCount: number | null } {
   const checkRuns: CiCheckRun[] = [];
   let flakeReport: FlakeReport | null = null;
   for (const raw of contexts) {
@@ -81,6 +108,7 @@ export function ciCheckRunsFromRollup(
     const node = raw as Record<string, unknown>;
     const state = classifyCheckEntry(node);
     if (state === null) continue;
+    const required = node.isRequired === true ? { required: true } : {};
     if (typeof node.status === "string" && typeof node.name === "string") {
       const conclusion = typeof node.conclusion === "string" ? node.conclusion.toUpperCase() : null;
       if (node.name === FLAKY_TESTS_CHECK_NAME && typeof node.summary === "string") {
@@ -93,6 +121,7 @@ export function ciCheckRunsFromRollup(
         detailsUrl: text(node.detailsUrl, 2_000),
         title: text(node.title, CI_CHECK_TITLE_CHARS),
         summary: text(node.summary, CI_CHECK_SUMMARY_CHARS),
+        ...required,
       });
       continue;
     }
@@ -105,10 +134,15 @@ export function ciCheckRunsFromRollup(
         detailsUrl: text(node.targetUrl, 2_000),
         title: null,
         summary: text(node.description, CI_CHECK_SUMMARY_CHARS),
+        ...required,
       });
     }
   }
-  return { checkRuns, flakeReport };
+  return {
+    checkRuns,
+    flakeReport,
+    totalCount: Number.isInteger(totalCount) && (totalCount as number) >= 0 ? (totalCount as number) : null,
+  };
 }
 
 /**
@@ -116,11 +150,15 @@ export function ciCheckRunsFromRollup(
  * (`WORKFLOW_RUN_PHASES`) and a `Record` key in the run views.
  */
 export const WAIT_FOR_CI_BLOCK_CODES = [
-  /** Every check passed and no "Flaky tests" check appeared. */
+  /**
+   * Every check passed and no "Flaky tests" check appeared. Nothing produces it any more:
+   * runs blocked with it before that check stopped being required keep it, and "Wait for CI
+   * again" judges them under the current rules.
+   */
   "ci_flake_report_missing",
   /** No check appeared on the head commit before the timeout. */
   "ci_missing",
-  /** Checks were still running at the timeout. */
+  /** Checks were still running, or had not stayed settled for the quiet period, at the timeout. */
   "ci_timeout",
   /** The node has no pull request to watch: the action before it recorded none. */
   "ci_pull_request_unknown",
@@ -150,8 +188,17 @@ export const WaitForCiStateSchema = z.object({
   observedAt: z.number().nullable(),
   /** The expected head's checks as last read. */
   checkRuns: z.array(CiCheckRunSchema).max(CI_CHECK_RUNS_MAX),
-  /** When CI was first seen all green without a "Flaky tests" check. */
+  /**
+   * Retired: when CI was first seen green without a "Flaky tests" check. Always written as
+   * null, and kept in the schema so a downgraded daemon can still read attempts this one wrote.
+   */
   greenWithoutReportSince: z.number().nullable(),
+  /**
+   * The `observedAt` of the Inspector observation that first saw this settled set of checks:
+   * the start of the quiet period. Null while any check is pending or the set has not been
+   * seen settled; absent on attempts written before the quiet period existed.
+   */
+  quietSince: z.number().nullable().optional(),
   outcome: z.enum(["pass", "fail", "blocked"]).nullable(),
   /** The flake report of a passing run, when the "Flaky tests" check carried one. */
   flakeReport: FlakeReportSchema.nullable(),
@@ -183,6 +230,7 @@ export function initialWaitForCiState(input: {
     observedAt: null,
     checkRuns: [],
     greenWithoutReportSince: null,
+    quietSince: null,
     outcome: null,
     flakeReport: null,
     blocked: null,
@@ -226,20 +274,42 @@ function sameHead(expected: string, observed: string): boolean {
   return expected.toLowerCase() === observed.toLowerCase();
 }
 
+/** A check as the quiet period compares it: what it is called and what it concluded. */
+function checkKey(run: CiCheckRun): string {
+  return JSON.stringify([run.name, run.state, run.conclusion]);
+}
+
+/** Whether two observations saw the same checks, in any order. */
+function sameChecks(a: readonly CiCheckRun[], b: readonly CiCheckRun[]): boolean {
+  if (a.length !== b.length) return false;
+  const left = a.map(checkKey).sort();
+  const right = b.map(checkKey).sort();
+  return left.every((key, index) => key === right[index]);
+}
+
 /**
  * One observation of a waiting node, decided. Pure: the caller supplies the stored
- * observation and the time.
+ * observation and the time. Every node judges under `WAIT_FOR_CI_LEGACY_SETTINGS`.
  *
  * - The pull request conflicts with its base on the expected head: fail, before anything else.
  *   GitHub runs no `pull_request` checks on a conflicting pull request, so waiting for them
  *   would only end in `ci_missing`. A conflict observed on another head waits like any other
  *   observation of another head.
  * - Another head, or no observation yet: wait. The node never judges a head it was not given.
- * - Any check still pending: wait.
- * - A failing check other than "Flaky tests": fail, naming every failing check.
- * - All passing with a "Flaky tests" check: pass, carrying its report.
- * - All passing without one: wait out the grace period, then block `ci_flake_report_missing`.
- * - At the timeout: block `ci_missing` when no check ever appeared, `ci_timeout` otherwise.
+ * - Any check still pending: wait, and clear the quiet period.
+ * - Every check settled, one failing: fail, naming every failing check. "Flaky tests" is a
+ *   check like any other.
+ * - Every check passed: the quiet period. Its clock starts at the `observedAt` of the
+ *   observation that first saw this set, and the node passes on an observation at least the
+ *   quiet period later that saw the same set. A changed set restarts it. The clock reads
+ *   observations, never `now`, so the manager's fifteen-second sweep re-deciding one
+ *   observation cannot pass the node on its own. The pass carries the flake report, when CI
+ *   published one.
+ * - At the timeout: a quiet period already running may still finish on its first new
+ *   observation, unchanged, but never starts or restarts. It blocks `ci_timeout` when the set
+ *   changes, or when no new observation arrives within `WAIT_FOR_CI_QUIET_GRACE_MS` of the
+ *   period's end. Otherwise it blocks `ci_missing` when no check ever appeared, and
+ *   `ci_timeout`, naming the checks still running, when one did.
  */
 export function decideWaitForCi(
   state: WaitForCiState,
@@ -247,69 +317,83 @@ export function decideWaitForCi(
   now: number,
   mergeability: WaitForCiMergeability | null = null,
 ): WaitForCiDecision {
-  if (!state.expectedHeadOid) {
+  // Retired, and never written as anything but null again, whatever an older daemon left.
+  let next: WaitForCiState = { ...state, greenWithoutReportSince: null };
+  if (!next.expectedHeadOid) {
     const blocked = {
       code: "ci_pull_request_unknown" as const,
-      detail: state.pullRequestKey
+      detail: next.pullRequestKey
         ? "The pull request's head commit could not be identified: GitHub had not reported it, "
           + "and the checkout's own head could not be resolved."
         : "The step before this node recorded no pull request to watch.",
     };
-    return { kind: "block", ...blocked, state: { ...state, outcome: "blocked", blocked } };
+    return { kind: "block", ...blocked, state: { ...next, outcome: "blocked", blocked } };
   }
   if (
     mergeability?.mergeable === "conflicting"
-    && sameHead(state.expectedHeadOid, mergeability.headSha)
+    && sameHead(next.expectedHeadOid, mergeability.headSha)
   ) {
     return {
       kind: "fail",
       failing: [],
       conflict: { baseRef: mergeability.baseRef },
-      state: { ...state, outcome: "fail", greenWithoutReportSince: null },
+      state: { ...next, outcome: "fail", quietSince: null },
     };
   }
-  let next = state;
-  if (observation && sameHead(state.expectedHeadOid, observation.headSha)) {
-    next = { ...next, observedAt: observation.observedAt, checkRuns: observation.checkRuns };
+  const quietMs = WAIT_FOR_CI_LEGACY_SETTINGS.quietMinutes * 60_000;
+  if (observation && sameHead(next.expectedHeadOid, observation.headSha)) {
+    const previous = next.checkRuns;
     const runs = observation.checkRuns;
+    next = { ...next, observedAt: observation.observedAt, checkRuns: runs };
     const settled = runs.length > 0 && runs.every((run) => run.state !== "pending");
-    if (settled) {
-      const failing = runs.filter((run) => run.state === "failing" && run.name !== FLAKY_TESTS_CHECK_NAME);
+    if (!settled) {
+      next = { ...next, quietSince: null };
+    } else {
+      const failing = runs.filter((run) => run.state === "failing");
       if (failing.length > 0) {
-        return { kind: "fail", failing, state: { ...next, outcome: "fail", greenWithoutReportSince: null } };
+        return { kind: "fail", failing, state: { ...next, outcome: "fail", quietSince: null } };
       }
-      if (runs.some((run) => run.name === FLAKY_TESTS_CHECK_NAME)) {
-        return {
-          kind: "pass",
-          state: { ...next, outcome: "pass", flakeReport: observation.flakeReport, greenWithoutReportSince: null },
-        };
+      const since = next.quietSince ?? null;
+      if (since !== null && sameChecks(previous, runs)) {
+        if (observation.observedAt - since >= quietMs) {
+          return {
+            kind: "pass",
+            state: { ...next, outcome: "pass", flakeReport: observation.flakeReport },
+          };
+        }
+        if (timedOut(next, now) && now - since >= quietMs + WAIT_FOR_CI_QUIET_GRACE_MS) {
+          return timeoutBlock(next, "No new CI observation arrived to finish the quiet period "
+            + `within ${WAIT_FOR_CI_QUIET_GRACE_MS / 60_000} minutes of its end.`);
+        }
+        return { kind: "wait", state: next };
       }
-      const since = next.greenWithoutReportSince ?? now;
-      next = { ...next, greenWithoutReportSince: since };
-      if (now - since >= WAIT_FOR_CI_FLAKE_REPORT_GRACE_MS || timedOut(next, now)) {
-        const blocked = {
-          code: "ci_flake_report_missing" as const,
-          detail: `Every check passed, but no "${FLAKY_TESTS_CHECK_NAME}" check appeared on the head commit.`,
-        };
-        return { kind: "block", ...blocked, state: { ...next, outcome: "blocked", blocked } };
+      if (timedOut(next, now)) {
+        return timeoutBlock(next, `CI had not stayed settled for the ${quietMs / 60_000}-minute quiet `
+          + `period after ${next.timeoutMinutes} minutes.`);
       }
-      return { kind: "wait", state: next };
+      return { kind: "wait", state: { ...next, quietSince: observation.observedAt } };
     }
-    next = { ...next, greenWithoutReportSince: null };
   }
   if (timedOut(next, now)) {
-    const blocked = next.checkRuns.length === 0
-      ? {
-          code: "ci_missing" as const,
-          detail: `No CI check appeared on the head commit within ${next.timeoutMinutes} minutes.`,
-        }
-      : {
-          code: "ci_timeout" as const,
-          detail: `CI was still running after ${next.timeoutMinutes} minutes.`,
-        };
-    return { kind: "block", ...blocked, state: { ...next, outcome: "blocked", blocked } };
+    if (next.checkRuns.length === 0) {
+      const blocked = {
+        code: "ci_missing" as const,
+        detail: `No CI check appeared on the head commit within ${next.timeoutMinutes} minutes.`,
+      };
+      return { kind: "block", ...blocked, state: { ...next, outcome: "blocked", blocked } };
+    }
+    const pending = next.checkRuns.filter((run) => run.state === "pending").map((run) => `"${run.name}"`);
+    return timeoutBlock(next, pending.length > 0
+      ? `Still running after ${next.timeoutMinutes} minutes: ${pending.join(", ")}.`
+      : `CI had not stayed settled for the ${quietMs / 60_000}-minute quiet period after `
+        + `${next.timeoutMinutes} minutes.`);
   }
   return { kind: "wait", state: next };
+}
+
+function timeoutBlock(state: WaitForCiState, detail: string): WaitForCiDecision {
+  const blocked = { code: "ci_timeout" as const, detail };
+  return { kind: "block", ...blocked, state: { ...state, outcome: "blocked", blocked } };
 }
 
 function timedOut(state: WaitForCiState, now: number): boolean {

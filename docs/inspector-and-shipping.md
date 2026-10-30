@@ -218,7 +218,11 @@ than read.
 
 The same pull request query that reads the head also reads **CI on the head commit**, check by
 check, and stores it with the pull request, keyed to that commit. Nothing polls GitHub a second
-time for it. Two things read it:
+time for it. For each check the query also reads `isRequired(pullRequestNumber:)`, whether GitHub
+marks it required on this pull request, and for the head it reads `contexts.totalCount`, the
+number of checks GitHub reports, which can exceed the first 100 the query reads. Both are stored
+with the snapshot; a snapshot stored before they existed reads as nothing marked required. Two
+things read the snapshot:
 
 - A workflow's [Wait for CI](workflows.md#wait-for-ci) node, which decides from it whether the
   pull request's CI passed, failed, or never reported.

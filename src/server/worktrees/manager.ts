@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { WorktreeClaim, WorktreeClaimSeed } from "@shared/protocol.ts";
 import type { WorktreeProvider } from "@shared/types.ts";
-import { isWorktreeOwnerKind, type WorktreeOwnerKind } from "@shared/worktrees.ts";
+import { isWorktreeOwnerKind, type WorktreeOwnerKind, type WorktreeRecoveryRefusalView } from "@shared/worktrees.ts";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
 import { openDb } from "../db.ts";
@@ -61,7 +61,12 @@ import {
   type FileHolders,
   type SlotIndexLock,
 } from "./index-lock.ts";
-import { worktreeReturnBlocker } from "../git/worktree-return-safety.ts";
+import {
+  describeWorktreeWork,
+  worktreeWork,
+  worktreeWorkBlocker,
+  type WorktreeWork,
+} from "../git/worktree-return-safety.ts";
 import {
   inspectWorktreeOccupancy,
   pathContains,
@@ -169,7 +174,8 @@ export interface WorktreeBlockingProcess {
 
 export type WorktreeRecoverResult =
   | { outcome: "recovered"; removedLock: string | null }
-  | { outcome: "refused"; reason: string }
+  /** `blocking` is the exact path that refused it: the first work entry, or the slot's `index.lock`. */
+  | { outcome: "refused"; reason: string; blocking?: NonNullable<WorktreeRecoveryRefusalView["blocking"]> }
   | { outcome: "outcomeUnknown"; reason: string };
 
 export type NativeLeaseLookup =
@@ -208,6 +214,8 @@ export interface NativeSlotStatus {
   occupancy: WorktreeOccupancy;
   ownerReferenced: boolean | null;
   mergedIntoDefault: boolean | null;
+  /** The last automatic-recovery refusal of the quarantine this slot is in now, or null. */
+  recoveryRefusal: WorktreeRecoveryRefusalView | null;
 }
 
 export interface NativePoolStatus {
@@ -708,6 +716,12 @@ export class WorktreeManager {
   private readonly liveWarmOwners = new Set<string>();
   /** Staging directories a seed in flight owns. Reconciliation removes every other one. */
   private readonly liveSeedStaging = new Set<string>();
+  /**
+   * The last automatic-recovery refusal per slot, with the slot version it refused. Any change
+   * to the slot moves its version, so a refusal is shown only for the quarantine it judged. In
+   * memory: the next maintenance pass, which runs at startup, records it again.
+   */
+  private readonly recoveryRefusals = new Map<string, { version: number; refusal: WorktreeRecoveryRefusalView }>();
 
   /**
    * Manual acquires running in the background because their pool has a claim. `make session`
@@ -2630,12 +2644,23 @@ export class WorktreeManager {
       fileHolders: this.deps.fileHolders,
     });
     const lockBlocker = indexLockBlocker(lock, input.automatic);
-    if (lockBlocker) return { outcome: "refused", reason: lockBlocker };
+    if (lockBlocker) {
+      return lock.path === null
+        ? { outcome: "refused", reason: lockBlocker }
+        : { outcome: "refused", reason: lockBlocker, blocking: { kind: "lock", path: lock.path } };
+    }
     // After the lock check, never before it: the clean read is Git in the slot, and it reads
     // with `--no-optional-locks` so it cannot itself take the lock it is judging.
     if (!input.allowDirty) {
-      const work = await this.slotWork(slot.path);
-      if (work) return { outcome: "refused", reason: `the slot holds work Recover would discard: ${work}` };
+      const work = await this.slotWorkEntry(slot.path);
+      if (work.status === "unknown") return { outcome: "refused", reason: `the slot's work could not be read: ${work.reason}` };
+      if (work.status === "work") {
+        return {
+          outcome: "refused",
+          reason: `the slot holds work Recover would discard: ${describeWorktreeWork(work.entry)}`,
+          blocking: work.entry,
+        };
+      }
     }
     if (!occupancy || occupancy.status === "unknown") {
       return { outcome: "refused", reason: occupancy?.status === "unknown" ? occupancy.reason : "slot occupancy is unknown" };
@@ -2696,8 +2721,19 @@ export class WorktreeManager {
    * The work a reset of this slot would discard, or null when there is none: uncommitted,
    * untracked or unpushed work, or an ignored file outside `REGENERABLE_IGNORED_PATHS`.
    */
-  slotWork(path: string): Promise<string | null> {
-    return worktreeReturnBlocker(path, { regenerableIgnored: true, execute: trackedRun });
+  async slotWork(path: string): Promise<string | null> {
+    return worktreeWorkBlocker(await this.slotWorkEntry(path));
+  }
+
+  /** The first entry `slotWork` would name, as its path and kind. */
+  slotWorkEntry(path: string): Promise<WorktreeWork> {
+    return worktreeWork(path, { regenerableIgnored: true, execute: trackedRun });
+  }
+
+  /** The last automatic-recovery refusal of this slot's current quarantine, or null. */
+  recoveryRefusal(slot: WorktreeSlotRow): WorktreeRecoveryRefusalView | null {
+    const recorded = this.recoveryRefusals.get(slot.id);
+    return slot.state === "quarantined" && recorded?.version === slot.version ? recorded.refusal : null;
   }
 
   /**
@@ -2708,6 +2744,9 @@ export class WorktreeManager {
   async recoverLockQuarantines(): Promise<void> {
     const candidates = this.store.slots().filter((slot) =>
       slot.state === "quarantined" && lockCausedQuarantine(slot.lastError) && !this.claims.has(slot.id));
+    // A slot that is no longer a candidate keeps no refusal: it left that quarantine, or is gone.
+    const ids = new Set(candidates.map((slot) => slot.id));
+    for (const id of this.recoveryRefusals.keys()) if (!ids.has(id)) this.recoveryRefusals.delete(id);
     for (const slot of candidates) {
       if (this.stopped) return;
       const result = await this.recoverSlot({
@@ -2716,6 +2755,16 @@ export class WorktreeManager {
         allowDirty: false,
         automatic: true,
       });
+      if (result.outcome === "refused") {
+        const prior = this.recoveryRefusals.get(slot.id);
+        const refusal = { at: this.deps.now(), reason: result.reason, blocking: result.blocking ?? null };
+        this.recoveryRefusals.set(slot.id, { version: slot.version, refusal });
+        // The card shows the refusal, so a new one reaches it; the same one repeated does not.
+        if (prior?.version !== slot.version || prior.refusal.reason !== refusal.reason ||
+          prior.refusal.blocking?.path !== refusal.blocking?.path) this.publish();
+      } else {
+        this.recoveryRefusals.delete(slot.id);
+      }
       if (result.outcome === "recovered") {
         console.log(`[worktrees] recovered slot ${slot.ordinal} (${slot.path}) from a stale index.lock quarantine`);
       } else if (result.outcome === "outcomeUnknown") {
@@ -3114,6 +3163,7 @@ export class WorktreeManager {
           occupancy: occupancy.get(slot.path) ?? { status: "unknown", reason: "path is missing" },
           ownerReferenced: referenced,
           mergedIntoDefault,
+          recoveryRefusal: this.recoveryRefusal(slot),
         };
       });
       const policy = this.deps.resolvePolicy(pool.gitCommonDirectory);

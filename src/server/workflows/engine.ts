@@ -2107,7 +2107,7 @@ export class WorkflowEngine {
     const { submission, run, version, node } = resolved;
     if (run.status !== "running" || submission.status !== "running") return false;
     const decision: WaitForCiDecision = disabledNodes(run).includes(node.id)
-      ? { kind: "pass", state: { ...state, outcome: "pass", disabled: true } }
+      ? { kind: "pass", state: { ...state, outcome: "pass", disabled: true, greenWithoutReportSince: null } }
       : decideWaitForCi(
           state,
           state.pullRequestKey ? observe.ci(state.pullRequestKey) : null,

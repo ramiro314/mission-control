@@ -1,6 +1,5 @@
 import type { WorkflowNodeAttempt } from "@shared/workflow.ts";
 import type { CiCheckRun } from "@shared/wait-for-ci.ts";
-import { FLAKY_TESTS_CHECK_NAME } from "@shared/flake-report.ts";
 import { ClockText } from "../components/ClockText.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { waitForCiHeadline, waitForCiStateOf } from "./run-model.ts";
@@ -14,7 +13,8 @@ const CHECK_STATE_WORDS: Record<CiCheckRun["state"], string> = {
 /**
  * What a Wait for CI attempt is waiting for, or what it decided: the pull request and head,
  * elapsed time against the limit, each check with its state, the failing checks on a fail,
- * the flakes on a pass, and the block sentence when it blocked. Renders nothing for any other
+ * the flakes on a pass when CI published a flake report, and the block sentence when it
+ * blocked. Renders nothing for any other
  * attempt, so the attempt and verdict cards can include it unconditionally.
  */
 export function WaitForCiPanel({
@@ -26,8 +26,7 @@ export function WaitForCiPanel({
 }): React.JSX.Element | null {
   const state = waitForCiStateOf(attempt);
   if (!state) return null;
-  const failing = state.checkRuns.filter((run) =>
-    run.state === "failing" && run.name !== FLAKY_TESTS_CHECK_NAME);
+  const failing = state.checkRuns.filter((run) => run.state === "failing");
   const flakes = state.flakeReport?.flakes ?? [];
   const issues = new Map((state.flakeReport?.issues ?? []).map((issue) => [issue.key, issue]));
   return (
@@ -70,7 +69,7 @@ export function WaitForCiPanel({
           </ul>
         </>
       )}
-      {state.outcome === "pass" && (
+      {state.outcome === "pass" && state.flakeReport && (
         <p className="wf-run-meta">
           {flakes.length === 0
             ? "No flaky tests in this run."

@@ -28,7 +28,7 @@ import type {
   SessionActionAdoptedPullRequest,
 } from "../src/server/workflows/session-action-adapters.ts";
 import { mkMuxHandle, mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
-import type { CiCheckRun, CiObservation, WaitForCiMergeability } from "../src/shared/wait-for-ci.ts";
+import type { CiCheckRun, CiObservation, WaitForCiMergeability, WaitForCiState } from "../src/shared/wait-for-ci.ts";
 import { prCreationFixture } from "./helpers/pr-creation-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
@@ -1934,8 +1934,25 @@ function observeCi(
   headSha: string,
   checkRuns: CiCheckRun[],
   flakeReport: CiObservation["flakeReport"] = null,
+  observedAt = Date.now(),
 ): void {
-  h.ci.observation = { headSha, observedAt: Date.now(), checkRuns, flakeReport };
+  h.ci.observation = { headSha, observedAt, checkRuns, flakeReport };
+}
+
+/**
+ * Green CI as two Inspector polls one quiet period apart, each swept: the first starts the
+ * node's quiet clock, the second passes it. The first is backdated so no test waits minutes.
+ */
+async function observeGreenCi(
+  h: Harness,
+  headSha: string,
+  checkRuns: CiCheckRun[],
+  flakeReport: CiObservation["flakeReport"] = null,
+): Promise<void> {
+  observeCi(h, headSha, checkRuns, flakeReport, Date.now() - 4 * 60_000);
+  await h.manager.sweepWaitForCi();
+  observeCi(h, headSha, checkRuns, flakeReport);
+  await h.manager.sweepWaitForCi();
 }
 
 function ciAttempts(h: Harness, runId: string) {
@@ -2000,11 +2017,20 @@ test("Wait for CI judges only the proven head, and passes green CI carrying its 
     assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
     assert.equal((ciAttempts(h, runId)[0]!.output as { checkRuns: unknown[] }).checkRuns.length, 2);
 
-    observeCi(h, h.full("head-2"), [
+    const green = [
       ciRun("unit", "passing"),
       ciRun("e2e", "passing"),
       ciRun("Flaky tests", "passing", { conclusion: "NEUTRAL", title: "1 flaky test" }),
-    ], FLAKE_REPORT);
+    ];
+    // Settled, but one observation is not a quiet period: the sweep alone never passes it.
+    const firstSeen = Date.now() - 4 * 60_000;
+    observeCi(h, h.full("head-2"), green, FLAKE_REPORT, firstSeen);
+    await h.manager.sweepWaitForCi();
+    await h.manager.sweepWaitForCi(Date.now() + 10 * 60_000);
+    assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
+    assert.equal((ciAttempts(h, runId)[0]!.output as { quietSince: number | null }).quietSince, firstSeen);
+    // The next poll, a quiet period later, with nothing changed.
+    observeCi(h, h.full("head-2"), green, FLAKE_REPORT);
     await h.manager.sweepWaitForCi();
     await waitFor(() => h.store.getRun(runId)?.status === "completed", "green CI with a flake did not reach End");
 
@@ -2021,7 +2047,7 @@ test("Wait for CI judges only the proven head, and passes green CI carrying its 
   }
 });
 
-test("a failing CI check sends a repair packet naming it, and Flaky tests never fails the node", async () => {
+test("a failing CI check sends a repair packet naming it, and Flaky tests counts like any check", async () => {
   const h = await harness("ci-fail", { pullRequest: true, waitForCiMinutes: 45 });
   try {
     const runId = await runToCiWait(h);
@@ -2038,6 +2064,7 @@ test("a failing CI check sends a repair packet naming it, and Flaky tests never 
     assert.equal(verdict.verdict, "fail");
     assert.deepEqual(verdict.requestedChanges.map((change) => change.title), [
       'Fix the failing CI check "unit (node 24)"',
+      'Fix the failing CI check "Flaky tests"',
     ]);
     await waitFor(
       () => h.store.listDeliveries(runId).some((delivery) => delivery.kind === "persona_feedback"),
@@ -2048,7 +2075,7 @@ test("a failing CI check sends a repair packet naming it, and Flaky tests never 
     assert.match(repair.payload, /Fix the failing CI check "unit \(node 24\)"/);
     assert.match(repair.payload, /2 tests failed/);
     assert.match(repair.payload, /https:\/\/ci\.example\/unit/);
-    assert.doesNotMatch(repair.payload, /CI check "Flaky tests"/);
+    assert.match(repair.payload, /CI check "Flaky tests"/);
   } finally {
     await h.stop();
   }
@@ -2060,14 +2087,13 @@ test("Wait for CI blocks with a plain reason, and retrying waits on the same hea
     const runId = await runToCiWait(h);
     const firstState = ciAttempts(h, runId)[0]!.output as { expectedHeadOid: string };
 
-    // Green without the report: a grace period first, then the block.
+    // Green CI whose quiet period stalls past the timeout: no new poll ever finishes it.
     observeCi(h, h.full("head-2"), [ciRun("unit", "passing")]);
-    const now = Date.now();
-    await h.manager.sweepWaitForCi(now);
+    await h.manager.sweepWaitForCi();
     assert.equal(ciAttempts(h, runId)[0]!.state, "waiting");
-    await h.manager.sweepWaitForCi(now + 6 * 60_000);
+    await h.manager.sweepWaitForCi(Date.now() + 46 * 60_000);
     assert.equal(h.store.getRun(runId)?.status, "blocked");
-    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_flake_report_missing");
+    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_timeout");
     assert.equal(ciAttempts(h, runId)[0]!.state, "error");
     // Waiting again on the same head is the primary move; a new round stays available for a
     // fix that needs a new commit.
@@ -2083,7 +2109,7 @@ test("Wait for CI blocks with a plain reason, and retrying waits on the same hea
       assert.equal((latest.output as { expectedHeadOid: string }).expectedHeadOid, firstState.expectedHeadOid);
       assert.equal(h.store.getRun(runId)?.status, "running");
     };
-    retry("retry-report");
+    retry("retry-quiet");
 
     // Nothing ever appears on the head: missing CI at the timeout.
     h.ci.observation = null;
@@ -2095,9 +2121,53 @@ test("Wait for CI blocks with a plain reason, and retrying waits on the same hea
     observeCi(h, h.full("head-2"), [ciRun("unit", "pending")]);
     await h.manager.sweepWaitForCi(Date.now() + 46 * 60_000);
     assert.equal(h.store.getRun(runId)?.currentPhase, "ci_timeout");
+    assert.equal(ciAttempts(h, runId).at(-1)!.error, 'ci_timeout: Still running after 45 minutes: "unit".');
     assert.equal(ciAttempts(h, runId).length, 3);
     // No repair round was spent on any of it.
     assert.equal(h.store.listSubmissions(runId).every((submission) => submission.round === 1), true);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a run an older daemon blocked for a missing Flaky tests check passes green CI once waited on again", async () => {
+  const h = await harness("ci-legacy-block", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(h);
+    const waiting = ciAttempts(h, runId)[0]!;
+    // Exactly what the old rule wrote: the block, its code, and its retired grace timestamp.
+    const green = [ciRun("unit", "passing")];
+    const detail = 'Every check passed, but no "Flaky tests" check appeared on the head commit.';
+    const blocked = h.store.blockWaitForCiAttempt({
+      attemptId: waiting.id,
+      code: "ci_flake_report_missing",
+      detail,
+      state: {
+        ...(waiting.output as WaitForCiState),
+        checkRuns: green,
+        observedAt: Date.now() - 10 * 60_000,
+        greenWithoutReportSince: Date.now() - 10 * 60_000,
+        outcome: "blocked",
+        blocked: { code: "ci_flake_report_missing", detail },
+      },
+      now: Date.now(),
+    });
+    assert.ok(blocked);
+    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_flake_report_missing");
+    // Stays blocked under the new rules until somebody waits again: nothing re-judges it.
+    observeCi(h, h.full("head-2"), green);
+    await h.manager.sweepWaitForCi();
+    assert.equal(h.store.getRun(runId)?.currentPhase, "ci_flake_report_missing");
+    assert.equal(h.store.runSummary(runId)?.recovery?.primary, "retry");
+
+    const retried = h.manager.retry(runId, { requestId: "retry-legacy" });
+    assert.equal(retried.ok, true, JSON.stringify(retried));
+    const rewait = ciAttempts(h, runId).at(-1)!.output as WaitForCiState;
+    assert.equal(rewait.greenWithoutReportSince, null);
+    assert.equal(rewait.quietSince, null);
+    await observeGreenCi(h, h.full("head-2"), green);
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "the re-judged run did not pass green CI");
+    assert.equal((ciAttempts(h, runId).at(-1)!.verdict as { verdict: string }).verdict, "pass");
   } finally {
     await h.stop();
   }
@@ -2251,8 +2321,7 @@ test("before the Inspector has polled, Wait for CI watches the head the continua
       () => (ciAttempts(h, runId)[0]!.output as { expectedHeadOid: string | null }).expectedHeadOid === h.full("head-2"),
       "Wait for CI did not adopt the continuation's captured head",
     );
-    observeCi(h, h.full("head-2"), [ciRun("unit", "passing"), ciRun("Flaky tests", "passing")]);
-    await h.manager.sweepWaitForCi();
+    await observeGreenCi(h, h.full("head-2"), [ciRun("unit", "passing")]);
     await waitFor(() => h.store.getRun(runId)?.status === "completed", "green CI on the captured head did not pass");
   } finally {
     await h.stop();

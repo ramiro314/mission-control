@@ -1134,6 +1134,59 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 
 .wt-diagnostic { color: var(--wt-attention); }
 
+/* Why a slot is in its state: each fact on its own line, none hiding another. */
+.wt-why dl {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+
+.wt-why dt {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.wt-why dd {
+  color: var(--wt-attention);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.wt-why code { font-size: 11px; }
+
+/* Processes whose working directory is inside the slot. */
+.wt-occupants {
+  border-top: 1px solid var(--border);
+  margin: 10px 0 0;
+  padding-top: 8px;
+}
+
+.wt-occupants h5 {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .08em;
+  margin: 0 0 6px;
+  text-transform: uppercase;
+}
+
+.wt-occupants ul {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wt-occupants li { display: grid; gap: 2px; min-width: 0; }
+.wt-occupants code { font-size: 11px; overflow-wrap: anywhere; }
+.wt-occupants span { color: var(--dim); font-size: 10px; }
+
 /* Processes that outlived the slot's owner, each with its guarded Kill. */
 .wt-orphans {
   border-top: 1px solid var(--border);

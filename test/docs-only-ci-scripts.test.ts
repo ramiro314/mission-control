@@ -194,11 +194,12 @@ test("ci-result: an unreadable or empty NEEDS_JSON fails", () => {
 
 // ---- Wait for CI ---------------------------------------------------------------------------
 
-test("a docs-only run's checks pass Wait for CI, because flake report still publishes Flaky tests", () => {
+test("a docs-only run's checks pass Wait for CI", () => {
   const HEAD = "d".repeat(40);
   const done = (name: string, conclusion: string, extra: Record<string, string> = {}) =>
     ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion, ...extra });
-  // What `flake report` publishes after reading zero reports.
+  // What `flake report` publishes after reading zero reports, so a docs-only run still records
+  // its (empty) flake report.
   const zero = renderFlakeSummary({
     version: 1,
     commit: HEAD,
@@ -232,7 +233,11 @@ test("a docs-only run's checks pass Wait for CI, because flake report still publ
     timeoutMinutes: 45,
     now: 0,
   });
-  const decision = decideWaitForCi(state, { headSha: HEAD, observedAt: 1, checkRuns, flakeReport }, 1);
+  // Skipped jobs count as passing, so the set settles; it passes one quiet period later.
+  const quiet = decideWaitForCi(state, { headSha: HEAD, observedAt: 1, checkRuns, flakeReport }, 1);
+  assert.equal(quiet.kind, "wait");
+  const at = 1 + 3 * 60_000;
+  const decision = decideWaitForCi(quiet.state, { headSha: HEAD, observedAt: at, checkRuns, flakeReport }, at);
   assert.equal(decision.kind, "pass");
   assert.equal(decision.state.flakeReport?.flakes.length, 0);
 });

@@ -29,6 +29,7 @@ import {
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
 import { WORKTREE_WARM_LOGS_DIR } from "../config.ts";
 import { run } from "../util/exec.ts";
+import { clipUtf8Bytes } from "../util/utf8.ts";
 import { unref } from "../util/timers.ts";
 import { TailRing } from "../workflows/check-spawn.ts";
 import { worktreeRepositoryIdentity } from "../util/git.ts";
@@ -588,6 +589,13 @@ export class WorktreeOperationsService {
                 : "unmerged" as const,
             dirty: entry.dirty,
             processes,
+            occupants: entry.occupancy.status === "known"
+              ? entry.occupancy.occupants.slice(0, WORKTREE_INVENTORY_LIMITS.occupantsPerSlot).map((occupant) => ({
+                pid: occupant.pid,
+                command: clipUtf8Bytes(occupant.command, WORKTREE_INVENTORY_LIMITS.occupantCommandBytes),
+                startedAt: occupant.startMs,
+              }))
+              : [],
             // Recursive size walks are intentionally absent from inventory. Large warm
             // dependency caches made one settings read launch a `du` over every slot,
             // saturating disk and holding the page for seconds. A destructive preview
@@ -596,6 +604,15 @@ export class WorktreeOperationsService {
             busy: entry.busy,
             quarantineReason: compact(entry.slot.quarantineReason),
             diagnostic: compact(entry.slot.lastError),
+            recoveryRefusal: entry.recoveryRefusal && {
+              at: entry.recoveryRefusal.at,
+              reason: compact(entry.recoveryRefusal.reason)!,
+              blocking: entry.recoveryRefusal.blocking && {
+                kind: entry.recoveryRefusal.blocking.kind,
+                // The exact path, never whitespace-collapsed: it is what an operator goes to find.
+                path: clipUtf8Bytes(entry.recoveryRefusal.blocking.path, WORKTREE_INVENTORY_LIMITS.textBytes),
+              },
+            },
             actions,
             dependencies: slotDependencies({
               hasClaim: Boolean(pool.policy.claim),
