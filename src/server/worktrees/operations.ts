@@ -33,7 +33,13 @@ import { clipUtf8Bytes } from "../util/utf8.ts";
 import { unref } from "../util/timers.ts";
 import { TailRing } from "../workflows/check-spawn.ts";
 import { worktreeRepositoryIdentity } from "../util/git.ts";
-import { UNCOMMITTED_WORK, UNPUBLISHED_COMMITS, worktreeDiscardedWork } from "../git/worktree-return-safety.ts";
+import {
+  UNCOMMITTED_WORK,
+  UNPUBLISHED_COMMITS,
+  describeWorktreeResetWork,
+  worktreeDiscardedWork,
+  worktreeResetWorkKey,
+} from "../git/worktree-return-safety.ts";
 import type {
   CheckGroupRecovery,
   CheckLeaseManager,
@@ -64,6 +70,7 @@ import {
 } from "./manager.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
+import { splitObservationFailure } from "./quarantine-reasons.ts";
 import type { UnownedTreeDiscards } from "./orphan-sweep.ts";
 import {
   inspectWorktreeOccupancy,
@@ -421,6 +428,8 @@ export function slotDependencies(input: {
 export class WorktreeOperationsService {
   private readonly deps: WorktreeOperationsDeps;
   private readonly tokens = new Map<string, HeldPreview>();
+  /** Each built Recover preview's work set (`worktreeResetWorkKey`), for execute to hold the reset to. */
+  private readonly recoverWork = new WeakMap<object, string>();
   private legacyVisibleRevision: string | null = null;
   private observing: Promise<Observation> | null = null;
   private nextObservation: Promise<Observation> | null = null;
@@ -601,7 +610,8 @@ export class WorktreeOperationsService {
             // measures only the fixed paths it is about to show.
             diskBytes: null,
             quarantineReason: compact(entry.slot.quarantineReason),
-            diagnostic: compact(entry.slot.lastError),
+            diagnostic: compact(splitObservationFailure(entry.slot.lastError).rest),
+            observationFailure: compact(splitObservationFailure(entry.slot.lastError).failure),
             recoveryRefusal: entry.recoveryRefusal && {
               at: entry.recoveryRefusal.at,
               reason: compact(entry.recoveryRefusal.reason)!,
@@ -1145,7 +1155,7 @@ export class WorktreeOperationsService {
     if (!pool) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
 
     if (request.action === "reconcile") {
-      consequences.push("Re-observes durable rows, Git registration, ownership, and processes. Uncertainty remains quarantined.");
+      consequences.push("Re-observes durable rows, Git registration, ownership, and processes. A proven fault quarantines its slot; a read that fails leaves each slot as it was and says so on its card.");
       return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
     }
 
@@ -1262,9 +1272,12 @@ export class WorktreeOperationsService {
 
   /**
    * Recover one quarantined slot. The preview names the `index.lock` it would remove, any Git
-   * process using the worktree (which blocks it), and the work the reset would discard, which
-   * is the one acknowledgeable risk. Everything it read is bound into the token, so a lock
-   * that appears or a file written after the preview makes Execute refuse as stale.
+   * process using the worktree (which blocks it), and each entry the reset would discard by the
+   * reset rule against origin's freshly fetched default, which is the one acknowledgeable risk.
+   * An ignored file that default keeps ignored and untracked is kept, so it asks nothing.
+   * Everything it read is bound into the token, so a lock that appears or a file written after
+   * the preview makes Execute refuse as stale, and the reset itself refuses a work set that
+   * differs from the preview's once it has fetched its own target.
    */
   private async buildRecoverPreview(
     request: Extract<WorktreeActionRequest, { action: "recover" }>,
@@ -1279,7 +1292,8 @@ export class WorktreeOperationsService {
     const { pool, slot } = target;
     const ordinal = slot.slot.ordinal;
     const lock = await this.manager.slotIndexLock(slot.slot, pool.pool.gitCommonDirectory, slot.occupancy);
-    const work = slot.slot.state === "quarantined" && slot.nativePath ? await this.manager.slotWork(slot.slot.path) : null;
+    const work = slot.slot.state === "quarantined" && slot.nativePath ? await this.manager.slotResetWork(slot.slot) : null;
+    const workKey = work ? worktreeResetWorkKey(work) : null;
     affected.push({
       provider: "mission",
       id: slot.slot.id,
@@ -1293,7 +1307,7 @@ export class WorktreeOperationsService {
         occupancy: slot.occupancy,
         ownerReferenced: slot.ownerReferenced,
         lock: { ...lock, ageMs: null },
-        work,
+        work: workKey,
       }),
       diskBytes: null,
     });
@@ -1323,9 +1337,16 @@ export class WorktreeOperationsService {
       blockers.push("Known processes must exit before Recover can reset the slot.");
     }
     risks.push(risk("quarantined", "The slot is quarantined", false));
-    if (work) {
+    if (work?.status === "work") {
       risks.push(risk("dirty", "Uncommitted, untracked, unpushed or ignored work will be discarded", true));
-      consequences.push(`Discards the slot's work: ${work}. Regenerable ignored directories such as node_modules/ are kept.`);
+      const named = work.entries.map(describeWorktreeResetWork).join("; ");
+      consequences.push(`Discards the slot's work: ${named}${work.more ? "; and more" : ""}.`);
+    } else if (work?.status === "unknown") {
+      risks.push(risk("dirty", "The slot's work could not be read, and whatever it holds will be discarded", true));
+      consequences.push(`Discards whatever the slot holds: its work could not be read (${work.reason}).`);
+    }
+    if (work) {
+      consequences.push("Keeps every ignored file the remote default still ignores and does not track, such as node_modules/ and .yarn/install-state.gz.");
     }
     if (lock.exists && lock.path) {
       consequences.push(`Removes the stale lock ${lock.path}.`);
@@ -1333,7 +1354,9 @@ export class WorktreeOperationsService {
       consequences.push(`No index.lock is present at ${lock.path}.`);
     }
     consequences.push("Resets the slot to the fetched remote default and returns it to the pool as available.");
-    return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+    const built = this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+    if (workKey !== null) this.recoverWork.set(built, workKey);
+    return built;
   }
 
   /**
@@ -1864,11 +1887,13 @@ export class WorktreeOperationsService {
     if (currentFingerprint !== held.fingerprint) {
       throw new WorktreeOperationError(409, "worktree state changed after preview; refresh before executing", "changed");
     }
+    // The rebuild matched the preview, so its work set is the preview's.
+    const expectedWork = this.recoverWork.get(rebuilt);
     // publishOnSuccess covers legacy-only actions where no native manager method calls
     // publish(). Supplying the service publisher also coalesces native mutations through the
     // same content-free invalidation path instead of emitting once from each dependency.
     await this.manager.runChangeBatch(
-      () => this.dispatch(held.preview, acknowledgementSet, removed),
+      () => this.dispatch(held.preview, acknowledgementSet, removed, expectedWork),
       true,
       this.deps.notifyChanged,
     );
@@ -1881,6 +1906,7 @@ export class WorktreeOperationsService {
     preview: WorktreeActionPreview,
     acknowledgements: Set<WorktreeRiskKey>,
     removed: (target: WorktreeActionAffected) => void,
+    expectedWork?: string,
   ): Promise<void> {
     const request = preview.request;
     if (request.action === "reconcile") {
@@ -1896,6 +1922,7 @@ export class WorktreeOperationsService {
         expectedVersion: target.version ?? undefined,
         allowDirty: acknowledgements.has("dirty"),
         automatic: false,
+        expectedWork,
       });
       if (result.outcome === "recovered") return;
       throw new WorktreeOperationError(
@@ -2036,7 +2063,7 @@ export class WorktreeOperationsService {
       case "recover": return "Quarantined worktree recovered to warm capacity.";
       case "removeUnowned": return "Unowned tree discarded and removed.";
       case "prune": return "Safe candidate set pruned.";
-      case "reconcile": return "Pool re-observed; uncertainty remains quarantined.";
+      case "reconcile": return "Pool re-observed; a slot whose read failed was left as it was.";
       case "destroy": return "Fixed worktree target destroyed.";
       case "legacyReturn": return "Exact legacy lease returned through its domain owner.";
       case "warm": return "Warm finished.";

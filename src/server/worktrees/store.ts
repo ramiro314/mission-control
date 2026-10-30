@@ -365,6 +365,30 @@ export class WorktreeStore {
     return Number(changed.changes) === 1 ? this.slot(input.slotId) : null;
   }
 
+  /**
+   * Undo a reservation that was refused before anything in the slot changed: the slot is
+   * available again, exactly as `reserveAvailable` found it, with `lastError` recorded.
+   */
+  releaseReservation(input: {
+    slotId: string;
+    version: number;
+    leaseId: string;
+    requestedHeadSha: string | null;
+    lastError: string | null;
+    now: number;
+  }): WorktreeSlotRow | null {
+    const changed = this.db
+      .prepare(
+        `UPDATE worktree_slots SET
+           state = 'available', version = version + 1, requested_head_sha = ?,
+           active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL,
+           quarantine_reason = NULL, last_error = ?, updated_at = ?
+         WHERE id = ? AND state = 'provisioning' AND version = ? AND active_lease_id = ?`,
+      )
+      .run(input.requestedHeadSha, input.lastError, input.now, input.slotId, input.version, input.leaseId);
+    return Number(changed.changes) === 1 ? this.slot(input.slotId) : null;
+  }
+
   finalizeLease(slotId: string, version: number, currentHeadSha: string, now: number): WorktreeSlotRow | null {
     const changed = this.db
       .prepare(
@@ -615,6 +639,18 @@ export class WorktreeStore {
     this.db
       .prepare(`UPDATE worktree_slots SET current_head_sha = ?, last_error = ?, updated_at = ? WHERE id = ?`)
       .run(currentHeadSha, error, now, slotId);
+  }
+
+  /**
+   * Record what the last observation of a slot found, and nothing else. The version is
+   * compared and left alone: an observation is not a transition, so it never invalidates an
+   * operation that judged this version, and it never lands on a slot that changed since.
+   */
+  noteLastError(slotId: string, version: number, error: string | null, now: number): boolean {
+    const changed = this.db
+      .prepare(`UPDATE worktree_slots SET last_error = ?, updated_at = ? WHERE id = ? AND version = ?`)
+      .run(error, now, slotId, version);
+    return Number(changed.changes) === 1;
   }
 
   removePruned(slotId: string, version: number): boolean {
