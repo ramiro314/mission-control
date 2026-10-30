@@ -62,6 +62,8 @@ export interface WorktreeGit {
   fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>>;
   remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean): Promise<GitResult<void>>;
+  unlock(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<void>>;
+  repair(identity: WorktreeRepositoryIdentity, path?: string): Promise<GitResult<void>>;
 }
 
 function failure(step: string, result: RunResult): GitResult<never> {
@@ -76,7 +78,7 @@ function commandFailed(result: RunResult): boolean {
   return result.code !== 0 || result.outcomeUnknown || result.overflowed;
 }
 
-async function canonical(path: string): Promise<string> {
+export async function canonical(path: string): Promise<string> {
   try {
     return await realpath(path);
   } catch {
@@ -426,6 +428,32 @@ export class NativeWorktreeGit implements WorktreeGit {
     args.push(path);
     const result = await this.execute("git", args, { timeoutMs: 60_000 });
     if (commandFailed(result)) return failure("git worktree remove", result);
+    return { ok: true, value: undefined };
+  }
+
+  async unlock(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<void>> {
+    const result = await this.execute(
+      "git",
+      ["-C", identity.mainCheckoutRoot, "worktree", "unlock", path],
+      { timeoutMs: 30_000 },
+    );
+    if (commandFailed(result)) return failure("git worktree unlock", result);
+    return { ok: true, value: undefined };
+  }
+
+  /**
+   * Git's own registration repair, from the main checkout. With `path` it points a registration
+   * back at that folder, reading the folder's `.git` file. Without one it rewrites the `.git`
+   * file of every registered worktree whose file is missing or wrong: Git has no form that
+   * rewrites one, and only a `.git` file already broken is touched.
+   */
+  async repair(identity: WorktreeRepositoryIdentity, path?: string): Promise<GitResult<void>> {
+    const result = await this.execute(
+      "git",
+      ["-C", identity.mainCheckoutRoot, "worktree", "repair", ...(path === undefined ? [] : [path])],
+      { timeoutMs: 30_000 },
+    );
+    if (commandFailed(result)) return failure("git worktree repair", result);
     return { ok: true, value: undefined };
   }
 }

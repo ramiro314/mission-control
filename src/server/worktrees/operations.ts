@@ -70,7 +70,8 @@ import {
 } from "./manager.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
-import { splitObservationFailure } from "./quarantine-reasons.ts";
+import { registrationRepairQuarantine, splitObservationFailure } from "./quarantine-reasons.ts";
+import { describeRegistrationFix } from "./registration-repair.ts";
 import type { UnownedTreeDiscards } from "./orphan-sweep.ts";
 import {
   inspectWorktreeOccupancy,
@@ -597,7 +598,7 @@ export class WorktreeOperationsService {
             : { state: "unknown" as const, count: null, reason: compact(entry.occupancy.reason) };
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;
-          const actions: Array<"return" | "destroy" | "warm" | "recover"> = [];
+          const actions: Array<"return" | "destroy" | "warm" | "recover" | "repair"> = [];
           // A `warm` lease belongs to the seed copying from it, which returns it the moment the
           // copy ends. Nothing an operator could do to it here would be safer than that.
           if (entry.slot.state === "leased") {
@@ -614,6 +615,14 @@ export class WorktreeOperationsService {
           // is positively gone. The preview and the manager each re-read that.
           if (entry.slot.state === "quarantined" && exact && entry.ownerReferenced === false) {
             actions.push("recover");
+          }
+          // Repair is Recover's way in when Git's registration is what is wrong, so it asks for
+          // none of the `exact` proofs its own fixes are about to restore.
+          if (
+            entry.slot.state === "quarantined" && registrationRepairQuarantine(entry.slot.quarantineReason) &&
+            entry.ownerReferenced === false && pool.identityValid && pool.markerValid && entry.nativePath
+          ) {
+            actions.push("repair");
           }
           // Warm prepares an idle slot ahead of time: one acquisition's own rule calls idle, in a
           // pool whose claim it would run. The preview applies the same rule.
@@ -1175,6 +1184,9 @@ export class WorktreeOperationsService {
     if (request.action === "recover") {
       return this.buildRecoverPreview(request, observed, affected, risks, blockers, consequences);
     }
+    if (request.action === "repair") {
+      return this.buildRepairPreview(request, observed, affected, risks, blockers, consequences);
+    }
     if (request.action === "removeUnowned") {
       return this.buildRemoveUnownedPreview(request, observed, affected, risks, blockers, consequences);
     }
@@ -1412,6 +1424,79 @@ export class WorktreeOperationsService {
     const built = this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
     if (workKey !== null) this.recoverWork.set(built, workKey);
     return built;
+  }
+
+  /**
+   * Repair one slot quarantined for its registration. The preview names each of Git's fixes, and
+   * what it read is bound into the token, so a registration or an occupant that changes after
+   * it makes Execute refuse as stale. Nothing here needs an acknowledgement: the recovery that
+   * follows never discards work, and a slot holding any stays quarantined for Recover.
+   */
+  private async buildRepairPreview(
+    request: Extract<WorktreeActionRequest, { action: "repair" }>,
+    observed: Observation,
+    affected: WorktreeActionAffected[],
+    risks: WorktreeActionRisk[],
+    blockers: string[],
+    consequences: string[],
+  ): Promise<Omit<WorktreeActionPreview, "token" | "expiresAt">> {
+    const target = this.nativeTargets(observed).find(({ slot }) => slot.slot.id === request.slotId);
+    if (!target) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
+    const { pool, slot } = target;
+    const ordinal = slot.slot.ordinal;
+    const diagnosis = await this.manager.slotRegistrationDiagnosis(slot.slot);
+    affected.push({
+      provider: "mission",
+      id: slot.slot.id,
+      path: slot.slot.path,
+      owner: null,
+      version: slot.slot.version,
+      safetyRevision: digest({
+        state: slot.slot.state,
+        version: slot.slot.version,
+        occupancy: slot.occupancy,
+        ownerReferenced: slot.ownerReferenced,
+        diagnosis,
+      }),
+      diskBytes: null,
+    });
+    if (slot.slot.state !== "quarantined") blockers.push(`Slot ${ordinal} is ${slot.slot.state}, not quarantined.`);
+    else if (!registrationRepairQuarantine(slot.slot.quarantineReason)) {
+      blockers.push(`Slot ${ordinal}'s quarantine is not about its Git registration.`);
+    }
+    if (slot.ownerReferenced !== false) {
+      blockers.push(slot.ownerReferenced === null
+        ? `Slot ${ordinal}'s owner could not be read, so it may still be in use.`
+        : `A live owner still references slot ${ordinal}; return it through that owner instead.`);
+    }
+    if (!pool.identityValid || !pool.markerValid || !slot.nativePath) {
+      blockers.push("Exact native pool, marker and slot path are not all proven.");
+    }
+    if (observed.pending.has(slot.slot.path)) {
+      blockers.push(`Slot ${ordinal} already has an operation queued; wait for it to finish.`);
+    }
+    if (this.manager.claims.has(slot.slot.id)) blockers.push(`A dependency claim is running in slot ${ordinal}.`);
+    if (slot.occupancy.status === "unknown") {
+      risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
+      blockers.push(slot.occupancy.reason);
+    } else if (slot.occupancy.occupants.length > 0) {
+      risks.push(risk("occupied", `${slot.occupancy.occupants.length} process(es) occupy the slot`, false));
+      blockers.push("Known processes must exit before Repair can touch the slot.");
+    }
+    risks.push(risk("quarantined", "The slot is quarantined", false));
+    if (diagnosis === null) blockers.push("The pool's repository identity cannot be proven.");
+    else if (diagnosis.status === "refused") blockers.push(`Git has no fix for this slot: ${diagnosis.reason}.`);
+    else if (diagnosis.status === "fixable") {
+      for (const fix of diagnosis.fixes) consequences.push(`${describeRegistrationFix(fix)}.`);
+      if (diagnosis.fixes.includes("repairGitFile")) {
+        consequences.push("Git takes no path for that fix, so it also rewrites any other worktree's broken .git file in this repository.");
+      }
+    } else {
+      consequences.push("Git's registration of this slot already reads healthy, so no Git fix runs.");
+    }
+    consequences.push("Then runs automatic recovery's checks and resets the slot to the fetched remote default, keeping its warm install.");
+    consequences.push("A slot that holds work is not reset: it stays quarantined as \"registration repaired; holds work\", for Recover.");
+    return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
   }
 
   /**
@@ -1986,6 +2071,16 @@ export class WorktreeOperationsService {
         result.outcome === "outcomeUnknown" ? "unavailable" : "changed",
       );
     }
+    if (request.action === "repair") {
+      const target = preview.affected[0]!;
+      const result = await this.manager.repairSlot({ slotId: target.id, expectedVersion: target.version ?? undefined });
+      if (result.outcome === "recovered" || result.outcome === "heldWork") return;
+      throw new WorktreeOperationError(
+        result.outcome === "outcomeUnknown" ? 503 : 409,
+        result.reason,
+        result.outcome === "outcomeUnknown" ? "unavailable" : "changed",
+      );
+    }
     if (request.action === "removeUnowned") {
       const refused = await this.deps.unownedTrees.discard(preview.affected[0]!.path);
       if (refused) throw new WorktreeOperationError(409, `Unowned tree was not removed: ${refused}`, "changed");
@@ -2116,6 +2211,7 @@ export class WorktreeOperationsService {
     switch (action) {
       case "return": return "Worktree returned to warm capacity.";
       case "recover": return "Quarantined worktree recovered to warm capacity.";
+      case "repair": return "Registration repaired. A slot that holds work stays quarantined for Recover.";
       case "removeUnowned": return "Unowned tree discarded and removed.";
       case "prune": return "Safe candidate set pruned.";
       case "reconcile": return "Pool re-observed; a slot whose read failed was left as it was.";

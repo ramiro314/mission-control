@@ -75,6 +75,8 @@ export const REGISTRATION_OR_IDENTITY = {
   incompleteReturnIdentity: "interrupted return has incomplete active lease identity",
   noDomainOwner: "leased slot has no matching domain owner reference",
   headMoved: "available slot HEAD moved outside an allocator transition",
+  /** Repair fixed the registration, and the slot holds work only a manual Recover may discard. */
+  repairedHoldsWork: "registration repaired; holds work",
 } as const;
 
 /** Every registration or identity reason: the labels above, and an older build's marker wording. */
@@ -85,6 +87,21 @@ export const REGISTRATION_OR_IDENTITY_REASONS: ReadonlySet<string> = new Set([
 
 export function registrationOrIdentityQuarantine(reason: string | null): boolean {
   return reasonIn(REGISTRATION_OR_IDENTITY_REASONS, reason);
+}
+
+/**
+ * The reasons Repair answers: Git's registration of the slot is unsafe, or names another path.
+ * That last one reads as "missing" here, because `git worktree list` shows the registration
+ * under the path it names.
+ */
+const REGISTRATION_REPAIR_REASONS: ReadonlySet<string> = new Set([
+  REGISTRATION_OR_IDENTITY.unsafeRegistration,
+  REGISTRATION_OR_IDENTITY.noSafeRegistration,
+  REGISTRATION_OR_IDENTITY.missingRegistration,
+]);
+
+export function registrationRepairQuarantine(reason: string | null): boolean {
+  return reasonIn(REGISTRATION_REPAIR_REASONS, reason);
 }
 
 /** A dirty available slot, and the reason older builds gave it before occupied was split off. */
