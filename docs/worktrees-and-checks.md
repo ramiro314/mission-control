@@ -704,9 +704,12 @@ this order:
   this page accepts writes one entry per slot it targeted once it finishes: Return, Destroy,
   Prune, Warm, Recover, Repair and Kill. The entry names the outcome: done, refused with its reason
   (the slot was left as it was, such as a preview that went stale), partly done, or failed (the
-  outcome is unknown, or the reset went wrong). A partly done entry says whether its slot finished
-  before the operation stopped, and a Repair that kept the slot quarantined for its work is partly
-  done too. A Warm decides each slot on its own turn, so each entry carries that slot's own result:
+  outcome is unknown, or the work began and may have changed the slot). A partly done entry says
+  whether its slot finished before the operation stopped, and a Repair that kept the slot
+  quarantined for its work is partly done too. A task's trees are torn down together, so a Return
+  that brought one back and not another is partly done, one that brought none back after trying
+  is failed, and one refused before any teardown began is refused. Destroying one slot of a task
+  returns the task's other slots, so their entries read Return, not Destroy. A Warm decides each slot on its own turn, so each entry carries that slot's own result:
   a slot skipped reads refused, a failed claim or a Cancel that reached the slot reads partly done,
   and a slot Cancel stopped before its turn was never touched and has no entry. Automatic Recover
   and Repair write the same entries as automatic; a refusal or an unknown outcome writes one when

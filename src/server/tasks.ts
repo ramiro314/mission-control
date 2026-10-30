@@ -378,6 +378,8 @@ export class TaskIdCollisionError extends Error {}
 export interface Ok {
   ok: boolean;
   error?: string;
+  /** On a teardown that failed: the paths that came back. Absent when none was attempted. */
+  reclaimed?: readonly string[];
 }
 
 /** The merge identity needed to close the session after its task finishes. */
@@ -6683,6 +6685,7 @@ export class TaskManager {
       return {
         ok: false,
         error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+        reclaimed: reclaimedFrom(error),
       };
     }
     const cur = this.registry.getTask(id) ?? t;

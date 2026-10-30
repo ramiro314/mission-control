@@ -104,7 +104,8 @@ export class WorktreeOperationError extends Error {
 
 export interface WorktreeTaskOwner {
   get(id: string): WorktreeTaskView | null;
-  reclaim(id: string): Promise<{ ok: boolean; error?: string }>;
+  /** `reclaimed` is present once teardown was attempted: the paths that came back from it. */
+  reclaim(id: string): Promise<{ ok: boolean; error?: string; reclaimed?: readonly string[] }>;
 }
 
 export interface WorktreeTaskResource {
@@ -168,6 +169,8 @@ interface Observation {
 interface HeldPreview {
   preview: WorktreeActionPreview;
   fingerprint: string;
+  /** The slots it removes, read here because a removed slot's row can no longer say. */
+  removals: ReadonlySet<string>;
 }
 
 interface HeldOperation {
@@ -277,6 +280,8 @@ interface OperationProgress {
   finished: Set<string>;
   /** A step short of finishing a slot landed, such as a Destroy returning its owner's lease. */
   moved: boolean;
+  /** The work itself began, so a failure may have changed a slot and is no refusal. */
+  uncertain: boolean;
   /** A Recover or Repair's own reading of its result, which outranks reading the error. */
   settled: WorktreeOperationSettled | null;
 }
@@ -847,7 +852,11 @@ export class WorktreeOperationsService {
     const token = this.deps.randomId();
     const preview = { ...built, token, expiresAt: this.deps.now() + TOKEN_TTL_MS };
     const fingerprint = previewFingerprint(built);
-    this.tokens.set(token, { preview, fingerprint });
+    this.tokens.set(token, {
+      preview,
+      fingerprint,
+      removals: new Set(this.removalTargets(preview).map((target) => target.id)),
+    });
     while (this.tokens.size > WORKTREE_INVENTORY_LIMITS.previewTokens) {
       this.tokens.delete(this.tokens.keys().next().value!);
     }
@@ -2105,7 +2114,7 @@ export class WorktreeOperationsService {
     removed: (target: WorktreeActionAffected) => void = () => {},
   ): Promise<WorktreeActionExecuteResult> {
     const startedAt = this.deps.now();
-    const progress: OperationProgress = { finished: new Set(), moved: false, settled: null };
+    const progress: OperationProgress = { finished: new Set(), moved: false, uncertain: false, settled: null };
     try {
       const observed = await this.observe();
       const rebuilt = await this.buildPreview(held.preview.request, observed, operationId);
@@ -2119,29 +2128,30 @@ export class WorktreeOperationsService {
       // publish(). Supplying the service publisher also coalesces native mutations through the
       // same content-free invalidation path instead of emitting once from each dependency.
       await runAsWorktreeActor("operator", () => this.manager.runChangeBatch(
-        () => this.dispatch(held.preview, acknowledgementSet, removed, progress, expectedWork),
+        () => this.dispatch(held, acknowledgementSet, removed, progress, expectedWork),
         true,
         this.deps.notifyChanged,
       ));
     } catch (error) {
       const reason = compact(error instanceof Error ? error.message : String(error)) ?? "operation failed";
-      const refused = error instanceof WorktreeOperationError && error.code !== "unavailable";
+      const refused = error instanceof WorktreeOperationError && error.code !== "unavailable" && !progress.uncertain;
       const outcome = progress.moved || progress.finished.size > 0 ? "partial" : refused ? "refused" : "failed";
-      this.recordOperation(held.preview, operationId, startedAt, progress.settled ?? { outcome, reason }, progress);
+      this.recordOperation(held, operationId, startedAt, progress.settled ?? { outcome, reason }, progress);
       throw error;
     }
-    this.recordOperation(held.preview, operationId, startedAt, progress.settled ?? { outcome: "done", reason: null }, progress);
+    this.recordOperation(held, operationId, startedAt, progress.settled ?? { outcome: "done", reason: null }, progress);
     if (held.preview.request.action === "legacyReturn") this.legacyVisibleRevision = null;
     return { ok: true, action: held.preview.request.action, message: this.successMessage(held.preview.request.action) };
   }
 
   /**
    * One row per slot a finished operation targeted, each with the whole operation's outcome. A
-   * partly done row says which side of the stop its slot fell on. An Unowned trees removal has
-   * no slot, so it is logged instead.
+   * partly done row says which side of the stop its slot fell on. A task's other slots in a
+   * Destroy are only returned, so their rows say Return. An Unowned trees removal has no slot,
+   * so it is logged instead.
    */
   private recordOperation(
-    preview: WorktreeActionPreview,
+    { preview, removals }: HeldPreview,
     operationId: string | null,
     startedAt: number,
     { outcome, reason }: WorktreeOperationSettled,
@@ -2160,7 +2170,7 @@ export class WorktreeOperationsService {
       const stopped = outcome === "partial" && progress.settled === null;
       this.manager.recordOperation(target.id, {
         at,
-        operation,
+        operation: request.action === "destroy" && !removals.has(target.id) ? "return" : operation,
         outcome,
         reason: !stopped
           ? reason
@@ -2203,12 +2213,13 @@ export class WorktreeOperationsService {
 
   /** `removed` hears each slot the moment its removal is confirmed, so a later failure is partial, not silent. */
   private async dispatch(
-    preview: WorktreeActionPreview,
+    held: HeldPreview,
     acknowledgements: Set<WorktreeRiskKey>,
     removed: (target: WorktreeActionAffected) => void,
     progress: OperationProgress,
     expectedWork?: string,
   ): Promise<void> {
+    const { preview } = held;
     const request = preview.request;
     const finished = (target: WorktreeActionAffected): void => {
       progress.finished.add(target.id);
@@ -2273,8 +2284,8 @@ export class WorktreeOperationsService {
       // after Treehouse confirms the path disappeared. Calling executeReturn here as well
       // would run after the durable owner was cleared and would turn success into a false
       // conflict. Check recovery owns the equivalent ordering for check leases.
-      if (request.owner.kind === "task") await this.reclaimTask(request.owner.id);
-      else await this.recoverCheck(request.owner.id);
+      if (request.owner.kind === "task") await this.reclaimTask(request.owner.id, held, progress);
+      else await this.recoverCheck(request.owner.id, progress);
       return;
     }
     const recoveredOwners = new Set<string>();
@@ -2289,9 +2300,9 @@ export class WorktreeOperationsService {
       if (!owner || (ownerIdentity && recoveredOwners.has(ownerIdentity))) continue;
       if (owner.kind === "task") {
         if (!parsedTask) throw new WorktreeOperationError(409, "task owner changed after preview", "changed");
-        await this.reclaimTask(parsedTask.id);
+        await this.reclaimTask(parsedTask.id, held, progress);
       } else if (owner.kind === "check") {
-        await this.recoverCheck(owner.key);
+        await this.recoverCheck(owner.key, progress);
       } else if (owner.kind === "warm") {
         throw new WorktreeOperationError(409, "a dependency seed holds this slot and returns it when its copy ends", "changed");
       } else {
@@ -2338,14 +2349,26 @@ export class WorktreeOperationsService {
     });
   }
 
-  private async reclaimTask(id: string): Promise<void> {
+  /**
+   * Reclaim a task, noting what came back for its history rows. Teardown attempts every tree and
+   * reports the failures together, so a failed reclaim can still have returned some of them.
+   */
+  private async reclaimTask(id: string, { preview, removals }: HeldPreview, progress: OperationProgress): Promise<void> {
     const result = await this.deps.tasks.reclaim(id);
-    if (!result.ok) throw new WorktreeOperationError(409, result.error ?? "task cleanup was refused", "changed");
+    const owned = preview.affected.filter(({ owner }) => owner?.kind === "task" && taskIdentity(owner.key)?.id === id);
+    for (const target of result.ok ? owned : owned.filter(({ path }) => result.reclaimed?.includes(path))) {
+      progress.moved = true;
+      if (!removals.has(target.id)) progress.finished.add(target.id);
+    }
+    if (result.ok) return;
+    if (result.reclaimed) progress.uncertain = true;
+    throw new WorktreeOperationError(409, result.error ?? "task cleanup was refused", "changed");
   }
 
-  private async recoverCheck(id: string): Promise<void> {
+  private async recoverCheck(id: string, progress: OperationProgress): Promise<void> {
     const result = await this.deps.checks.recoverForOperator(id, this.deps.checkRecovery);
     if (result.outcome === "returned" || result.outcome === "lost") return;
+    if (result.outcome === "retry") progress.uncertain = true;
     throw new WorktreeOperationError(409, result.reason, "changed");
   }
 
