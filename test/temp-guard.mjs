@@ -110,7 +110,8 @@ function sweep({ parent, entries }, rows) {
       rmSync(join(parent, name), { recursive: true, force: true });
       swept.push(name);
     } catch {
-      // Another worker is removing the same directory. Whichever finishes, it is going.
+      // Another worker is removing the same directory, or something in it cannot be removed.
+      // Neither is this file's failure, and an undeletable directory is tried again next time.
     }
   }
   if (swept.length === 0) return;
@@ -168,8 +169,8 @@ export function armTempGuard(opened, rows) {
     try {
       rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
     } catch {
-      // An untracked child is still writing. The next worker's sweep finishes the job, and
-      // failing the file here would turn that race into a flake.
+      // An untracked child is still writing, or something in here cannot be removed. The next
+      // worker's sweep tries again, and failing the file here would turn that race into a flake.
     }
   });
   return dir;

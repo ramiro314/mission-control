@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -237,15 +238,19 @@ test("the sweep leaves a name it did not make, and everything outside its parent
   const parent = dirname(readFileSync(marker, "utf8"));
   const unnamed = join(parent, "not-a-worker");
   const neighbor = join(temp, "mission-control-resumes");
+  // Named as a dead worker's directory would be, so only where it sits can save it.
+  const deadNeighbor = join(temp, `${deadPid()}-abcdef`);
   mkdirSync(unnamed);
   mkdirSync(neighbor);
+  mkdirSync(deadNeighbor);
   assert.equal(runBriefWorker(env(temp, `${marker}-next`)).status, 0);
   assert.equal(existsSync(unnamed), true);
   assert.equal(existsSync(neighbor), true);
+  assert.equal(existsSync(deadNeighbor), true);
   rmSync(unnamed, { recursive: true });
 });
 
-test("a directory whose owner is missing from the table but not proven dead is kept", { skip: !supported }, () => {
+test("a directory whose owner is missing from the table but not proven dead is kept", { skip: !privateParent }, () => {
   const { temp, marker } = scenario();
   // This worker is alive and PID 1 answers EPERM to anyone but root, and neither is in the table.
   const alive = `${process.pid}-abcdef`;
@@ -316,6 +321,38 @@ test("leaves a child running", async () => {
   assert.match(output, /test leak guard: this test file left 1 process\(es\) running; killed:/);
   assert.equal(existsSync(readFileSync(marker, "utf8")), false);
   assert.deepEqual(entriesLeftIn(temp), []);
+});
+
+test("a temp dir that cannot be removed fails neither its file nor the next worker", { skip: !supported || process.geteuid?.() === 0 }, (t) => {
+  const { temp, marker } = scenario();
+  const file = fixture(
+    "undeletable.test.mjs",
+    `import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+writeFileSync(process.env.FIXTURE_MARKER, process.env.TMPDIR);
+const locked = join(tmpdir(), "locked");
+mkdirSync(locked);
+writeFileSync(join(locked, "held"), "");
+chmodSync(locked, 0o500);
+test("passes", () => {});
+`,
+  );
+  const result = runTestFile(file, env(temp, marker));
+  const workerTemp = readFileSync(marker, "utf8");
+  const locked = join(workerTemp, "locked");
+  // Before any assertion, or a failure here leaves what the suite's own cleanup cannot remove.
+  t.after(() => {
+    chmodSync(locked, 0o700);
+    rmSync(workerTemp, { recursive: true, force: true });
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+
+  const next = runBriefWorker(env(temp, `${marker}-next`));
+  assert.equal(next.status, 0, next.stderr);
+  assert.doesNotMatch(next.stderr, new RegExp(basename(workerTemp)));
+  assert.equal(existsSync(join(locked, "held")), true);
 });
 
 test("removing a worker's temp dir does not reach through to the shared compile cache", { skip: !supported }, () => {
