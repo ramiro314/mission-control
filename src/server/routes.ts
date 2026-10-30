@@ -372,6 +372,7 @@ import {
   type SettingsRestoreResult,
 } from "@shared/settings-backups.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
+import { terminalOwnerKey } from "./worktrees/owners.ts";
 import {
   WorktreeOperationError,
   type WorktreeOperationsService,
@@ -599,7 +600,7 @@ import {
   SessionFileError,
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
-import { agentHostUnavailable, terminalTargetViews, launchManagedAgentTerminal, launchTerminal } from "./terminal/targets.ts";
+import { agentHostUnavailable, terminalTargetViews, launchManagedAgentTerminal, launchNotAttempted, launchTerminal } from "./terminal/targets.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -2047,18 +2048,33 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, OpenWorktreeSchema);
     if (!parsed.ok) return parsed.res;
     const slotId = c.req.param("slotId");
-    const cwd = await worktreeOperations.slotPath(slotId);
+    // A shell in an available slot must not sit there unowned for acquisition to hand out, so
+    // that slot is leased as it stands before anything opens in it.
+    const taken = await worktreeOperations.manager.leaseAsIs(slotId, {
+      kind: "manual",
+      key: terminalOwnerKey(randomUUID()),
+    });
+    if (taken.outcome === "refused") return c.json({ error: taken.reason }, 409);
+    if (taken.outcome === "outcomeUnknown") return c.json({ error: taken.reason }, 503);
+    const leased = taken.outcome === "leased";
+    const cwd = leased ? taken.lease.path : await worktreeOperations.slotPath(slotId);
     if (!cwd) return c.json({ error: "native worktree slot was not found" }, 404);
     const result = await terminalLauncher(parsed.data.backend, {
       name: `worktree-${slotId.slice(0, 8)}`,
       cwd,
       argv: [process.env.SHELL || FIXED_OS_EXECUTABLES.sh, "-l"],
     });
+    // A launcher that refused never tried, so the slot goes back as it was. One that failed or
+    // timed out may still have opened a shell, so its lease stands.
+    const leaseStands = leased && !(launchNotAttempted(result) && await worktreeOperations.manager.handBackAsIs(taken.lease));
+    const error = result.error && leaseStands
+      ? `${result.error}. The slot stays leased, so Return it from its card.`
+      : result.error;
     const body = {
       ok: result.ok,
       backend: parsed.data.backend,
       label: result.label,
-      ...(result.error ? { error: result.error } : {}),
+      ...(error ? { error } : {}),
     };
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });

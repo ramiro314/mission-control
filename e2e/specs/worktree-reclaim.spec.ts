@@ -949,7 +949,7 @@ test("a stray process in an available slot is listed on its card with Kill, and 
  * A quarantined slot with `count` real processes still running in it, opened on its card from
  * the first one's Storage problem link, so the card lists every one of them.
  */
-async function slotWithOrphans(dashboard: Page, daemon: DaemonHandle, count: number) {
+async function slotWithOrphans(dashboard: Page, daemon: DaemonHandle, count: number, firstArgv0?: string) {
   const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
     data: { repositoryPath: daemon.repo, label: "orphan processes" },
   });
@@ -971,7 +971,11 @@ async function slotWithOrphans(dashboard: Page, daemon: DaemonHandle, count: num
   });
   const children: ChildProcess[] = [];
   for (let index = 0; index < count; index += 1) {
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: lease.path, stdio: "ignore" });
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      cwd: lease.path,
+      stdio: "ignore",
+      ...(index === 0 && firstArgv0 ? { argv0: firstArgv0 } : {}),
+    });
     await once(child, "spawn");
     children.push(child);
   }
@@ -994,6 +998,34 @@ async function slotWithOrphans(dashboard: Page, daemon: DaemonHandle, count: num
     throw error;
   }
 }
+
+test("an orphan row names its process beside an unnamed one, and the name does not take the Kill away", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const { pids, orphans, cleanup } = await slotWithOrphans(dashboard, daemon, 2, "gopls");
+  const [named, unnamed] = pids as [number, number];
+  try {
+    const namedRow = orphans.getByRole("listitem").filter({ hasText: `PID ${named}` });
+    const unnamedRow = orphans.getByRole("listitem").filter({ hasText: `PID ${unnamed}` });
+    await expect(namedRow.getByText("IDE language server", { exact: true })).toBeVisible();
+    await expect(unnamedRow).not.toContainText("IDE language server");
+    await namedRow.scrollIntoViewIfNeeded();
+    await shoot(dashboard, "named-orphan-row");
+
+    await namedRow.getByRole("button", { name: `Kill process ${named}` }).click();
+    const confirm = dashboard.getByRole("dialog", { name: "Kill orphan process" });
+    const killed = dashboard.waitForResponse((response) => response.url().endsWith("/api/worktrees/processes/kill"));
+    await confirm.getByRole("button", { name: "Kill process" }).click();
+    expect((await killed).status()).toBe(200);
+    await expect.poll(() => alive(named)).toBe(false);
+    await expect(namedRow).toHaveCount(0);
+    await expect(unnamedRow).toBeVisible();
+  } finally {
+    cleanup();
+  }
+});
 
 test("Kill all, on a slot card, confirms every orphan process together and stops them all", async ({
   dashboard,

@@ -194,6 +194,7 @@ export class OrphanProcessMonitor {
         ppid: occupant.ppid,
         command: occupant.command,
         startedAt: occupant.startMs,
+        knownOwner: occupant.knownOwner,
       },
     })));
   }

@@ -85,6 +85,8 @@ export interface WorktreeOccupantView {
   command: string;
   /** Epoch milliseconds of the process's start, as `ps` reports it. */
   startedAt: number;
+  /** What the process is, when something names it. A name never makes it safe to ignore. */
+  knownOwner: string | null;
 }
 
 /**

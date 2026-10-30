@@ -189,8 +189,13 @@ export function classifyAgent(command: string): AgentType | null {
  * whole-argv token scan.
  */
 export function isBackgroundAgent(command: string): boolean {
+  return backgroundAgentOf(command) !== null;
+}
+
+/** Whose background role a command is, by the same decision `isBackgroundAgent` documents. */
+export function backgroundAgentOf(command: string): AgentType | null {
   const found = harnessOf(command);
-  return found ? !isSession(found.harness, command) : false;
+  return found && !isSession(found.harness, command) ? found.harness.id : null;
 }
 
 /** The role check itself, against one harness's declared vocabulary. */

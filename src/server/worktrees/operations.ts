@@ -68,6 +68,7 @@ import {
   type NativeSlotStatus,
   type WarmSlotResult,
 } from "./manager.ts";
+import { isTerminalOwnerKey } from "./owners.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
 import { splitObservationFailure } from "./quarantine-reasons.ts";
@@ -323,8 +324,9 @@ function ownerView(
   };
 }
 
-/** A manual lease named by `make session --label`, or by its key alone. */
+/** A manual lease Open terminal took, one named by `make session --label`, or by its key alone. */
 function manualLabel(key: string): string {
+  if (isTerminalOwnerKey(key)) return "Terminal from Settings";
   const separator = key.indexOf(":");
   const label = separator === -1 ? "" : key.slice(separator + 1);
   return label ? `Manual lease ${key.slice(0, 8)}: ${label}` : `Manual lease ${key.slice(0, 8)}`;
@@ -644,6 +646,7 @@ export class WorktreeOperationsService {
                 pid: occupant.pid,
                 command: clipUtf8Bytes(occupant.command, WORKTREE_INVENTORY_LIMITS.occupantCommandBytes),
                 startedAt: occupant.startMs,
+                knownOwner: occupant.knownOwner && clipUtf8Bytes(occupant.knownOwner, WORKTREE_INVENTORY_LIMITS.textBytes),
               }))
               : [],
             // Recursive size walks are intentionally absent from inventory. Large warm

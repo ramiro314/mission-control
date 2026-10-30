@@ -677,7 +677,19 @@ this order:
   default, cleanliness, process count, disk estimate, and owner, and in a pool with a claim, its
   dependency state. **Copy path** stays in the browser.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
-  manager-known path.
+  manager-known path. On an available slot it first takes a manual lease, so acquisition cannot
+  hand out a slot with an unowned shell in it. The lease takes the slot exactly as it stands, with
+  no reset and no claim, so HEAD and every file stay as they were, and the shell opens only once
+  the lease is held. The card then shows a manual lease labelled "Terminal from Settings", with
+  **Return**. The slot must pass acquisition's idle rule on a fresh read, under the slot lock, and
+  a slot that does not is refused with the reason and no shell opens: one that is occupied stays
+  available, and one that is dirty is quarantined, as acquisition would leave it. A slot attached
+  to a branch is refused too, since only a reset can undo that. On a leased or quarantined slot
+  Open terminal opens a shell and takes no lease. Closing the shell does not return the lease, as
+  with any manual lease, and [Stale live leases](#stale-live-leases) applies to it. A terminal that
+  is unknown or unavailable is refused before anything is launched, so the lease is given back with
+  no fetch or reset and the slot is available again as it was. A launcher that tried and failed may
+  still have opened a shell, so that lease stands and the error says to Return it.
 
   Each slot card ends in a **History** disclosure: what happened to the slot, newest first, 50
   entries at a time through `GET /api/worktrees/:slotId/history`, each with its state change, its
@@ -924,6 +936,24 @@ its row under [Unowned trees](#unowned-trees), which lists the same processes wi
 
 Unlike the inventory, the storage report carries each orphan process's command line, bounded to
 512 bytes, because the confirmation must show what will be signalled.
+
+A slot card names the processes it can identify, on the process's own line in the list and on its
+orphan row:
+
+- **`Session <name>`** is a live Mission Control session's own process or a descendant of it: a
+  terminal pane's process, or an SDK session's driver child and what that runs. Process ancestry
+  alone decides this, with the session's process matched by PID and start time, so a reused PID is
+  not the session. A process that only shares a session's cwd, pane or hook coordinates is not named
+  as that session. An SDK session with no recorded process names nothing.
+- **`<agent> background process`** is a process the harness's own background vocabulary recognizes,
+  such as `claude daemon` or `claude mcp serve`, or a descendant of one, such as an MCP server. A
+  background process a session spawned is named as that session.
+- **An IDE helper**, such as `VS Code helper`, `JetBrains IDE helper` or `IDE language server`, is
+  matched by its executable name against a small table. Its children are not named.
+
+A name never makes a process safe to ignore. Occupancy, every refusal and the orphan report count
+a named process exactly as they count any other, and a process with no name is only one nothing
+identified. When the names cannot be read, the occupants are still counted, without them.
 
 Native slot cleanliness allows a narrow set of untracked ai-conductor scratch files at the
 checkout root: `.pipeline/.memory-count-at-start`, `conduct-state.json`, `engineer-run.json`,
@@ -1224,6 +1254,12 @@ authoritative above the generic slot record. Cleanup first proves the process gr
 conditionally returns the exact native lease. A missing, stale, occupied, or uncertain lease is
 kept for startup or maintenance reconciliation rather than guessed away. Native check leak
 reclamation runs on the native maintenance cadence after slot startup reconciliation.
+
+Check lease startup reconciliation does not hold the daemon back from listening. It pins every
+live lease's tree synchronously, so a new check cannot take a tree a durable row still names, and
+then resolves each row in the background. Releasing a tree Git no longer recognizes deletes the
+whole checkout, which can take minutes for a large monorepo, and a failure is logged and retried
+by the next maintenance pass.
 
 A Git fallback tree that Git no longer recognizes is deleted rather than retried forever. Once a
 tree's `.git` file is gone, `git worktree remove --force` refuses it with "validation failed",

@@ -123,6 +123,8 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { StorageHealthService, stuckReturnSource } from "./storage-health.ts";
+import { knownOwnerLabels, sessionProcesses } from "./worktrees/known-owners.ts";
+import { inspectWorktreeOccupancy } from "./worktrees/occupancy.ts";
 import { finishedTrees, OrphanProcessMonitor } from "./worktrees/orphan-processes.ts";
 import { LeaseActivityObserver } from "./worktrees/lease-activity.ts";
 import { quarantinedSlotProblems } from "./worktrees/storage-problems.ts";
@@ -238,7 +240,12 @@ const publishWorktreesChanged = () => {
   registry.emitWorktreesChanged();
   recomputeStorageHealth();
 };
+// Names what an inspection finds, for the slot card. Passed to the two readers a card shows.
+const namedOccupancy = (paths: readonly string[]) => inspectWorktreeOccupancy(paths, {
+  knownOwner: knownOwnerLabels(() => sessionProcesses(registry.liveSessions())),
+});
 const worktrees = new WorktreeManager(undefined, {
+  occupancy: namedOccupancy,
   ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference),
   publishChanged: () => {
     publishWorktreesChanged();
@@ -351,9 +358,9 @@ const checkScheduler = createCheckScheduler();
 // still writing in it, and only the second authorizes provider release. That seam is injected
 // here with a refusing default, so missing recovery keeps the resource instead of guessing.
 //
-// Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
-// daemon that refused to start over one unreconcilable lease would be worse than one
-// running without it.
+// Not awaited: the ordering above is the pins `reconcileOnStartup` registers before its first
+// await, and resolving a recovered tree can delete a whole checkout, which held the listener
+// back for minutes. Best-effort, because one unreconcilable lease must not stop the daemon.
 // Unreferenced folders under the overflow and check-fallback directories. Husks and clean trees
 // are removed on each maintenance pass; a dirty one is kept and listed as `dirty-orphan-folder`,
 // and Worktrees > Unowned trees discards it through the preview below. Created before the check
@@ -370,11 +377,9 @@ const checkRuntime = new CheckRuntime(checkLeases, {
   testPolicy: getWorkflowPolicy,
   storedTestingLayers: (repoRoot) => testingSettings.forRepository(repoRoot),
 });
-try {
-  await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
-} catch (err) {
+checkLeases.reconcileOnStartup(checkRuntime.groupRecovery).catch((err) => {
   console.error("[mission-control] could not reconcile check leases:", err);
-}
+});
 const worktreeOperations = new WorktreeOperationsService(worktrees, {
   legacy: legacyWorktrees,
   tasks: {
@@ -477,6 +482,7 @@ let stopDatabaseBackups = async () => {};
 // Scanned after each maintenance pass, which sweeps first, and reported as `orphan-process`
 // problems; Kill retries the blocked return at once, and sweeps again for an unowned tree.
 const orphanProcesses = new OrphanProcessMonitor({
+  occupancy: namedOccupancy,
   trees: () => finishedTrees({
     pool: worktrees,
     taskReturns: tasks.pendingWorktreeReturns(),

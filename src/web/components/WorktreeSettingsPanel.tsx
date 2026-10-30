@@ -586,6 +586,7 @@ function OrphanList({
         {orphans.map((orphan) => (
           <li key={`${orphan.pid}:${orphan.startedAt}`} className="wt-orphan">
             <div>
+              {orphan.knownOwner && <strong>{orphan.knownOwner}</strong>}
               <code>{orphan.command}</code>
               <span>PID {orphan.pid} · parent {orphan.ppid} · started {startedLabel(orphan.startedAt)}</span>
             </div>
@@ -807,7 +808,11 @@ function SlotCard({
             {terminals.targets?.map((target) => <option key={target.id} value={target.id} disabled={target.unavailable !== null}>{target.label}{target.unavailable ? `: ${target.unavailable}` : ""}</option>)}
           </select>
         </Tooltip>
-        <Tooltip label={terminal?.blurb ?? "No terminal backend is currently available"}>
+        <Tooltip label={!terminal
+          ? "No terminal backend is currently available"
+          : slot.state === "available"
+            ? `${terminal.blurb} Takes a manual lease on this slot as it stands; Return gives it back.`
+            : terminal.blurb}>
           <button className="btn btn-ghost" type="button" disabled={!terminal} onClick={() => void openTerminal()}>Open terminal</button>
         </Tooltip>
         {!pending && slot.actions.includes("warm") && (
@@ -1001,6 +1006,7 @@ function SlotDiagnosis({
           <ul>
             {occupants.map((occupant) => (
               <li key={`${occupant.pid}:${occupant.startedAt}`}>
+                {occupant.knownOwner && <strong>{occupant.knownOwner}</strong>}
                 <code>{occupant.command}</code>
                 <span>PID {occupant.pid} · started {startedLabel(occupant.startedAt)}</span>
               </li>
