@@ -948,3 +948,20 @@ test("a preview names a repository whose identity can no longer be proven", asyn
   assert.equal(preview.allowed, false);
   assert.ok(preview.blockers.includes("The pool's repository identity cannot be proven."), preview.blockers.join("; "));
 });
+
+test("the card repairs a registration whose gitdir names elsewhere, through its preview and Execute", async () => {
+  const { clone, sha } = repository("mission-repair-card-elsewhere-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-repair-card-elsewhere", REGISTRATION_OR_IDENTITY.missingRegistration);
+  writeFileSync(join(slot.administrative, "gitdir"), "/gone/from/here/.git\n");
+  assert.equal(gitIn(clone, "worktree", "list", "--porcelain").includes(`worktree ${slot.path}\n`), false);
+  assert.equal((await slotActions(slot.slotId))?.includes("repair"), true);
+
+  const preview = await operations.preview({ action: "repair", slotId: slot.slotId });
+
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  assert.ok(preview.consequences.includes("Points the registration back at this path with git worktree repair <path>."));
+  assert.equal(preview.consequences.some((line) => line.includes("any other worktree's broken .git file")), false);
+  assert.equal((await operations.execute(preview.token, [])).ok, true);
+  assert.equal(readFileSync(join(slot.administrative, "gitdir"), "utf8").trim(), join(slot.path, ".git"));
+  assertRecovered(manager, slot);
+});
