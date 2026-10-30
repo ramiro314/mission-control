@@ -1,7 +1,9 @@
 # Wait for CI strictness
 
 Fork feature `fork:ci-strictness` on `ramiro314/mission-control`. Status: shaped from a two-round
-interview; this document records every decision with the answer the human gave.
+interview, revised by the review of PR #624, then re-checked against the 2026-10-29 upstream sync
+(see [Upstream sync of 2026-10-29](#upstream-sync-of-2026-10-29)). This document records every
+decision with the answer the human gave.
 
 ## Summary
 
@@ -162,6 +164,60 @@ GitHub Inspector raised two findings on the plan's pull request; the human decid
 | truncated-checks | What the node does when GitHub reports more than 100 checks on the head | Never pass on a partial list. A counted failure among the first 100 still fails the node, but a result that would otherwise pass blocks with the new append-only code `ci_checks_truncated`, in both modes. It ships in M3, which already depends on M2's `totalCount`; until then the node judges the first 100, as it does today. |
 | quiet-past-timeout | How a quiet period still running at the timeout finishes | Decide on the first new observation at or after `quietSince + quietMinutes`: an unchanged set passes, a changed one blocks `ci_timeout`. If no new observation arrives within 15 minutes of that point (`WAIT_FOR_CI_QUIET_GRACE_MS`), block `ci_timeout` anyway. |
 
+### Upstream sync of 2026-10-29
+
+The plan's branch was cut at `006d19a2c`, before the upstream sync (PR #618, upstream 1.27.2 at
+`fe8e85f5`) merged into `main`. Every file this plan edits was diffed across that sync. Most
+changes were textual, and the sync already resolved them. Three change behavior the plan relies on.
+These facts were checked against the merged tree (`2d55c5323`):
+
+- **The Inspector poll can run while the Inspector is off.** Upstream's CodeRabbit follow-up
+  (#1244) sweeps open PRs when `cfg.enabled || codeRabbitEnabled()`
+  (`src/server/inspector/worker.ts`, `startInspector`). `processPr` records the CI observation
+  (`recordInspectorCiObservation`) before its new `if (!getInspectorConfig().enabled) return true`
+  check. So with CodeRabbit auto-resolve on and the Inspector off, `observed_ci_json` stays
+  fresh, and each observation also calls `registry.refreshInspections()`.
+- **A session can act on its own workflow run through MCP** (#1205,
+  `src/server/workflows/mcp.ts`, `src/shared/workflow-mcp.ts`). This includes `retry` (which is
+  "Wait for CI again") and `set-nodes-disabled`, with no delegation grant. Upstream allows this for
+  every node, including Persona nodes and the Inspector gate.
+- **Each PR's turn in a sweep can take longer.** `observeCodeRabbit` runs between `fetchPr` (20 s
+  `GH_TIMEOUT_MS`) and the CI record, within `CODE_RABBIT_LIMITS` (60 s, 20 pages). The
+  observation's `observedAt` is still the time processing started, so it stays monotonic per PR.
+
+The interview on these facts settled the following:
+
+| Id | Question | Answer |
+| --- | --- | --- |
+| plan-form | Where the post-sync considerations are recorded | In this plan, revised in place, so the ticket follow-up slices one plan. |
+| d5-coderabbit | Foreman's Required mode with the Inspector off but CodeRabbit auto-resolve on | Keep D5 as written. Inspector off means every check counts, even when a fresh snapshot exists. Foreman then nudges more, never less, and the hint stays true. |
+| explanation-copy | Whether the Wait for CI explanation should name CodeRabbit follow-up as a poll source | Keep "It reads CI through the GitHub Inspector, which must be on." The Inspector is the supported path. CodeRabbit's poll is incidental, and upstream may change it. |
+| agent-mcp | A session can retry its own Wait for CI, and disable that node, through MCP | Accept upstream's posture with no fork guard, and document it. The `ci_checks_truncated` sentence speaks to the operator ([S7](#supersessions-and-source-notes)). |
+| quiet-grace | Whether `WAIT_FOR_CI_QUIET_GRACE_MS` still fits | Keep 15 minutes and record why ([S8](#supersessions-and-source-notes)). |
+| delivery-units | Whether M1 to M4 and their edges stand | Unchanged. None of the sync's changes crosses a unit boundary. |
+| truncated-copy | Run panel sentence for `ci_checks_truncated` | `GitHub reported 140 checks; only the first 100 were read, so this node cannot confirm CI passed. Check the rest on GitHub; if they pass, an operator can disable this node for the run.` |
+| mcp-doc | Which unit ships the MCP docs note | M1, beside its "Wait for CI again" sentence. M3 adds nothing to it. |
+
+These upstream changes need edits to the plan text but no decision:
+
+- `InspectorSummary` gained `codeRabbit`. `inspectorSummaryForUrl(prUrl, session?)` now takes the
+  session, and `rowToInspection` in `src/server/db.ts` derives `codeRabbit` for each ledger row.
+  The `ci` projection in [§6](#6-foreman) is derived in that same place.
+- `review-followup.ts`: `feedbackState(pr, cfg, read, now)` gained `now` and a `codeRabbit` arm, and
+  `ReviewFollowupConfig` gained `codeRabbitAutoResolve`. `src/server/foreman/worker.ts` still
+  builds the config in exactly two places, and both now also read `client.shippingConfig()`.
+- `PR_QUERY` now fails a poll whose output overflowed and records `responseBytes`. The two fields
+  this plan adds are negligible against `PR_QUERY_MAX_BUFFER`.
+- Built-in round limits (#1239, `setBuiltinRoundLimit`) change only the projected
+  `bindingDefaults`, never a built-in's graph. [§10](#10-built-in-workflows)'s "no new version" and
+  the byte-identical graph test still hold.
+- `INSPECTOR_POLL_MS` (90 s) and `src/shared/wait-for-ci.ts` did not change in the sync.
+- The `fork:ci-strictness` label and its tracking issue did not exist when this revision was
+  written. PR #624's "Fork feature changes" section carries the body with `base: new`, so the daily
+  refresh creates both. If the label still does not exist when an implementation PR opens, that PR
+  creates it under the standing grant in `AGENTS.md`. This revision changes no behavior contract
+  in the tracking issue body.
+
 ### Derived rules
 
 These rules follow from the decisions above, and the plan writes them down so the review can
@@ -184,7 +240,9 @@ confirm them.
 - **D5.** "Inspector off" for Foreman means `InspectorConfig.enabled` is false, even for a PR the
   Inspector adopted earlier. Foreman then counts all failures, which matches the hint "With none
   marked, or the Inspector off, every check counts." A PR that is adopted while the Inspector is
-  enabled, but has no observation for the current head yet, is held.
+  enabled, but has no observation for the current head yet, is held. This holds even when
+  CodeRabbit auto-resolve keeps the snapshot fresh while the Inspector is off (sync answer
+  `d5-coderabbit`): only `InspectorConfig.enabled` is read, never `codeRabbitAutoResolve`.
 - **D6.** A draft saved in the editor keeps absent fields absent until the author edits any of
   the three; an edit then writes all three. Publishing an untouched legacy draft does not change
   its graph bytes.
@@ -223,6 +281,17 @@ confirm them.
 - **S6. The PR review's `truncated-checks` extends round 1 `new-ids`** with the block code
   `ci_checks_truncated`, and narrows decision 6 for a head with more than 100 checks: settled
   counted checks are not enough to pass when GitHub reported checks the node never read.
+- **S7. The sync answer `truncated-copy` replaces the `ci_checks_truncated` sentence from the PR
+  review.** The old sentence ended "Disable the node for this run to pass it." Since upstream's
+  MCP workflow actions, the session the node is gating can read that sentence through
+  `get_workflow_run` and disable its own node. The new sentence asks for the remaining checks to
+  be looked at on GitHub, and leaves disabling to an operator. No guard is added (sync answer
+  `agent-mcp`). Disabling stays possible through MCP, as it is for every node.
+- **S8. `WAIT_FOR_CI_QUIET_GRACE_MS` stays 15 minutes after the sync.** The CodeRabbit read adds at
+  most about 80 s to one PR's turn (the 20 s fetch plus the 60 s thread budget), and a typical read
+  takes one or two pages and a few seconds. One 10-minute review, a 90-second poll and that read
+  still fit in 15 minutes. The grace remains a bound on a stalled poll, not a measure of sweep
+  length.
 
 ## Design
 
@@ -231,10 +300,10 @@ color; everything else exists today.
 
 ```mermaid
 flowchart LR
-  GH["GitHub GraphQL<br/>statusCheckRollup.contexts(first:100)<br/>+ isRequired, totalCount"] -->|every 90 s| INS["Inspector poller<br/>inspector/worker.ts"]
+  GH["GitHub GraphQL<br/>statusCheckRollup.contexts(first:100)<br/>+ isRequired, totalCount"] -->|every 90 s| INS["Inspector poller<br/>inspector/worker.ts<br/>Inspector or CodeRabbit on"]
   INS --> DB[("inspector_prs.observed_ci_json<br/>CiObservation (+required, +totalCount)")]
   DB -->|Inspector update + 15 s sweep| WFC["Wait for CI decision<br/>decideWaitForCi (strictness, quiet, expected)"]
-  DB -->|new: compact projection| REG["Registry InspectorSummary.ci<br/>headSha + required-checks rollup"]
+  DB -->|new: compact projection| REG["Registry InspectorSummary.ci<br/>beside codeRabbit<br/>headSha + required-checks rollup"]
   REG -->|new: session snapshot| FM["Foreman follow-up<br/>review-followup.ts (ciStrictness)"]
   GHCLI["gh pr list --json statusCheckRollup<br/>(no isRequired)"] --> PRP["PR poller pr.ts<br/>prChecks rollup"]
   PRP -->|All mode and fallbacks| FM
@@ -276,7 +345,8 @@ flowchart LR
   more.
 - `WAIT_FOR_CI_QUIET_GRACE_MS = 15 * 60_000`: how long a quiet period running past the timeout
   may wait for its deciding observation (D2). It is a literal, because the shared module cannot
-  import the Inspector worker's constants, and it covers one 10-minute review plus a poll.
+  import the Inspector worker's constants, and it covers one 10-minute review plus a poll. Since
+  the sync it also covers the CodeRabbit read in that PR's turn ([S8](#supersessions-and-source-notes)).
 - `WaitForCiStateSchema` gains these optional fields: `strictness`, `quietMinutes`,
   `expectedChecks` (resolved at activation), `quietSince: number | null` (the `observedAt` of the
   observation that started the clock), `requiredFallback: boolean` (set on a verdict reached
@@ -360,7 +430,7 @@ on its own, which is what makes the quiet period observed rather than assumed.
   `quietSince` and `missingExpected` reset with the fresh timeout.
 - `recovery.ts`: `WORKFLOW_PHASE_RECOVERY.ci_expected_missing = "retry"` and
   `WORKFLOW_PHASE_RECOVERY.ci_checks_truncated = "retry"`; disabling the node for the run is how
-  an operator passes a truncated head. Every
+  an operator passes a truncated head, after checking the rest on GitHub (S7). Every
   `Record<WaitForCiBlockCode, …>` gains the entry; the compiler finds them.
 
 ### 4. Publish validation
@@ -397,15 +467,17 @@ migration, because the default covers stored configs. `ReviewFollowupConfig` gai
 and `src/server/foreman/worker.ts` passes it at both places that build the config (the first pass
 and the post-read re-check).
 
-**Projection.** `src/server/db.ts` `loadInspectorInspections` also reads `observed_ci_json` and
-derives a compact `ci` for the cached ledger row. The registry's `inspectorSummaryForUrl` puts it
-on `InspectorSummary.ci`, together with whether the Inspector is enabled. The full check list
+**Projection.** `src/server/db.ts` `loadInspectorInspections` also reads `observed_ci_json`, and
+`rowToInspection` derives a compact `ci` for the cached ledger row, next to the `codeRabbit`
+summary upstream derives there. The registry's `inspectorSummaryForUrl(prUrl, session?)` puts it
+on `InspectorSummary.ci`, beside `codeRabbit`, together with whether the Inspector is enabled. The full check list
 never travels on the session wire. `inspectionUpdated` already reloads the row after every
 observation, so nothing new is read per session snapshot. Both the session PR and each
 `repoPrs[].feedback.inspector` get it, because both go through `inspectorSummaryForUrl`.
 
-**Decision.** In `review-followup.ts`, `feedbackState`'s `ciFailing` and the re-arm in
-`advanceFollowupMark` both read one predicate:
+**Decision.** In `review-followup.ts`, `feedbackState(pr, cfg, read, now)`'s `ciFailing` and the
+re-arm in `advanceFollowupMark` both read one predicate. Upstream's `codeRabbit` arm beside it is
+left alone. When one payload carries both, the Required wording applies only to the CI lines.
 
 | ciStrictness | Condition | CI counts as failing when |
 | --- | --- | --- |
@@ -490,7 +562,8 @@ head… Continue until the required checks pass or…". All mode keeps today's t
 - Truncation note, when `checksTotal > 100`:
   `GitHub reported 140 checks; only the first 100 were read.`
 - `ci_checks_truncated` sentence, with the count taken from the attempt state:
-  `GitHub reported 140 checks; only the first 100 were read, so this node cannot confirm CI passed. Disable the node for this run to pass it.`
+  `GitHub reported 140 checks; only the first 100 were read, so this node cannot confirm CI passed. Check the rest on GitHub; if they pass, an operator can disable this node for the run.`
+  (sync answer `truncated-copy`, [S7](#supersessions-and-source-notes))
 - On a fail with missing expected checks, under Failing checks:
   `Not reported when CI failed: "deploy".` The Failing checks list shows only counted failures.
 - `ci_expected_missing` sentence, with the names taken from the attempt state:
@@ -537,7 +610,10 @@ head… Continue until the required checks pass or…". All mode keeps today's t
   modes, the quiet period, expected checks, the fallback, `ci_expected_missing`,
   `ci_checks_truncated`, the legacy `ci_flake_report_missing`), how the quiet period is measured
   and how it interacts with the timeout, and the flake report as enrichment. Rewrite the sentence that says "Flaky tests" never
-  fails the node.
+  fails the node. Add the MCP note (sync answer `mcp-doc`):
+  "A blocked Wait for CI can be judged again from the dashboard or by the session itself with
+  trigger_workflow_action `retry`. Disabling the node passes it without checking CI; leave that to
+  the operator."
 - `docs/workflows.md` built-in section (the Affected tests paragraph): remove "bind it in a
   repository whose CI publishes 'Flaky tests' … Without that check, Wait for CI blocks the run";
   say it works on any repository whose CI runs on pull requests, and that the flake report adds
@@ -680,16 +756,16 @@ Upstream-owned files this feature edits, by expected risk:
 
 | Risk | File | Why |
 | --- | --- | --- |
-| High | `src/server/foreman/review-followup.ts` | Upstream changes Foreman follow-through often. The CI predicate, re-arm and payload wording sit in functions upstream edits (`feedbackState`, `advanceFollowupMark`, `buildPayload`). |
-| High | `src/server/registry.ts` | A high-churn file. The `inspectorSummaryForUrl` projection gains the `ci` field. |
-| High | `src/server/inspector/github.ts` | `PR_QUERY` is one template string; any upstream field change there conflicts textually. |
+| High | `src/server/foreman/review-followup.ts` | Upstream changes Foreman follow-through often. The CI predicate, re-arm and payload wording sit in functions upstream edits (`feedbackState`, `advanceFollowupMark`, `buildPayload`). The 2026-10-29 sync added the `codeRabbit` arm and `now` to exactly these functions. |
+| High | `src/server/registry.ts` | A high-churn file. The `inspectorSummaryForUrl` projection gains the `ci` field, beside the `codeRabbit` field the 2026-10-29 sync added. |
+| High | `src/server/inspector/github.ts` | `PR_QUERY` is one template string; any upstream field change there conflicts textually. The 2026-10-29 sync changed its review-thread comment fields. |
 | Medium | `src/shared/protocol.ts` | `ForemanConfigSchema` gains `ciStrictness` beside upstream-owned keys. The `wait_for_ci` arms are fork-added already. |
 | Medium | `src/web/components/ForemanBar.tsx` | The Pull requests fieldset, where upstream adds controls. |
 | Medium | `src/server/workflows/agent-contract.ts`, `feedback.ts`, `manager.ts` | The CI contract text and the packet input; upstream owns that wording. |
-| Medium | `src/shared/types.ts` | `InspectorSummary` gains `ci`. |
-| Medium | `src/server/db.ts` | `loadInspectorInspections` also selects `observed_ci_json` (the column is fork-added). |
+| Medium | `src/shared/types.ts` | `InspectorSummary` gains `ci`, beside upstream's `codeRabbit`. |
+| Medium | `src/server/db.ts` | `loadInspectorInspections` also selects `observed_ci_json` (the column is fork-added), and `rowToInspection` derives `ci` beside upstream's `codeRabbit`. |
 | Low | `src/shared/workflow.ts` | Appending to `WORKFLOW_DIAGNOSTIC_CODES` conflicts only if upstream appends at the same time; keep both, upstream's first. |
-| Low | `src/server/foreman/worker.ts`, `src/server/index.ts`, `src/shared/app-config-entries.ts` | One-line pass-throughs. |
+| Low | `src/server/foreman/worker.ts`, `src/server/index.ts`, `src/shared/app-config-entries.ts` | One-line pass-throughs. In `worker.ts`, the two config literals now also carry upstream's `codeRabbitAutoResolve`. |
 | Low | `src/server/workflows/{engine,store,recovery,builtin-workflows}.ts`, `src/shared/{workflow-graph,workflow-stages}.ts`, `src/web/workflows/{PipelineEditor,WorkflowProperties,run-model}.tsx` | Edits stay inside branches the fork already added for `wait_for_ci`. |
 | Low | `docs/workflows.md`, `docs/work-queues.md`, `docs/inspector-and-shipping.md`, `docs/agent-guides/change-contracts.md` | Prose next to upstream prose; resolve by keeping both. |
 | Low | `.github/workflows/ci.yml` | Comment-only, inside comments the fork already owns. |
@@ -700,6 +776,12 @@ Conceptual conflicts to check on every sync, even when the merge is clean:
 - Upstream rewrites `workflowPullRequestCiContract` or how packets read Foreman preferences.
 - Upstream changes the Inspector's PR query, its poll cadence, or `InspectorSummary`'s shape.
 - Upstream adds its own CI gate or required-checks reading.
+- Upstream changes when the Inspector worker polls, or where `processPr` records the CI
+  observation. Since the 2026-10-29 sync, the sweep also runs for CodeRabbit consent alone, and the
+  CI record sits before the Inspector-enabled check. D5 deliberately ignores this.
+- Upstream changes which workflow actions a session may take on its own run through MCP
+  (`src/shared/workflow-mcp.ts`). S7 and the `mcp-doc` note assume `retry` and
+  `set-nodes-disabled` are both allowed.
 
 ## Fork tracking
 
@@ -707,7 +789,9 @@ The label `fork:ci-strictness` and the tracking issue are created when the plan'
 opens, by the turn that opens it, under the standing grant in `AGENTS.md`. If that turn's
 authorization refuses the writes, the PR's "Fork feature changes" section carries the body below
 under `### fork:ci-strictness`, and the refresh creates both after the merge. The shaping turn
-makes no GitHub writes. Every merge unit in [Delivery boundaries](#delivery-boundaries) carries
+makes no GitHub writes. PR #624 took the second path, so the label and issue appear when the
+refresh applies its section (see [Upstream sync of 2026-10-29](#upstream-sync-of-2026-10-29)).
+Every merge unit in [Delivery boundaries](#delivery-boundaries) carries
 both `fork:ci-strictness` and `fork:flake-aware-testing`, as round 1 `fork-tracking` decided.
 Only M1 and M3 replace #296's Wait for CI line, as the amendment below describes.
 
@@ -793,7 +877,7 @@ API caller can store is ignored. Data that no setting reads yet (M2) may land on
 
 | Unit | What it delivers (plan sections) | Depends on | Docs and fork records it ships |
 | --- | --- | --- | --- |
-| **M1. Drop the "Flaky tests" gate** | [§2](#2-the-decision) for the legacy settings only (All, quiet 3, no expected checks; no new node fields), the removed `FLAKY_TESTS_CHECK_NAME` exemption, `quietSince`, `WAIT_FOR_CI_QUIET_GRACE_MS` and D7 in [§1](#1-shared-contract), [§3](#3-engine-manager-and-store), the quiet headline and rewritten `ci_flake_report_missing` sentence from [§9](#9-run-panel), [§10](#10-built-in-workflows), [§11](#11-compatibility-and-upgrade). Tests: the All-mode, quiet and timeout rows (D2, D3 without expected checks), D7, built-ins. E2E: cases 5 and 8. | none | `docs/workflows.md` Wait for CI behavior and the Affected-tests paragraph, `docs/flaky-tests.md`, the `ci.yml` comments, change-contracts (legacy constant, observed quiet period), and the interim #296 line below. |
+| **M1. Drop the "Flaky tests" gate** | [§2](#2-the-decision) for the legacy settings only (All, quiet 3, no expected checks; no new node fields), the removed `FLAKY_TESTS_CHECK_NAME` exemption, `quietSince`, `WAIT_FOR_CI_QUIET_GRACE_MS` and D7 in [§1](#1-shared-contract), [§3](#3-engine-manager-and-store), the quiet headline and rewritten `ci_flake_report_missing` sentence from [§9](#9-run-panel), [§10](#10-built-in-workflows), [§11](#11-compatibility-and-upgrade). Tests: the All-mode, quiet and timeout rows (D2, D3 without expected checks), D7, built-ins. E2E: cases 5 and 8. | none | `docs/workflows.md` Wait for CI behavior, the MCP note (sync answer `mcp-doc`) and the Affected-tests paragraph, `docs/flaky-tests.md`, the `ci.yml` comments, change-contracts (legacy constant, observed quiet period), and the interim #296 line below. |
 | **M2. Inspector reads required flags** | [§5](#5-inspector-query); `CiCheckRunSchema.required`, `CiObservationSchema.totalCount`, `ciCheckRunsFromRollup`; `CI_STRICTNESS` and `requiredChecksRollup` in `src/shared/ci-checks.ts`. Nothing reads the new data yet, so no behavior changes. Tests: parse and `PR_QUERY`. | none | `docs/inspector-and-shipping.md`: the query reads `isRequired` and `totalCount`. |
 | **M3. Node settings: strictness, quiet period and expected checks** | `strictness`, `quietMinutes` and `expectedChecks` together on both node arms and the stage model ([§1](#1-shared-contract), D6 as written), the expected-check and Required rows of [§2](#2-the-decision) (the Required counted set, the fallback and `requiredFallback`, D1, D4, the Required packet of S1), both diagnostics in [§4](#4-publish-validation), `ci_expected_missing` and `ci_checks_truncated` with their recovery and sentences, `checksTotal` and the truncation row of [§2](#2-the-decision), all of [§8](#8-workflow-editor), and the settings line, tags, unreported expected rows, fallback note, truncation note and "Not reported when CI failed" of [§9](#9-run-panel). Tests: the expected-check, Required and truncation rows, D3 with expected checks, D6, diagnostics, render. E2E: cases 1, 2, 3, 4, 6, 7 and 9. | M1, M2 | `docs/workflows.md`: the three settings, the fallback, `ci_expected_missing` and `ci_checks_truncated`; change-contracts: the block-code list and `CI_STRICTNESS` is append-only; the final #296 line. |
 | **M4. Foreman's "Which failures count"** | `ciStrictness` in `ForemanConfigSchema` and `app-config-entries.ts`, all of [§6](#6-foreman) (projection, predicate, hold, nudge wording, worker pass-through, popover select and hint), and [§7](#7-pull-request-action-wording). Tests: the review-followup table, D5, the CI policy text, the config default. E2E: the `foreman-pr-defaults.spec.ts` extension. | M2 | `docs/work-queues.md`, the "Conditional CI instructions" paragraph of `docs/workflows.md`, and the Foreman sentence of `docs/inspector-and-shipping.md`. |
