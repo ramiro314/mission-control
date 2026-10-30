@@ -779,9 +779,11 @@ test("a slot card's History lists what happened to the slot, newest first, and p
   const entries = history.getByRole("listitem");
 
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toHaveAccessibleDescription("Show what happened to this slot, newest first");
   await expect(entries).toHaveCount(0);
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(toggle).toHaveAccessibleDescription("Hide this slot's history");
 
   await expect(entries).toHaveCount(4);
   await expect(entries.nth(0)).toContainText("returning → available");
@@ -819,6 +821,8 @@ test("a slot card's History lists what happened to the slot, newest first, and p
   await toggle.click();
   await expect(entries).toHaveCount(50);
   await expect(entries.nth(0)).toContainText("paged row 60");
+  await expect(history.getByRole("button", { name: "Show older" }))
+    .toHaveAccessibleDescription("Load the next older entries of this slot's history");
   await history.getByRole("button", { name: "Show older" }).click();
   await expect(entries).toHaveCount(65);
   await expect(entries.nth(64)).toContainText("new → provisioning");

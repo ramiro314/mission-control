@@ -913,10 +913,12 @@ function SlotHistory({
 
   return (
     <section className="wt-history" aria-label={`Slot ${ordinal} history`}>
-      <button type="button" className="wt-disclosure" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        <span className="wt-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
-        <span>History</span>
-      </button>
+      <Tooltip label={open ? "Hide this slot's history" : "Show what happened to this slot, newest first"}>
+        <button type="button" className="wt-disclosure" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+          <span className="wt-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+          <span>History</span>
+        </button>
+      </Tooltip>
       {open && (
         <>
           {entries === null && !failed && <p className="wt-history-note">Reading this slot's history…</p>}
@@ -940,9 +942,11 @@ function SlotHistory({
             </ol>
           )}
           {nextBefore !== null && (
-            <button className="btn btn-ghost" type="button" disabled={loadingOlder} onClick={() => void showOlder()}>
-              Show older
-            </button>
+            <Tooltip label="Load the next older entries of this slot's history">
+              <button className="btn btn-ghost" type="button" disabled={loadingOlder} onClick={() => void showOlder()}>
+                Show older
+              </button>
+            </Tooltip>
           )}
         </>
       )}
