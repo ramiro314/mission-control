@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
-import { mkTask } from "./helpers/session-fixture.ts";
+import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-settled-tree-"));
 process.env.HARNESS_HOME = home;
@@ -291,4 +291,44 @@ test("a kept tree reclaimed by hand takes its problem and first-seen entry with 
   assert.ok(changes() > before, "storage health is asked again once the tree is gone");
   assert.equal(health(manager, record, 2_000).problems.some((each) => each.id.startsWith(`${subject}:`)), false);
   assert.equal(record[subject], undefined, "a gone subject drops its first-seen entry at once");
+});
+
+test("the last session leaving a cancelled task's real tree reclaims it and keeps its status", async () => {
+  const tree = settledWorktree("session-left");
+  write(tree.worktree, "node_modules/left-pad/index.js");
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "session-left",
+    status: "cancelled",
+    dispatchedAt: 5_000,
+    repoRoot: tree.repoRoot,
+    worktreePath: tree.worktree,
+    branch: tree.branch,
+    provider: "git",
+  }));
+  // Live, so the startup pass leaves the tree for the event to reclaim.
+  const manager = new TaskManager(
+    registry,
+    undefined,
+    { taskLiveness: () => true, handleFor: () => undefined } as never,
+    undefined,
+    undefined,
+    { occupancy: unoccupied },
+  );
+  await manager.settleWorktreeReturns();
+  const session = mkSession({ id: "session-left-agent", cwd: join(tree.worktree, "packages"), pid: undefined, terminals: [] });
+  const evicting = registry as unknown as {
+    sessions: Map<string, unknown>;
+    beginEviction(s: unknown): void;
+    remove(id: string): void;
+  };
+  evicting.sessions.set(session.id, session);
+  evicting.beginEviction(session);
+  evicting.remove(session.id);
+  await manager.settleWorktreeReturns();
+
+  const task = registry.getTask("session-left")!;
+  assert.equal(task.worktreePath, null, "the released tree left the row");
+  assert.equal(task.status, "cancelled", "reclaim keeps the settled status");
+  assert.equal(existsSync(tree.worktree), false, "the clean tree is gone");
 });

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "../src/shared/types.ts";
 import type { ActivityFingerprint } from "../src/server/git/worktree-activity.ts";
+import type { TaskManagerStartupDeps } from "../src/server/tasks.ts";
 import { mkTask as baseTask, mkSession } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-retention-cleanup-"));
@@ -83,6 +84,10 @@ function world(options: {
    * and quiescence falls through to a real terminal backend.
    */
   sessions?: { id: string }[];
+  /** The supervisor's answer for every task. Null means no embedded session at all. */
+  liveness?: boolean | null;
+  /** Host evidence for the settled-tree reclaim, which reads processes and Git directly. */
+  startupDeps?: Pick<TaskManagerStartupDeps, "occupancy" | "returnBlocker">;
 } ) {
   const registry = new Registry();
   // Every test in this file shares one SQLite home, and a Registry loads every
@@ -110,16 +115,25 @@ function world(options: {
     options.killSession ? ({ kill: options.killSession } as never) : undefined,
     // Nothing is alive, and nothing needs to be: every fixture here is already terminal, so
     // startup reconciliation settles them where they stand and touches no resource.
-    { taskLiveness: () => null } as never,
+    { taskLiveness: () => options.liveness ?? null, handleFor: () => undefined } as never,
     undefined,
     undefined,
     {
+      ...options.startupDeps,
       teardown: async (task) => {
         state.teardowns.push((task as Task).id);
         if (options.teardown) await options.teardown(task as Task);
       },
     },
   );
+  // `reclaim` is the operator's path and calls the real `teardownWorktree`, which no invented
+  // checkout can satisfy. Its real tree is `test/task-settled-tree-reclaim.test.ts`'s to prove.
+  if (options.startupDeps) {
+    tasks.reclaim = async (id) => {
+      state.teardowns.push(id);
+      return { ok: true };
+    };
+  }
   const probe = async (task: Task): Promise<ActivityFingerprint> => {
     state.probes += 1;
     const digest = state.fingerprints.get(task.id);
@@ -1082,4 +1096,216 @@ test("a provider that keeps refusing is attempted on the doubling schedule, not 
     [0, 1, 3, 7],
     "attempts at due, +1h, +3h, +7h - intervals of 1h, 2h, 4h",
   );
+});
+
+/** The trees a test says are free of processes, or the occupant it says is still inside. */
+const occupancy = (occupied: readonly string[] = []) => async (paths: readonly string[]) =>
+  new Map(paths.map((path) => [path, {
+    status: "known" as const,
+    occupants: occupied.includes(path)
+      ? [{ pid: 4242, ppid: 1, startRaw: "now", startMs: 1, command: "node mcp-server", cwd: path, knownOwner: null }]
+      : [],
+  }])) as never;
+
+/** A world whose trees are clean by the reclaim's own rule unless a test says otherwise. */
+function reclaimWorld(
+  tasks: Task[],
+  deps: Pick<TaskManagerStartupDeps, "occupancy" | "returnBlocker"> = {},
+) {
+  return world({ tasks, startupDeps: { occupancy: occupancy(), returnBlocker: async () => null, ...deps } });
+}
+
+/** Register a session, as discovery would, so it can leave through the one eviction path. */
+function arrive(w: ReturnType<typeof world>, id: string, cwd: string) {
+  const session = mkSession({ id, cwd, pid: undefined, terminals: [] });
+  (w.registry as unknown as { sessions: Map<string, unknown> }).sessions.set(id, session);
+  return session;
+}
+
+/** `Registry.beginEviction`'s whole sequence, without waiting out its linger. */
+async function leave(w: ReturnType<typeof world>, session: ReturnType<typeof mkSession>): Promise<void> {
+  const evicting = w.registry as unknown as { beginEviction(s: unknown): void; remove(id: string): void };
+  evicting.beginEviction(session);
+  evicting.remove(session.id);
+  await w.tasks.settleWorktreeReturns();
+}
+
+for (const status of ["cancelled", "failed"] as const) {
+  test(`the last session leaving a ${status} task's tree reclaims it at once`, async () => {
+    const id = uid("left");
+    const w = reclaimWorld([baseTask({ id, status, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })]);
+    await w.ready();
+    await leave(w, arrive(w, uid("session"), "/pool/a/packages/app"));
+    assert.deepEqual(w.state.teardowns, [id]);
+  });
+
+  test(`startup reclaims a ${status} task's clean tree the event never saw leave`, async () => {
+    const id = uid("startup");
+    const w = world({
+      tasks: [baseTask({ id, status, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+      liveness: false,
+      startupDeps: { occupancy: occupancy(), returnBlocker: async () => null },
+    });
+    await w.ready();
+    assert.deepEqual(w.state.teardowns, [id]);
+  });
+}
+
+test("an agent's own departure settles its task and reclaims the clean tree in the same event", async () => {
+  const id = uid("bound");
+  const sessionId = uid("session");
+  const w = reclaimWorld([
+    baseTask({ id, status: "running", sessionId, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 }),
+  ]);
+  await w.ready();
+  await leave(w, arrive(w, sessionId, "/pool/a"));
+  assert.equal(w.registry.getTask(id)?.status, "failed");
+  assert.deepEqual(w.state.teardowns, [id]);
+});
+
+test("every tree of a multi-repository task is reclaimed when the last session leaves any of them", async () => {
+  const id = uid("multi");
+  const inspected: string[][] = [];
+  const w = reclaimWorld(
+    [baseTask({
+      id, status: "cancelled", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1,
+      extraRepos: [attached("/pool/b")],
+    })],
+    { occupancy: async (paths) => { inspected.push([...paths]); return occupancy()(paths); } },
+  );
+  await w.ready();
+  await leave(w, arrive(w, uid("session"), "/pool/b"));
+  assert.deepEqual(inspected, [["/pool/a", "/pool/b"]], "the whole task is read, not the tree the session left");
+  assert.deepEqual(w.state.teardowns, [id]);
+});
+
+test("a process still inside any of the task's trees keeps them all", async () => {
+  const id = uid("occupied");
+  const w = reclaimWorld(
+    [baseTask({
+      id, status: "cancelled", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1,
+      extraRepos: [attached("/pool/b")],
+    })],
+    { occupancy: occupancy(["/pool/b"]) },
+  );
+  await w.ready();
+  await leave(w, arrive(w, uid("session"), "/pool/a"));
+  assert.deepEqual(w.state.teardowns, [], "an occupant keeps the tree");
+  assert.equal(w.registry.getTask(id)?.worktreePath, "/pool/a");
+});
+
+test("unknown occupancy keeps the tree rather than reading it as empty", async () => {
+  const id = uid("unknown");
+  const w = reclaimWorld(
+    [baseTask({ id, status: "failed", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+    {
+      occupancy: async (paths) => new Map(paths.map((path) => [path, {
+        status: "unknown" as const, reason: "ps timed out",
+      }])) as never,
+    },
+  );
+  await w.ready();
+  await leave(w, arrive(w, uid("session"), "/pool/a"));
+  assert.deepEqual(w.state.teardowns, []);
+});
+
+test("a second session in the tree holds the reclaim until it leaves too", async () => {
+  const id = uid("second");
+  let reads = 0;
+  const w = reclaimWorld(
+    [baseTask({ id, status: "cancelled", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+    { occupancy: async (paths) => { reads += 1; return occupancy()(paths); } },
+  );
+  await w.ready();
+  const first = arrive(w, uid("session"), "/pool/a");
+  const second = arrive(w, uid("session"), "/pool/a/nested");
+  await leave(w, first);
+  assert.deepEqual(w.state.teardowns, [], "a registered session is still inside");
+  assert.equal(reads, 0, "and the process table was not read to learn that");
+  await leave(w, second);
+  assert.deepEqual(w.state.teardowns, [id]);
+});
+
+test("a task's bound session keeps its trees even from outside them", async () => {
+  const id = uid("bound-outside");
+  const bound = uid("session");
+  const w = reclaimWorld([
+    baseTask({ id, status: "failed", sessionId: bound, worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 }),
+  ]);
+  await w.ready();
+  arrive(w, bound, "/elsewhere");
+  await leave(w, arrive(w, uid("session"), "/pool/a"));
+  assert.deepEqual(w.state.teardowns, [], "reclaiming would stop the agent the task is still bound to");
+});
+
+test("a tree with work is kept and listed, and only a tree the session was inside is considered", async () => {
+  const id = uid("dirty");
+  const sibling = uid("sibling");
+  const w = reclaimWorld(
+    [
+      baseTask({ id, status: "cancelled", worktreePath: "/pool/1", provider: "mission", dispatchedAt: 1 }),
+      baseTask({ id: sibling, status: "cancelled", worktreePath: "/pool/10", provider: "mission", dispatchedAt: 1 }),
+    ],
+    { returnBlocker: async () => "uncommitted changes" },
+  );
+  await w.ready();
+  await leave(w, arrive(w, uid("session"), "/pool/1"));
+  assert.deepEqual(w.state.teardowns, []);
+  const subjects = (w.tasks.dirtySettledTreeProblems().firstSeen ?? []).map((problem) => problem.subject);
+  assert.deepEqual(subjects, [`dirty-settled-tree:${id}`], "the sibling sharing a path prefix is not touched");
+});
+
+test("only a cancelled or failed task is reclaimed by a session leaving", async () => {
+  const running = uid("running");
+  const done = uid("done");
+  const pipeline = uid("pipeline");
+  const w = reclaimWorld([
+    baseTask({ id: running, status: "running", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 }),
+    baseTask({ id: done, status: "done", worktreePath: "/pool/b", provider: "mission", dispatchedAt: 1 }),
+    baseTask({ id: pipeline, kind: "pipeline", status: "failed", worktreePath: "/pool/c", provider: "mission", dispatchedAt: 1 }),
+  ]);
+  await w.ready();
+  await leave(w, arrive(w, uid("session"), "/pool/a"));
+  await leave(w, arrive(w, uid("session"), "/pool/b"));
+  await leave(w, arrive(w, uid("session"), "/pool/c"));
+  assert.deepEqual(w.state.teardowns, []);
+});
+
+test("a session leaving while the task's cleanup is queued is not lost", async () => {
+  const id = uid("queued");
+  let hold: (() => void) | null = null;
+  const reading = new Promise<void>((resolve) => { hold = resolve; });
+  let started: (() => void) | null = null;
+  const firstRead = new Promise<void>((resolve) => { started = resolve; });
+  let reads = 0;
+  const w = reclaimWorld(
+    [baseTask({ id, status: "cancelled", worktreePath: "/pool/a", provider: "mission", dispatchedAt: 1 })],
+    {
+      occupancy: async (paths) => {
+        reads += 1;
+        if (reads > 1) return occupancy()(paths);
+        const answer = occupancy(["/pool/a"])(paths);
+        started!();
+        await reading;
+        return answer;
+      },
+    },
+  );
+  await w.ready();
+  w.registry.applyDiscovery([]);
+  const evicting = w.registry as unknown as { beginEviction(s: unknown): void; remove(id: string): void };
+  const first = arrive(w, uid("session"), "/pool/a");
+  evicting.beginEviction(first);
+  evicting.remove(first.id);
+  await firstRead;
+  // The first attempt read a process that has since gone, and the queue holds one job per task.
+  const second = arrive(w, uid("session"), "/pool/a");
+  evicting.beginEviction(second);
+  evicting.remove(second.id);
+  hold!();
+  await w.tasks.settleWorktreeReturns();
+  assert.deepEqual(w.state.teardowns, [], "the first attempt saw the occupant");
+  await w.tasks.sweepMissionSessionClosures();
+  await w.tasks.settleWorktreeReturns();
+  assert.deepEqual(w.state.teardowns, [id], "the refused event was retried");
 });

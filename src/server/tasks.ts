@@ -590,6 +590,17 @@ class TaskCleanupQueue {
   }
 }
 
+/**
+ * Whether a session leaving may reclaim this task's trees. A managed Pipeline is left out:
+ * its provider owns the outcome, a failed attempt can still be recovered, and the startup pass
+ * returns before this reclaim for the same task.
+ */
+function settledTreesReclaimOnSessionLeaving(task: Task): boolean {
+  return (task.status === "cancelled" || task.status === "failed") &&
+    !providerOwnsTaskCompletion(task.kind) &&
+    taskHasWorktrees(task);
+}
+
 /** Every repository whose cleanup one task can reach, in the queue's canonical key space. */
 function taskCleanupRepoKeys(task: Task): string[] {
   return [...new Set(
@@ -1016,6 +1027,10 @@ export class TaskManager {
   /** Told after every automatic worktree return outcome, so storage health can recompute. */
   private readonly worktreeReturnListeners = new Set<() => void>();
   private readonly killedSessionReturns = new Map<string, { taskId: string; ownership: string }>();
+  /** Each leaving session's cwd, because `session_remove` carries only the id. */
+  private readonly leavingSessionCwds = new Map<string, string>();
+  /** Settled tasks whose reclaim the cleanup queue refused, retried by the closure sweep. */
+  private readonly settledReclaimsOwed = new Set<string>();
   /**
    * Tasks a restart settled with work still in a tree, and why: the tree and the refusal that
    * kept it. Rebuilt by every startup reconciliation, which visits each one again, so it needs
@@ -1154,6 +1169,9 @@ export class TaskManager {
     // the operator closed, an agent that exited by itself. Registry emits `session_remove`
     // only from its eviction timer, which is the durable answer - a session marked exited
     // by one sweep and rediscovered by the next never reaches it.
+    this.subscriptions.push(registry.onSessionExit((session) => {
+      if (session.cwd) this.leavingSessionCwds.set(session.id, session.cwd);
+    }));
     this.subscriptions.push(registry.subscribe((e) => {
       if (e.type === "session_remove") {
         // Before `agentWentAway`, so a task whose work landed reads as done rather than
@@ -1164,6 +1182,8 @@ export class TaskManager {
         this.reconcileMergedTasks();
         this.reconcileTasksBoundTo(e.id);
         this.returnKilledSessionWorktrees(e.id);
+        // After both of the above, so the task this session just settled counts as settled.
+        this.reclaimTreesSessionLeft(e.id);
         // Recheck promptly after registry removal. Forced retirement still owes runtime
         // cleanup until discovery or the SDK supervisor confirms that it stopped.
         this.scheduleMissionSessionClosureSweep(0);
@@ -1915,6 +1935,7 @@ export class TaskManager {
       this.sweepUrgentlyRequested = false;
       this.resumeCompletedWorktreeReturns();
       for (const sessionId of this.killedSessionReturns.keys()) this.returnKilledSessionWorktrees(sessionId);
+      for (const taskId of this.settledReclaimsOwed) this.enqueueSettledReclaim(taskId);
       if (listTaskSessionClosures().length > 0 || this.registry.listTasks().some(taskOwesWorktreeReturn)) {
         this.scheduleMissionSessionClosureSweep(urgent ? 0 : MISSION_SESSION_CLOSURE_RETRY_MS);
       }
@@ -6377,6 +6398,16 @@ export class TaskManager {
     }
   }
 
+  private taskSessionRuns(task: Task): boolean {
+    return task.sessionId !== null &&
+      Boolean(this.registry.getSession(task.sessionId) || this.supervisor?.handleFor(task.sessionId));
+  }
+
+  private sessionUses(paths: readonly string[]): boolean {
+    return this.registry.snapshot().sessions.some((session) =>
+      session.cwd && paths.some((path) => pathContains(canonicalWorktreePath(path), canonicalWorktreePath(session.cwd!))));
+  }
+
   /** Listen for automatic worktree return outcomes. Returns the unsubscribe. */
   onWorktreeReturnOutcome(listener: () => void): () => void {
     this.worktreeReturnListeners.add(listener);
@@ -6497,13 +6528,8 @@ export class TaskManager {
       if (stoppedSessionId && this.supervisor?.handleFor(stoppedSessionId)) {
         return "killed session runtime has not stopped";
       }
-      if (task.sessionId && (this.registry.getSession(task.sessionId) || this.supervisor?.handleFor(task.sessionId))) {
-        return "task session has not stopped";
-      }
-      if (this.registry.snapshot().sessions.some((session) =>
-        session.cwd && paths.some((path) => pathContains(canonicalWorktreePath(path), canonicalWorktreePath(session.cwd!))))) {
-        return "another session still uses a checkout";
-      }
+      if (this.taskSessionRuns(task)) return "task session has not stopped";
+      if (this.sessionUses(paths)) return "another session still uses a checkout";
       const occupancy = await (this.startupDeps.occupancy ?? inspectWorktreeOccupancy)(paths);
       for (const path of paths) {
         const state = occupancy.get(path);
@@ -6866,6 +6892,49 @@ export class TaskManager {
     })) return;
     const result = await this.reclaim(id);
     if (!result.ok) console.warn(`[tasks] could not reclaim settled task ${id}'s clean worktrees: ${result.error}`);
+  }
+
+  /**
+   * The live half of the restart-settle pass: a session left, so the cancelled or failed task
+   * holding the tree it sat in may be reclaimable now rather than at day 30. Everything that
+   * decides is `reclaimSettledTreesIfClean`; this only says which task to ask it about.
+   */
+  private reclaimTreesSessionLeft(sessionId: string): void {
+    const cwd = this.leavingSessionCwds.get(sessionId);
+    this.leavingSessionCwds.delete(sessionId);
+    if (!cwd) return;
+    const left = canonicalWorktreePath(cwd);
+    for (const task of this.registry.listTasks()) {
+      if (settledTreesReclaimOnSessionLeaving(task) && taskRepoRefs(task).some((ref) =>
+        ref.worktreePath && pathContains(canonicalWorktreePath(ref.worktreePath), left))) {
+        this.enqueueSettledReclaim(task.id);
+      }
+    }
+  }
+
+  /** On the shared queue, so `stop` drains it and it never joins a same-repository convoy. */
+  private enqueueSettledReclaim(id: string): void {
+    this.settledReclaimsOwed.delete(id);
+    const task = this.registry.getTask(id);
+    if (!task || this.closuresStopped || !settledTreesReclaimOnSessionLeaving(task)) return;
+    const accepted = this.cleanupQueue.enqueue({
+      taskId: id,
+      repoKeys: taskCleanupRepoKeys(task),
+      run: async () => {
+        // A queued job can wait minutes, so nothing about `task` is trusted here. A session
+        // still registered is not read as a process: its own `session_remove` will ask again.
+        const current = this.registry.getTask(id);
+        if (!current || !settledTreesReclaimOnSessionLeaving(current) || this.cleanupReservations.has(id)) return;
+        const paths = taskRepoRefs(current).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []);
+        if (this.taskSessionRuns(current) || this.sessionUses(paths)) return;
+        await this.reclaimSettledTreesIfClean(id);
+      },
+    });
+    if (accepted) return;
+    // Another cleanup holds the task's one queue slot, and it may have read a process this
+    // session has since taken with it, so this event still has to be answered.
+    this.settledReclaimsOwed.add(id);
+    this.scheduleMissionSessionClosureSweep();
   }
 
   /**

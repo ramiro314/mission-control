@@ -966,6 +966,13 @@ completed before this policy keep their existing retained checkouts and 30-day a
 upgrade never infers return permission from an old done status or session-closure record.
 Another live session or process always blocks automatic return.
 
+A cancelled or failed task can leave that window early. When a session ends inside a tree such a
+task holds, Mission Control reclaims all of the task's trees at once if they hold no work and no
+session or process remains in any of them, the same check a restart runs. A tree with work stays
+for the 30 days and is listed in **Settings > Storage**. A process still inside keeps the trees
+too, and the session's exit does not ask again, so they then wait for **Clean up**, a restart or
+the 30 days. A managed Pipeline task is left out, because its provider owns the outcome.
+
 A return that keeps being refused is recorded rather than silent. A completed task's owed
 return and a check's lease return each record when their return was first refused and the
 latest refusal: its reason, plus the processes found occupying the tree when occupancy was the
