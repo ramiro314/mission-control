@@ -677,7 +677,19 @@ this order:
   default, cleanliness, process count, disk estimate, and owner, and in a pool with a claim, its
   dependency state. **Copy path** stays in the browser.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
-  manager-known path.
+  manager-known path. On an available slot it first takes a manual lease, so acquisition cannot
+  hand out a slot with an unowned shell in it. The lease takes the slot exactly as it stands, with
+  no reset and no claim, so HEAD and every file stay as they were, and the shell opens only once
+  the lease is held. The card then shows a manual lease labelled "Terminal from Settings", with
+  **Return**. The slot must pass acquisition's idle rule on a fresh read, under the slot lock, and
+  a slot that does not is refused with the reason and no shell opens: one that is occupied stays
+  available, and one that is dirty is quarantined, as acquisition would leave it. A slot attached
+  to a branch is refused too, since only a reset can undo that. On a leased or quarantined slot
+  Open terminal opens a shell and takes no lease. Closing the shell does not return the lease, as
+  with any manual lease, and [Stale live leases](#stale-live-leases) applies to it. A terminal that
+  is unknown or unavailable is refused before anything is launched, so the lease is given back with
+  no fetch or reset and the slot is available again as it was. A launcher that tried and failed may
+  still have opened a shell, so that lease stands and the error says to Return it.
 
   The group states loading, empty, and unavailable separately, and never renders a heading over
   nothing. An inventory that could not be observed says so and offers Refresh; it is never drawn as

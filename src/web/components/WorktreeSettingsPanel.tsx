@@ -800,7 +800,11 @@ function SlotCard({
             {terminals.targets?.map((target) => <option key={target.id} value={target.id} disabled={target.unavailable !== null}>{target.label}{target.unavailable ? `: ${target.unavailable}` : ""}</option>)}
           </select>
         </Tooltip>
-        <Tooltip label={terminal?.blurb ?? "No terminal backend is currently available"}>
+        <Tooltip label={!terminal
+          ? "No terminal backend is currently available"
+          : slot.state === "available"
+            ? `${terminal.blurb} Takes a manual lease on this slot as it stands; Return gives it back.`
+            : terminal.blurb}>
           <button className="btn btn-ghost" type="button" disabled={!terminal} onClick={() => void openTerminal()}>Open terminal</button>
         </Tooltip>
         {!pending && slot.actions.includes("warm") && (
