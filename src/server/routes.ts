@@ -118,6 +118,7 @@ import {
   ManualWorktreeReturnSchema,
   OpenWorktreeSchema,
   StopWorktreeClaimSchema,
+  WorktreeSlotHistoryQuerySchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   PendingTurnDeliverSchema,
@@ -2031,6 +2032,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return stopped
       ? c.json({ ok: true })
       : c.json({ error: "that dependency claim is no longer running" }, 404);
+  });
+
+  // What happened to a slot, newest first, a page at a time. Answers for a slot that has since
+  // been destroyed, whose rows stay until they age out.
+  app.get("/api/worktrees/:slotId/history", (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const query = WorktreeSlotHistoryQuerySchema.safeParse(c.req.query());
+    if (!query.success) return c.json({ error: "invalid slot history cursor" }, 400);
+    return c.json(worktreeOperations.manager.store.slotHistory(c.req.param("slotId"), query.data.before ?? null));
   });
 
   app.post("/api/worktrees/:slotId/open", async (c) => {
