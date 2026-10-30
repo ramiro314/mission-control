@@ -172,13 +172,19 @@ test("Open terminal refuses a slot that is not idle, leases an idle one as it st
   const slot = pool.getByRole("article", { name: "Slot 1" });
   await expect(slot.getByText("available", { exact: true })).toBeVisible();
   await slot.getByLabel("Terminal backend for slot 1").selectOption("cmux");
+  const openTerminal = slot.getByRole("button", { name: "Open terminal" });
+
+  // The tooltip warns about the lease only where Open terminal would take one.
+  const LEASE_SENTENCE = /Takes a manual lease on this slot as it stands; Return gives it back\./;
+  await openTerminal.hover();
+  await expect(openTerminal).toHaveAccessibleDescription(LEASE_SENTENCE);
 
   // An occupied slot is not idle. It is refused with acquisition's reason and nothing opens.
   const occupant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: lease.path, stdio: "ignore" });
   try {
     await once(occupant, "spawn");
     await expect.poll(async () => (await observed())?.processes.count).toBe(1);
-    await slot.getByRole("button", { name: "Open terminal" }).click();
+    await openTerminal.click();
     await expect(slot.getByText("the slot is not idle: an available slot has process occupancy")).toBeVisible();
     expect(launches()).toBe(0);
     await expect(slot.getByText("available", { exact: true })).toBeVisible();
@@ -190,9 +196,12 @@ test("Open terminal refuses a slot that is not idle, leases an idle one as it st
   }
   await expect.poll(async () => (await observed())?.processes.count).toBe(0);
 
-  await slot.getByRole("button", { name: "Open terminal" }).click();
+  await openTerminal.click();
   await expect(slot.getByText("leased", { exact: true })).toBeVisible();
   await expect(slot.getByText("Terminal from Settings")).toBeVisible();
+  await openTerminal.hover();
+  await expect(openTerminal).toHaveAccessibleDescription(/\S/);
+  await expect(openTerminal).not.toHaveAccessibleDescription(LEASE_SENTENCE);
   await expect(slot.getByText("the slot is not idle: an available slot has process occupancy")).toHaveCount(0);
   await expect.poll(launches).toBe(1);
   expect((await observed())?.head).toBe(lease.baseSha);

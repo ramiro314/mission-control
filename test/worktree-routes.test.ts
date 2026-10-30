@@ -1,6 +1,7 @@
-import { after, test } from "node:test";
+import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/server/db.ts";
 import { Registry } from "../src/server/registry.ts";
@@ -8,14 +9,16 @@ import { ReviewManager } from "../src/server/reviews.ts";
 import { TaskManager } from "../src/server/tasks.ts";
 import { QueueManager } from "../src/server/queue.ts";
 import { buildApp } from "../src/server/routes.ts";
+import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
 import { WorktreeManager } from "../src/server/worktrees/manager.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
+import { OBSERVATION_FAILURE, RESERVATION_NOT_HANDED_BACK } from "../src/server/worktrees/quarantine-reasons.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import type { TerminalLaunchSpec } from "../src/server/terminal/targets.ts";
 import type { TerminalBackendId } from "../src/shared/terminal.ts";
-import { WorktreeActionRequestSchema } from "../src/shared/protocol.ts";
+import { WorktreeActionRequestSchema, WorktreeClaimSchema, type WorktreeClaim } from "../src/shared/protocol.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "../src/shared/worktrees.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -23,15 +26,18 @@ const db = openDb();
 const registry = new Registry();
 const tasks = new TaskManager(registry);
 const occupied = new Set<string>();
+const occupant = (path: string) =>
+  ({ pid: 4242, ppid: 1, startRaw: "s", startMs: 0, command: "node", cwd: path, knownOwner: null });
+/** Answers occupancy reads in order ahead of `occupied`, to stage a change between two reads. */
+const occupancyReads: Array<WorktreeOccupancy | null> = [];
+let poolClaim: WorktreeClaim | undefined;
 const manager = new WorktreeManager(db, {
   occupancy: (paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> =>
-    Promise.resolve(new Map(paths.map((path) => [path, {
+    Promise.resolve(new Map(paths.map((path) => [path, occupancyReads.shift() ?? {
       status: "known",
-      occupants: occupied.has(path)
-        ? [{ pid: 4242, ppid: 1, startRaw: "s", startMs: 0, command: "node", cwd: path, knownOwner: null }]
-        : [],
+      occupants: occupied.has(path) ? [occupant(path)] : [],
     }]))),
-  resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
+  resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null, ...(poolClaim ? { claim: poolClaim } : {}) }),
 });
 const checks = new CheckLeaseManager(db, { manager, legacy: new LegacyTreehouseService(db) });
 const operations = new WorktreeOperationsService(manager, {
@@ -60,6 +66,38 @@ const app = buildApp({
   worktreeOperations: operations,
 });
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
+
+const openSlot = (slotId: string) => app.request(`/api/worktrees/${slotId}/open`, {
+  method: "POST",
+  headers: HEADERS,
+  body: JSON.stringify({ backend: "wezterm" }),
+});
+
+async function hand(leaseId: string): Promise<void> {
+  const returned = await app.request("/api/worktrees/manual/return", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ leaseId }),
+  });
+  assert.equal(returned.status, 200);
+}
+
+/** A slot in a pool of its own, leased once and handed back, so it is idle and available. */
+async function availableSlot() {
+  const { clone } = mkOriginAndClone("mission-worktree-open-");
+  const head = gitIn(clone, "rev-parse", "HEAD");
+  const acquired = await manager.acquire({
+    repositoryPath: clone,
+    baseSha: head,
+    owner: { kind: "manual", key: "open-route" },
+    runClaim: true,
+  });
+  assert.equal(acquired.outcome, "acquired");
+  if (acquired.outcome !== "acquired") throw new Error("the slot could not be acquired");
+  await hand(acquired.lease.leaseId);
+  const { slotId, path, poolId } = acquired.lease;
+  return { clone, head, slotId, path, poolId, open: () => openSlot(slotId), row: () => manager.store.slot(slotId)! };
+}
 
 after(() => db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';"));
 
@@ -154,28 +192,8 @@ test("preview/execute status vocabulary and injected terminal launcher stay exac
 });
 
 test("Open terminal leases an idle available slot as it stands, and refuses one that is not idle", async () => {
-  const { clone } = mkOriginAndClone("mission-worktree-open-");
+  const { clone, head, slotId, path, open, row } = await availableSlot();
   appendFileSync(join(clone, ".git/info/exclude"), "local-cache/\n");
-  const head = gitIn(clone, "rev-parse", "HEAD");
-  const acquired = await manager.acquire({ repositoryPath: clone, baseSha: head, owner: { kind: "manual", key: "open-route" } });
-  assert.equal(acquired.outcome, "acquired");
-  if (acquired.outcome !== "acquired") return;
-  const { slotId, path } = acquired.lease;
-  const open = () => app.request(`/api/worktrees/${slotId}/open`, {
-    method: "POST",
-    headers: HEADERS,
-    body: JSON.stringify({ backend: "wezterm" }),
-  });
-  const hand = async (leaseId: string) => {
-    const returned = await app.request("/api/worktrees/manual/return", {
-      method: "POST",
-      headers: HEADERS,
-      body: JSON.stringify({ leaseId }),
-    });
-    assert.equal(returned.status, 200);
-  };
-  await hand(acquired.lease.leaseId);
-  const row = () => manager.store.slot(slotId)!;
   assert.equal(row().state, "available");
 
   // Idle: leased with nothing touched. An ignored file proves the reset really did not run.
@@ -280,6 +298,186 @@ test("Open terminal leases an idle available slot as it stands, and refuses one 
   assert.equal((await open()).status, 200);
   assert.equal(row().state, "quarantined");
   assert.equal(row().activeLeaseId, null);
+});
+
+test("Open terminal runs no claim and leaves the slot's dependency state alone", async () => {
+  const ran = join(mkdtempSync(join(tmpdir(), "mission-worktree-open-claim-")), "ran");
+  poolClaim = WorktreeClaimSchema.parse({
+    steps: [{ argv: [process.execPath, "-e", `require("node:fs").appendFileSync(${JSON.stringify(ran)}, "ran\\n")`] }],
+  });
+  try {
+    const { slotId, open, row } = await availableSlot();
+    assert.equal(readFileSync(ran, "utf8"), "ran\n", "the pool's claim really runs for a lease that asks for it");
+    const dependencies = () => {
+      const { depsState, depsFingerprint, depsFingerprintSha, depsClaimedAt, depsLastError } = row();
+      return { depsState, depsFingerprint, depsFingerprintSha, depsClaimedAt, depsLastError };
+    };
+    const before = dependencies();
+    assert.equal(before.depsState, "current");
+
+    assert.equal((await open()).status, 200);
+    assert.equal(manager.store.slot(slotId)?.state, "leased");
+    assert.equal(readFileSync(ran, "utf8"), "ran\n", "the step did not run again");
+    assert.deepEqual(dependencies(), before);
+  } finally {
+    poolClaim = undefined;
+  }
+});
+
+type Slot = Awaited<ReturnType<typeof availableSlot>>;
+
+/** Each stages one way `leaseAsIs` ends with no lease, and what the route must then answer. */
+const NO_LEASE_CASES: Array<{
+  name: string;
+  stage: (t: TestContext, slot: Slot) => void;
+  status: number;
+  error: string | RegExp;
+  state: "available" | "quarantined";
+  quarantineReason?: string;
+}> = [
+  {
+    name: "a process enters after the screening",
+    stage: (_t, slot) => occupancyReads.push(null, { status: "known", occupants: [occupant(slot.path)] }),
+    status: 409,
+    error: "a process entered the available slot before it was leased",
+    state: "available",
+  },
+  {
+    name: "occupancy goes unknown after the screening",
+    stage: () => occupancyReads.push(null, { status: "unknown", reason: "ps timed out after 15 s" }),
+    status: 409,
+    error: "ps timed out after 15 s",
+    state: "available",
+  },
+  {
+    name: "a process enters and the reservation cannot be handed back",
+    stage: (t, slot) => {
+      occupancyReads.push(null, { status: "known", occupants: [occupant(slot.path)] });
+      t.mock.method(manager.store, "releaseReservation", () => null);
+    },
+    status: 503,
+    error: "a process entered the available slot before it was leased",
+    state: "quarantined",
+    quarantineReason: RESERVATION_NOT_HANDED_BACK,
+  },
+  {
+    name: "something else reserves the slot first",
+    stage: (t) => t.mock.method(manager.store, "reserveAvailable", () => null),
+    status: 409,
+    error: "the slot was leased by something else first",
+    state: "available",
+  },
+  {
+    name: "the reservation cannot be written",
+    stage: (t) => t.mock.method(manager.store, "reserveAvailable", () => { throw new Error("database is locked"); }),
+    status: 503,
+    error: /database is locked/,
+    state: "available",
+  },
+  {
+    name: "the lease loses its compare-and-swap",
+    stage: (t) => t.mock.method(manager.store, "finalizeLease", () => null),
+    status: 503,
+    error: "lease commit could not be proven",
+    state: "quarantined",
+    quarantineReason: "lease commit lost its slot compare-and-swap",
+  },
+  {
+    name: "the lease cannot be written",
+    stage: (t) => t.mock.method(manager.store, "finalizeLease", () => { throw new Error("database is locked"); }),
+    status: 503,
+    error: /database is locked/,
+    state: "quarantined",
+    quarantineReason: "as-is lease outcome is unknown",
+  },
+  {
+    name: "the screening cannot read occupancy",
+    stage: () => occupancyReads.push({ status: "unknown", reason: "ps timed out after 15 s" }),
+    status: 409,
+    error: `the slot is not idle: ${OBSERVATION_FAILURE.occupancy}`,
+    state: "available",
+  },
+  {
+    name: "the screening cannot list registrations",
+    stage: (t) => t.mock.method(NativeWorktreeGit.prototype, "list", async () =>
+      ({ ok: false as const, reason: "git worktree list timed out after 15 s", outcomeUnknown: true })),
+    status: 409,
+    error: /git worktree list timed out after 15 s/,
+    state: "available",
+  },
+  {
+    name: "the pool's checkout no longer exists",
+    stage: (t, slot) => repoint(t, slot, "/nonexistent/mission-worktree-open"),
+    status: 409,
+    error: "the pool's repository identity can no longer be proven",
+    state: "available",
+  },
+  {
+    name: "the pool's checkout is now another repository",
+    stage: (t, slot) => repoint(t, slot, mkOriginAndClone("mission-worktree-open-other-").clone),
+    status: 409,
+    error: "the pool's repository identity can no longer be proven",
+    state: "available",
+  },
+];
+
+function repoint(t: TestContext, slot: Slot, root: string): void {
+  const update = db.prepare("UPDATE worktree_pools SET main_checkout_root = ? WHERE id = ?");
+  update.run(root, slot.poolId);
+  t.after(() => update.run(slot.clone, slot.poolId));
+}
+
+for (const scenario of NO_LEASE_CASES) {
+  test(`Open terminal opens nothing and holds no lease when ${scenario.name}`, async (t) => {
+    const slot = await availableSlot();
+    scenario.stage(t, slot);
+    const launches = launched.length;
+    const response = await slot.open();
+    assert.equal(response.status, scenario.status);
+    const { error } = await response.json() as { error: string };
+    if (typeof scenario.error === "string") assert.equal(error, scenario.error);
+    else assert.match(error, scenario.error);
+    assert.equal(launched.length, launches, "the launcher was never asked");
+    assert.equal(slot.row().state, scenario.state);
+    assert.equal(slot.row().activeLeaseId, null);
+    assert.equal(slot.row().activeOwnerKey, null);
+    assert.equal(slot.row().quarantineReason, scenario.quarantineReason ?? null);
+    assert.equal(occupancyReads.length, 0, "every staged read was consumed");
+  });
+}
+
+test("a failed launch on a slot that took no lease reports the launcher's own error", async () => {
+  const failedOpen = async (open: () => Promise<Response> | Response) => {
+    launchError = "terminal did not answer";
+    try {
+      const response = await open();
+      assert.equal(response.status, 502);
+      assert.equal((await response.json() as { error: string }).error, "terminal did not answer");
+    } finally {
+      launchError = null;
+    }
+  };
+
+  const { clone } = mkOriginAndClone("mission-worktree-open-");
+  const held = await manager.acquire({
+    repositoryPath: clone,
+    baseSha: gitIn(clone, "rev-parse", "HEAD"),
+    owner: { kind: "manual", key: "still-held" },
+  });
+  assert.equal(held.outcome, "acquired");
+  if (held.outcome !== "acquired") return;
+  await failedOpen(() => openSlot(held.lease.slotId));
+  const leased = manager.store.slot(held.lease.slotId)!;
+  assert.equal(leased.state, "leased");
+  assert.equal(leased.activeLeaseId, held.lease.leaseId);
+
+  const quarantined = await availableSlot();
+  writeFileSync(join(quarantined.path, "stray.txt"), "work\n");
+  assert.equal((await quarantined.open()).status, 409);
+  assert.equal(quarantined.row().state, "quarantined");
+  await failedOpen(quarantined.open);
+  assert.equal(quarantined.row().state, "quarantined");
+  assert.equal(quarantined.row().activeLeaseId, null);
 });
 
 test("a bulk destroy selection accepts up to the bulk limit and rejects one more", async () => {
