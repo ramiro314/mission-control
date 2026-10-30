@@ -431,7 +431,7 @@ test("the inventory lists at most 16 occupants per slot, clips each command to 5
   assert.equal(view.occupants.length, 16, "the 17th occupant is counted, not listed");
   assert.deepEqual(view.processes, { state: "known", count: 17, reason: null });
   assert.deepEqual(view.occupants.map((each) => each.pid), Array.from({ length: 16 }, (_, index) => 6000 + index));
-  assert.deepEqual(view.occupants[2], { pid: 6002, command: "node worker-2.js", startedAt: 1_002, knownOwner: null });
+  assert.deepEqual(view.occupants[2], { pid: 6002, command: "node worker-2.js", startedAt: 1_002, knownOwner: null, session: null });
   assert.equal(view.occupants[0]!.command, "a".repeat(511), "the straddling character is dropped whole");
   assert.equal(view.occupants[1]!.command, exact, "a command of exactly 512 bytes is kept whole");
   assert.equal(WORKTREE_INVENTORY_LIMITS.textBytes, 2_048);
