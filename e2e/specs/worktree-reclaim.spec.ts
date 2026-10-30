@@ -446,6 +446,9 @@ test("Repair runs Git's own fix from the slot card through its preview, and a sl
   await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
   await expect(slot).toContainText("slot Git registration is bare, locked, or prunable");
   await expect(slot.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  // The cards sit below the pool's settings, in a scrolling pane, so the card is brought into frame.
+  await dashboard.setViewportSize({ width: 1280, height: 1100 });
+  await slot.scrollIntoViewIfNeeded();
   await shoot(dashboard, "11-slot-card-repair");
   await slot.getByRole("button", { name: "Repair", exact: true }).click();
 
