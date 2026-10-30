@@ -286,10 +286,12 @@ popover's **Pull requests** section has three independent, default-on controls:
   [GitHub Inspector's stored CI snapshot](inspector-and-shipping.md#ci-and-flaky-tests) rather
   than a new poll, and the nudge points at `gh pr checks <url> --required`. Every check counts
   instead when the Inspector is off (even if CodeRabbit follow-up keeps the snapshot fresh), when
-  it never adopted the PR, or when no check on the head is marked required. While the snapshot
-  is for an older head than the PR's, Foreman holds: it neither nudges nor treats the failure as
-  over until the Inspector reads the new head. The PR card's CI chip is unchanged and still
-  shows every check.
+  it never adopted the PR, or when no check on the head is marked required. A head with more
+  checks than the snapshot holds (over 100) counts every check unless a required one among those
+  read is failing. While the snapshot is for an older head than the PR's, Foreman holds: it
+  neither nudges nor treats the failure as over until the Inspector reads the new head, and a
+  required check still failing on that new head is a new episode. The PR card's CI chip is
+  unchanged and still shows every check.
 - **Keep sessions on track with merge conflicts** (`trackMergeConflicts`) nudges the parked
   session when its pull request conflicts with its base: merge the base branch in
   (`git fetch origin <base>`, `git merge origin/<base>`), resolve every conflict, run the tests

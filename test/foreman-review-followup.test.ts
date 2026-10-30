@@ -1406,6 +1406,43 @@ test("a held pass neither nudges nor re-arms", () => {
 
   // In All mode the same observation is decided by the rollup, and re-arms as it always has.
   assert.equal(advanceFollowupMark(first.mark, onlyPr(pushed), "all").ciNudged, false);
+
+  // The Inspector then reads the new head, and its first snapshot already has the required
+  // check failing again. The held passes never saw a recovery, so the new head re-arms it.
+  assert.equal(first.mark.ciHead, HEAD, "the episode is keyed to the head it was nudged on");
+  const refailed = mkSession({
+    prChecks: "failing",
+    prHeadSha: "head-3",
+    inspector: inspector({ ci: ciProjection({ headSha: "head-3", required: "failing" }) }),
+  });
+  const rearmed = advanceFollowupMark(held, onlyPr(refailed), "required");
+  assert.equal(rearmed.ciNudged, false, "a decided pass for another head starts a new episode");
+  const second = decide({ session: refailed, cfg: REQUIRED_CFG, mark: rearmed });
+  assert.equal(second.kind, "nudge");
+  if (second.kind !== "nudge") return;
+  assert.match(second.payload, /its required CI checks are failing/);
+  assert.equal(second.mark.ciHead, "head-3");
+
+  // The same head, still failing, is the episode already relayed.
+  assert.deepEqual(
+    decide({ session: refailed, cfg: REQUIRED_CFG, mark: advanceFollowupMark(second.mark, onlyPr(refailed), "required") }),
+    { kind: "skip", why: "already nudged this round of feedback" },
+  );
+});
+
+test("an All-mode or fallback CI nudge keys nothing to a head", () => {
+  for (const [name, session, cfg] of [
+    ["all", ciSession("failing", ciProjection({ required: "failing" })), { ...REQUIRED_CFG, ciStrictness: "all" }],
+    ["fallback", ciSession("failing", ciProjection({ required: null })), REQUIRED_CFG],
+  ] as const) {
+    const d = decide({ session, cfg });
+    assert.equal(d.kind, "nudge", name);
+    if (d.kind !== "nudge") continue;
+    assert.equal(d.mark.ciHead, null, name);
+    // So a new, still-failing head does not re-arm it: only an observed recovery does.
+    const pushed = mkSession({ ...session, prHeadSha: "head-9" });
+    assert.equal(advanceFollowupMark(d.mark, onlyPr(pushed), cfg.ciStrictness).ciNudged, true, name);
+  }
 });
 
 test("Required mode re-arms on the required rollup, not the whole one", () => {

@@ -217,6 +217,12 @@ export interface FollowupMark {
   findingsRound: number | null;
   /** Whether we have nudged for the CURRENT CI-failing episode; re-armed on recovery. */
   ciNudged: boolean;
+  /**
+   * Fork (ci-strictness): the head a Required-checks CI nudge was decided on, or null. In
+   * Required mode a push is held until the Inspector reads the new head, so the PR poller's
+   * recovery on it is never seen; a decided pass for another head re-arms the episode instead.
+   */
+  ciHead: string | null;
   /** The conflicting head SHA last nudged about, or null. */
   conflictHead: string | null;
   /** Conflict nudges sent this episode. */
@@ -244,6 +250,7 @@ function freshMark(prKey: string): FollowupMark {
     prKey,
     findingsRound: null,
     ciNudged: false,
+    ciHead: null,
     ...CONFLICT_REARMED,
   };
 }
@@ -329,10 +336,14 @@ export function advanceFollowupMark(
   ciStrictness: CiStrictness = "all",
 ): FollowupMark {
   let mark: FollowupMark = prev && prev.prKey === pr.prKey ? prev : freshMark(pr.prKey);
-  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it. A held
-  // observation says nothing about the episode, so it re-arms nothing.
+  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it. So is a
+  // required-checks episode once a decided pass is for another head: the push that made it
+  // was held, so its recovery was never observed. A held observation re-arms nothing.
   const ci = ciFollowup(pr, ciStrictness);
-  if (mark.ciNudged && ci !== "held" && !ci.failing) mark = { ...mark, ciNudged: false };
+  const newHead = ci !== "held" && ci.required && mark.ciHead !== null && pr.headSha !== mark.ciHead;
+  if (mark.ciNudged && ci !== "held" && (!ci.failing || newHead)) {
+    mark = { ...mark, ciNudged: false, ciHead: null };
+  }
   const mergeable = mergeabilityOf(pr);
   if (mergeable === "mergeable") {
     const rearmed = mark.conflictHead === null && mark.conflictNudges === 0 && !mark.conflictEscalated;
@@ -624,6 +635,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
     ...cur,
     findingsRound: open.findings ? round : cur.findingsRound,
     ciNudged: cur.ciNudged || open.ciFailing,
+    ciHead: open.ciFailing && open.ciRequired ? pr.headSha : cur.ciHead,
     ...(conflictNew
       ? { conflictHead: pr.headSha, conflictNudges: cur.conflictNudges + 1, conflictNudgedAt: now }
       : {}),

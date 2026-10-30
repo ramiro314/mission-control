@@ -14186,12 +14186,17 @@ function parseCiObservation(json: string | null): CiObservation | null {
  * Fork (ci-strictness): the stored CI snapshot reduced to what Foreman's Required mode reads,
  * the head it was read on and the required checks' rollup. Derived beside `codeRabbit` so the
  * registry's cached ledger row carries it and no session snapshot reads the column again.
+ *
+ * A snapshot GitHub reported more checks for than were read (`totalCount`) is Wait for CI's
+ * truncation rule applied to Foreman: a failing required check among those read still decides,
+ * but nothing else can be confirmed, so it reads as nothing marked and every check counts.
  */
 function ciProjection(json: string | null): InspectorCiProjection {
   const observation = parseCiObservation(json);
-  return observation
-    ? { headSha: observation.headSha, required: requiredChecksRollup(observation.checkRuns) }
-    : { headSha: null, required: null };
+  if (!observation) return { headSha: null, required: null };
+  const required = requiredChecksRollup(observation.checkRuns);
+  const truncated = (observation.totalCount ?? 0) > observation.checkRuns.length;
+  return { headSha: observation.headSha, required: truncated && required !== "failing" ? null : required };
 }
 
 export function getInspectorPr(key: string): InspectorPr | null {

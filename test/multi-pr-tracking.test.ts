@@ -670,9 +670,9 @@ test("the Inspector summary carries a compact CI projection and never the check 
     name, state, conclusion: state === "failing" ? "FAILURE" : null, detailsUrl: null, title: null, summary: null,
     ...(required === undefined ? {} : { required }),
   });
-  const observe = (checkRuns: ReturnType<typeof run>[]) => {
+  const observe = (checkRuns: ReturnType<typeof run>[], totalCount = checkRuns.length) => {
     recordInspectorCiObservation("example/other#20", {
-      headSha: "head-20", observedAt: 5_000, checkRuns, flakeReport: null, totalCount: checkRuns.length,
+      headSha: "head-20", observedAt: 5_000, checkRuns, flakeReport: null, totalCount,
     });
     f.registry.refreshInspections();
   };
@@ -683,6 +683,13 @@ test("the Inspector summary carries a compact CI projection and never the check 
   assert.deepEqual(ci(), { headSha: "head-20", required: "failing", inspectorEnabled: false });
   observe([run("lint", "failing"), run("build", "passing")]);
   assert.deepEqual(ci(), { headSha: "head-20", required: null, inspectorEnabled: false }, "nothing marked");
+
+  // GitHub reported more checks than were read: Wait for CI's truncation rule. A required
+  // failure among those read still decides; a pass cannot be confirmed, so every check counts.
+  observe([run("lint", "failing"), run("build", "passing", true)], 140);
+  assert.deepEqual(ci(), { headSha: "head-20", required: null, inspectorEnabled: false }, "truncated pass");
+  observe([run("lint", "passing"), run("build", "failing", true)], 140);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "failing", inspectorEnabled: false }, "truncated failure");
 
   // Switching the Inspector on changes no ledger row, so the flag is read at resolution.
   setInspectorConfig({ enabled: true });
