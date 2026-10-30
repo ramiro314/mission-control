@@ -316,6 +316,20 @@ function names(line: string): string[] {
   return line.slice("Files it deletes include: ".length).replace(/(, and more)?\.$/, "").split(", ");
 }
 
+test("a worktree whose git status fails is previewed by its files, not as an empty tree", async () => {
+  const tree = join(worktreesDir, "status-fails");
+  const gitDirectory = join(root, "not-a-repository");
+  mkdirSync(tree);
+  mkdirSync(gitDirectory);
+  writeFileSync(join(tree, ".git"), `gitdir: ${gitDirectory}\n`);
+  writeFileSync(join(tree, "left-behind.txt"), "work\n");
+  await sweep.sweep();
+
+  assert.ok(names(await filesLine(tree)).includes("left-behind.txt"));
+  rmSync(tree, { recursive: true });
+  await sweep.sweep();
+});
+
 test("the preview names at most ten deleted paths and says when there are more", async () => {
   const worktree = join(worktreesDir, `many-${trees++}`);
   git(repo, "worktree", "add", "-q", "-b", `harness/many-${trees}`, worktree);

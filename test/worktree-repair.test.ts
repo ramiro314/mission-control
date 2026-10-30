@@ -1471,7 +1471,7 @@ for (const shape of [
   });
 }
 
-test("a tree whose git status fails is described by its files, for Forget and Unowned trees alike", async () => {
+test("a tree whose git status fails is described by its files", async () => {
   const { clone } = repository("mission-forget-status-");
   const tree = join(dirname(clone), "unreadable-tree");
   const gitDirectory = join(dirname(clone), "still-there");
@@ -1595,4 +1595,124 @@ test("Forget removes every registration that names the path, not only the first"
   await service.execute((await service.preview({ action: "forget", slotId: slot.slotId })).token, [...FORGET_ACK]);
   assert.equal(naming(), 0);
   assert.equal(m.store.slot(slot.slotId), null);
+});
+
+test("Forget clears a slot whose whole ordinal folder is gone, not only the checkout in it", async () => {
+  const { clone, sha } = repository("mission-forget-parent-gone-");
+  const m = managerWith();
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-parent-gone", REGISTRATION_OR_IDENTITY.missingRegistration);
+  rmSync(dirname(slot.path), { recursive: true });
+
+  assert.equal((await forgetActions(service, slot.slotId)).includes("forget"), true);
+  const preview = await service.preview({ action: "forget", slotId: slot.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  assert.ok(preview.consequences.includes(`The folder ${slot.path} is already gone.`), preview.consequences.join("\n"));
+  await service.execute(preview.token, [...FORGET_ACK]);
+  assert.equal(registered(clone, slot.path), false);
+  assert.equal(m.store.slot(slot.slotId), null);
+});
+
+for (const failure of [{ shape: "fails", throws: false }, { shape: "throws", throws: true }]) {
+  for (const { step, call } of [{ step: "before the removal", call: 2 }, { step: "after the removal", call: 3 }]) {
+    test(`a listing that ${failure.shape} ${step} leaves the row quarantined, and a later Forget finishes`, async () => {
+      const { clone, sha } = repository("mission-forget-late-listing-");
+      let calls = 0;
+      let armed = false;
+      class LateFailure extends NativeWorktreeGit {
+        override async list(...args: Parameters<NativeWorktreeGit["list"]>) {
+          calls += 1;
+          if (!armed || calls !== call) return super.list(...args);
+          armed = false;
+          if (failure.throws) throw new Error("git worktree list timed out after 30 s");
+          return { ok: false as const, reason: "git worktree list timed out after 30 s", outcomeUnknown: true };
+        }
+      }
+      const m = managerWith(new LateFailure());
+      const service = operationsFor(m);
+      const slot = await quarantinedSlot(m, clone, sha, `task-forget-late-${failure.shape}-${call}`, INTERRUPTED_PRUNE);
+      const row = m.store.slot(slot.slotId)!;
+      calls = 0;
+      armed = true;
+
+      const result = await m.forgetSlot({ slotId: slot.slotId });
+      assert.equal(result.outcome, "outcomeUnknown");
+      assert.match((result as { reason: string }).reason, /git worktree list timed out after 30 s/);
+      assert.equal(existsSync(slot.path), false, "the folder had already gone");
+      assert.deepEqual(m.store.slot(slot.slotId), row, "the row is the way back to Forget");
+      assert.equal(registered(clone, slot.path), call === 2, "only a removal that ran drops the registration");
+
+      assert.equal((await forgetActions(service, slot.slotId)).includes("forget"), true);
+      await service.execute((await service.preview({ action: "forget", slotId: slot.slotId })).token, [...FORGET_ACK]);
+      assert.equal(registered(clone, slot.path), false);
+      assert.equal(m.store.slot(slot.slotId), null);
+    });
+  }
+}
+
+test("a git worktree remove that throws is an unknown outcome, and the row stays", async () => {
+  const { clone, sha } = repository("mission-forget-remove-throws-");
+  class ThrowingRemove extends NativeWorktreeGit {
+    override async remove(): Promise<never> {
+      throw new Error("spawn git EAGAIN");
+    }
+  }
+  const m = managerWith(new ThrowingRemove());
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-remove-throws", INTERRUPTED_PRUNE);
+  const row = m.store.slot(slot.slotId)!;
+
+  const result = await m.forgetSlot({ slotId: slot.slotId });
+  assert.equal(result.outcome, "outcomeUnknown");
+  assert.match((result as { reason: string }).reason, /spawn git EAGAIN/);
+  assert.deepEqual(m.store.slot(slot.slotId), row);
+});
+
+test("a row that cannot be settled is an unknown outcome, never a reported success", async () => {
+  const { clone, sha } = repository("mission-forget-settle-");
+  const m = managerWith();
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-settle", INTERRUPTED_PRUNE);
+  m.store.forget = () => false;
+
+  assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), {
+    outcome: "outcomeUnknown", reason: "the forgotten slot's row could not be settled",
+  });
+  assert.equal(m.store.slot(slot.slotId)?.state, "quarantined");
+});
+
+test("a pool whose marker cannot be proven never offers Forget, and nothing is deleted", async () => {
+  const { clone, sha } = repository("mission-forget-marker-");
+  const m = managerWith();
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-marker", INTERRUPTED_PRUNE);
+  rmSync(join(dirname(dirname(slot.path)), WORKTREE_POOL_MARKER));
+
+  assert.equal((await forgetActions(service, slot.slotId)).includes("forget"), false);
+  const preview = await service.preview({ action: "forget", slotId: slot.slotId });
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes("Exact native pool, marker and slot path are not all proven."), preview.blockers.join("; "));
+  assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), {
+    outcome: "refused", reason: "native pool marker is missing or does not match",
+  });
+  assert.equal(readFileSync(slot.install, "utf8"), "warm\n");
+});
+
+test("a row naming a path outside its pool never offers Forget, is not read, and that folder survives", async () => {
+  const { clone, sha } = repository("mission-forget-native-");
+  const m = managerWith();
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-native", INTERRUPTED_PRUNE);
+  const outside = join(dirname(clone), "not-a-slot");
+  mkdirSync(outside);
+  writeFileSync(join(outside, "precious.txt"), "not the pool's\n");
+  db.prepare("UPDATE worktree_slots SET path = ? WHERE id = ?").run(outside, slot.slotId);
+
+  assert.equal((await forgetActions(service, slot.slotId)).includes("forget"), false);
+  const preview = await service.preview({ action: "forget", slotId: slot.slotId });
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes("Exact native pool, marker and slot path are not all proven."), preview.blockers.join("; "));
+  assert.equal(preview.consequences.some((line) => line.includes("precious.txt")), false, "a path the pool does not own is not read");
+  assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), {
+    outcome: "refused", reason: "pool repository identity can no longer be proven",
+  });
+  assert.equal(readFileSync(join(outside, "precious.txt"), "utf8"), "not the pool's\n");
 });
