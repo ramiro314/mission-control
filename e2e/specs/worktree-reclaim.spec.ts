@@ -32,6 +32,12 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
  * untracked is not work: a slot holding only a warm install recovers without acknowledgement,
  * and one the default would overwrite is named by its path.
  *
+ * Automatic recovery: a maintenance pass clears a quarantine that no longer applies, with no
+ * operator. A slot quarantined by a failed read, with no owner, no process and nothing the reset
+ * would discard, reads available again with its warm install in place. One the default would
+ * overwrite stays quarantined, and its card names the entry that blocked the pass. The pass is
+ * real, on the daemon's own timer; only its interval is set.
+ *
  * Orphan processes: a process still inside a tree whose owner has finished is listed in Storage,
  * its link lands on the slot card, and Kill there goes through its confirmation to the guarded
  * route and comes back as the process gone and the row cleared over `storage_health`. With more
@@ -469,6 +475,92 @@ test("Recover keeps a warm install: it names an ignored path the default would o
   expect(existsSync(lock)).toBe(false);
   expect(kept.map((file) => statSync(join(lease.path, file)).ino), "the install kept every inode").toEqual(inodes);
   await shoot(dashboard, "09-recovered-with-install");
+});
+
+test("a maintenance pass clears a slot whose quarantine no longer applies, and names what keeps another", async ({
+  dashboard,
+  daemon,
+}) => {
+  // One real maintenance pass, on the shortest interval the daemon accepts.
+  test.setTimeout(180_000);
+  const repo = (...args: string[]) => execFileSync("git", ["-C", daemon.repo, ...args], { stdio: "pipe" }).toString().trim();
+  repo("config", "user.name", "Spec");
+  repo("config", "user.email", "spec@example.com");
+  writeFileSync(join(daemon.repo, ".gitignore"), ".yarn/install-state.gz\nnode_modules/\n.idea/\n");
+  repo("add", ".gitignore");
+  repo("commit", "-qm", "ignore the install");
+  repo("push", "-q", "origin", "main");
+
+  // Two slots that served a lease at once, so each went back to the pool as itself.
+  const lease = async (label: string) => {
+    const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(acquired.status()).toBe(201);
+    return await acquired.json() as { path: string; leaseId: string };
+  };
+  const clearing = await lease("clears by itself");
+  const blocked = await lease("kept by the pass");
+  for (const { leaseId } of [clearing, blocked]) {
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId } });
+    expect(returned.ok()).toBe(true);
+  }
+
+  // Both hold only ignored files, then a read that failed under load quarantines them, written
+  // as older builds wrote it. Nothing in either folder has anything wrong with it.
+  const install = join(clearing.path, ".yarn", "install-state.gz");
+  mkdirSync(join(clearing.path, ".yarn"), { recursive: true });
+  writeFileSync(install, "installed\n");
+  const inode = statSync(install).ino;
+  const idea = join(blocked.path, ".idea", "workspace.xml");
+  mkdirSync(join(blocked.path, ".idea"), { recursive: true });
+  writeFileSync(idea, "<project/>\n");
+  withDaemonDb(daemon, (db) => {
+    for (const path of [clearing.path, blocked.path]) {
+      const changed = db.prepare(
+        `UPDATE worktree_slots
+            SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+                quarantine_reason = 'slot process occupancy is unknown',
+                last_error = 'process listing was killed before it answered'
+          WHERE path = ? AND state = 'available'`,
+      ).run(Date.now(), path);
+      expect(Number(changed.changes)).toBe(1);
+    }
+  });
+
+  // Origin's default starts tracking a file inside the ignored .idea/, which a reset would write.
+  mkdirSync(join(daemon.repo, ".idea", "codeStyles"), { recursive: true });
+  writeFileSync(join(daemon.repo, ".idea", "codeStyles", "Project.xml"), "<code_scheme/>\n");
+  repo("add", "-f", ".idea/codeStyles/Project.xml");
+  repo("commit", "-qm", "share the code style");
+  repo("push", "-q", "origin", "main");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const card = (path: string) => dashboard.locator(".wt-slot", { hasText: path });
+  await expect(card(clearing.path).getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(card(blocked.path).getByText("quarantined", { exact: true })).toBeVisible();
+
+  // The fixture switches maintenance off, so this daemon comes back with it on.
+  await daemon.crash();
+  await daemon.restart({ MISSION_WORKTREE_SWEEP_MS: "30000" });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+
+  // The ignored install is not work: the slot comes back with no operator, and keeps it.
+  await expect(card(clearing.path).getByText("available", { exact: true })).toBeVisible({ timeout: 90_000 });
+  expect(statSync(install).ino, "the install kept its inode").toBe(inode);
+  expect(readFileSync(install, "utf8")).toBe("installed\n");
+  await expect(card(clearing.path).getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+
+  // The other stays quarantined, its file intact, and its card says exactly what blocked the pass.
+  const kept = card(blocked.path);
+  await expect(kept.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(kept).toContainText(
+    "the slot holds work Recover would discard: ignored .idea/ (the target tracks .idea/codeStyles/Project.xml)",
+    { timeout: EXECUTES_MS },
+  );
+  await expect(kept).toContainText("Blocked by");
+  expect(readFileSync(idea, "utf8")).toBe("<project/>\n");
+  await shoot(dashboard, "10-automatic-recovery");
 });
 
 function alive(pid: number): boolean {

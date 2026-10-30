@@ -784,16 +784,32 @@ The operations have deliberately narrow meanings:
   next reset fail with Git's "Unable to create '...index.lock': File exists", and the slot is
   quarantined with that text as its last error.
 
-  Each maintenance pass also retries every quarantine whose last error is that text, with no
-  operator. It recovers the slot when the lock is gone, or when the lock is more than 10 minutes
-  old and the same no-Git-process and no-holder check passes, and only when the slot is clean
-  with regenerable ignored files discounted, the stricter rule rather than Recover's reset rule.
-  A slot holding any other work stays quarantined, with
-  that work intact, until someone runs Recover and reads its preview. Each refusal is recorded
-  with the exact path that blocked it: the first entry the reset would discard, with its kind
-  (an uncommitted change, an untracked file, an ignored file or unpushed commits on `HEAD`), or
-  the slot's `index.lock` for a lock-caused refusal. The record is kept in memory for the
-  quarantine it judged, so a restart drops it until the next pass, which runs at startup.
+  Each maintenance pass also runs Recover's automatic half, with no operator, on every quarantine
+  that a fresh read can disprove: one whose last error is that lock text, one whose reason is a
+  failed read (the set in `src/server/worktrees/quarantine-reasons.ts`, older builds' reasons
+  included), and "available slot is dirty" or the "available slot is occupied or dirty" that older
+  builds wrote. A slot quarantined for its registration or identity is never cleared here, however
+  healthy it reads, because a read that happens to succeed repairs nothing.
+
+  The safety line is the same for all of them. The slot's active and last-released owners must be
+  positively gone, its occupancy known and empty, its registration exact, a fresh Git read must
+  succeed, and it must hold no work by the reset rule above, against origin's default. The slot
+  then takes the ordinary owner-authorized reset and becomes available, keeping its warm install.
+  The reset rule is judged again inside the reset, against the commit it fetched, so a default
+  that moved between the check and the reset is refused with every file unchanged. The pass never
+  discards work: a slot with an occupant, a live or unknown owner, a failed read or any work stays
+  quarantined, exactly as it was, until someone runs Recover and reads its preview.
+
+  The `index.lock` checks apply only to a lock-caused quarantine. There the slot comes back when
+  the lock is gone, or when the lock is more than 10 minutes old and the same no-Git-process and
+  no-holder check passes. Any other quarantine leaves a lock alone, and a reset that lock then
+  refuses records Git's text, so the next pass judges the slot as lock-caused.
+
+  Each refusal is recorded with the exact path that blocked it, when there is one: the first entry
+  the reset would discard, with its kind (an uncommitted change, an untracked file, an ignored
+  file or unpushed commits on `HEAD`), or the slot's `index.lock` for a lock-caused refusal. The
+  record is kept in memory for the quarantine it judged, so a restart drops it until the next
+  pass.
 
   A slot's card shows why it is in its state, each fact on its own line: the quarantine reason,
   the detail behind it (such as Git's own error), why its last observation failed, why its
@@ -990,15 +1006,22 @@ return obligations after session discovery.
 
 **A restart reclaims a settled task's clean trees at once.** When a restart settles a task whose
 agent did not survive it, or finds a failed or cancelled task still holding trees, it checks every
-tree the task holds. This amends the earlier settle-and-retain rule for clean trees only:
+tree the task holds, by the rule of what reclaiming that tree does. This amends the earlier
+settle-and-retain rule for clean trees only:
 
-- **Clean** means nothing uncommitted, untracked or unpushed, and no ignored file except under
-  the regenerable directories `node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`,
-  `.turbo/` and `.next/`, at any depth. A clean task whose trees no process occupies is
-  reclaimed through the same path as **Clean up**, keeping its status and outcome.
-- **Anything else keeps the 30-day window.** Any other ignored file is work here: workflow
-  evidence under `.evidence/` or `e2e/.artifacts/`, or a local `.env`. So is a tree Git cannot
-  read. The task is listed as a `dirty-settled-tree` problem in **Settings > Storage**, named
+- **A pool slot keeps its folder**, so it is judged by the [reset rule](#settings--worktrees) against
+  origin's default: nothing uncommitted, untracked or unpushed, and no ignored entry the reset
+  would overwrite or delete. A slot holding only ignored files is therefore reclaimed at once and
+  keeps them, warm install included. The reset judges the rule again against the commit it
+  fetched, so a default that moved after the check keeps the slot, with every file unchanged.
+- **Any other tree's folder is removed**, so **clean** means nothing uncommitted, untracked or
+  unpushed, and no ignored file except under the regenerable directories `node_modules/`,
+  `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/` and `.next/`, at any depth. Any other
+  ignored file is work here: workflow evidence under `.evidence/` or `e2e/.artifacts/`, or a
+  local `.env`.
+- A clean task whose trees no process occupies is reclaimed through the same path as **Clean
+  up**, keeping its status and outcome.
+- **Anything else keeps the 30-day window.** So does a tree Git cannot read. The task is listed as a `dirty-settled-tree` problem in **Settings > Storage**, named
   `dirty-settled-tree:<task id>:<first seen at>` from the storage first-seen record, so a restart
   keeps its id. It is listed in Storage only and never raises the banner.
 - **Discard and reclaim is the slot card's Return.** The problem links to the task's pool slot,

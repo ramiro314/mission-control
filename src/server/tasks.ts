@@ -6577,7 +6577,7 @@ export class TaskManager {
    * "reclaim" action) while KEEPING its status and outcome - unlike cancel, which
    * aborts an active task.
    */
-  async reclaim(id: string): Promise<Ok> {
+  async reclaim(id: string, beforeReturn?: Parameters<typeof teardownWorktree>[4]): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
     // Reserved for the same reason the automatic path is, and against the same set of
@@ -6587,12 +6587,12 @@ export class TaskManager {
     return this.withCleanupReservation<Ok>(
       id,
       { ok: false, error: "this task's resources are already being cleaned up" },
-      () => this.reclaimReserved(id, t),
+      () => this.reclaimReserved(id, t, beforeReturn),
     );
   }
 
   /** `reclaim`'s body, once the reservation is held. */
-  private async reclaimReserved(id: string, t: Task): Promise<Ok> {
+  private async reclaimReserved(id: string, t: Task, beforeReturn?: Parameters<typeof teardownWorktree>[4]): Promise<Ok> {
     try {
       await this.quiesceLaunchedAgentBeforeCapture(t);
     } catch (error) {
@@ -6609,7 +6609,7 @@ export class TaskManager {
     this.autoCompleted.delete(id);
     try {
       const current = this.registry.getTask(id) ?? t;
-      await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees);
+      await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees, beforeReturn);
     } catch (error) {
       // A partial reclaim still releases what came back. The refusal stands - the operator
       // is told the reclaim failed, and the trees still standing keep their record so a
@@ -6834,24 +6834,16 @@ export class TaskManager {
   /**
    * D20 of the disk-reclaim plan, amending settle-and-retain for clean trees only: a settled
    * task whose every tree is clean is reclaimed now, through the operator's own `reclaim`.
-   * "Clean" discounts regenerable ignored directories such as `node_modules/`, while any other
-   * ignored file - evidence, `.env` - is work. A tree with work, or one that cannot be read,
-   * keeps the 30-day window and is listed; one a process occupies is left to the orphan report.
+   * What "clean" means follows what the reclaim does to each tree (`settledTreeWork`). A tree
+   * with work, or one that cannot be read, keeps the 30-day window and is listed; one a process
+   * occupies is left to the orphan report.
    */
   private async reclaimSettledTreesIfClean(id: string): Promise<void> {
     const task = this.registry.getTask(id);
     if (!task || isActiveTask(task.status) || !taskHasWorktrees(task)) return;
     const generation = taskResourceGeneration(task);
     const paths = taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []);
-    const probe = this.startupDeps.returnBlocker ?? worktreeReturnBlocker;
-    let kept: { path: string; reason: string } | null = null;
-    for (const path of paths) {
-      const reason = await probe(path, { regenerableIgnored: true });
-      if (reason) {
-        kept = { path, reason };
-        break;
-      }
-    }
+    const kept = await this.settledTreeWork(task);
     const current = this.registry.getTask(id);
     if (!current || taskResourceGeneration(current) !== generation) return;
     if (kept) {
@@ -6864,8 +6856,36 @@ export class TaskManager {
       const state = occupancy.get(path);
       return !state || state.status === "unknown" || state.occupants.length > 0;
     })) return;
-    const result = await this.reclaim(id);
-    if (!result.ok) console.warn(`[tasks] could not reclaim settled task ${id}'s clean worktrees: ${result.error}`);
+    // The default may move between the check above and a pool slot's reset, so the reset
+    // judges its slot again against the commit it fetched, and refuses rather than discard.
+    const result = await this.reclaim(id, async (path, target) =>
+      target === undefined ? null : this.worktrees.slotResetBlocker(path, target));
+    if (result.ok) return;
+    console.warn(`[tasks] could not reclaim settled task ${id}'s clean worktrees: ${result.error}`);
+    const remaining = this.registry.getTask(id);
+    const refused = remaining && taskHasWorktrees(remaining) ? await this.settledTreeWork(remaining) : null;
+    if (refused) {
+      this.dirtySettledTrees.set(id, refused);
+      this.settledTreesChanged();
+    }
+  }
+
+  /**
+   * The first of a settled task's trees holding work, by the rule of what reclaiming it does.
+   * A pool slot keeps its folder and takes a reset, so it is judged by the reset rule and only
+   * what that reset discards counts. Any other tree's folder is removed, so the return rule
+   * counts every ignored file outside the regenerable directories.
+   */
+  private async settledTreeWork(task: Task): Promise<{ path: string; reason: string } | null> {
+    const probe = this.startupDeps.returnBlocker ?? worktreeReturnBlocker;
+    for (const { worktreePath: path, provider } of taskRepoRefs(task)) {
+      if (!path) continue;
+      const reason = provider === "mission"
+        ? await this.worktrees.slotResetBlocker(path)
+        : await probe(path, { regenerableIgnored: true });
+      if (reason) return { path, reason };
+    }
+    return null;
   }
 
   /**

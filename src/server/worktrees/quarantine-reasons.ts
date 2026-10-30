@@ -49,6 +49,20 @@ export function isObservationFailure(reason: string | null): boolean {
   return colon > 0 && OBSERVATION_FAILURE_REASONS.has(reason.slice(0, colon));
 }
 
+/** A dirty available slot, and the reason older builds gave it before occupied was split off. */
+export const AVAILABLE_SLOT_DIRTY = "available slot is dirty";
+const AVAILABLE_SLOT_OCCUPIED_OR_DIRTY = "available slot is occupied or dirty";
+
+/**
+ * Whether automatic recovery may judge a slot quarantined for this reason: a failed read, or a
+ * dirty available slot, each of which a fresh read can disprove. An `index.lock` quarantine is
+ * recognized by its error instead (`lockCausedQuarantine`). A registration or identity reason
+ * is never here: a read that happens to succeed does not repair one.
+ */
+export function clearableQuarantineReason(reason: string | null): boolean {
+  return isObservationFailure(reason) || reason === AVAILABLE_SLOT_DIRTY || reason === AVAILABLE_SLOT_OCCUPIED_OR_DIRTY;
+}
+
 /**
  * The quarantine of a reservation refused before anything changed that could not be handed back
  * to available. Whether the hand-back landed is unknown, so it is deliberately not in the set.

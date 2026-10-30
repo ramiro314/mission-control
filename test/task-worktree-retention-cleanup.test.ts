@@ -1,10 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Task } from "../src/shared/types.ts";
 import type { ActivityFingerprint } from "../src/server/git/worktree-activity.ts";
+import type { WorktreeGit } from "../src/server/worktrees/git.ts";
+import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 import { mkTask as baseTask, mkSession } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-retention-cleanup-"));
@@ -24,10 +26,13 @@ const {
   settleTaskWithRetentionAdoption,
   listTasks,
   getTask,
+  openDb,
 } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { WorktreeTeardownError } = await import("../src/server/dispatcher.ts");
+const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
+const { NativeWorktreeGit } = await import("../src/server/worktrees/git.ts");
 const {
   TaskWorktreeRetentionObserver,
   defaultRetentionCleanupDeps,
@@ -1082,4 +1087,147 @@ test("a provider that keeps refusing is attempted on the doubling schedule, not 
     [0, 1, 3, 7],
     "attempts at due, +1h, +3h, +7h - intervals of 1h, 2h, 4h",
   );
+});
+
+// ---- a settled task's pool slot: the reset rule, against a real slot and a real reset ----
+
+const SLOT_IGNORE = ".yarn/install-state.gz\nnode_modules/\n.idea/\n.env\n.evidence/\n";
+
+const unoccupied = async (paths: readonly string[]) =>
+  new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }]));
+
+function writeIn(root: string, file: string, body = "kept\n"): void {
+  mkdirSync(dirname(join(root, file)), { recursive: true });
+  writeFileSync(join(root, file), body);
+}
+
+/** A task holding a real native slot, as a restart finds it once its agent is gone. */
+async function settledPoolSlot(id: string, git?: WorktreeGit) {
+  const { root, origin, clone } = mkOriginAndClone(`mission-settled-slot-${id}-`);
+  after(() => rmSync(root, { recursive: true, force: true }));
+  writeIn(origin, ".gitignore", SLOT_IGNORE);
+  gitIn(origin, "add", ".gitignore");
+  gitIn(origin, "commit", "-qm", "ignore");
+  gitIn(clone, "fetch", "-q", "origin");
+  gitIn(clone, "reset", "-q", "--hard", "origin/main");
+  const sha = gitIn(clone, "rev-parse", "HEAD");
+  const worktrees = new WorktreeManager(openDb(), {
+    occupancy: unoccupied,
+    resolvePolicy: () => ({ enabled: true, maxSlots: 4, setupArgv: null }),
+    ...(git ? { git } : {}),
+  });
+  const acquired = await worktrees.acquire({
+    repositoryPath: clone,
+    baseSha: sha,
+    owner: { kind: "task", key: `${id}:0` },
+  });
+  assert.equal(acquired.outcome, "acquired");
+  const lease = (acquired as Extract<typeof acquired, { outcome: "acquired" }>).lease;
+  const registry = new Registry();
+  for (const stale of registry.listTasks()) registry.removeTask(stale.id);
+  registry.upsertTask(baseTask({
+    id,
+    title: `Settled ${id}`,
+    status: "running",
+    dispatchedAt: 5_000,
+    repoRoot: clone,
+    worktreePath: lease.path,
+    branch: null,
+    provider: "mission",
+    worktreeLeaseId: lease.leaseId,
+    baseSha: sha,
+    sessionId: `proc:${id}`,
+  }));
+  const restart = () => new TaskManager(
+    registry,
+    undefined,
+    { taskLiveness: () => false } as never,
+    undefined,
+    undefined,
+    { occupancy: unoccupied },
+    worktrees,
+  );
+  return { origin, sha, path: lease.path, slotId: lease.slotId, registry, worktrees, restart };
+}
+
+async function eventually(predicate: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(message);
+}
+
+const keptTree = (manager: InstanceType<typeof TaskManager>, id: string) =>
+  (manager.dirtySettledTreeProblems().firstSeen ?? []).find((each) => each.subject === `dirty-settled-tree:${id}`);
+
+test("a settled task's pool slot holding only ignored files is reclaimed at once, and keeps them", async () => {
+  const id = uid("settled-ignored");
+  const slot = await settledPoolSlot(id);
+  const ignored = [".yarn/install-state.gz", "node_modules/pkg/index.js", ".idea/workspace.xml", ".env", ".evidence/report.md"];
+  for (const file of ignored) writeIn(slot.path, file);
+  const inodes = ignored.map((file) => statSync(join(slot.path, file)).ino);
+
+  const manager = slot.restart();
+  await eventually(() => slot.registry.getTask(id)?.worktreePath === null, "the slot was not reclaimed");
+  assert.equal(slot.registry.getTask(id)?.status, "failed", "reclaim keeps the settled outcome");
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "available");
+  assert.deepEqual(ignored.map((file) => statSync(join(slot.path, file)).ino), inodes, "the reset keeps every ignored file");
+  assert.equal(keptTree(manager, id), undefined);
+});
+
+test("a settled task's pool slot holding reset-rule work keeps its window and is listed, naming the entry", async () => {
+  const id = uid("settled-work");
+  const slot = await settledPoolSlot(id);
+  writeIn(slot.path, "notes.md", "draft\n");
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the kept slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, new RegExp(`work left in ${slot.path} \\(untracked notes\\.md\\)`));
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+  assert.equal(existsSync(join(slot.path, "notes.md")), true);
+});
+
+test("a settled task's pool slot whose ignored .env the default un-ignores is kept and listed", async () => {
+  const id = uid("settled-unignored");
+  const slot = await settledPoolSlot(id);
+  writeIn(slot.path, ".env", "TOKEN=1\n");
+  writeIn(slot.origin, ".gitignore", "node_modules/\n");
+  gitIn(slot.origin, "commit", "-qam", "stop ignoring .env");
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the kept slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, /ignored \.env \(the target's \.gitignore files no longer ignore it\)/);
+  assert.equal(readFileSync(join(slot.path, ".env"), "utf8"), "TOKEN=1\n");
+  assert.equal(gitIn(slot.path, "rev-parse", "HEAD"), slot.sha);
+});
+
+test("a default that moves between a settled slot's check and its reset is caught, and the slot is listed", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const id = uid("settled-moved");
+  let fetches = 0;
+  let origin = "";
+  class MovingDefaultGit extends NativeWorktreeGit {
+    override async fetchDefaultSha(identity: Parameters<WorktreeGit["fetchDefaultSha"]>[0]) {
+      // The first fetch is the check's. The second is the reset's own, after the check passed.
+      if ((fetches += 1) === 2) {
+        writeIn(origin, ".gitignore", "node_modules/\n");
+        gitIn(origin, "commit", "-qam", "stop ignoring .env");
+      }
+      return super.fetchDefaultSha(identity);
+    }
+  }
+  const slot = await settledPoolSlot(id, new MovingDefaultGit());
+  origin = slot.origin;
+  fetches = 0;
+  writeIn(slot.path, ".env", "TOKEN=1\n");
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased", "the refusal came before the reset's intent");
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
+  assert.equal(readFileSync(join(slot.path, ".env"), "utf8"), "TOKEN=1\n");
+  assert.equal(gitIn(slot.path, "rev-parse", "HEAD"), slot.sha);
 });
