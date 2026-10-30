@@ -151,6 +151,63 @@ for (const action of ["destroy", "prune"] as const) {
   });
 }
 
+test("Open terminal refuses a slot that is not idle, leases an idle one as it stands, and offers Return", async ({ dashboard, daemon }) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "open terminal target" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string; baseSha: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+  const observed = async () => (await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory)
+    .repositories.flatMap((pool) => pool.slots).find((slot) => slot.path === lease.path);
+  const launches = () => readdirSync(daemon.recordDir).filter((name) => name.startsWith("cmux-")).length;
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = pool.getByRole("article", { name: "Slot 1" });
+  await expect(slot.getByText("available", { exact: true })).toBeVisible();
+  await slot.getByLabel("Terminal backend for slot 1").selectOption("cmux");
+
+  // An occupied slot is not idle. It is refused with acquisition's reason and nothing opens.
+  const occupant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: lease.path, stdio: "ignore" });
+  try {
+    await once(occupant, "spawn");
+    await expect.poll(async () => (await observed())?.processes.count).toBe(1);
+    await slot.getByRole("button", { name: "Open terminal" }).click();
+    await expect(slot.getByText("the slot is not idle: an available slot has process occupancy")).toBeVisible();
+    expect(launches()).toBe(0);
+    await expect(slot.getByText("available", { exact: true })).toBeVisible();
+    await shoot(dashboard, "16-open-terminal-refused");
+  } finally {
+    const exited = once(occupant, "exit");
+    occupant.kill("SIGKILL");
+    await exited;
+  }
+  await expect.poll(async () => (await observed())?.processes.count).toBe(0);
+
+  await slot.getByRole("button", { name: "Open terminal" }).click();
+  await expect(slot.getByText("leased", { exact: true })).toBeVisible();
+  await expect(slot.getByText("Terminal from Settings")).toBeVisible();
+  await expect(slot.getByText("the slot is not idle: an available slot has process occupancy")).toHaveCount(0);
+  await expect.poll(launches).toBe(1);
+  expect((await observed())?.head).toBe(lease.baseSha);
+  await shoot(dashboard, "17-open-terminal-leased");
+
+  // The lease goes back the way any manual lease does.
+  await slot.getByRole("button", { name: "Return", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  await expect(preview.getByText(lease.path)).toBeVisible();
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(slot.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(slot.getByText("Terminal from Settings")).toHaveCount(0);
+});
+
 test("Settings Worktrees configures, inventories, previews, blocks, launches, and stays bounded", async ({
   dashboard,
   daemon,

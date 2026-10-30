@@ -1,5 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { appendFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { openDb } from "../src/server/db.ts";
 import { Registry } from "../src/server/registry.ts";
 import { ReviewManager } from "../src/server/reviews.ts";
@@ -20,9 +22,15 @@ import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 const db = openDb();
 const registry = new Registry();
 const tasks = new TaskManager(registry);
+const occupied = new Set<string>();
 const manager = new WorktreeManager(db, {
   occupancy: (paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> =>
-    Promise.resolve(new Map(paths.map((path) => [path, { status: "known", occupants: [] }]))),
+    Promise.resolve(new Map(paths.map((path) => [path, {
+      status: "known",
+      occupants: occupied.has(path)
+        ? [{ pid: 4242, ppid: 1, startRaw: "s", startMs: 0, command: "node", cwd: path, knownOwner: null }]
+        : [],
+    }]))),
   resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
 });
 const checks = new CheckLeaseManager(db, { manager, legacy: new LegacyTreehouseService(db) });
@@ -35,9 +43,12 @@ const operations = new WorktreeOperationsService(manager, {
   diskBytes: async () => 0,
 });
 const launched: TerminalLaunchSpec[] = [];
+let launchError: string | null = null;
 const launch = async (_backend: TerminalBackendId, spec: TerminalLaunchSpec) => {
   launched.push(spec);
-  return { ok: true, label: "Test terminal", homeName: null, status: 200 };
+  return launchError
+    ? { ok: false, label: "Test terminal", homeName: null, status: 502, error: launchError }
+    : { ok: true, label: "Test terminal", homeName: null, status: 200 };
 };
 const app = buildApp({
   registry,
@@ -140,6 +151,135 @@ test("preview/execute status vocabulary and injected terminal launcher stay exac
     body: "{}",
   });
   assert.equal(dismissed.status, 404, "a finished operation leaves nothing to dismiss");
+});
+
+test("Open terminal leases an idle available slot as it stands, and refuses one that is not idle", async () => {
+  const { clone } = mkOriginAndClone("mission-worktree-open-");
+  appendFileSync(join(clone, ".git/info/exclude"), "local-cache/\n");
+  const head = gitIn(clone, "rev-parse", "HEAD");
+  const acquired = await manager.acquire({ repositoryPath: clone, baseSha: head, owner: { kind: "manual", key: "open-route" } });
+  assert.equal(acquired.outcome, "acquired");
+  if (acquired.outcome !== "acquired") return;
+  const { slotId, path } = acquired.lease;
+  const open = () => app.request(`/api/worktrees/${slotId}/open`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ backend: "wezterm" }),
+  });
+  const hand = async (leaseId: string) => {
+    const returned = await app.request("/api/worktrees/manual/return", {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ leaseId }),
+    });
+    assert.equal(returned.status, 200);
+  };
+  await hand(acquired.lease.leaseId);
+  const row = () => manager.store.slot(slotId)!;
+  assert.equal(row().state, "available");
+
+  // Idle: leased with nothing touched. An ignored file proves the reset really did not run.
+  mkdirSync(join(path, "local-cache"));
+  writeFileSync(join(path, "local-cache/warm"), "kept\n");
+  const before = statSync(join(path, "local-cache/warm")).ino;
+  const launches = launched.length;
+  assert.equal((await open()).status, 200);
+  assert.equal(launched.length, launches + 1);
+  assert.equal(launched.at(-1)?.cwd, path);
+  assert.equal(row().state, "leased");
+  assert.equal(row().activeOwnerKind, "manual");
+  assert.match(row().activeOwnerKey ?? "", /^terminal-/);
+  assert.equal(row().currentHeadSha, head);
+  assert.equal(gitIn(path, "rev-parse", "HEAD"), head);
+  assert.equal(gitIn(path, "status", "--porcelain"), "");
+  assert.equal(statSync(join(path, "local-cache/warm")).ino, before);
+
+  const inventory = await (await app.request("/api/worktrees", { headers: HEADERS })).json() as {
+    repositories: Array<{ slots: Array<{ id: string; actions: string[]; owner: { kind: string; label: string } | null }> }>;
+  };
+  const card = inventory.repositories.flatMap((pool) => pool.slots).find((slot) => slot.id === slotId)!;
+  assert.deepEqual(card.owner && { kind: card.owner.kind, label: card.owner.label }, {
+    kind: "manual",
+    label: "Terminal from Settings",
+  });
+  assert.ok(card.actions.includes("return"));
+
+  // Leased: a shell opens and the lease stays the one it was.
+  const leaseId = row().activeLeaseId!;
+  assert.equal((await open()).status, 200);
+  assert.equal(launched.length, launches + 2);
+  assert.equal(row().activeLeaseId, leaseId);
+  await hand(leaseId);
+
+  // Two clicks at once take one lease between them.
+  const both = await Promise.all([open(), open()]);
+  assert.deepEqual(both.map((response) => response.status), [200, 200]);
+  assert.equal(row().state, "leased");
+  await hand(row().activeLeaseId!);
+
+  // Occupied: refused with acquisition's reason, nothing opened, and still available.
+  occupied.add(path);
+  const launchesBefore = launched.length;
+  const busy = await open();
+  occupied.delete(path);
+  assert.equal(busy.status, 409);
+  assert.deepEqual(await busy.json(), { error: "the slot is not idle: an available slot has process occupancy" });
+  assert.equal(row().state, "available");
+  assert.equal(row().activeLeaseId, null);
+
+  // Mid-reservation: neither available nor held by an owner, so it is refused without a shell.
+  const reserved = manager.store.reserveAvailable({
+    slotId,
+    version: row().version,
+    leaseId: "reserved",
+    ownerKind: "manual",
+    ownerKey: "reserved",
+    requestedHeadSha: head,
+    now: Date.now(),
+  })!;
+  const provisioning = await open();
+  assert.equal(provisioning.status, 409);
+  assert.deepEqual(await provisioning.json(), { error: "the slot is provisioning" });
+  manager.store.releaseReservation({
+    slotId,
+    version: reserved.version,
+    leaseId: "reserved",
+    requestedHeadSha: head,
+    lastError: null,
+    now: Date.now(),
+  });
+
+  // Attached to a branch: no reset would repair it, so it is not leased as it stands.
+  gitIn(path, "checkout", "-qb", "left-attached");
+  const attached = await open();
+  assert.equal(attached.status, 409);
+  assert.match((await attached.json() as { error: string }).error, /attached to a branch/);
+  assert.equal(row().state, "available");
+  gitIn(path, "checkout", "-q", "--detach");
+  gitIn(path, "branch", "-qD", "left-attached");
+
+  // A launcher that failed may still have opened a shell, so the lease stands and says so.
+  launchError = "terminal did not answer";
+  const failed = await open();
+  launchError = null;
+  assert.equal(failed.status, 502);
+  assert.equal(
+    (await failed.json() as { error: string }).error,
+    "terminal did not answer. The slot stays leased, so Return it from its card.",
+  );
+  assert.equal(row().state, "leased");
+  await hand(row().activeLeaseId!);
+
+  // Dirty: a proven fault, quarantined as acquisition would. A quarantined slot then still opens.
+  writeFileSync(join(path, "stray.txt"), "work\n");
+  const dirty = await open();
+  assert.equal(dirty.status, 409);
+  assert.match((await dirty.json() as { error: string }).error, /^the slot was quarantined: available slot has dirty/);
+  assert.equal(launched.length, launchesBefore + 1, "only the failed launcher's attempt reached the launcher");
+  assert.equal(row().state, "quarantined");
+  assert.equal((await open()).status, 200);
+  assert.equal(row().state, "quarantined");
+  assert.equal(row().activeLeaseId, null);
 });
 
 test("a bulk destroy selection accepts up to the bulk limit and rejects one more", async () => {
