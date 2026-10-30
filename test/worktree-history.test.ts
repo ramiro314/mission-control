@@ -493,6 +493,51 @@ test("reconcile finishing an interrupted return or a removal is recorded as auto
   assert.equal(trail(removing.slotId).at(-1), "pruning -> null (automatic)");
 });
 
+test("a Return run from Settings names the operator, whichever domain owns the lease", async () => {
+  const { clone, sha } = repository("mission-history-settings-");
+  const m = realManager();
+  const legacy = new LegacyTreehouseService(db);
+  const operations = new WorktreeOperationsService(m, {
+    legacy,
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks: new CheckLeaseManager(db, { manager: m, legacy }),
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async () => 0,
+  });
+  const take = async (owner: { kind: "manual" | "task"; key: string }) => {
+    const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner });
+    assert.equal(acquired.outcome, "acquired");
+    if (acquired.outcome !== "acquired") throw new Error("not acquired");
+    return acquired.lease;
+  };
+
+  const manual = await take({ kind: "manual", key: "manual-settings" });
+  const preview = await operations.preview({ action: "return", slotId: manual.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  await operations.execute(preview.token, []);
+  assert.deepEqual(trail(manual.slotId).slice(-2), [
+    "leased -> returning (operator)",
+    "returning -> available (operator)",
+  ]);
+
+  // A task's reclaim goes through its own domain before it reaches the manager.
+  const task = await take({ kind: "task", key: "task-settings" });
+  const reached = await m.runAsOperator(async () => {
+    await Promise.resolve();
+    return await m.release(task, { ownerAuthorized: true });
+  });
+  assert.equal(reached.outcome, "released");
+  assert.deepEqual(trail(task.slotId).slice(-2), [
+    "leased -> returning (operator)",
+    "returning -> available (operator)",
+  ]);
+
+  const owned = await take({ kind: "task", key: "task-own-return" });
+  assert.equal((await m.release(owned, { ownerAuthorized: true })).outcome, "released");
+  assert.equal(trail(owned.slotId).at(-1), "returning -> available (owner)", "outside an action it stays the owner's");
+});
+
 test("a Warm names the operator, and the return that ends it does too", async () => {
   const { clone, sha } = repository("mission-history-warm-");
   const m = realManager({

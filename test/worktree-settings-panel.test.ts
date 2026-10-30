@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStaleLeaseDays, slotHistoryHeadline, WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
 import { capacityGeometry } from "../src/web/lib/worktree-capacity.ts";
+import { refreshedSlotHistory } from "../src/web/lib/worktree-history.ts";
 import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
 import type { WorktreesState } from "../src/web/useWorktrees.ts";
 
@@ -757,7 +758,7 @@ test("a slot whose last observation failed says so on its own line, in whatever 
   assert.match(html, /<dt>Reason<\/dt><dd>worktree reset failed<\/dd><\/div><div><dt>Detail<\/dt><dd>fatal: unable to write new index file<\/dd><\/div><div><dt>Last observation failed<\/dt>/);
 });
 
-test("every slot card closes its History, which reads nothing until it is opened", () => {
+test("every slot card starts with its History closed, showing no list and no note", () => {
   const html = render();
   assert.match(html, /<section class="wt-history" aria-label="Slot 1 history">/);
   assert.match(html, /aria-expanded="false"[^>]*>.*?<span>History<\/span>/s);
@@ -775,4 +776,32 @@ test("a history row's headline names the change, and a later build's kind reads 
   assert.equal(slotHistoryHeadline({ ...entry, kind: "observation", outcome: "started" }), "Failed read");
   assert.equal(slotHistoryHeadline({ ...entry, kind: "observation", outcome: "cleared" }), "Failed read cleared");
   assert.equal(slotHistoryHeadline({ ...entry, kind: "a-later-kind" }), "a-later-kind");
+});
+
+test("a refresh adds what is newer to an open list and keeps its older rows and cursor", () => {
+  const entry = (id: number) => ({
+    id, slotId: "s", ordinal: 1, at: id, kind: "transition", fromState: null, toState: null, reason: null,
+    detail: null, operation: null, outcome: null, actor: null, durationMs: null, meta: null,
+  });
+  const ids = (page: { entries: Array<{ id: number }> }) => page.entries.map((row) => row.id);
+  const shown = { entries: [10, 9, 8, 7, 6].map(entry), nextBefore: 6 };
+
+  const nothing = { entries: [], nextBefore: null };
+  assert.deepEqual(refreshedSlotHistory(null, shown), shown, "the first read is the list");
+  assert.deepEqual(refreshedSlotHistory(nothing, shown), shown, "as it is over an empty one");
+  assert.deepEqual(refreshedSlotHistory(shown, nothing), nothing, "a slot with nothing left shows nothing");
+
+  const newer = refreshedSlotHistory(shown, { entries: [12, 11, 10, 9].map(entry), nextBefore: 9 });
+  assert.deepEqual(ids(newer), [12, 11, 10, 9, 8, 7, 6], "every row once, in order");
+  assert.equal(newer.nextBefore, 6, "the cursor still continues below the oldest row shown");
+
+  const same = refreshedSlotHistory(shown, { entries: [10, 9].map(entry), nextBefore: 9 });
+  assert.deepEqual(same, shown);
+
+  const whole = refreshedSlotHistory(shown, { entries: [11, 10, 9, 8, 7, 6, 5].map(entry), nextBefore: null });
+  assert.deepEqual(ids(whole), [11, 10, 9, 8, 7, 6]);
+  assert.equal(whole.nextBefore, null, "the daemon holds nothing older than this page");
+
+  const past = { entries: [40, 39].map(entry), nextBefore: 39 };
+  assert.deepEqual(refreshedSlotHistory(shown, past), past, "a page that cannot reach the list starts it again");
 });

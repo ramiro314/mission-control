@@ -6,6 +6,7 @@ import type { WorktreeActionPreview, WorktreeInventory } from "../../src/shared/
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
@@ -726,6 +727,154 @@ test("an open History picks up a failed read as it starts and as it clears", asy
     writeFileSync(dotGit, original);
     await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } });
   }
+});
+
+/**
+ * Two facts about one real Return, clicked in Settings. A closed card asks the daemon for nothing,
+ * even as its slot changes under it, so a pool of closed cards costs no reads. The rows then name
+ * the operator who clicked, not the manual owner the lease belongs to.
+ */
+test("a closed History reads nothing, and a Return from Settings is recorded as the operator's", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history operator return" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  let reads = 0;
+  dashboard.on("request", (request) => {
+    if (new URL(request.url()).pathname.endsWith("/history")) reads += 1;
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  await expect(slot.getByText("leased", { exact: true })).toBeVisible();
+
+  await slot.getByRole("button", { name: "Return", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(slot.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  expect(reads, "the slot changed while its History was closed").toBe(0);
+
+  const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+  const entries = history.getByRole("listitem");
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries).toHaveCount(4);
+  expect(reads).toBe(1);
+  await expect(entries.nth(0)).toContainText("returning → available");
+  await expect(entries.nth(0)).toContainText("by the operator");
+  await expect(entries.nth(1)).toContainText("leased → returning");
+  await expect(entries.nth(1)).toContainText("by the operator");
+});
+
+/**
+ * History open at 60 written rows with its older page held in flight, for the two ways a refresh
+ * can land under it. The refresh in each is real: a Return, whose two rows push the row at the
+ * cursor off the end of the newest page. Only the rows that give the list more pages are written
+ * directly.
+ */
+async function historyWithOlderPageHeld(dashboard: Page, daemon: DaemonHandle) {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history refresh race" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const seed = (from: number, to: number) => withDaemonDb(daemon, (db) => {
+    const row = db.prepare(`SELECT id, pool_id, ordinal FROM worktree_slots WHERE path = ?`).get(lease.path) as
+      { id: string; pool_id: string; ordinal: number };
+    const insert = db.prepare(
+      `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind, reason, actor)
+       VALUES (?, ?, ?, ?, 'observation', ?, 'automatic')`,
+    );
+    for (let index = from; index <= to; index += 1) insert.run(row.pool_id, row.id, row.ordinal, Date.now(), `paged row ${index}`);
+  });
+  seed(1, 60);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const history = repo.locator(".wt-slot", { hasText: lease.path }).getByRole("region", { name: /^Slot \d+ history$/ });
+  const entries = history.getByRole("listitem");
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries).toHaveCount(50);
+
+  const olderPage = (url: URL) => url.pathname.endsWith("/history") && url.searchParams.has("before");
+  let openRoute = () => {};
+  const opened = new Promise<void>((resolve) => { openRoute = resolve; });
+  await dashboard.route(olderPage, async (route) => {
+    await opened;
+    await route.continue();
+  });
+  const older = history.getByRole("button", { name: "Show older" });
+  const held = dashboard.waitForRequest((request) => olderPage(new URL(request.url())));
+  await older.click();
+  await held;
+
+  return {
+    entries,
+    older,
+    seed,
+    /** The real Return, and the refresh it causes reaching the open list. */
+    refresh: async () => {
+      const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+        data: { leaseId: lease.leaseId },
+      });
+      expect(returned.ok()).toBe(true);
+      await expect(entries.nth(0)).toContainText("returning → available", { timeout: EXECUTES_MS });
+    },
+    /** Let the held older page answer, and wait until the card has dealt with it. */
+    answerOlder: async () => {
+      const answered = dashboard.waitForResponse((response) => olderPage(new URL(response.url())));
+      openRoute();
+      await answered;
+      await dashboard.unroute(olderPage);
+    },
+    pagedRows: async () => (await entries.allTextContents())
+      .flatMap((text) => /paged row (\d+)/.exec(text)?.[1] ?? [])
+      .map(Number),
+  };
+}
+
+test("a refresh that lands during Show older leaves every row in the list once, in order", async ({
+  dashboard,
+  daemon,
+}) => {
+  const held = await historyWithOlderPageHeld(dashboard, daemon);
+  await held.refresh();
+  await held.answerOlder();
+
+  await expect(held.entries).toHaveCount(64);
+  expect(await held.pagedRows()).toEqual(Array.from({ length: 60 }, (_, index) => 60 - index));
+  await expect(held.entries.nth(63)).toContainText("new → provisioning");
+  await expect(held.older).toHaveCount(0);
+});
+
+test("an older page that answers after a refresh started the list again is dropped, not spliced in", async ({
+  dashboard,
+  daemon,
+}) => {
+  const held = await historyWithOlderPageHeld(dashboard, daemon);
+  // More new rows than a page holds, so the refreshed page cannot reach the list it replaces.
+  held.seed(61, 120);
+  await held.refresh();
+  await expect(held.entries).toHaveCount(50);
+  await held.answerOlder();
+
+  await expect(held.older).toBeEnabled();
+  await expect(held.entries).toHaveCount(50);
+  const downFrom = (first: number, length: number) => Array.from({ length }, (_, index) => first - index);
+  expect(await held.pagedRows()).toEqual(downFrom(120, 48));
+
+  await held.older.click();
+  await expect(held.entries).toHaveCount(100);
+  expect(await held.pagedRows()).toEqual(downFrom(120, 98));
 });
 
 /**

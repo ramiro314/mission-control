@@ -1947,11 +1947,11 @@ export class WorktreeOperationsService {
     // publishOnSuccess covers legacy-only actions where no native manager method calls
     // publish(). Supplying the service publisher also coalesces native mutations through the
     // same content-free invalidation path instead of emitting once from each dependency.
-    await this.manager.runChangeBatch(
+    await this.manager.runAsOperator(() => this.manager.runChangeBatch(
       () => this.dispatch(held.preview, acknowledgementSet, removed, expectedWork),
       true,
       this.deps.notifyChanged,
-    );
+    ));
     if (held.preview.request.action === "legacyReturn") this.legacyVisibleRevision = null;
     return { ok: true, action: held.preview.request.action, message: this.successMessage(held.preview.request.action) };
   }

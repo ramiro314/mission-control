@@ -749,6 +749,8 @@ export class WorktreeManager {
    */
   private readonly defaultFingerprints = new Map<string, { key: string; fingerprint: string | null }>();
   private readonly changeBatch = new AsyncLocalStorage<{ pending: boolean }>();
+  /** Set while an operator's action runs. See `runAsOperator`. */
+  private readonly operatorAction = new AsyncLocalStorage<true>();
   /**
    * The `warm` owners whose operation is running in this daemon right now. In memory by
    * design: no Warm or seed survives a restart, so startup reconciliation, which runs before
@@ -852,6 +854,15 @@ export class WorktreeManager {
   }
 
   /** Coalesces every visible mutation in one operator action into one invalidation. */
+  /**
+   * An operator's action reaches a release through whichever domain owns the lease (a task's
+   * reclaim, a check's recovery, a manual return), so the history's actor travels with the work
+   * instead of through each of them. A release this runs names the operator, not the owner.
+   */
+  runAsOperator<T>(operation: () => Promise<T>): Promise<T> {
+    return this.operatorAction.run(true, operation);
+  }
+
   async runChangeBatch<T>(
     operation: () => Promise<T>,
     publishOnSuccess = true,
@@ -2630,7 +2641,7 @@ export class WorktreeManager {
       const policyBlocker = await options.beforeReset?.(target);
       if (policyBlocker) return { outcome: "refused", reason: policyBlocker };
       return null;
-    }, options.actor);
+    }, options.actor ?? (this.operatorAction.getStore() ? "operator" : undefined));
   }
 
   /**

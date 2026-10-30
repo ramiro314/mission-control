@@ -3,6 +3,7 @@ import {
   WORKTREES_CONFIG_LIMITS,
   type WorktreeClaim,
   type WorktreeSlotHistoryEntry,
+  type WorktreeSlotHistoryPage,
   type WorktreesConfigPatch,
 } from "@shared/protocol.ts";
 import type { OrphanProcess, StorageHealth, StorageProblem } from "@shared/storage-health.ts";
@@ -27,6 +28,7 @@ import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { api, fetchWorktreeSlotHistory, openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
+import { refreshedSlotHistory } from "../lib/worktree-history.ts";
 import { BULK_SELECTION_LIMIT, changeSelection } from "../lib/worktree-selection.ts";
 import {
   claimErrorsFrom,
@@ -862,8 +864,8 @@ const HISTORY_ACTORS: Record<string, string> = {
 
 /**
  * What happened to this slot, newest first. Read only while open, so a pool of closed cards asks
- * the daemon for nothing, and read again when `refreshKey` says the slot moved on. Showing the
- * list again after that starts from the newest page.
+ * the daemon for nothing, and read again when `refreshKey` says the slot moved on, which keeps
+ * the older pages already shown.
  */
 function SlotHistory({
   slotId,
@@ -875,10 +877,11 @@ function SlotHistory({
   refreshKey: string;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const [entries, setEntries] = useState<WorktreeSlotHistoryEntry[] | null>(null);
-  const [nextBefore, setNextBefore] = useState<number | null>(null);
+  const [list, setList] = useState<WorktreeSlotHistoryPage | null>(null);
   const [failed, setFailed] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const entries = list?.entries ?? null;
+  const nextBefore = list?.nextBefore ?? null;
 
   useEffect(() => {
     if (!open) return;
@@ -886,9 +889,7 @@ function SlotHistory({
     void fetchWorktreeSlotHistory(slotId, null, controller.signal).then((page) => {
       if (controller.signal.aborted) return;
       setFailed(page === null);
-      if (!page) return;
-      setEntries(page.entries);
-      setNextBefore(page.nextBefore);
+      if (page) setList((shown) => refreshedSlotHistory(shown, page));
     });
     return () => controller.abort();
   }, [open, slotId, refreshKey]);
@@ -899,12 +900,10 @@ function SlotHistory({
     setLoadingOlder(false);
     setFailed(page === null);
     if (!page) return;
-    // A refresh that landed meanwhile can already hold the top of this page.
-    setEntries((shown) => {
-      const known = new Set(shown?.map((entry) => entry.id));
-      return [...(shown ?? []), ...page.entries.filter((entry) => !known.has(entry.id))];
-    });
-    setNextBefore(page.nextBefore);
+    // A list that a refresh started again meanwhile no longer ends where this page begins.
+    setList((shown) => shown?.nextBefore === nextBefore
+      ? { entries: [...shown.entries, ...page.entries], nextBefore: page.nextBefore }
+      : shown);
   }
 
   return (
