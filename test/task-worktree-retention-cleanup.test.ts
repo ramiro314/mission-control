@@ -1226,10 +1226,51 @@ test("a default that moves between a settled slot's check and its reset is caugh
 
   const manager = slot.restart();
   await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, /ignored \.env \(the target's \.gitignore files no longer ignore it\)/);
+  assert.equal(fetches, 2, "the reset's own refusal is listed, so nothing judges the slot a second time");
   assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased", "the refusal came before the reset's intent");
   assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
   assert.equal(readFileSync(join(slot.path, ".env"), "utf8"), "TOKEN=1\n");
   assert.equal(gitIn(slot.path, "rev-parse", "HEAD"), slot.sha);
+});
+
+test("a read that fails once at the reset's repeated check is what is listed, though the next read is clean", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const id = uid("settled-transient");
+  let armed = false;
+  let fetches = 0;
+  let restore = () => {};
+  class FailsOnceAfterValidation extends NativeWorktreeGit {
+    override async inspect(path: string) {
+      const inspected = await super.inspect(path);
+      // The reset's validation is the last read before its hook, so the hook's status fails.
+      if (armed) {
+        armed = false;
+        const index = gitIn(path, "rev-parse", "--path-format=absolute", "--git-path", "index");
+        const intact = readFileSync(index);
+        writeFileSync(index, "not an index");
+        restore = () => writeFileSync(index, intact);
+      }
+      return inspected;
+    }
+
+    override async fetchDefaultSha(identity: Parameters<WorktreeGit["fetchDefaultSha"]>[0]) {
+      // The first fetch is the check's and the second the reset's. A third could only be a
+      // second opinion, which would now read a clean slot and lose the refusal.
+      if ((fetches += 1) === 3) restore();
+      return super.fetchDefaultSha(identity);
+    }
+  }
+  const slot = await settledPoolSlot(id, new FailsOnceAfterValidation());
+  fetches = 0;
+  armed = true;
+
+  const manager = slot.restart();
+  await eventually(() => keptTree(manager, id) !== undefined, "the refused slot was never listed");
+  assert.match(keptTree(manager, id)!.problem(1).message, /working tree could not be read/);
+  assert.equal(fetches, 2, "nothing judged the slot a second time");
+  assert.equal(slot.worktrees.store.slot(slot.slotId)?.state, "leased");
+  assert.equal(slot.registry.getTask(id)?.worktreePath, slot.path);
 });
 
 test("a settled pool slot whose reset-rule read fails keeps its window and is listed, with the failure", async () => {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { lockCausedQuarantine } from "../src/server/worktrees/index-lock.ts";
 import {
@@ -6,6 +7,7 @@ import {
   isObservationFailure,
   OBSERVATION_FAILURE,
   OBSERVATION_FAILURE_REASONS,
+  REGISTRATION_OR_IDENTITY,
   REGISTRATION_OR_IDENTITY_REASONS,
   registrationOrIdentityQuarantine,
   RESERVATION_NOT_HANDED_BACK,
@@ -75,4 +77,43 @@ test("a registration or identity reason is never one automatic recovery may clea
   assert.equal(registrationOrIdentityQuarantine("slot Git state is unknown"), false);
   assert.equal(registrationOrIdentityQuarantine("return reset failed"), false);
   assert.equal(registrationOrIdentityQuarantine(null), false);
+});
+
+test("every registration or identity reason this build writes is in the one set", () => {
+  for (const label of Object.values(REGISTRATION_OR_IDENTITY)) {
+    assert.ok(REGISTRATION_OR_IDENTITY_REASONS.has(label), label);
+  }
+});
+
+/**
+ * Every other literal reason the manager quarantines with, each classified by being listed
+ * here: a reset or proof that failed, an interrupted transition, or a dirty slot. None of them
+ * is a registration or identity fault, so Git's lock text may still make one a candidate.
+ */
+const OTHER_QUARANTINE_REASONS = new Set([
+  "Warm reset failed",
+  "an interrupted warm lease could not be returned",
+  "available slot has dirty or untracked work",
+  "dependency claim state could not be recorded",
+  "interrupted return did not reach its requested exact HEAD",
+  "interrupted return is occupied or dirty",
+  "return reset failed",
+  "return verification failed",
+  "startup found an interrupted provisioning intent",
+  "startup found an interrupted prune with filesystem state still present",
+  "warmed slot verification failed",
+  "worktree removal could not be verified",
+]);
+
+test("no quarantine reason in the manager escapes classification", () => {
+  const source = readFileSync(new URL("../src/server/worktrees/manager.ts", import.meta.url), "utf8");
+  const written = [
+    ...source.matchAll(/\b(?:reject|refuse|failPool)\(\s*"([^"]+)"/g),
+    ...source.matchAll(/this\.quarantine\(\s*\w+,\s*"([^"]+)"/g),
+  ].map((match) => match[1]!);
+  assert.ok(written.length >= OTHER_QUARANTINE_REASONS.size, "the patterns still find the writers");
+  // A registration or identity reason goes through the constants, so a literal that is not
+  // listed above is a new reason nobody has decided about yet.
+  for (const reason of written) assert.ok(OTHER_QUARANTINE_REASONS.has(reason), `unclassified: ${reason}`);
+  for (const reason of OTHER_QUARANTINE_REASONS) assert.ok(written.includes(reason), `no longer written: ${reason}`);
 });

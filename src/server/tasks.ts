@@ -6858,14 +6858,20 @@ export class TaskManager {
     })) return;
     // The default may move between the check above and a pool slot's reset, so the reset
     // judges its slot again against the commit it fetched, and refuses rather than discard.
-    const result = await this.reclaim(id, async (path, target) =>
-      target === undefined ? null : this.worktrees.slotResetBlocker(path, target));
+    const refused: Array<{ path: string; reason: string }> = [];
+    const result = await this.reclaim(id, async (path, target) => {
+      const reason = target === undefined ? null : await this.worktrees.slotResetBlocker(path, target);
+      if (reason) refused.push({ path, reason });
+      return reason;
+    });
     if (result.ok) return;
     console.warn(`[tasks] could not reclaim settled task ${id}'s clean worktrees: ${result.error}`);
+    // The reset's own refusal is what is listed; judging the slot again could answer otherwise.
+    // By path, not generation: a sibling tree that did come back changes the generation.
+    const [refusal] = refused;
     const remaining = this.registry.getTask(id);
-    const refused = remaining && taskHasWorktrees(remaining) ? await this.settledTreeWork(remaining) : null;
-    if (refused) {
-      this.dirtySettledTrees.set(id, refused);
+    if (refusal && remaining && taskRepoRefs(remaining).some((ref) => ref.worktreePath === refusal.path)) {
+      this.dirtySettledTrees.set(id, refusal);
       this.settledTreesChanged();
     }
   }

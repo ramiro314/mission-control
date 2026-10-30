@@ -55,23 +55,32 @@ function reasonIn(reasons: ReadonlySet<string>, reason: string | null): boolean 
 }
 
 /**
- * Every reason that says the slot's registration, its path, its pool or its lease identity is
- * wrong, including the marker wording older builds used. A later read that succeeds repairs
- * none of these, so automatic recovery never judges one, whatever else `last_error` holds.
+ * The reasons that say a slot's registration, its path, its pool, its lease identity or the
+ * commit the allocator recorded for it is wrong. A later read that succeeds repairs none of
+ * these, so automatic recovery never judges one, whatever else `last_error` holds. Every
+ * writer uses these labels, so this is the one copy of each.
  */
+export const REGISTRATION_OR_IDENTITY = {
+  inexactPath: "slot path is not the exact path owned by its native pool",
+  missingRegistration: "slot path or Git registration is missing",
+  unsafeRegistration: "slot Git registration is bare, locked, or prunable",
+  noSafeRegistration: "slot has no safe Git worktree registration",
+  commonDirectory: "slot belongs to a different Git common directory",
+  poolIdentity: "pool repository identity no longer matches its durable row",
+  poolMarker: "pool marker is missing, malformed, or belongs to another pool",
+  incompleteAvailableIdentity: "available slot has incomplete active lease identity",
+  availableIdentity: "available slot still carries active lease identity",
+  incompleteLastIdentity: "last-released lease identity is incomplete",
+  incompleteLeasedIdentity: "leased slot has incomplete active identity",
+  incompleteReturnIdentity: "interrupted return has incomplete active lease identity",
+  noDomainOwner: "leased slot has no matching domain owner reference",
+  headMoved: "available slot HEAD moved outside an allocator transition",
+} as const;
+
+/** Every registration or identity reason: the labels above, and an older build's marker wording. */
 export const REGISTRATION_OR_IDENTITY_REASONS: ReadonlySet<string> = new Set([
-  "slot path is not the exact path owned by its native pool",
-  "slot path or Git registration is missing",
-  "slot Git registration is bare, locked, or prunable",
-  "slot belongs to a different Git common directory",
-  "pool repository identity no longer matches its durable row",
-  "pool marker is missing, malformed, or belongs to another pool",
+  ...Object.values(REGISTRATION_OR_IDENTITY),
   "pool marker is missing, unreadable, or belongs to another pool",
-  "available slot has incomplete active lease identity",
-  "available slot still carries active lease identity",
-  "last-released lease identity is incomplete",
-  "leased slot has incomplete active identity",
-  "interrupted return has incomplete active lease identity",
 ]);
 
 export function registrationOrIdentityQuarantine(reason: string | null): boolean {

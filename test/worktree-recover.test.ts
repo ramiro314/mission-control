@@ -684,25 +684,14 @@ test("a fresh Git read that fails leaves the slot quarantined, records it for th
   assert.equal(existsSync(path), true);
 });
 
-const NEVER_CLEARED = [
-  "slot path or Git registration is missing",
-  "slot Git registration is bare, locked, or prunable",
-  "slot path is not the exact path owned by its native pool",
-  "slot belongs to a different Git common directory",
-  "pool repository identity no longer matches its durable row",
-  "pool marker is missing, malformed, or belongs to another pool",
-  "last-released lease identity is incomplete",
-  "available slot still carries active lease identity",
-  "available slot HEAD moved outside an allocator transition",
-  "leased slot has no matching domain owner reference",
-  "return verification failed",
-];
+/** Proven faults outside the candidates that are not about registration or identity. */
+const OTHER_FAULTS = ["return verification failed", "return reset failed", "interrupted return is occupied or dirty"];
 
-test("a registration or identity quarantine is never a candidate, even once every read would succeed", async () => {
+test("a quarantine outside the candidates is never judged, even once every read would succeed", async () => {
   const { clone, sha } = repository("mission-recover-never-");
   const m = manager();
-  const { slotId } = await quarantinedSlot(m, clone, sha, "task-never", NEVER_CLEARED[0]!);
-  for (const reason of NEVER_CLEARED) {
+  const { slotId } = await quarantinedSlot(m, clone, sha, "task-never", "slot Git state is unknown");
+  for (const reason of [...REGISTRATION_OR_IDENTITY_REASONS, ...OTHER_FAULTS]) {
     assert.ok(m.store.quarantine(slotId, reason, null, Date.now()));
     const row = m.store.slot(slotId)!;
     await m.recoverQuarantines();

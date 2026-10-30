@@ -57,6 +57,7 @@ import {
   clearableQuarantineReason,
   OBSERVATION_FAILURE,
   observationFailureText,
+  REGISTRATION_OR_IDENTITY,
   registrationOrIdentityQuarantine,
   RESERVATION_NOT_HANDED_BACK,
   sameObservationFailure,
@@ -639,10 +640,10 @@ export function idleSlotRefusal(facts: IdleSlotFacts): IdleSlotRefusal | null {
   if (facts.state !== "available") {
     return { kind: "notAvailable", reason: `the slot is ${facts.state}`, detail: null, disposition: "skip" };
   }
-  if (!facts.exactPath) return refuse("slot path is not the exact path owned by its native pool");
-  if (facts.activeIdentity === "invalid") return refuse("available slot has incomplete active lease identity");
-  if (facts.activeIdentity === "present") return refuse("available slot still carries active lease identity");
-  if (facts.lastOwner === "invalid") return refuse("last-released lease identity is incomplete");
+  if (!facts.exactPath) return refuse(REGISTRATION_OR_IDENTITY.inexactPath);
+  if (facts.activeIdentity === "invalid") return refuse(REGISTRATION_OR_IDENTITY.incompleteAvailableIdentity);
+  if (facts.activeIdentity === "present") return refuse(REGISTRATION_OR_IDENTITY.availableIdentity);
+  if (facts.lastOwner === "invalid") return refuse(REGISTRATION_OR_IDENTITY.incompleteLastIdentity);
   if (facts.lastOwner === "referenced") {
     // The recoverable release/domain-row crash window. The slot stays available but is not
     // idle until the exact owner clears its durable row.
@@ -656,10 +657,10 @@ export function idleSlotRefusal(facts: IdleSlotFacts): IdleSlotRefusal | null {
     // Its processes are the card's to show and Kill; the slot itself is not at fault.
     return { kind: "notIdle", reason: "an available slot has process occupancy", detail: null, disposition: "skip" };
   }
-  if (!facts.registrationSafe) return refuse("slot has no safe Git worktree registration");
+  if (!facts.registrationSafe) return refuse(REGISTRATION_OR_IDENTITY.noSafeRegistration);
   if (!facts.inspection) return null;
   if (!facts.inspection.ok) return unknown(OBSERVATION_FAILURE.git, facts.inspection.reason);
-  if (!facts.inspection.pathMatches) return refuse("slot belongs to a different Git common directory");
+  if (!facts.inspection.pathMatches) return refuse(REGISTRATION_OR_IDENTITY.commonDirectory);
   if (facts.inspection.dirty) return refuse("available slot has dirty or untracked work");
   return null;
 }
@@ -1090,7 +1091,7 @@ export class WorktreeManager {
     if (!registration || registration.bare || registration.locked || registration.prunable) {
       return {
         ok: false,
-        reason: "slot has no safe Git worktree registration",
+        reason: REGISTRATION_OR_IDENTITY.noSafeRegistration,
         outcomeUnknown: false,
       };
     }
@@ -3059,7 +3060,7 @@ export class WorktreeManager {
       identity.gitCommonDirectory !== pool.gitCommonDirectory ||
       identity.poolPath !== pool.poolPath
     ) {
-      await failPool("pool repository identity no longer matches its durable row");
+      await failPool(REGISTRATION_OR_IDENTITY.poolIdentity);
       return;
     }
     const marker = await observeWorktreePoolMarker(pool.poolPath);
@@ -3068,7 +3069,7 @@ export class WorktreeManager {
       return;
     }
     if (marker.marker?.poolId !== pool.id) {
-      await failPool("pool marker is missing, malformed, or belongs to another pool");
+      await failPool(REGISTRATION_OR_IDENTITY.poolMarker);
       return;
     }
     let listed: Awaited<ReturnType<WorktreeGit["list"]>>;
@@ -3107,7 +3108,7 @@ export class WorktreeManager {
           continue;
         }
         if (!exactSlotPath(pool, identity, slot)) {
-          reject("slot path is not the exact path owned by its native pool");
+          reject(REGISTRATION_OR_IDENTITY.inexactPath);
           continue;
         }
         const registration = registrationFor(listed.value, slot.path);
@@ -3117,11 +3118,11 @@ export class WorktreeManager {
           continue;
         }
         if (!existsSync(slot.path) || !registration) {
-          reject("slot path or Git registration is missing");
+          reject(REGISTRATION_OR_IDENTITY.missingRegistration);
           continue;
         }
         if (registration.bare || registration.locked || registration.prunable) {
-          reject("slot Git registration is bare, locked, or prunable");
+          reject(REGISTRATION_OR_IDENTITY.unsafeRegistration);
           continue;
         }
         // Interrupted provisioning and prune are faults whatever Git or the process table say,
@@ -3150,7 +3151,7 @@ export class WorktreeManager {
           inspection.value.path !== slot.path ||
           inspection.value.commonDirectory !== pool.gitCommonDirectory
         ) {
-          reject("slot belongs to a different Git common directory");
+          reject(REGISTRATION_OR_IDENTITY.commonDirectory);
           continue;
         }
         const observedOccupancy = occupancy.get(slot.path) ?? {
@@ -3185,7 +3186,7 @@ export class WorktreeManager {
         if (slot.state === "returning") {
           const returningReference = activeReference(slot);
           if (!returningReference || returningReference === "invalid") {
-            reject("interrupted return has incomplete active lease identity");
+            reject(REGISTRATION_OR_IDENTITY.incompleteReturnIdentity);
             continue;
           }
           if (observedOccupancy.occupants.length > 0 || inspection.value.dirty) {
@@ -3206,8 +3207,8 @@ export class WorktreeManager {
           if (active !== null) {
             reject(
               active === "invalid"
-                ? "available slot has incomplete active lease identity"
-                : "available slot still carries active lease identity",
+                ? REGISTRATION_OR_IDENTITY.incompleteAvailableIdentity
+                : REGISTRATION_OR_IDENTITY.availableIdentity,
             );
             continue;
           }
@@ -3218,12 +3219,12 @@ export class WorktreeManager {
             continue;
           }
           if (slot.currentHeadSha && slot.currentHeadSha !== inspection.value.head) {
-            reject("available slot HEAD moved outside an allocator transition");
+            reject(REGISTRATION_OR_IDENTITY.headMoved);
             continue;
           }
           const prior = lastReference(slot);
           if (prior === "invalid") {
-            reject("last-released lease identity is incomplete");
+            reject(REGISTRATION_OR_IDENTITY.incompleteLastIdentity);
             continue;
           }
           try {
@@ -3246,7 +3247,7 @@ export class WorktreeManager {
         // unknown scan leaves it leased. This preserves live work while still preventing reuse.
         const active = activeReference(slot);
         if (!active || active === "invalid") {
-          reject("leased slot has incomplete active identity");
+          reject(REGISTRATION_OR_IDENTITY.incompleteLeasedIdentity);
           continue;
         }
         if (active.owner.kind === "warm" && !(await this.ownerReferenced(active))) {
@@ -3275,7 +3276,7 @@ export class WorktreeManager {
         }
         try {
           if (!(await this.ownerReferenced(active))) {
-            reject("leased slot has no matching domain owner reference");
+            reject(REGISTRATION_OR_IDENTITY.noDomainOwner);
             continue;
           }
         } catch (error) {
@@ -3463,7 +3464,7 @@ export class WorktreeManager {
       }
       const prior = lastReference(slot);
       if (prior === "invalid") {
-        return { outcome: "refused", reason: "last-released lease identity is incomplete" };
+        return { outcome: "refused", reason: REGISTRATION_OR_IDENTITY.incompleteLastIdentity };
       }
       if (prior) {
         try {
@@ -3504,7 +3505,7 @@ export class WorktreeManager {
       if (!listed.ok) return { outcome: listed.outcomeUnknown ? "outcomeUnknown" : "refused", reason: listed.reason };
       const registration = registrationFor(listed.value, slot.path);
       if (!registration || registration.bare || registration.locked || registration.prunable) {
-        return { outcome: "refused", reason: "slot has no safe Git worktree registration" };
+        return { outcome: "refused", reason: REGISTRATION_OR_IDENTITY.noSafeRegistration };
       }
       if (!inspection.ok) {
         return { outcome: inspection.outcomeUnknown ? "outcomeUnknown" : "refused", reason: inspection.reason };

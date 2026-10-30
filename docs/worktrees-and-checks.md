@@ -1014,7 +1014,8 @@ settle-and-retain rule for clean trees only:
   origin's default: nothing uncommitted, untracked or unpushed, and no ignored entry the reset
   would overwrite or delete. A slot holding only ignored files is therefore reclaimed at once and
   keeps them, warm install included. The reset judges the rule again against the commit it
-  fetched, so a default that moved after the check keeps the slot, with every file unchanged.
+  fetched, so a default that moved after the check keeps the slot, with every file unchanged, and
+  the task is listed with that reset's own refusal.
 - **Any other tree's folder is removed**, so **clean** means nothing uncommitted, untracked or
   unpushed, and no ignored file except under the regenerable directories `node_modules/`,
   `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/` and `.next/`, at any depth. Any other
