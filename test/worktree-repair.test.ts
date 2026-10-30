@@ -1753,6 +1753,12 @@ for (const change of [
     apply: (_clone: string, path: string) => { mkdirSync(path, { recursive: true }); },
     registeredAfter: true,
   },
+  // Reads the same in the preview's words, so only the bound facts can tell.
+  {
+    name: "a second registration naming the path",
+    apply: (_clone: string, _path: string, administrative: string) => { cpSync(administrative, `${administrative}-twin`, { recursive: true }); },
+    registeredAfter: true,
+  },
 ]) {
   test(`execute refuses ${change.name} after a gone folder's preview, where there is no tree to bind`, async () => {
     const { clone, sha } = repository("mission-forget-stale-facts-");
@@ -1763,7 +1769,7 @@ for (const change of [
     const preview = await service.preview({ action: "forget", slotId: slot.slotId });
     assert.equal(preview.allowed, true, preview.blockers.join("; "));
 
-    change.apply(clone, slot.path);
+    change.apply(clone, slot.path, slot.administrative);
     await assert.rejects(service.execute(preview.token, [...FORGET_ACK]), (error: unknown) => {
       assert.ok(error instanceof WorktreeOperationError);
       assert.equal(error.status, 409);
