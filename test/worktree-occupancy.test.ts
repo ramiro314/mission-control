@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { Proc } from "../src/server/discovery/processes.ts";
 import {
   knownOwnerLabels,
+  observedSessionProcesses,
   sessionProcesses,
   type SessionProcess,
 } from "../src/server/worktrees/known-owners.ts";
@@ -68,7 +69,7 @@ test("occupancy batches one process read and one cwd read across every target", 
       assert.deepEqual(pids, [10, 20]);
       return { cwds: new Map([[10, nested], [20, ten]]), unknownReason: null };
     },
-    knownOwner: () => (proc) => (proc.pid === 10 ? "terminal:session-1" : null),
+    knownOwner: () => (proc) => (proc.pid === 10 ? { label: "terminal:session-1" } : null),
   });
 
   assert.equal(processReads, 1);
@@ -667,7 +668,7 @@ async function labels(
   return new Map(state.status === "known" ? state.occupants.map((row) => [row.pid, row.knownOwner]) : []);
 }
 
-const session: SessionProcess = { pid: 100, startMs: 100_000, name: "fix the login" };
+const session: SessionProcess = { id: "session-1", pid: 100, startMs: 100_000, name: "fix the login" };
 
 test("a session's own process and its descendants are named as that session", async () => {
   const named = await labels([process(100), process(101, 100), process(102, 101)], [session]);
@@ -725,6 +726,29 @@ test("a parent-link loop in the table ends the walk and names nothing", async ()
   assert.deepEqual([...named.entries()], [[500, null], [501, null]]);
 });
 
+test("a session's occupant carries that session, and no other name does", async () => {
+  const { one } = fixture();
+  const helper = { ...process(101), command: "/usr/bin/gopls serve" };
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [process(100), helper],
+      unknownReason: null,
+      cwdScopePids: [100, 101],
+      completedCollectorPids: [],
+    }),
+    readCwds: async () => ({ cwds: new Map([[100, one], [101, one]]), unknownReason: null }),
+    knownOwner: knownOwnerLabels(() => [session]),
+  });
+  const state = result.get(one)!;
+  assert.equal(state.status, "known");
+  if (state.status !== "known") return;
+  assert.equal(state.namesUnread, undefined);
+  assert.deepEqual(state.occupants.map((row) => [row.pid, row.knownOwner, row.session]), [
+    [100, "Session fix the login", { id: "session-1", name: "fix the login" }],
+    [101, "IDE language server", null],
+  ]);
+});
+
 test("a named process stays an occupant", async () => {
   const { one } = fixture();
   const result = await inspectWorktreeOccupancy([one], {
@@ -758,7 +782,22 @@ test("names that cannot be read leave the occupant counted and unnamed", async (
   });
   const state = result.get(one)!;
   assert.equal(state.status, "known");
-  if (state.status === "known") assert.deepEqual(state.occupants.map((row) => [row.pid, row.knownOwner]), [[100, null]]);
+  if (state.status === "known") {
+    assert.deepEqual(state.occupants.map((row) => [row.pid, row.knownOwner]), [[100, null]]);
+    assert.equal(state.namesUnread, true, "the inspection says so, for Kill's session guard");
+  }
+});
+
+test("before the first discovery sweep the sessions are unread rather than empty", () => {
+  const live = { id: "s", name: "n", runtime: "terminal", pid: 7, startedAt: 7_000 } as Session;
+  assert.throws(
+    () => observedSessionProcesses({ sessionsObserved: () => false, liveSessions: () => [] }),
+    /no discovery sweep/,
+  );
+  assert.deepEqual(
+    observedSessionProcesses({ sessionsObserved: () => true, liveSessions: () => [live] }),
+    [{ id: "s", name: "n", pid: 7, startMs: 7_000 }],
+  );
 });
 
 test("a session's process is its process start, or its recorded SDK lifetime", () => {
@@ -772,6 +811,6 @@ test("a session's process is its process start, or its recorded SDK lifetime", (
       live({ id: "sdk:unbound", runtime: "sdk", pid: 0 }),
       live({ id: "no-start", startedAt: null }),
     ], (id) => lifetimes.get(id) ?? null),
-    [{ pid: 7, startMs: 7_000, name: "n" }, { pid: 8, startMs: 8_000, name: "n" }],
+    [{ id: "terminal", pid: 7, startMs: 7_000, name: "n" }, { id: "sdk:a", pid: 8, startMs: 8_000, name: "n" }],
   );
 });

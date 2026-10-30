@@ -1,11 +1,16 @@
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import type { ProcessSession } from "@shared/storage-health.ts";
 import type { Session } from "@shared/types.ts";
 import { backgroundAgentOf, type Proc } from "../discovery/processes.ts";
 import { getSdkSessionProcess, type SdkProcessLifetime } from "../sdk/store.ts";
 
 /** One live session's own process, as PID and start time, so a reused PID is never its. */
-export interface SessionProcess extends SdkProcessLifetime {
-  name: string;
+export interface SessionProcess extends SdkProcessLifetime, ProcessSession {}
+
+/** What one occupant is: the words a card shows, and the live session behind them, if any. */
+export interface KnownOwner {
+  label: string;
+  session?: ProcessSession;
 }
 
 const JETBRAINS = "JetBrains IDE helper";
@@ -54,8 +59,20 @@ export function sessionProcesses(
     const own = session.runtime === "sdk"
       ? lifetime(session.id)
       : { pid: session.pid, startMs: session.startedAt ?? 0 };
-    return own && own.pid > 0 && own.startMs > 0 ? [{ ...own, name: session.name }] : [];
+    return own && own.pid > 0 && own.startMs > 0 ? [{ ...own, id: session.id, name: session.name }] : [];
   });
+}
+
+/**
+ * The live sessions' processes, or a throw until a discovery sweep has filled the session map.
+ * Before that an empty map is no evidence that a process has no session, and Kill must not read
+ * it as evidence, so the names go unread instead.
+ */
+export function observedSessionProcesses(
+  registry: { sessionsObserved(): boolean; liveSessions(): Session[] },
+): SessionProcess[] {
+  if (!registry.sessionsObserved()) throw new Error("no discovery sweep has completed yet");
+  return sessionProcesses(registry.liveSessions());
 }
 
 /** The process and then each ancestor, by the table's parent links. */
@@ -76,11 +93,12 @@ function* lineage(process: Proc, byPid: ReadonlyMap<number, Proc>): Generator<Pr
  * process, because whatever a session spawned belongs to it, whichever role it plays.
  *
  * A label says what a process is and nothing more. Occupancy, every refusal and the orphan
- * report count a named process exactly as they count any other.
+ * report count a named process exactly as they count any other. The one thing a name changes is
+ * Kill: a process with a `session` ends from that session, never from a card.
  */
 export function knownOwnerLabels(
   sessions: () => readonly SessionProcess[],
-): (table: readonly Proc[]) => (process: Proc) => string | null {
+): (table: readonly Proc[]) => (process: Proc) => KnownOwner | null {
   return (table) => {
     const byPid = new Map(table.map((process) => [process.pid, process]));
     const sessionAt = new Map(sessions().map((session) => [session.pid, session]));
@@ -89,12 +107,13 @@ export function knownOwnerLabels(
       const session = chain
         .map((at) => ({ at, session: sessionAt.get(at.pid) }))
         .find(({ at, session }) => session?.startMs === at.startMs)?.session;
-      if (session) return `Session ${session.name}`;
+      if (session) return { label: `Session ${session.name}`, session: { id: session.id, name: session.name } };
       for (const at of chain) {
         const agent = backgroundAgentOf(at.command);
-        if (agent) return `${AGENT_IDENTITY[agent].label} background process`;
+        if (agent) return { label: `${AGENT_IDENTITY[agent].label} background process` };
       }
-      return IDE_HELPERS.get(executableName(process.command)) ?? null;
+      const helper = IDE_HELPERS.get(executableName(process.command));
+      return helper ? { label: helper } : null;
     };
   };
 }
