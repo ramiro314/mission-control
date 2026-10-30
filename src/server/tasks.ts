@@ -139,6 +139,7 @@ import {
 } from "./task-resource-generation.ts";
 import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
 import { worktreeReturnBlocker } from "./git/worktree-return-safety.ts";
+import { treeSeedPaths } from "./worktrees/config.ts";
 import { storageProblem, type StorageProblemLink } from "@shared/storage-health.ts";
 import type { StorageProblemObservation } from "./storage-health.ts";
 import { inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
@@ -6835,18 +6836,24 @@ export class TaskManager {
    * D20 of the disk-reclaim plan, amending settle-and-retain for clean trees only: a settled
    * task whose every tree is clean is reclaimed now, through the operator's own `reclaim`.
    * "Clean" discounts regenerable ignored directories such as `node_modules/`, while any other
-   * ignored file - evidence, `.env` - is work. A tree with work, or one that cannot be read,
+   * ignored file - evidence, `.env` - is work. A disposable or Treehouse tree is deleted, so it
+   * takes the delete rule: the owning pool claim's seed paths are regenerable too. A pool slot
+   * keeps its folder and is checked as before. A tree with work, or one that cannot be read,
    * keeps the 30-day window and is listed; one a process occupies is left to the orphan report.
    */
   private async reclaimSettledTreesIfClean(id: string): Promise<void> {
     const task = this.registry.getTask(id);
     if (!task || isActiveTask(task.status) || !taskHasWorktrees(task)) return;
     const generation = taskResourceGeneration(task);
-    const paths = taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []);
+    const trees = taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [{ path: ref.worktreePath, provider: ref.provider }] : []);
+    const paths = trees.map((tree) => tree.path);
     const probe = this.startupDeps.returnBlocker ?? worktreeReturnBlocker;
     let kept: { path: string; reason: string } | null = null;
-    for (const path of paths) {
-      const reason = await probe(path, { regenerableIgnored: true });
+    for (const { path, provider } of trees) {
+      const reason = await probe(path, {
+        regenerableIgnored: true,
+        ...(provider === "mission" ? {} : { seedPaths: treeSeedPaths(path) }),
+      });
       if (reason) {
         kept = { path, reason };
         break;

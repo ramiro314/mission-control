@@ -13,12 +13,14 @@ import { QueueManager } from "../src/server/queue.ts";
 import { buildApp } from "../src/server/routes.ts";
 import { InFlightTrees } from "../src/server/worktrees/in-flight.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
+import { setWorktreesConfig } from "../src/server/worktrees/config.ts";
 import { WorktreeManager } from "../src/server/worktrees/manager.ts";
 import { inspectWorktreeOccupancy, type WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { finishedTrees, OrphanProcessMonitor } from "../src/server/worktrees/orphan-processes.ts";
 import { ORPHAN_TREE_GRACE_MS, OrphanTreeSweep } from "../src/server/worktrees/orphan-sweep.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
+import { WorktreeClaimSchema } from "../src/shared/protocol.ts";
 import type { WorktreeActionPreview, WorktreeOperationView } from "../src/shared/worktrees.ts";
 
 // Worktrees > Unowned trees: a folder the orphan sweep kept for its work is discarded only
@@ -433,6 +435,43 @@ test("the signature stops at regenerable directories, which a discard deletes ei
   const done = await execute(shown.body.token, ["dirty"]);
   assert.equal(done.failed, null, done.failed?.error ?? "");
   assert.equal(existsSync(path), false);
+});
+
+test("the preview and its signature take the delete rule: the pool's seed paths are regenerable", async () => {
+  const commonDirectory = realpathSync(join(repo, ".git"));
+  writeFileSync(join(commonDirectory, "info", "exclude"), ".yarn/install-state.gz\nvendor-cache/\n");
+  setWorktreesConfig({
+    repositories: {
+      [commonDirectory]: {
+        claim: WorktreeClaimSchema.parse({ steps: [{ argv: ["yarn", "install"] }], seed: { paths: [".yarn/install-state.gz", "vendor-cache"] } }),
+      },
+    },
+  });
+  try {
+    // Kept for its unpushed commit; the install state and the seeded cache lose no work.
+    const path = join(worktreesDir, `seeded-${trees++}`);
+    git(repo, "worktree", "add", "-q", "-b", `harness/seeded-${trees}`, path);
+    writeFileSync(join(path, "README.md"), "local only\n");
+    git(path, "commit", "-qam", "local only");
+    mkdirSync(join(path, ".yarn"));
+    writeFileSync(join(path, ".yarn", "install-state.gz"), "state\n");
+    const cached = join(path, "vendor-cache", "pkg", "index.js");
+    mkdirSync(join(path, "vendor-cache", "pkg"), { recursive: true });
+    writeFileSync(cached, "1\n");
+    await sweep.sweep();
+
+    const shown = await preview(path);
+    assert.ok(shown.body.consequences.includes(`Discards the work in ${path}: checkout has unpublished commits.`), shown.body.consequences.join("\n"));
+    assert.equal(await filesLine(path), "Files it deletes include: .yarn/install-state.gz (regenerable), vendor-cache/ (regenerable).");
+    // A write inside a seed path is not walked, so it does not stale the preview.
+    writeFileSync(cached, "2 // reinstalled\n");
+    const done = await execute(shown.body.token, ["dirty"]);
+    assert.equal(done.failed, null, done.failed?.error ?? "");
+    assert.equal(existsSync(path), false);
+  } finally {
+    setWorktreesConfig({ repositories: { [commonDirectory]: null } });
+    writeFileSync(join(commonDirectory, "info", "exclude"), "");
+  }
 });
 
 test("an entry the walk cannot read is part of the signature, not a failed preview", async () => {

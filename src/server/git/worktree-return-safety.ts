@@ -1,5 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { run } from "../util/exec.ts";
+import { withinSeedPaths } from "../worktrees/seed.ts";
 
 /** Ignored directories an install or build recreates, discounted at any depth by `regenerableIgnored`. */
 export const REGENERABLE_IGNORED_PATHS = ["node_modules/", "dist/", "build/", "coverage/", ".cache/", ".turbo/", ".next/"] as const;
@@ -44,13 +45,14 @@ export function worktreeWorkBlocker(work: WorktreeWork): string | null {
 }
 
 /**
- * An ignored entry that is a regenerable directory itself, which is how `--ignored=matching`
- * reports one. A file merely under a tracked `build/` (`!! build/.env`) is not, nor is a non-ignored entry.
+ * Whether an ignored entry, as Git's status names it, is regenerable: a directory on the
+ * built-in list itself, at any depth, which is how `--ignored=matching` reports one, or a path
+ * at or under one of the owning pool claim's `seedPaths`. A file merely under a tracked
+ * `build/` (`!! build/.env`) is not. The caller has already established that the entry is ignored.
  */
-function regenerable(entry: StatusEntry): boolean {
-  if (entry.code !== "!!") return false;
-  const path = `/${entry.path}`;
-  return REGENERABLE_IGNORED_PATHS.some((dir) => path.endsWith(`/${dir}`));
+export function regenerableIgnoredPath(path: string, seedPaths: readonly string[] = []): boolean {
+  const rooted = `/${path}`;
+  return REGENERABLE_IGNORED_PATHS.some((dir) => rooted.endsWith(`/${dir}`)) || withinSeedPaths(path, seedPaths);
 }
 
 interface StatusEntry {
@@ -79,13 +81,23 @@ function entryKind(code: string): WorktreeWorkKind {
 }
 
 /**
- * Kill is permission to stop, not to discard work. Every uncertain read retains the tree.
- * `regenerableIgnored` is for reclaim and sweep only: it discounts ignored files under
- * `REGENERABLE_IGNORED_PATHS`, while every other ignored file (evidence, `.env`) still blocks.
+ * How a work check reads a tree. `regenerableIgnored` is for reclaim and sweep only: it
+ * discounts ignored entries under `REGENERABLE_IGNORED_PATHS`, while every other ignored file
+ * (evidence, `.env`) still blocks. `seedPaths` widens that discount to the owning pool claim's
+ * seed paths, which is the delete rule an action that removes the folder applies
+ * (`treeSeedPaths` resolves them); it has no effect without `regenerableIgnored`.
  */
+export interface WorktreeWorkOptions {
+  fetch?: boolean;
+  regenerableIgnored?: boolean;
+  seedPaths?: readonly string[];
+  execute?: typeof run;
+}
+
+/** Kill is permission to stop, not to discard work. Every uncertain read retains the tree. */
 export async function worktreeReturnBlocker(
   path: string,
-  options: { fetch?: boolean; regenerableIgnored?: boolean; execute?: typeof run } = {},
+  options: WorktreeWorkOptions = {},
 ): Promise<string | null> {
   return worktreeWorkBlocker(await worktreeWork(path, options));
 }
@@ -97,7 +109,7 @@ export async function worktreeReturnBlocker(
  */
 export async function worktreeWork(
   path: string,
-  options: { fetch?: boolean; regenerableIgnored?: boolean; execute?: typeof run } = {},
+  options: WorktreeWorkOptions = {},
 ): Promise<WorktreeWork> {
   const git = gitIn(path, options.execute ?? run);
   const unknown = (reason: string): WorktreeWork => ({ status: "unknown", reason });
@@ -113,7 +125,8 @@ export async function worktreeWork(
     }
     const status = await git(["status", "--porcelain", "-z", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"]);
     if (status.code !== 0 || status.outcomeUnknown || status.overflowed) return unknown("working tree could not be read");
-    const blocking = statusEntries(status.stdout).find((entry) => !(options.regenerableIgnored && regenerable(entry)));
+    const blocking = statusEntries(status.stdout).find((entry) =>
+      !(options.regenerableIgnored && entry.code === "!!" && regenerableIgnoredPath(entry.path, options.seedPaths)));
     if (blocking) return { status: "work", entry: { kind: entryKind(blocking.code), path: blocking.path } };
     const unpublished = await hasUnpublishedCommits(git);
     if (unpublished === null) return unknown("commits could not be compared against origin");
@@ -130,7 +143,7 @@ export async function worktreeWork(
  */
 export async function worktreeDiscardedWork(
   path: string,
-  options: { regenerableIgnored?: boolean; execute?: typeof run } = {},
+  options: Omit<WorktreeWorkOptions, "fetch"> = {},
 ): Promise<Array<typeof UNCOMMITTED_WORK | typeof UNPUBLISHED_COMMITS>> {
   const first = await worktreeReturnBlocker(path, options);
   if (first === UNPUBLISHED_COMMITS) return [UNPUBLISHED_COMMITS];

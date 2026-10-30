@@ -1,9 +1,12 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { WorktreesConfigSchema } from "../src/shared/protocol.ts";
+import { treeSeedPaths } from "../src/server/worktrees/config.ts";
+import { withinSeedPaths } from "../src/server/worktrees/seed.ts";
 import {
   REGENERABLE_IGNORED_PATHS,
   UNCOMMITTED_WORK,
@@ -242,4 +245,96 @@ test("each blocking kind reads as a phrase naming its path", () => {
   assert.equal(describeWorktreeWork({ kind: "untracked", path: "notes.md" }), "untracked notes.md");
   assert.equal(describeWorktreeWork({ kind: "ignored", path: ".env" }), "ignored .env");
   assert.equal(describeWorktreeWork({ kind: "unpushed", path: "HEAD" }), "unpushed commits on HEAD");
+});
+
+/** Every path under `root` with its kind, size, mtime and content: what "unchanged" means here. */
+function snapshot(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir).sort()) {
+      const path = join(dir, name);
+      const stat = lstatSync(path);
+      out.push(`${relative(root, path)} ${stat.isDirectory() ? "d" : "f"} ${stat.size} ${stat.mtimeMs}`);
+      if (stat.isDirectory()) walk(path);
+      else out.push(readFileSync(path, "utf8"));
+    }
+  };
+  walk(root);
+  return out;
+}
+
+/**
+ * A linked worktree of an ignoring checkout, as a pool or overflow tree is: its `.git` is a file
+ * naming the main checkout's common directory, which keys the pool's claim. The `.yarn` install
+ * state, `.idea/` and `.env` are ignored there, as they are in upstart-web-frontend.
+ */
+function linkedTree(t: TestContext) {
+  const repo = ignoringFixture(t);
+  writeFileSync(join(repo.path, ".git", "info", "exclude"), ".yarn/install-state.gz\n.idea/\n");
+  const tree = join(repo.path, "..", "tree");
+  repo.git("worktree", "add", "-q", "--detach", tree, "HEAD");
+  const put = (file: string) => {
+    mkdirSync(join(tree, file, ".."), { recursive: true });
+    writeFileSync(join(tree, file), "x\n");
+  };
+  const claimed = (paths: string[]) => WorktreesConfigSchema.parse({
+    repositories: {
+      [realpathSync(join(repo.path, ".git"))]: { claim: { steps: [{ argv: ["yarn", "install"] }], seed: { paths } } },
+    },
+  });
+  return { tree, put, claimed };
+}
+
+test("delete rule: a pool's seed paths are regenerable, while .idea/ and .env are still work", async (t) => {
+  const { tree, put, claimed } = linkedTree(t);
+  const config = claimed(["node_modules", "apps/*/node_modules", ".yarn/install-state.gz"]);
+  const seedPaths = treeSeedPaths(tree, config);
+  assert.deepEqual(seedPaths, ["node_modules", "apps/*/node_modules", ".yarn/install-state.gz"], "the tree maps to its pool by common directory");
+  put(".yarn/install-state.gz");
+  put("node_modules/pkg/index.js");
+  const deleteRule = { fetch: true, regenerableIgnored: true, seedPaths } as const;
+  assert.deepEqual(await worktreeWork(tree, deleteRule), { status: "clean" });
+  assert.equal(await worktreeReturnBlocker(tree, deleteRule), null);
+  assert.deepEqual(await worktreeDiscardedWork(tree, deleteRule), []);
+
+  put(".idea/workspace.xml");
+  assert.deepEqual(await worktreeWork(tree, deleteRule), { status: "work", entry: { kind: "ignored", path: ".idea/" } });
+  rmSync(join(tree, ".idea"), { recursive: true });
+  put(".env");
+  const before = snapshot(tree);
+  assert.deepEqual(await worktreeWork(tree, deleteRule), { status: "work", entry: { kind: "ignored", path: ".env" } });
+  assert.deepEqual(await worktreeDiscardedWork(tree, deleteRule), [UNCOMMITTED_WORK]);
+  assert.deepEqual(snapshot(tree), before, "the check leaves every file in the tree as it was");
+});
+
+test("delete rule: a pool with no claim, and a folder with no repository, get only the built-in list", async (t) => {
+  const { tree, put, claimed } = linkedTree(t);
+  put(".yarn/install-state.gz");
+  put("node_modules/pkg/index.js");
+  const noClaim = WorktreesConfigSchema.parse({ repositories: {} });
+  assert.deepEqual(treeSeedPaths(tree, noClaim), []);
+  assert.deepEqual(
+    await worktreeWork(tree, { regenerableIgnored: true, seedPaths: treeSeedPaths(tree, noClaim) }),
+    { status: "work", entry: { kind: "ignored", path: ".yarn/install-state.gz" } },
+  );
+  // Another pool's claim never applies: the key is this tree's own common directory.
+  const elsewhere = WorktreesConfigSchema.parse({
+    repositories: { "/elsewhere/.git": { claim: { steps: [{ argv: ["yarn"] }], seed: { paths: [".yarn/install-state.gz"] } } } },
+  });
+  assert.deepEqual(treeSeedPaths(tree, elsewhere), []);
+  const bare = mkdtempSync(join(tmpdir(), "mission-no-repo-"));
+  t.after(() => rmSync(bare, { recursive: true, force: true }));
+  assert.deepEqual(treeSeedPaths(bare, claimed([".yarn/install-state.gz"])), [], "no .git of its own, and no walking up");
+});
+
+test("seed paths match an ignored entry segment by segment, as the seed matches them", () => {
+  const globs = ["node_modules", "apps/*/node_modules", ".yarn/install-state.gz"];
+  for (const path of ["node_modules/", "node_modules/pkg/index.js", "apps/web/node_modules/", ".yarn/install-state.gz"]) {
+    assert.equal(withinSeedPaths(path, globs), true, path);
+  }
+  for (const path of ["apps/", "apps/web/dist/", "packages/web/node_modules/", ".yarn/", ".yarn/cache/x.zip", "apps/.hidden/node_modules/"]) {
+    assert.equal(withinSeedPaths(path, globs), false, path);
+  }
+  assert.equal(withinSeedPaths(".git/x", ["*"]), false, ".git is never a seed path");
+  assert.equal(withinSeedPaths("anything", []), false);
 });

@@ -7,14 +7,17 @@ import { CHECK_WORKTREES_DIR, STATE_DIR, WORKTREES_DIR } from "../config.ts";
 import { openDb } from "../db.ts";
 import {
   REGENERABLE_IGNORED_PATHS,
+  regenerableIgnoredPath,
   worktreeDiscardedWork,
   worktreeReturnBlocker,
 } from "../git/worktree-return-safety.ts";
 import type { StorageProblemObservation } from "../storage-health.ts";
 import { commandFailureText, run } from "../util/exec.ts";
+import { treeSeedPaths } from "./config.ts";
 import { inFlightTrees, type InFlightTrees } from "./in-flight.ts";
 import { inspectWorktreeOccupancy, pathContains, type WorktreeOccupancy } from "./occupancy.ts";
 import { canonicalWorktreePath } from "./path.ts";
+import { withinSeedPaths } from "./seed.ts";
 
 // The orphan tree sweep: folders under the overflow and check-fallback directories that no
 // live owner references. A referenced child is never touched. An unreferenced one is removed
@@ -81,7 +84,12 @@ export interface OrphanTreeSweepDeps {
   sourceRepositories: () => string[];
   inFlight: InFlightTrees;
   occupancy: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
-  /** Why a worktree is not clean enough to remove, or null when it is. */
+  /**
+   * The owning pool claim's seed paths for a worktree, which the delete rule counts as
+   * regenerable alongside the built-in list.
+   */
+  seedPaths: (path: string) => readonly string[];
+  /** Why a worktree is not clean enough to remove, or null when it is: the delete rule. */
   blocker: (path: string) => Promise<string | null>;
   execute: typeof run;
   now: () => number;
@@ -171,11 +179,12 @@ const SIGNATURE_STAT_BATCH = 64;
 
 /**
  * Every entry under `path`, in a stable order, with its kind, size and modification time. A
- * regenerable directory such as `node_modules/` contributes its own stat only: a warmed tree can
- * hold hundreds of thousands of entries there, and they are deleted either way. An entry that
- * vanishes mid-walk is recorded as gone rather than thrown, so the tree reads as changed.
+ * regenerable directory such as `node_modules/`, or one at a seed path of the owning pool's
+ * claim, contributes its own stat only: a warmed tree can hold hundreds of thousands of entries
+ * there, and they are deleted either way. An entry that vanishes mid-walk is recorded as gone
+ * rather than thrown, so the tree reads as changed.
  */
-async function treeSignature(path: string): Promise<string> {
+async function treeSignature(path: string, seedPaths: readonly string[]): Promise<string> {
   const hash = createHash("sha256");
   const pending = [path];
   while (pending.length > 0) {
@@ -196,7 +205,9 @@ async function treeSignature(path: string): Promise<string> {
           hash.update(`${name}\0gone\n`);
           return;
         }
-        if (stat.isDirectory() && !REGENERABLE_DIRECTORIES.has(basename(child))) pending.push(child);
+        if (stat.isDirectory() && !REGENERABLE_DIRECTORIES.has(basename(child)) && !withinSeedPaths(name, seedPaths)) {
+          pending.push(child);
+        }
         hash.update(`${name}\0${stat.isDirectory() ? "d" : stat.isFile() ? "f" : "o"}\0${stat.size}\0${stat.mtimeMs}\n`);
       });
     }
@@ -250,7 +261,8 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
       sourceRepositories: () => knownSourceRepositories(),
       inFlight: inFlightTrees,
       occupancy: inspectWorktreeOccupancy,
-      blocker: (path) => worktreeReturnBlocker(path, { regenerableIgnored: true }),
+      seedPaths: (path) => treeSeedPaths(path),
+      blocker: (path) => worktreeReturnBlocker(path, { regenerableIgnored: true, seedPaths: this.deps.seedPaths(path) }),
       execute: run,
       now: Date.now,
       graceMs: ORPHAN_TREE_GRACE_MS,
@@ -289,9 +301,13 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     const stat = await lstat(tree.path).catch(() => null);
     if (!stat?.isDirectory() || stat.ino !== tree.inode) return null;
     const worktree = (await gitMarker(tree.path)).kind === "worktree";
-    const work = worktree ? await worktreeDiscardedWork(tree.path, { execute: this.deps.execute }) : [];
-    const { files, moreFiles } = worktree ? await this.statusFiles(tree.path) : await listedFiles(tree.path);
-    return { ...tree, worktree, work, files, moreFiles, signature: await treeSignature(tree.path) };
+    // The delete rule: a folder with no repository has no pool, so only the built-in list applies.
+    const seedPaths = worktree ? this.deps.seedPaths(tree.path) : [];
+    const work = worktree
+      ? await worktreeDiscardedWork(tree.path, { regenerableIgnored: true, seedPaths, execute: this.deps.execute })
+      : [];
+    const { files, moreFiles } = worktree ? await this.statusFiles(tree.path, seedPaths) : await listedFiles(tree.path);
+    return { ...tree, worktree, work, files, moreFiles, signature: await treeSignature(tree.path, seedPaths) };
   }
 
   discard(path: string): Promise<string | null> {
@@ -340,18 +356,25 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     return null;
   }
 
-  /** The worktree's changed, untracked and ignored paths, as `git status` lists them. */
-  private async statusFiles(path: string): Promise<{ files: string[]; moreFiles: boolean }> {
+  /**
+   * The worktree's changed, untracked and ignored paths, as `git status` lists them. Ignored
+   * paths are read in matching mode, as the work check reads them, so a file an ignore pattern
+   * names is listed by itself rather than folded into its directory. One the delete rule
+   * discounts is labelled regenerable: it is deleted too, but loses no work.
+   */
+  private async statusFiles(path: string, seedPaths: readonly string[]): Promise<{ files: string[]; moreFiles: boolean }> {
     const status = await this.deps.execute(
       "git",
-      ["--no-optional-locks", "-C", path, "status", "--porcelain", "--ignored", "--untracked-files=normal"],
+      ["--no-optional-locks", "-C", path, "status", "--porcelain", "--ignored=matching", "--untracked-files=normal"],
       { timeoutMs: GIT_TIMEOUT_MS },
     );
     if (!ok(status)) return { files: [], moreFiles: false };
     const lines = status.stdout.split("\n").filter(Boolean).map((line) => {
       const code = line.slice(0, 2);
       const name = line.slice(3);
-      return code === "??" ? `${name} (untracked)` : code === "!!" ? `${name} (ignored)` : `${name} (changed)`;
+      if (code === "??") return `${name} (untracked)`;
+      if (code === "!!") return `${name} (${regenerableIgnoredPath(name, seedPaths) ? "regenerable" : "ignored"})`;
+      return `${name} (changed)`;
     });
     return { files: lines.slice(0, DESCRIBED_FILES), moreFiles: lines.length > DESCRIBED_FILES };
   }

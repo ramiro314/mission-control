@@ -13,6 +13,8 @@ const { CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts
 const { InFlightTrees } = await import("../src/server/worktrees/in-flight.ts");
 const { OrphanTreeSweep, ORPHAN_TREE_GRACE_MS, referencedTreePaths } = await import("../src/server/worktrees/orphan-sweep.ts");
 const { run, stubRun } = await import("../src/server/util/exec.ts");
+const { setWorktreesConfig } = await import("../src/server/worktrees/config.ts");
+const { WorktreeClaimSchema } = await import("../src/shared/protocol.ts");
 type Deps = ConstructorParameters<typeof OrphanTreeSweep>[0];
 type Occupancy = import("../src/server/worktrees/occupancy.ts").WorktreeOccupancy;
 
@@ -113,6 +115,44 @@ test("removes a husk and a clean unreferenced worktree, and keeps and lists a di
   assert.equal(problem.kind, "dirty-orphan-folder");
   assert.equal(problem.bannered, true);
   assert.deepEqual(problem.link, { target: "unowned-tree", path: dirty });
+});
+
+test("the sweep applies the delete rule with the owning pool's seed paths", async () => {
+  const seeded = fixture();
+  const unclaimed = fixture();
+  for (const f of [seeded, unclaimed]) writeFileSync(join(f.repo, ".git", "info", "exclude"), ".yarn/install-state.gz\n.idea/\n.env\n");
+  // Only `seeded`'s pool has a claim; the policy is keyed by the physical common directory.
+  setWorktreesConfig({
+    repositories: {
+      [realpathSync(join(seeded.repo, ".git"))]: {
+        claim: WorktreeClaimSchema.parse({ steps: [{ argv: ["yarn", "install"] }], seed: { paths: ["node_modules", ".yarn/install-state.gz"] } }),
+      },
+    },
+  });
+  const plant = (path: string, ...files: string[]) => {
+    for (const file of files) {
+      mkdirSync(join(path, file, ".."), { recursive: true });
+      writeFileSync(join(path, file), "x");
+    }
+    return path;
+  };
+  const install = plant(addWorktree(seeded, join(seeded.worktrees, "install"), "harness/install"), ".yarn/install-state.gz");
+  const idea = plant(addWorktree(seeded, join(seeded.worktrees, "idea"), "harness/idea"), ".yarn/install-state.gz", ".idea/workspace.xml");
+  const env = plant(addWorktree(seeded, join(seeded.checks, "env"), "harness/env"), ".yarn/install-state.gz", ".env");
+  const noClaim = plant(addWorktree(unclaimed, join(unclaimed.worktrees, "install"), "harness/install"), ".yarn/install-state.gz");
+
+  const result = await sweeper(seeded).sweep();
+  assert.deepEqual(result.removed, [install], "only the seed path is regenerable");
+  assert.equal(existsSync(install), false);
+  assert.deepEqual(result.kept.map((tree) => tree.path).sort(), [env, idea].sort());
+  assert.ok(existsSync(join(idea, ".idea", "workspace.xml")));
+  assert.ok(existsSync(join(env, ".env")));
+
+  // A pool with no claim gets the built-in list, so its install state is work.
+  const plain = await sweeper(unclaimed).sweep();
+  assert.deepEqual(plain.removed, []);
+  assert.deepEqual(plain.kept.map((tree) => tree.path), [noClaim]);
+  assert.match(plain.kept[0]!.reason, /ignored work/);
 });
 
 test("a tree with unpublished commits is kept, with its branch", async () => {

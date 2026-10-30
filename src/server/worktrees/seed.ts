@@ -68,6 +68,30 @@ function gitAdministrative(name: string): boolean {
   return name.toLowerCase() === ".git";
 }
 
+/** A seed path segment that is a one-level pattern rather than a literal name. */
+function isSeedPattern(segment: string): boolean {
+  return /[*?[{]/.test(segment);
+}
+
+/** Whether one path segment matches one seed path segment, as `expandSeedPaths` matches it. */
+function seedSegmentMatches(name: string, segment: string): boolean {
+  if (gitAdministrative(name)) return false;
+  return isSeedPattern(segment) ? matchesGlob(name, segment) : name === segment;
+}
+
+/**
+ * Whether a repository-relative path is a seed path, or lies under one, matched segment by
+ * segment exactly as `expandSeedPaths` matches them in a slot. A trailing slash, which Git's
+ * status prints for a directory, is ignored. Pure: nothing on disk is read.
+ */
+export function withinSeedPaths(path: string, globs: readonly string[]): boolean {
+  const names = path.replace(/\/$/, "").split("/");
+  return globs.some((glob) => {
+    const segments = glob.split("/");
+    return segments.length <= names.length && segments.every((segment, index) => seedSegmentMatches(names[index]!, segment));
+  });
+}
+
 /** One path a seed path glob matched, repository-relative, and whether it is a directory. */
 export interface SeedEntry {
   path: string;
@@ -97,10 +121,9 @@ export async function expandSeedPaths(
       const next: string[] = [];
       for (const parent of level) {
         checkBudget(budget);
-        const names = (/[*?[{]/.test(segment)
-          ? await childNames(join(root, parent)).then((all) => all.filter((name) => matchesGlob(name, segment)))
-          : [segment]
-        ).filter((name) => !gitAdministrative(name));
+        const names = isSeedPattern(segment)
+          ? await childNames(join(root, parent)).then((all) => all.filter((name) => seedSegmentMatches(name, segment)))
+          : [segment].filter((name) => !gitAdministrative(name));
         for (const name of names) {
           const relative = parent ? `${parent}/${name}` : name;
           let stat;
