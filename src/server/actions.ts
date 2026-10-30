@@ -2333,11 +2333,15 @@ function git(cwd: string, args: string[], timeoutMs = 15000): Promise<RunResult>
  * remote-only: a reset pulls from origin, so a stale *local* main is never a
  * valid target (unlike the diff's source ref, which may fall back to local).
  */
-export async function remoteDefaultRef(cwd: string): Promise<string | null> {
-  const head = await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+export async function remoteDefaultRef(
+  cwd: string,
+  /** Runs one Git read in `cwd`. The native allocator passes its own, lock-free and tracked. */
+  read: (args: string[]) => Promise<RunResult> = (args) => git(cwd, args),
+): Promise<string | null> {
+  const head = await read(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
   if (head.code === 0 && head.stdout.trim()) return head.stdout.trim(); // e.g. "origin/main"
   for (const ref of ["origin/main", "origin/master"]) {
-    const r = await git(cwd, ["rev-parse", "--verify", "--quiet", ref]);
+    const r = await read(["rev-parse", "--verify", "--quiet", ref]);
     if (r.code === 0 && r.stdout.trim()) return ref;
   }
   return null;

@@ -1117,6 +1117,7 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 }
 
 .wt-owner,
+.wt-busy,
 .wt-diagnostic {
   color: var(--muted);
   font-size: 11px;

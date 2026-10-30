@@ -124,3 +124,45 @@ test("manual return refuses a native lease owned by a task", async () => {
   assert.match((await refused.json() as { error: string }).error, /task or workflow check/);
   assert.equal((await worktrees.release(acquired.lease)).outcome, "released");
 });
+
+test("manual return waits out a short slot lock holder, and names a holder that stays", async () => {
+  const { clone } = mkOriginAndClone("mission-manual-http-busy-");
+  const acquire = async () => {
+    const acquired = await post("/api/worktrees/manual/acquire", { repositoryPath: clone, label: "busy return" });
+    assert.equal(acquired.status, 201);
+    return await acquired.json() as { path: string; leaseId: string };
+  };
+
+  // A maintenance pass holding the clean slot briefly is waited out, not read as dirty.
+  const first = await acquire();
+  const leased = worktrees.lookupLease({ leaseId: first.leaseId });
+  assert.equal(leased.state, "active");
+  if (leased.state !== "active") return;
+  const held = worktrees as unknown as { acquireSlotLock(slotId: string, holder: string): Promise<() => void> };
+  const release = await held.acquireSlotLock(leased.lease.slotId, "reconciliation");
+  setTimeout(release, 300);
+  const returned = await post("/api/worktrees/manual/return", { leaseId: first.leaseId });
+  assert.equal(returned.status, 200, await returned.clone().text());
+  assert.equal(worktrees.lookupLease({ leaseId: first.leaseId }).state, "released");
+
+  // A running claim is not waited for: the refusal names it rather than calling the slot dirty.
+  const second = await acquire();
+  const lookup = worktrees.lookupLease({ leaseId: second.leaseId });
+  assert.equal(lookup.state, "active");
+  if (lookup.state !== "active") return;
+  const control = worktrees.claims.register(lookup.lease.slotId, lookup.lease.owner, Date.now());
+  assert.ok(control);
+  try {
+    const refused = await post("/api/worktrees/manual/return", { leaseId: second.leaseId });
+    assert.equal(refused.status, 409);
+    assert.equal(
+      (await refused.json() as { error: string }).error,
+      "manual worktree is busy with dependency claim, reading its fingerprint; return it once that finishes",
+    );
+    assert.equal(worktrees.lookupLease({ leaseId: second.leaseId }).state, "active");
+  } finally {
+    worktrees.claims.unregister(lookup.lease.slotId, control);
+  }
+  const later = await post("/api/worktrees/manual/return", { leaseId: second.leaseId });
+  assert.equal(later.status, 200);
+});

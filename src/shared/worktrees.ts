@@ -190,6 +190,12 @@ export interface NativeWorktreeSlotView {
   /** Empty when occupancy is unknown; at most `WORKTREE_INVENTORY_LIMITS.occupantsPerSlot`. */
   occupants: WorktreeOccupantView[];
   diskBytes: number | null;
+  /**
+   * The operation or dependency claim holding this slot's lock when inventory looked, or null.
+   * Inventory runs no Git in a busy slot: `head` is its last recorded HEAD, and `dirty` and
+   * `defaultRelation` are unknown until it is free.
+   */
+  busy: string | null;
   quarantineReason: string | null;
   diagnostic: string | null;
   /** Only on a quarantined slot, and only for the quarantine it is in now. */

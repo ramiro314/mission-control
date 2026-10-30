@@ -370,7 +370,7 @@ import {
   type SettingsRestorePreviewResult,
   type SettingsRestoreResult,
 } from "@shared/settings-backups.ts";
-import type { WorktreeManager } from "./worktrees/manager.ts";
+import { SLOT_SETTLE_MS, type WorktreeManager } from "./worktrees/manager.ts";
 import {
   WorktreeOperationError,
   type WorktreeOperationsService,
@@ -1878,8 +1878,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     if (found.state === "released") return c.json({ ok: true, alreadyReleased: true });
 
+    // A maintenance pass holding the slot is waited out, so its skipped Git read is not
+    // mistaken for unknown cleanliness. A holder still there is named as what it is.
+    await worktrees.slotsSettled([found.lease.slotId], SLOT_SETTLE_MS);
     const status = await worktrees.status();
     const slot = status.flatMap((pool) => pool.slots).find((entry) => entry.slot.id === found.lease.slotId);
+    if (slot?.busy) {
+      return c.json({ error: `manual worktree is busy with ${slot.busy}; return it once that finishes` }, 409);
+    }
     if (!slot || slot.dirty !== false) {
       return c.json({ error: "manual worktree is dirty or its cleanliness is unknown" }, 409);
     }
