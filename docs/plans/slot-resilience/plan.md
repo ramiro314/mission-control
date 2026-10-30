@@ -1,10 +1,10 @@
 # Make worktree slots survive large monorepos
 
-**Status:** Shaped with the operator in two interview rounds (2026-10-28 and 2026-10-29). Revision 1 was approved on 2026-10-29. Revision 2 repairs three findings from the Plan Validation review: the reset rule now counts the ignored entries a reset really discards, phase 1 produces the blocking path its card shows, and a check tree's lease settles before its registration is pruned. Revision 3 repairs the review's second round: the overwrite check also counts a target path above an ignored entry, and it compares paths without regard to letter case. Revision 4 repairs two GitHub Inspector findings on the plan's pull request: a check tree whose folder is already gone still completes its lease, and the timeout reason names both attempts. Approval is the Mission Control plan review of this exact revision.\
+**Status:** Shaped with the operator in three interview rounds (2026-10-28 and 2026-10-29). Revision 1 was approved on 2026-10-29. Revision 2 repairs three findings from the Plan Validation review: the reset rule now counts the ignored entries a reset really discards, phase 1 produces the blocking path its card shows, and a check tree's lease settles before its registration is pruned. Revision 3 repairs the review's second round: the overwrite check also counts a target path above an ignored entry, and it compares paths without regard to letter case. Revision 4 repairs two GitHub Inspector findings on the plan's pull request: a check tree whose folder is already gone still completes its lease, and the timeout reason names both attempts. Revision 5 re-checks the plan against `main` at `2d55c532`, after #616 and the 2026-10-29 upstream sync (#618), and records a third interview round (S23 to S27). Approval is the Mission Control plan review of this exact revision.\
 **Scope:** native worktree pools, check fallback trees, slot observation and recovery, the Worktrees slot card, the dev-mode daemon log\
-**Builds on:** `docs/plans/disk-reclaim/plan.md` (approved 2026-10-26, shipped as #602, #604, #608, #609, #611 and #615)\
-**Amends:** disk-reclaim D6, D10, D11 and D20, and four documented rules in `docs/worktrees-and-checks.md` (see [What this changes in earlier decisions](#what-this-changes-in-earlier-decisions))\
-**Delivery:** one plan in six phases; tickets are sliced from it after it merges
+**Builds on:** `docs/plans/disk-reclaim/plan.md` (approved 2026-10-26, shipped as #602, #604, #608, #609, #611 and #615), and #616 (Kill all orphan processes from a slot card)\
+**Amends:** disk-reclaim D6, D10, D11 and D20, documented rules in `docs/worktrees-and-checks.md`, and #616's Kill all (see [What this changes in earlier decisions](#what-this-changes-in-earlier-decisions))\
+**Delivery:** one plan in six phases; tickets are sliced from it after it merges. The implementation PRs belong to a new fork feature, `fork:slot-resilience` (S26)
 
 ## Goal
 
@@ -47,7 +47,7 @@ operator's running build, on 2026-10-28.
 | F9 | Quarantined slots count toward `maxSlots` (`WorktreeStore.reserveNew` counts every row). | Code | Verified |
 | F10 | A check fallback tree is returned with `git worktree remove --force`. Once the tree's `.git` is gone, Git refuses with "validation failed", the lease stays `returning`, and every pass retries it. The sweep leaves the tree alone because the lease still names it. On 2026-10-27 there were 8 such uwf trees, holding 22 GB. | `workflows/check-lease.ts`, `worktrees/orphan-sweep.ts`; the count comes from the investigation | Verified in code |
 | F11 | `quarantine()` logs nothing. The dev daemon (`tsx watch` under `make start`) writes only to its terminal, and `~/.mission-control/daemon.log` was last written on Oct 19. Only Electron's `startDaemon` and the installed service write that file. | Code, `package.json`, the file's mtime | Verified |
-| F12 | The slot card renders `quarantineReason ?? diagnostic ?? processes.reason` (`WorktreeSettingsPanel.tsx:761`), so whenever a reason exists, the detail (Git's stderr, for example) is hidden. | Code | Verified |
+| F12 | The slot card renders `quarantineReason ?? diagnostic ?? processes.reason` (`WorktreeSettingsPanel.tsx:773` at `2d55c532`), so whenever a reason exists, the detail (Git's stderr, for example) is hidden. | Code | Verified |
 | F13 | `knownOwner` is not wired (`occupancy.ts` defaults it to `() => null`), and the Claude background-process classifier in `harness/claude/detect.ts` plays no part in occupancy. | Code | Verified |
 
 How often slots broke. There is no history table, so these counts were rebuilt from 29 hourly
@@ -62,11 +62,35 @@ went between two backups does not appear.
 | `slot Git registration is bare, locked, or prunable` | 3 | Interrupted or broken registration; each took 35 min to 3.5 h by hand |
 | `worktree reset failed` (stale `index.lock`) | 1, plus one in the disk-reclaim audit | A Git process killed while holding the lock |
 
+### Re-check after the 2026-10-29 upstream sync
+
+Three PRs merged after these findings were checked: #616 (the fork's Kill all), #618 (the
+upstream sync, 30 upstream commits through release 1.27.2) and #624 (the ci-strictness plan,
+which has no slot surface). The re-check ran against `main` at `2d55c532`.
+
+- **Unchanged:** upstream touched none of `src/server/worktrees/`, `src/server/util/exec.ts`,
+  `src/server/git/worktree-return-safety.ts`, `src/server/workflows/check-lease.ts`,
+  `orphan-processes.ts` or `harness/claude/detect.ts`. F1 to F13 still hold. Only F12's line
+  number moved.
+- **#616 Kill all.** A slot card or Unowned trees row that lists more than one orphan process
+  now offers **Kill all**. It opens one confirmation naming every listed process and sends one
+  guarded kill per process. Phase 3 adds processes that must never be killed (S15), and more
+  cards that list orphans (S8). S23 settles how the two meet.
+- **Schema version.** The sync set `CURRENT_DATABASE_SCHEMA_VERSION` to 10, because upstream's
+  7 to 9 collided with the fork's own 7 to 9. `db.ts` requires a bump for every new migration,
+  so phase 5's table collides again with upstream's next one. S24 settles it.
+- **Upstream #1234.** An auxiliary `claude` CLI can inherit an SDK session's cwd or pane without
+  being that session, so upstream now refuses its hooks. Phase 3 names processes by session, and
+  S25 keeps it from making the same mistake.
+- **Found in passing (it predates the sync).** `make up` already sends the daemon's output to
+  `.harness.log` in the checkout, a launcher phase 5 did not list. S27 settles it.
+
 ## Adopted decisions
 
 Every decision below was made by the operator in the shaping interview. Round 1 took place on
-2026-10-28 and round 2 on 2026-10-29. Round 1's form was delivered twice, because the first
-send failed in transit, and both copies came back with the same answers.
+2026-10-28, and rounds 2 and 3 on 2026-10-29. Round 1's form was delivered twice, because the
+first send failed in transit, and both copies came back with the same answers. Round 3 (S23 to
+S27) followed the upstream sync re-check above.
 
 | ID | Decision | Answer |
 | --- | --- | --- |
@@ -92,6 +116,11 @@ send failed in transit, and both copies came back with the same answers.
 | S20 | How operation results relate to history | **One store.** Each finished operation writes one history entry per slot it touched |
 | S21 | The dev-mode daemon log | **`~/.mission-control/daemon.log`**, rotated at 10 MB with 3 old files kept |
 | S22 | Delivery | **One plan in six phases, stopping new quarantines first** |
+| S23 | How #616's Kill all treats a process named as a live Mission Control session | **Excluded.** Kill all counts and confirms only killable processes, and appears only when two or more are killable. A session's process stays listed with Open session |
+| S24 | The schema version for phase 5's table | **Bump to 11 as a fork entry**, documented in the `db.ts` version comment. The next upstream sync renumbers it, as #618 did for the fork's 7 to 9 |
+| S25 | How phase 3 decides that a process belongs to a live session | **By process ancestry only:** the session's own PID (driver, pane process or SDK supervisor child) or a descendant, matched by PID and start time. A shared cwd, pane or hook coordinates never name a process |
+| S26 | Which fork feature the implementation PRs belong to | **A new feature, `fork:slot-resilience`.** The first implementation PR creates the label and its `fork-feature` tracking issue |
+| S27 | The dev-mode `daemon.log` under `make up` | **Written as well.** `make up` does not set `MISSION_DAEMON_LOG_CAPTURED`, and `.harness.log` and `make logs` stay as they are |
 
 These follow from the answers above; they were not asked:
 
@@ -127,6 +156,7 @@ These follow from the answers above; they were not asked:
 | "Reconcile ... keeps uncertainty quarantined"; "Startup reconciliation uses the same fail-closed rules" | `docs/worktrees-and-checks.md` Native pools and the operations list | Uncertainty leaves a slot as it was. Such a slot is never leased, reset or returned while unknown, and it is never quarantined for being unknown (S3) |
 | An orphan process lives in a pool slot only while that slot holds the finished owner's lease, or holds no lease and is quarantined | `docs/worktrees-and-checks.md` Orphan processes | Also a slot that is available and holds no lease (S8) |
 | A seed source is an idle available sibling | `docs/worktrees-and-checks.md` Seeding | Also a quarantined sibling that meets S12 |
+| Kill all appears when a card lists more than one orphan process, and confirms every listed process (#616) | `docs/worktrees-and-checks.md` Orphan processes and the operations list | It counts, confirms and signals only killable processes, and a live session's process is never among them (S23) |
 | Open terminal opens a shell in the slot and nothing more | `docs/worktrees-and-checks.md` Settings > Worktrees | On an available slot it first takes a manual lease, as the slot stands (S9, S16) |
 
 ## Design
@@ -379,7 +409,10 @@ stateDiagram-v2
 4. **Known processes are named.** `knownOwner` is wired in the occupancy dependencies with a
    label per process:
    - a process that belongs to a registered Mission Control session, or descends from one (a
-     terminal pane's process, or an SDK supervisor child);
+     terminal pane's process, or an SDK supervisor child). This is decided by process ancestry
+     alone (S25): the session's own PID or a descendant of it, matched by PID and start time.
+     A process that only shares a session's cwd, pane or hook coordinates is not named as that
+     session. Upstream #1234 refuses such an auxiliary CLI's hooks for the same reason;
    - a Claude Code background process found by the `harness/claude/detect.ts` classifier, and
      its descendants, such as MCP servers;
    - an IDE helper, matched by a small table of executable names.
@@ -390,6 +423,10 @@ stateDiagram-v2
    session shows the session's name with an **Open session** link and no Kill. The Kill route
    refuses such a PID with 409, "belongs to live session `<name>`; end it from the session", so a
    session still leaves only through `Registry.beginEviction`.
+   - **Kill all leaves it out (S23).** #616's Kill all counts, confirms and signals only the
+     processes that offer Kill. It appears only when two or more of them are listed, and a
+     session's process stays in the list with Open session. The 409 still guards the route, so
+     a Kill all built from a stale list cannot reach a session.
 6. **Open terminal takes a lease (S9, S16).** On an available slot,
    `POST /api/worktrees/:slotId/open` first calls a new `WorktreeManager.leaseAsIs`:
    - Under the slot lock, it applies acquisition's idle rule (`idleSlotRefusal`) with a fresh
@@ -450,6 +487,10 @@ stateDiagram-v2
 
 1. **`worktree_slot_history`.** A new table, created in `src/server/db.ts` next to its upgrade
    path, with an index on `(pool_id, at)`.
+   - **Schema version (S24):** `CURRENT_DATABASE_SCHEMA_VERSION` goes from 10 to 11, with an
+     `11: fork - ...` line in the version comment naming the table. The migration is
+     `CREATE ... IF NOT EXISTS` and not gated by the number, so when the next upstream sync
+     brings its own 11, renumbering the fork's entry is safe, as #618 did for the fork's 7 to 9.
    - **Columns:**
      - `id`, `pool_id`, `slot_id`, `ordinal`, `at`;
      - `kind`: one of `transition`, `operation`, `observation`, `claim`, `seed`, `provisioning`.
@@ -489,6 +530,9 @@ stateDiagram-v2
    - It writes only when the daemon's launcher does not already capture its output. Electron's
      `startDaemon` and the installed service set `MISSION_DAEMON_LOG_CAPTURED=1`, so the packaged
      app's log is unchanged and nothing is written twice.
+   - `make up` does not set it (S27). Its redirect to `.harness.log` and `make logs` stay as
+     they are, and the daemon also writes `daemon.log`, so every dev launch leaves the same
+     durable, rotated log.
    - Electron main's `logMain` keeps appending to the same file, and append-mode writers survive
      a rotation.
    - The new variable is listed in `docs/configuration.md`.
@@ -538,8 +582,8 @@ label or placeholder. A new modal calls `expectContentClearsBorder`.
 | AC17 | 3 | A quarantined slot whose owner is referenced names the owner and offers Return. Return opens the owner's ordinary preview and is refused while a process is inside | `test/worktree-actions.test.ts`, `e2e/specs/worktree-reclaim.spec.ts` |
 | AC18 | 3 | Removing the last session in a cancelled or failed task's slot reclaims that task's trees at once when they are clean by their rule. The startup pass does the same | `test/task-worktree-retention-cleanup.test.ts` |
 | AC19 | 3 | A process in an available slot with no lease is reported as `orphan-process` and can be killed through the guarded route. A claim's or Warm's process is not reported | `test/worktree-orphan-processes.test.ts` |
-| AC20 | 3 | Occupants are named: a session's process and its descendants, a Claude Code background process and its MCP children, an IDE helper. A named process still counts as occupancy everywhere | `test/worktree-occupancy.test.ts` |
-| AC21 | 3 | Kill refuses a PID that belongs to a live Mission Control session with 409, and the card shows Open session instead of Kill | `test/worktree-orphan-processes.test.ts`, `e2e/specs/worktree-reclaim.spec.ts` |
+| AC20 | 3 | Occupants are named: a session's process and its descendants, a Claude Code background process and its MCP children, an IDE helper. A process that shares a session's cwd but does not descend from it is not named as that session. A named process still counts as occupancy everywhere | `test/worktree-occupancy.test.ts` |
+| AC21 | 3 | Kill refuses a PID that belongs to a live Mission Control session with 409, and the card shows Open session instead of Kill. Kill all counts, confirms and signals only killable processes: with one session process and two orphans it names the two, and with one session process and one orphan it is not offered | `test/worktree-orphan-processes.test.ts`, `e2e/specs/worktree-reclaim.spec.ts` |
 | AC22 | 3 | Open terminal on an idle available slot takes a manual lease with HEAD and every file unchanged, and the card shows it leased with Return. On a slot that is not idle it is refused with the reason. On a leased slot it opens with no new lease | `test/worktree-routes.test.ts`, `e2e/specs/settings-worktrees.spec.ts` |
 | AC23 | 4 | A slot locked `initializing` with no Git process is unlocked and recovered automatically. One with a missing `.git` file but an intact administrative directory is fixed with `git worktree repair` and recovered | `test/worktree-repair.test.ts` (new) |
 | AC24 | 4 | Card Repair re-registers a slot whose registration is gone. `node_modules` and `.yarn/install-state.gz` survive with the same inodes. The slot ends available when it held no work, and quarantined as "registration repaired; holds work", with that work intact, when it did | `test/worktree-repair.test.ts` |
@@ -549,8 +593,8 @@ label or placeholder. A new modal calls `expectContentClearsBorder`.
 | AC28 | 5 | Every slot state transition writes exactly one history row in its own transaction, and a failed transition writes none. Each finished operation writes one entry per slot it touched, and dismissing it keeps the entry | `test/worktree-history.test.ts` (new) |
 | AC29 | 5 | Rows older than 90 days, and beyond 2,000 per pool, are dropped oldest first. A forgotten slot's rows remain until they age out. Detail is bounded and never holds a claim variable value | `test/worktree-history.test.ts` |
 | AC30 | 5 | Provisioning, claim and seed durations and the seed outcome are recorded, and the pool summary computes the median and hit rate over the last 10 new slots | `test/worktree-history.test.ts` |
-| AC31 | 5 | Opening a database from before this phase creates the table and index, and opening it twice is harmless | `test/worktree-migration.test.ts` |
-| AC32 | 5 | Without `MISSION_DAEMON_LOG_CAPTURED`, the daemon appends its output to `daemon.log` and rotates at 10 MB, keeping 3 old files. With it, the daemon writes nothing there | `test/daemon-log.test.ts` (new) |
+| AC31 | 5 | Opening a database from before this phase, stamped 10, takes its recovery point, creates the table and index, and is stamped 11. Opening it twice is harmless | `test/worktree-migration.test.ts` |
+| AC32 | 5 | Without `MISSION_DAEMON_LOG_CAPTURED`, as under `make up`, the daemon appends its output to `daemon.log` and rotates at 10 MB, keeping 3 old files. With it, the daemon writes nothing there | `test/daemon-log.test.ts` (new) |
 | AC33 | 5 | The slot card's History disclosure lists recent transitions and operation outcomes, the card shows the last timings and seed outcome, and the pool row shows the median and hit rate | `e2e/specs/settings-worktrees.spec.ts` |
 | AC34 | 6 | With no idle available sibling, a qualifying quarantined sibling seeds a new slot while its slot lock is held, and stays quarantined with its files unchanged. An idle available sibling is still preferred. A quarantined slot with an occupant, a referenced or unknown owner, a running claim, or an install that is not `current` is never a source | `test/worktree-seed.test.ts` |
 | AC35 | 6 | A slot seeded from a quarantined sibling shows that source in its History and timings | `e2e/specs/settings-worktree-seed.spec.ts` |
@@ -562,7 +606,8 @@ label or placeholder. A new modal calls `expectContentClearsBorder`.
   - Recover, and automatic recovery's reasons (S1, S4);
   - restoring a slot to leased (S14);
   - Return on an owned quarantine (S5);
-  - orphan processes in available slots, named occupants, and the session exception (S8, S15);
+  - orphan processes in available slots, named occupants, and the session exception, which
+    Kill all also observes (S8, S15, S23, S25);
   - Open terminal's lease (S9, S16);
   - Repair and Forget (S6, S17);
   - the two work rules in Task worktree retention, Orphan tree sweep and Unowned trees (S1, S2);
@@ -574,8 +619,12 @@ label or placeholder. A new modal calls `expectContentClearsBorder`.
   failed tasks.
 - `docs/agent-guides/change-contracts.md`: the `worktree_slot_history.kind` and `actor` values
   are append-only.
-- `docs/database-and-migrations.md`: the new table and its retention.
-- `docs/configuration.md`: `MISSION_DAEMON_LOG_CAPTURED` and the dev-mode `daemon.log`.
+- `docs/database-and-migrations.md`: the new table, its retention, and schema version 11.
+- `docs/configuration.md`: `MISSION_DAEMON_LOG_CAPTURED` and the dev-mode `daemon.log`,
+  including under `make up`.
+- The `fork:slot-resilience` tracking issue (S26): the first implementation PR creates the
+  label and the issue, and every later PR adds its "Fork feature changes" section, as
+  `docs/fork/README.md` describes.
 
 ## Expected effect on the operator's machine
 
