@@ -1302,6 +1302,9 @@ test("a session leaving while the task's cleanup is queued is not lost", async (
   const second = arrive(w, uid("session"), "/pool/a");
   evicting.beginEviction(second);
   evicting.remove(second.id);
+  // A sweep with the job still running is refused again. It has to return, because the job
+  // cannot finish until this synchronous retry gives the event loop back.
+  await w.tasks.sweepMissionSessionClosures();
   hold!();
   await w.tasks.settleWorktreeReturns();
   assert.deepEqual(w.state.teardowns, [], "the first attempt saw the occupant");

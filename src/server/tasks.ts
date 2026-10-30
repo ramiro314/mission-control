@@ -1935,7 +1935,8 @@ export class TaskManager {
       this.sweepUrgentlyRequested = false;
       this.resumeCompletedWorktreeReturns();
       for (const sessionId of this.killedSessionReturns.keys()) this.returnKilledSessionWorktrees(sessionId);
-      for (const taskId of this.settledReclaimsOwed) this.enqueueSettledReclaim(taskId);
+      // A copy, because a refused task is added back and a Set iterator would visit it again.
+      for (const taskId of [...this.settledReclaimsOwed]) this.enqueueSettledReclaim(taskId);
       if (listTaskSessionClosures().length > 0 || this.registry.listTasks().some(taskOwesWorktreeReturn)) {
         this.scheduleMissionSessionClosureSweep(urgent ? 0 : MISSION_SESSION_CLOSURE_RETRY_MS);
       }
