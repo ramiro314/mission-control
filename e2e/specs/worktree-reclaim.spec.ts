@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Page } from "@playwright/test";
 import type { StorageView } from "../../src/shared/storage-health.ts";
@@ -41,7 +41,8 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
  * Unowned trees: a folder under `worktrees/` that no task, check or slot names has no slot card,
  * so its fixes live in Worktrees > Unowned trees. A process holding one is reported and killed
  * from its row; the sweep then keeps the folder for its work, and Discard and remove previews the
- * path and the work before it deletes the folder for real.
+ * path and the work before it deletes the folder for real. Removing a folder takes the delete
+ * rule, so an ignored path the pool's claim seeds is regenerable there, never work.
  */
 
 const EVIDENCE = artifactsDir("worktree-reclaim");
@@ -935,4 +936,61 @@ test("an unowned tree: Kill its process from its row, then Discard and remove it
   } finally {
     holder?.kill("SIGKILL");
   }
+});
+
+test("an unowned tree's discard preview treats its pool's seed path as regenerable, not as work", async ({
+  dashboard,
+  daemon,
+}) => {
+  // A restart and a real sweep of the tree.
+  test.setTimeout(120_000);
+  const commonDirectory = realpathSync(execFileSync(
+    "git", ["-C", daemon.repo, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" },
+  ).trim());
+  // The repository ignores the yarn install state, and its pool's claim seeds it.
+  appendFileSync(join(commonDirectory, "info", "exclude"), "\n.yarn/install-state.gz\n");
+  const saved = await dashboard.request.put(`${daemon.baseURL}/api/worktrees/config`, {
+    data: {
+      repositories: {
+        [commonDirectory]: {
+          claim: { steps: [{ argv: ["true"] }], seed: { paths: ["node_modules", ".yarn/install-state.gz"] } },
+        },
+      },
+    },
+  });
+  expect(saved.status()).toBe(200);
+
+  // An overflow tree a crash left behind: kept for a commit it never pushed, and holding the
+  // install state its pool would seed.
+  const tree = join(daemon.home, "worktrees", "seeded-left-behind");
+  mkdirSync(join(daemon.home, "worktrees"), { recursive: true });
+  execFileSync("git", ["-C", daemon.repo, "worktree", "add", "-q", "-b", "harness/seeded-left-behind", tree]);
+  writeFileSync(join(tree, "local.md"), "A commit nobody pushed.\n");
+  execFileSync("git", ["-C", tree, "add", "local.md"]);
+  execFileSync("git", ["-C", tree, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "local only"]);
+  mkdirSync(join(tree, ".yarn"));
+  writeFileSync(join(tree, ".yarn", "install-state.gz"), "install state\n");
+  const hoursAgo = new Date(Date.now() - 2 * 60 * 60_000);
+  utimesSync(tree, hoursAgo, hoursAgo);
+  utimesSync(join(tree, ".git"), hoursAgo, hoursAgo);
+
+  // The fixture switches maintenance off, which skips the startup sweep too, so this daemon
+  // comes back with an hour's interval: the startup pass runs, and no other does here.
+  await daemon.crash();
+  await daemon.restart({ MISSION_WORKTREE_SWEEP_MS: String(60 * 60_000) });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const row = dashboard.getByRole("article", { name: `Unowned tree ${tree}` });
+  // Kept for the commit alone: the install state is not the work that kept it.
+  await expect(row).toContainText(`Unowned tree ${tree} was kept: checkout has unpublished commits`, { timeout: 60_000 });
+
+  await row.getByRole("button", { name: "Discard and remove" }).click();
+  const preview = dashboard.getByRole("dialog", { name: "removeUnowned worktree preview" });
+  await expect(preview.getByText(`Discards the work in ${tree}: checkout has unpublished commits.`)).toBeVisible();
+  await expect(preview.getByText("Files it deletes include: .yarn/install-state.gz (regenerable).")).toBeVisible();
+  await expect(preview).not.toContainText("uncommitted, untracked or ignored work");
+  await shoot(dashboard, "13-discard-preview-seed-path-regenerable");
+
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(preview).toHaveCount(0);
+  expect(existsSync(join(tree, ".yarn", "install-state.gz"))).toBe(true);
 });
