@@ -4,6 +4,7 @@ import test from "node:test";
 import { lockCausedQuarantine } from "../src/server/worktrees/index-lock.ts";
 import {
   clearableQuarantineReason,
+  INTERRUPTED_PRUNE,
   isObservationFailure,
   OBSERVATION_FAILURE,
   OBSERVATION_FAILURE_REASONS,
@@ -12,6 +13,7 @@ import {
   registrationOrIdentityQuarantine,
   RESERVATION_NOT_HANDED_BACK,
   splitObservationFailure,
+  UNVERIFIED_REMOVAL,
   withObservationFailure,
   withoutObservationFailure,
 } from "../src/server/worktrees/quarantine-reasons.ts";
@@ -100,10 +102,11 @@ const OTHER_QUARANTINE_REASONS = new Set([
   "return reset failed",
   "return verification failed",
   "startup found an interrupted provisioning intent",
-  "startup found an interrupted prune with filesystem state still present",
   "warmed slot verification failed",
-  "worktree removal could not be verified",
 ]);
+
+/** The same kind of reason, written through a constant because Forget reads them back. */
+const NAMED_QUARANTINE_REASONS = { INTERRUPTED_PRUNE, UNVERIFIED_REMOVAL };
 
 test("no quarantine reason in the manager escapes classification", () => {
   const source = readFileSync(new URL("../src/server/worktrees/manager.ts", import.meta.url), "utf8");
@@ -116,4 +119,8 @@ test("no quarantine reason in the manager escapes classification", () => {
   // listed above is a new reason nobody has decided about yet.
   for (const reason of written) assert.ok(OTHER_QUARANTINE_REASONS.has(reason), `unclassified: ${reason}`);
   for (const reason of OTHER_QUARANTINE_REASONS) assert.ok(written.includes(reason), `no longer written: ${reason}`);
+  for (const [name, reason] of Object.entries(NAMED_QUARANTINE_REASONS)) {
+    assert.match(source, new RegExp(`(?:reject\\(|this\\.quarantine\\(\\w+, )${name}\\)`), `no longer written: ${name}`);
+    assert.equal(registrationOrIdentityQuarantine(reason), false, reason);
+  }
 });
