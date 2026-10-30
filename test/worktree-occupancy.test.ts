@@ -8,6 +8,7 @@ import {
   inspectWorktreeOccupancy,
   pathContains,
 } from "../src/server/worktrees/occupancy.ts";
+import { bothAttempts } from "../src/server/worktrees/observation-retry.ts";
 
 function process(pid: number, ppid = 1): Proc {
   return {
@@ -464,4 +465,108 @@ test("a listing that times out twice names both attempts", async () => {
     status: "unknown",
     reason: "process listing failed: the process listing timed out after 4 s, and after 8 s on retry",
   });
+});
+
+test("a re-read that the system refuses puts the PID outside the boundary, and occupancy stays known", async () => {
+  const { one } = fixture();
+  const cwdReads: number[][] = [];
+  let processReads = 0;
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => {
+      processReads++;
+      return {
+        processes: [process(10), process(20)],
+        unknownReason: null,
+        cwdScopePids: [10, 20],
+        completedCollectorPids: [],
+      };
+    },
+    readCwds: async (pids) => {
+      cwdReads.push(pids);
+      return pids.length > 1
+        ? { cwds: new Map([[10, one]]), unknownReason: null }
+        : { cwds: new Map(), unreadable: new Set([20]), unknownReason: null };
+    },
+    pause: async () => assert.fail("a refused PID is resolved, so nothing is retried"),
+  });
+  assert.deepEqual(cwdReads, [[10, 20], [20]]);
+  assert.equal(processReads, 1, "nothing stayed unresolved, so no disappearance check ran");
+  const occupancy = result.get(one);
+  assert.equal(occupancy?.status, "known");
+  if (occupancy?.status === "known") assert.deepEqual(occupancy.occupants.map((entry) => entry.pid), [10]);
+});
+
+test("a re-read that throws leaves the PID to the disappearance check, not a failed pass", async () => {
+  const { one } = fixture();
+  const cwdReads: number[][] = [];
+  let processReads = 0;
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => {
+      processReads++;
+      // The confirmation snapshot shows 20 gone.
+      return processReads === 1
+        ? { processes: [process(10), process(20)], unknownReason: null, cwdScopePids: [10, 20], completedCollectorPids: [] }
+        : { processes: [process(10)], unknownReason: null, cwdScopePids: [10], completedCollectorPids: [] };
+    },
+    readCwds: async (pids) => {
+      cwdReads.push(pids);
+      if (pids.length === 1) throw new Error("lsof could not be spawned");
+      return { cwds: new Map([[10, one]]), unknownReason: null };
+    },
+    pause: async () => assert.fail("the disappearance check resolved it, so nothing is retried"),
+  });
+  assert.deepEqual(cwdReads, [[10, 20], [20]]);
+  assert.equal(processReads, 2);
+  const occupancy = result.get(one);
+  assert.equal(occupancy?.status, "known");
+  if (occupancy?.status === "known") assert.deepEqual(occupancy.occupants.map((entry) => entry.pid), [10]);
+});
+
+test("only the first eight omitted PIDs are re-read alone; the rest stay unresolved", async () => {
+  const { one } = fixture();
+  const omitted = [21, 22, 23, 24, 25, 26, 27, 28, 29];
+  const all = [10, ...omitted];
+  const cwdReads: number[][] = [];
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: all.map((pid) => process(pid)),
+      unknownReason: null,
+      cwdScopePids: all,
+      completedCollectorPids: [],
+    }),
+    readCwds: async (pids) => {
+      cwdReads.push(pids);
+      // The batch omits every PID but 10; asked alone, each would answer.
+      return pids.length > 1
+        ? { cwds: new Map([[10, one]]), unknownReason: null }
+        : { cwds: new Map([[pids[0]!, one]]), unknownReason: null };
+    },
+    pause: noPause,
+  });
+  assert.deepEqual(
+    cwdReads.slice(0, 9),
+    [all, ...omitted.slice(0, 8).map((pid) => [pid])],
+    "the ninth omitted PID is never read alone",
+  );
+  assert.deepEqual(result.get(one), {
+    status: "unknown",
+    reason: "cwd listing omitted 1 ps-listed PID: 29, and again on retry",
+  });
+});
+
+test("a read that fails twice names both attempts", () => {
+  assert.equal(
+    bothAttempts("git status timed out after 15 s", "git status timed out after 30 s"),
+    "git status timed out after 15 s, and after 30 s on retry",
+  );
+  assert.equal(bothAttempts("lsof failed", "lsof failed"), "lsof failed, and again on retry");
+  assert.equal(
+    bothAttempts("git status timed out after 15 s", "git status failed: fatal: index file corrupt"),
+    "git status timed out after 15 s, and on retry git status failed: fatal: index file corrupt",
+  );
+  // Two different steps that both timed out are not folded into one.
+  assert.equal(
+    bothAttempts("git status timed out after 15 s", "git rev-parse HEAD timed out after 30 s"),
+    "git status timed out after 15 s, and on retry git rev-parse HEAD timed out after 30 s",
+  );
 });
