@@ -53,6 +53,7 @@ import {
 import { ensureWorktreePoolMarker, observeWorktreePoolMarker, readWorktreePoolMarker } from "./marker.ts";
 import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observation-retry.ts";
 import {
+  isObservationFailure,
   OBSERVATION_FAILURE,
   observationFailureText,
   RESERVATION_NOT_HANDED_BACK,
@@ -555,6 +556,15 @@ function activeReference(slot: WorktreeSlotRow): WorktreeOwnerReference | null |
     slot.activeOwnerKind,
     slot.activeOwnerKey,
   );
+}
+
+/**
+ * Whether this slot's active lease reached its owner. A reservation stamps `leased_at`, and only
+ * `finalizeLease` then stamps `last_used_at`. A failed-read reason cannot say so: earlier builds
+ * took those in any state, and a manual lease's row answers for itself as its owner.
+ */
+function leaseGranted(slot: WorktreeSlotRow): boolean {
+  return slot.leasedAt !== null && slot.lastUsedAt !== null && slot.lastUsedAt >= slot.leasedAt;
 }
 
 function exactSlotPath(
@@ -3133,21 +3143,39 @@ export class WorktreeManager {
         }
 
         if (slot.state === "quarantined") {
-          this.recordObserved(slot, inspection.value.head, withoutObservationFailure(slot.lastError), now);
-          // A quarantine taken before its lease was granted, by a build that kept the active
-          // identity, names an owner that never received it. Withdraw that identity only when
-          // the owner is positively proven not to reference it; unknown ownership stays put.
-          const stale = activeReference(slot);
-          if (stale && stale !== "invalid") {
+          const active = activeReference(slot);
+          const owner = active === "invalid" ? null : active;
+          let referenced = false;
+          if (owner) {
             try {
-              if (!(await this.ownerReferenced(stale))) {
-                // `updateObserved` leaves the version alone, so this is still the row read above.
-                if (this.store.withdrawQuarantinedLease(slot.id, slot.version, stale.leaseId, now)) {
-                  this.publish();
-                }
-              }
-            } catch {
-              // Unknown ownership is not proof of absence; the identity stays as it is.
+              referenced = await this.ownerReferenced(owner);
+            } catch (error) {
+              // Unknown ownership proves neither an owner nor its absence: the identity stays
+              // as it is, and so does the quarantine.
+              this.store.updateObserved(slot.id, inspection.value.head, slot.lastError, now);
+              unknown(OBSERVATION_FAILURE.activeOwner, String(error));
+              continue;
+            }
+          }
+          this.recordObserved(slot, inspection.value.head, withoutObservationFailure(slot.lastError), now);
+          // `updateObserved` leaves the version alone, so below this is still the row read above.
+          if (owner && !referenced) {
+            // A quarantine taken before its lease was granted, by a build that kept the active
+            // identity, names an owner that never received it. Withdraw that identity only when
+            // the owner is positively proven not to reference it.
+            if (this.store.withdrawQuarantinedLease(slot.id, slot.version, owner.leaseId, now)) this.publish();
+          } else if (owner && leaseGranted(slot) && isObservationFailure(slot.quarantineReason)) {
+            // An earlier build quarantined this live lease only because a read failed. Everything
+            // has now read, so the lease resumes as it stands, dirty and occupied included, as a
+            // live lease may be. Nothing on disk is touched. An interrupted return looks the same
+            // and resumes too: its owner's return is what finishes it, as it would from here.
+            if (this.store.restoreLease(slot.id, slot.version, owner.leaseId, now)) {
+              this.publish();
+              console.log(oneLine(
+                `[worktrees] restored ${this.slotLabel(slot)} to leased from its quarantine (${slot.quarantineReason})`,
+              ));
+            } else {
+              errors.push(`slot ${slot.ordinal}: lease restore raced`);
             }
           }
           continue;
