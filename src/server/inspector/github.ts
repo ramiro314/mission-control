@@ -261,7 +261,13 @@ export interface PrSnapshot {
    * the head `headSha` names; both come from this one query). Null when GitHub returned no
    * head commit. Read by the Wait for CI node and the Inspector's flake reading.
    */
-  ci: { headSha: string; checkRuns: CiCheckRun[]; flakeReport: FlakeReport | null } | null;
+  ci: {
+    headSha: string;
+    checkRuns: CiCheckRun[];
+    flakeReport: FlakeReport | null;
+    /** GitHub's `contexts.totalCount`, which can exceed the 100 checks read. */
+    totalCount: number | null;
+  } | null;
 }
 
 export interface ThreadSnapshot {
@@ -317,9 +323,9 @@ const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
-      commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state contexts(first:100){ nodes{
-        ... on CheckRun{ name status conclusion detailsUrl title summary }
-        ... on StatusContext{ context state targetUrl description }
+      commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state contexts(first:100){ totalCount nodes{
+        ... on CheckRun{ name status conclusion detailsUrl title summary isRequired(pullRequestNumber:$number) }
+        ... on StatusContext{ context state targetUrl description isRequired(pullRequestNumber:$number) }
       } } } } } }
       reviewThreads(first:100){
         nodes{
@@ -444,7 +450,10 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
     ((pr.commits as { nodes?: unknown[] } | undefined)?.nodes ?? []) as {
       commit?: {
         oid?: unknown;
-        statusCheckRollup?: { state?: unknown; contexts?: { nodes?: unknown[] } | null } | null;
+        statusCheckRollup?: {
+          state?: unknown;
+          contexts?: { totalCount?: unknown; nodes?: unknown[] } | null;
+        } | null;
       };
     }[]
   )[0]?.commit;
@@ -476,6 +485,7 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
           ...ciCheckRunsFromRollup(
             headCommit.statusCheckRollup?.contexts?.nodes ?? [],
             parseFlakeSummary,
+            headCommit.statusCheckRollup?.contexts?.totalCount,
           ),
         }
       : null,
