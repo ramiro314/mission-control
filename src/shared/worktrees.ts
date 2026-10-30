@@ -210,7 +210,7 @@ export interface NativeWorktreeSlotView {
    * offered on a leased slot, and on a quarantined one whose active owner is still referenced:
    * that owner's ordinary return brings it back.
    */
-  actions: Array<"return" | "destroy" | "warm" | "recover">;
+  actions: Array<"return" | "destroy" | "warm" | "recover" | "repair">;
   /** Null when the pool has no dependency claim configured. */
   dependencies: WorktreeSlotDependenciesView | null;
   /**
@@ -303,6 +303,8 @@ export interface WorktreeInventory {
 export type WorktreeActionRequest =
   | { action: "return"; slotId: string }
   | { action: "recover"; slotId: string }
+  /** Run Git's own fixes on a slot quarantined for its registration, then recover it. */
+  | { action: "repair"; slotId: string }
   /**
    * Discard and remove a folder under `worktrees/` or `check-worktrees/` that no task or
    * check names and that the orphan tree sweep kept because it holds work. `path` must be the

@@ -15,7 +15,7 @@ import {
   slotGitDirectory,
 } from "../src/server/worktrees/index-lock.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
-import { REGISTRATION_OR_IDENTITY_REASONS } from "../src/server/worktrees/quarantine-reasons.ts";
+import { REGISTRATION_OR_IDENTITY_REASONS, registrationRepairQuarantine } from "../src/server/worktrees/quarantine-reasons.ts";
 import { quarantinedSlotProblems } from "../src/server/worktrees/storage-problems.ts";
 import { describeWorktreeWork } from "../src/server/git/worktree-return-safety.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
@@ -708,7 +708,8 @@ test("a quarantine outside the candidates is never judged, even once every read 
   for (const reason of [...REGISTRATION_OR_IDENTITY_REASONS, ...OTHER_FAULTS]) {
     assert.ok(m.store.quarantine(slotId, reason, null, Date.now()));
     const row = m.store.slot(slotId)!;
-    await m.recoverQuarantines();
+    // Repair answers these in the pass; `test/worktree-repair.test.ts` holds what it does.
+    if (!registrationRepairQuarantine(reason)) await m.recoverQuarantines();
     assert.deepEqual(m.store.slot(slotId), row, reason);
     assert.equal(m.recoveryRefusal(row), null, `${reason}: not judged, so nothing to refuse`);
     assert.deepEqual(
@@ -728,7 +729,7 @@ test("a registration or identity quarantine carrying Git's lock text is still ne
     assert.ok(m.store.quarantine(slotId, reason, lockText, Date.now()));
     const row = m.store.slot(slotId)!;
     assert.equal(lockCausedQuarantine(row.lastError), true, "the error alone reads as lock-caused");
-    await m.recoverQuarantines();
+    if (!registrationRepairQuarantine(reason)) await m.recoverQuarantines();
     assert.deepEqual(m.store.slot(slotId), row, reason);
     assert.equal(m.recoveryRefusal(row), null, `${reason}: not judged, so nothing to refuse`);
     assert.deepEqual(

@@ -831,9 +831,10 @@ The operations have deliberately narrow meanings:
   that a fresh read can disprove: one whose last error is that lock text, one whose reason is a
   failed read (the set in `src/server/worktrees/quarantine-reasons.ts`, older builds' reasons
   included), and "available slot is dirty" or the "available slot is occupied or dirty" that older
-  builds wrote. A slot quarantined for its registration or identity is never cleared here, however
-  healthy it reads and whatever its last error says, because a read that happens to succeed
-  repairs nothing.
+  builds wrote. A slot quarantined for its identity is never cleared here, however healthy it
+  reads and whatever its last error says, because a read that happens to succeed repairs nothing.
+  A slot quarantined for its registration takes **Repair** instead, which tries Git's own fixes
+  first and then applies the same safety line.
 
   The safety line is the same for all of them. The slot's active and last-released owners must be
   positively gone, its occupancy known and empty, its registration exact, a fresh Git read must
@@ -867,6 +868,48 @@ The operations have deliberately narrow meanings:
   where the entry time is the slot's own `quarantined_at` column, so the id survives a daemon
   restart. A slot quarantined before that column existed is stamped once by the first start that
   finds it.
+- **Repair** is the way out for a slot quarantined because Git's registration of it is bare,
+  locked, prunable, or names another path. Each maintenance pass tries it with no operator, on
+  every such slot, and a quarantined slot's card offers it once the slot's owner is positively
+  gone. Recover needs a proven registration, so Repair is the one that can start from a broken
+  one.
+
+  It runs only when no owner is referenced, no process is in the slot (which covers a Git
+  process with its working directory there), and no claim runs. An unknown owner or unknown
+  occupancy refuses it. It then applies only Git's own fixes, each decided from the files Git
+  itself reads:
+
+  - a registration locked `initializing`, which an interrupted `git worktree add` leaves, is
+    unlocked with `git worktree unlock`. Any other lock refuses Repair. That includes a lock an
+    earlier build left in another language, because Git translates that word and a translated
+    lock cannot be told from a reason someone wrote. Slots are now added with `LANGUAGE=C`, so
+    new locks always read `initializing`;
+  - a `.git` file that is missing or wrong, while an administrative directory under
+    `<common>/worktrees/` still names this path, is fixed with `git worktree repair`;
+  - a `.git` file naming an administrative directory whose `gitdir` points elsewhere is fixed
+    with `git worktree repair <path>` from the main checkout. A pass reads this as a missing
+    registration, because Git lists it under the path it names. If the folder it names still
+    exists, even without its `.git`, the registration may belong to that checkout, and Repair
+    refuses.
+
+  Neither form of `git worktree repair` stops at one worktree: each also rewrites any other
+  worktree's `.git` file in the repository that is already broken, and the preview says so.
+
+  A bare registration, a folder that is gone, a `.git` that is not a file, and a registration no
+  administrative directory can be traced to all refuse, and the card shows why. A `git worktree
+  list` that fails says nothing about the slot, so its preview asks you to try again, and nothing
+  runs. Moving a folder aside to register it again never happens here. After a fix, Repair reads
+  the registration again instead of trusting Git's exit code, then takes automatic recovery's
+  checks and reset. The
+  preview names each fix, and Execute refuses a registration or an occupant that changed after
+  it. Repair asks for no acknowledgement, because it never discards work.
+
+  A slot that holds work by the reset rule is not reset. It stays quarantined as "registration
+  repaired; holds work", with that entry as its detail, and no pass touches it again until
+  someone reads Recover's preview. A `git worktree add` cut off before its checkout usually lands
+  here too: without an index every tracked file reads as a change, which cannot be told from
+  work. A recovery refused for any other reason, such as an unreachable origin, leaves the fix in
+  place and the reason as it was, so the next pass, finding the registration healthy, finishes it.
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
   adapter. There is no force action for unverifiable or foreign resources.
 - **Warm** prepares idle slots ahead of time: it holds each under a `warm` lease, fetches, resets
