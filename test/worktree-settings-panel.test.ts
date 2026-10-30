@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStaleLeaseDays, WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
+import { parseStaleLeaseDays, slotHistoryHeadline, WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
 import { capacityGeometry } from "../src/web/lib/worktree-capacity.ts";
+import { refreshedSlotHistory } from "../src/web/lib/worktree-history.ts";
 import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
 import type { WorktreesState } from "../src/web/useWorktrees.ts";
 import type { StorageHealth } from "../src/shared/storage-health.ts";
@@ -842,4 +843,61 @@ test("a slot whose last observation failed says so on its own line, in whatever 
   assert.match(html, /aria-label="Why slot 1 is leased"><dl><div><dt>Last observation failed<\/dt><dd>slot Git state is unknown \(git status timed out after 15 s, and after 30 s on retry\)<\/dd><\/div>/);
   // A quarantine keeps its reason and detail; the failed read is a line of its own beside them.
   assert.match(html, /<dt>Reason<\/dt><dd>worktree reset failed<\/dd><\/div><div><dt>Detail<\/dt><dd>fatal: unable to write new index file<\/dd><\/div><div><dt>Last observation failed<\/dt>/);
+});
+
+test("every slot card starts with its History closed, showing no list and no note", () => {
+  const html = render();
+  assert.match(html, /<section class="wt-history" aria-label="Slot 1 history">/);
+  assert.match(html, /aria-expanded="false"[^>]*>.*?<span>History<\/span>/s);
+  assert.doesNotMatch(html, /Reading this slot's history|Nothing recorded for this slot/);
+});
+
+test("a history row's headline names the change, and a later build's kind reads as itself", () => {
+  const entry = {
+    id: 1, slotId: "s", ordinal: 1, at: 1, kind: "transition", fromState: "leased", toState: "returning", reason: null,
+    detail: null, operation: null, outcome: null, actor: null, durationMs: null, meta: null,
+  };
+  assert.equal(slotHistoryHeadline(entry), "leased → returning");
+  assert.equal(slotHistoryHeadline({ ...entry, fromState: null, toState: "provisioning" }), "new → provisioning");
+  assert.equal(slotHistoryHeadline({ ...entry, fromState: "pruning", toState: null }), "pruning → removed");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "observation", outcome: "started" }), "Failed read");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "observation", outcome: "cleared" }), "Failed read cleared");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "a-later-kind" }), "a-later-kind");
+});
+
+test("a refresh adds what is newer to an open list and keeps its older rows and cursor", () => {
+  const entry = (id: number) => ({
+    id, slotId: "s", ordinal: 1, at: id, kind: "transition", fromState: null, toState: null, reason: null,
+    detail: null, operation: null, outcome: null, actor: null, durationMs: null, meta: null,
+  });
+  const ids = (page: { entries: Array<{ id: number }> }) => page.entries.map((row) => row.id);
+  const shown = { entries: [10, 9, 8, 7, 6].map(entry), nextBefore: 6 };
+
+  const nothing = { entries: [], nextBefore: null };
+  assert.deepEqual(refreshedSlotHistory(null, shown), shown, "the first read is the list");
+  assert.deepEqual(refreshedSlotHistory(nothing, shown), shown, "as it is over an empty one");
+  assert.deepEqual(refreshedSlotHistory(shown, nothing), nothing, "a slot with nothing left shows nothing");
+
+  const newer = refreshedSlotHistory(shown, { entries: [12, 11, 10, 9].map(entry), nextBefore: 9 });
+  assert.deepEqual(ids(newer), [12, 11, 10, 9, 8, 7, 6], "every row once, in order");
+  assert.equal(newer.nextBefore, 6, "the cursor still continues below the oldest row shown");
+
+  const reaching = refreshedSlotHistory(shown, { entries: [12, 11, 10].map(entry), nextBefore: 10 });
+  assert.deepEqual(ids(reaching), [12, 11, 10, 9, 8, 7, 6], "a page ending on the newest row shown still reaches it");
+  assert.equal(reaching.nextBefore, 6);
+
+  const complete = { entries: shown.entries, nextBefore: null };
+  const stillComplete = refreshedSlotHistory(complete, { entries: [11, 10, 9].map(entry), nextBefore: 9 });
+  assert.deepEqual(ids(stillComplete), [11, 10, 9, 8, 7, 6]);
+  assert.equal(stillComplete.nextBefore, null, "every row is already shown, whatever cursor the new page carries");
+
+  const same = refreshedSlotHistory(shown, { entries: [10, 9].map(entry), nextBefore: 9 });
+  assert.deepEqual(same, shown);
+
+  const whole = refreshedSlotHistory(shown, { entries: [11, 10, 9, 8, 7, 6, 5].map(entry), nextBefore: null });
+  assert.deepEqual(ids(whole), [11, 10, 9, 8, 7, 6]);
+  assert.equal(whole.nextBefore, null, "the daemon holds nothing older than this page");
+
+  const past = { entries: [40, 39].map(entry), nextBefore: 39 };
+  assert.deepEqual(refreshedSlotHistory(shown, past), past, "a page that cannot reach the list starts it again");
 });

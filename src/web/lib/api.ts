@@ -97,6 +97,8 @@ import type {
 } from "@shared/protocol.ts";
 import {
   HarnessModelCatalogsSchema,
+  WorktreeSlotHistoryPageSchema,
+  type WorktreeSlotHistoryPage,
   InspectorFindingsResponseSchema,
   StandingInstructionsConflictSchema,
   StandingInstructionsViewSchema,
@@ -385,6 +387,18 @@ export const worktreeWarmLogUrl = (id: string) => `/api/worktrees/warm-logs/${en
  */
 export const stopWorktreeClaim = (slotId: string, claimId: string) =>
   worktreeRequest<Record<string, never>>(`/api/worktrees/${encodeURIComponent(slotId)}/claim/stop`, "POST", { claimId });
+
+/** One page of a slot's history, newest first, or null when it could not be read. */
+export async function fetchWorktreeSlotHistory(
+  slotId: string,
+  before: number | null = null,
+  signal?: AbortSignal,
+): Promise<WorktreeSlotHistoryPage | null> {
+  const query = before === null ? "" : `?before=${before}`;
+  const value = await fetchJsonWithSignal<unknown>(`/api/worktrees/${encodeURIComponent(slotId)}/history${query}`, signal);
+  const parsed = WorktreeSlotHistoryPageSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
 
 export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId) =>
   worktreeRequest<{ label?: string }>(`/api/worktrees/${encodeURIComponent(slotId)}/open`, "POST", { backend });

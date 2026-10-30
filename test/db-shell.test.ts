@@ -55,8 +55,12 @@ test("the HTML database guide catalogs every application table exactly once", ()
     .map((match) => match[1]!)
     .sort();
 
-  assert.equal(schemaTables.length, 105);
+  assert.equal(schemaTables.length, 106);
   assert.deepEqual(documentedTables, schemaTables);
+  assert.ok(
+    guide.includes(`<strong>${schemaTables.length}</strong><span>application tables cataloged`),
+    "the guide's headline count is the catalog's",
+  );
 });
 
 test("every database guide family reports the number of tables it catalogs", () => {

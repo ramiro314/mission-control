@@ -132,6 +132,7 @@
   "GET /api/workflows/status": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/workflows/test-evidence-audit": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/worktrees": "503 {\"error\":\"worktree operations unavailable\"}",
+  "GET /api/worktrees/:slotId/history": "503 {\"error\":\"worktree operations unavailable\"}",
   "GET /api/worktrees/config": "503 {\"error\":\"worktree operations unavailable\"}",
   "GET /api/worktrees/manual/requests/:requestId": "503 {\"error\":\"native worktree manager unavailable\"}",
   "GET /api/worktrees/warm-logs/:id": "503 {\"error\":\"worktree operations unavailable\"}",

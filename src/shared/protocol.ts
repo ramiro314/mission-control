@@ -6,7 +6,7 @@ import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "./wait-for-ci.ts";
 import { CI_STRICTNESS } from "./ci-checks.ts";
-import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
+import { WORKTREE_HISTORY_LIMITS, WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
@@ -3387,6 +3387,40 @@ export const OpenWorktreeSchema = z
 export const StopWorktreeClaimSchema = z
   .object({ claimId: z.string().min(1).max(128) })
   .strict();
+
+/** One page of a slot's history, newest first. `before` is the `nextBefore` of the page above. */
+export const WorktreeSlotHistoryQuerySchema = z
+  .object({ before: z.coerce.number().int().positive().optional() })
+  .strict();
+
+/**
+ * One row of a slot's history. `kind` and `actor` are read as strings, like a slot's `state`: a
+ * value a later build appended stays readable after a downgrade instead of hiding the page.
+ */
+export const WorktreeSlotHistoryEntrySchema = z.object({
+  id: z.number().int().positive(),
+  slotId: z.string(),
+  ordinal: z.number().int(),
+  at: z.number(),
+  kind: z.string(),
+  fromState: z.string().nullable(),
+  toState: z.string().nullable(),
+  reason: z.string().nullable(),
+  detail: z.string().nullable(),
+  operation: z.string().nullable(),
+  outcome: z.string().nullable(),
+  actor: z.string().nullable(),
+  durationMs: z.number().nullable(),
+  meta: z.record(z.unknown()).nullable(),
+});
+export type WorktreeSlotHistoryEntry = z.infer<typeof WorktreeSlotHistoryEntrySchema>;
+
+export const WorktreeSlotHistoryPageSchema = z.object({
+  entries: z.array(WorktreeSlotHistoryEntrySchema).max(WORKTREE_HISTORY_LIMITS.pageEntries),
+  /** Null on the last page. */
+  nextBefore: z.number().int().positive().nullable(),
+});
+export type WorktreeSlotHistoryPage = z.infer<typeof WorktreeSlotHistoryPageSchema>;
 
 /**
  * Partial update of the harnesses config from the dashboard.

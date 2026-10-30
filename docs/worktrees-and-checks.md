@@ -691,6 +691,15 @@ this order:
   no fetch or reset and the slot is available again as it was. A launcher that tried and failed may
   still have opened a shell, so that lease stands and the error says to Return it.
 
+  Each slot card ends in a **History** disclosure: what happened to the slot, newest first, 50
+  entries at a time through `GET /api/worktrees/:slotId/history`, each with its state change, its
+  reason and detail, and who caused it: the operator (an action run from this page, whichever
+  domain owns the lease), automatic (a decision the daemon made on its own, such as retention or
+  reclaiming a leaked check lease), or the owner. The list is read only while open, and follows
+  the slot while it stays open. Every state transition writes one
+  entry in the same transaction as the change, and a failed read adds an entry only when it starts
+  and when it clears. See [the database guide](database-and-migrations.md) for retention.
+
   The group states loading, empty, and unavailable separately, and never renders a heading over
   nothing. An inventory that could not be observed says so and offers Refresh; it is never drawn as
   zero pools.

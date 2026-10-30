@@ -196,7 +196,10 @@ let db: DatabaseSync | undefined;
 //    database. 10 makes a fork database stamped 7, 8 or 9 take its recovery point before the
 //    combined upgrade. As with the fork's earlier 5 (renumbered 7), the migrations themselves
 //    are not gated by this number, so a fork database stamped 9 still gains upstream's 7 to 9.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 10;
+// 11: fork - the slot history table (`worktree_slot_history`), empty on an upgraded database.
+//    `CREATE ... IF NOT EXISTS` and not gated by this number, so when an upstream sync brings
+//    its own 11, renumbering this entry is safe, as #618 did for the fork's 7 to 9.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 11;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -979,6 +982,34 @@ function createSchemaObjects(d: DatabaseSync): void {
       ON worktree_slots(pool_id, state, ordinal);
     CREATE INDEX IF NOT EXISTS idx_worktree_slots_last_release
       ON worktree_slots(last_released_lease_id);
+
+    -- What happened to each slot, written by WorktreeStore in the same transaction as the
+    -- change it records. kind and actor are unconstrained TEXT for the same reason state is:
+    -- their vocabularies are append-only (WORKTREE_HISTORY_KINDS, WORKTREE_HISTORY_ACTORS).
+    -- Deliberately not a foreign key: a destroyed slot's rows stay until retention ages them
+    -- out, and retention is the only delete (WorktreeStore.pruneHistory). The id is
+    -- AUTOINCREMENT because a page's cursor names it, so a dropped id is never handed out again.
+    CREATE TABLE IF NOT EXISTS worktree_slot_history (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      pool_id      TEXT    NOT NULL,
+      slot_id      TEXT    NOT NULL,
+      ordinal      INTEGER NOT NULL,
+      at           INTEGER NOT NULL,
+      kind         TEXT    NOT NULL,
+      from_state   TEXT,
+      to_state     TEXT,
+      reason       TEXT,
+      detail       TEXT,
+      operation    TEXT,
+      outcome      TEXT,
+      actor        TEXT,
+      duration_ms  INTEGER,
+      meta         TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_worktree_slot_history_pool_at
+      ON worktree_slot_history(pool_id, at);
+    CREATE INDEX IF NOT EXISTS idx_worktree_slot_history_slot
+      ON worktree_slot_history(slot_id, id);
 
     -- Reusable workflow judges. guidance_md is exact operator-authored Markdown: no
     -- normalized copy exists and every write names this column directly.
