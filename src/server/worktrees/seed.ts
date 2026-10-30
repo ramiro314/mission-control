@@ -68,6 +68,79 @@ function gitAdministrative(name: string): boolean {
   return name.toLowerCase() === ".git";
 }
 
+/** A seed path segment that is a one-level pattern rather than a literal name. */
+function isSeedPattern(segment: string): boolean {
+  return /[*?[{]/.test(segment);
+}
+
+/** Whether one path segment matches one seed path segment, as `expandSeedPaths` matches it. */
+function seedSegmentMatches(name: string, segment: string): boolean {
+  if (gitAdministrative(name)) return false;
+  return isSeedPattern(segment) ? matchesGlob(name, segment) : name === segment;
+}
+
+/** A pool claim's seed as the delete rule reads it: what a seed copies, and what it leaves out. */
+export interface RegenerableSeed {
+  paths: readonly string[];
+  exclude: readonly string[];
+}
+
+/** No claim, no seed, or a policy that could not be read: only the built-in list is regenerable. */
+export const NO_SEED: RegenerableSeed = { paths: [], exclude: [] };
+
+/**
+ * Whether a `/` falls inside a brace, extglob or bracket group, or after one left open, as in
+ * `.yarn/{secrets/*,keys/*}`. Such a glob cannot be split into segments, so `exclusionReaches`
+ * could not judge it.
+ */
+function groupSpansSlash(glob: string): boolean {
+  let depth = 0;
+  for (const char of glob) {
+    if ("{([".includes(char)) depth += 1;
+    else if ("})]".includes(char)) depth = Math.max(0, depth - 1);
+    else if (char === "/" && depth > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether an exclusion glob could match `names` itself, one of its ancestors, or, for a
+ * `directory`, anything under it. Deliberately generous, so the answer is never "no" when the
+ * seed's own `matchesGlob` over a whole path could say "yes": a segment holding `**` stands for
+ * any number of segments, dot directories included.
+ */
+function exclusionReaches(names: readonly string[], segments: readonly string[], directory: boolean, i = 0, j = 0): boolean {
+  // The glob matched all of the entry or a prefix of it, so the entry is excluded or lies inside
+  // an excluded path.
+  if (j === segments.length) return true;
+  // The entry ran out first: the rest of the glob can only match under it, or nothing at all.
+  if (i === names.length) return directory || segments.slice(j).every((segment) => segment.includes("**"));
+  const segment = segments[j]!;
+  if (segment.includes("**")) {
+    return exclusionReaches(names, segments, directory, i, j + 1) || exclusionReaches(names, segments, directory, i + 1, j);
+  }
+  return matchesGlob(names[i]!, segment) && exclusionReaches(names, segments, directory, i + 1, j + 1);
+}
+
+/**
+ * Whether a seed regenerates a repository-relative path: it is a seed path or lies under one,
+ * matched segment by segment exactly as `expandSeedPaths` matches them in a slot, and no
+ * `exclude` glob could match it, an ancestor, or anything under it. A seed strips excluded
+ * paths from every clone, so those are local to each tree and never come back; a path any
+ * exclusion might reach is therefore never called regenerable, and a glob whose group spans a
+ * slash might reach any of them. A trailing slash, which Git's
+ * status prints for a directory, says the path is one. Pure: nothing on disk is read.
+ */
+export function seedRegenerates(path: string, seed: RegenerableSeed): boolean {
+  const directory = path.endsWith("/");
+  const names = (directory ? path.slice(0, -1) : path).split("/");
+  const seeded = seed.paths.some((glob) => {
+    const segments = glob.split("/");
+    return segments.length <= names.length && segments.every((segment, index) => seedSegmentMatches(names[index]!, segment));
+  });
+  return seeded && !seed.exclude.some((glob) => groupSpansSlash(glob) || exclusionReaches(names, glob.split("/"), directory));
+}
+
 /** One path a seed path glob matched, repository-relative, and whether it is a directory. */
 export interface SeedEntry {
   path: string;
@@ -97,10 +170,9 @@ export async function expandSeedPaths(
       const next: string[] = [];
       for (const parent of level) {
         checkBudget(budget);
-        const names = (/[*?[{]/.test(segment)
-          ? await childNames(join(root, parent)).then((all) => all.filter((name) => matchesGlob(name, segment)))
-          : [segment]
-        ).filter((name) => !gitAdministrative(name));
+        const names = isSeedPattern(segment)
+          ? await childNames(join(root, parent)).then((all) => all.filter((name) => seedSegmentMatches(name, segment)))
+          : [segment].filter((name) => !gitAdministrative(name));
         for (const name of names) {
           const relative = parent ? `${parent}/${name}` : name;
           let stat;
