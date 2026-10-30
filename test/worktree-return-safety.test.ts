@@ -1,19 +1,24 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   REGENERABLE_IGNORED_PATHS,
   UNCOMMITTED_WORK,
   UNPUBLISHED_COMMITS,
+  describeWorktreeResetWork,
   describeWorktreeWork,
   worktreeDiscardedWork,
+  worktreeResetWork,
+  worktreeResetWorkKey,
   worktreeReturnBlocker,
   worktreeWork,
+  type WorktreeResetWork,
   type WorktreeWork,
 } from "../src/server/git/worktree-return-safety.ts";
+import { run, type RunResult } from "../src/server/util/exec.ts";
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "mission-return-git-"));
@@ -242,4 +247,233 @@ test("each blocking kind reads as a phrase naming its path", () => {
   assert.equal(describeWorktreeWork({ kind: "untracked", path: "notes.md" }), "untracked notes.md");
   assert.equal(describeWorktreeWork({ kind: "ignored", path: ".env" }), "ignored .env");
   assert.equal(describeWorktreeWork({ kind: "unpushed", path: "HEAD" }), "unpushed commits on HEAD");
+});
+
+/**
+ * A published checkout shaped like a uwf slot: its `.gitignore` ignores a warm install, an
+ * IDE folder, build info, local secrets and evidence. Targets are built as commits on top of
+ * HEAD without touching the working tree, so the slot holds exactly what each case planted.
+ */
+function resetFixture(t: TestContext, options: { ignoreCase?: boolean } = {}) {
+  const repo = fixture(t);
+  if (options.ignoreCase !== undefined) repo.git("config", "core.ignorecase", String(options.ignoreCase));
+  const ignore = ".yarn/install-state.gz\n.idea/\n*.tsbuildinfo\n.env\n.evidence/\nnode_modules/\n";
+  writeFileSync(join(repo.path, ".gitignore"), ignore);
+  repo.git("add", ".gitignore"); repo.git("commit", "-m", "ignore");
+  repo.git("push", "origin", "main");
+  const put = (file: string) => {
+    mkdirSync(join(repo.path, file, ".."), { recursive: true });
+    writeFileSync(join(repo.path, file), "local\n");
+  };
+  let count = 0;
+  /** A commit on top of HEAD that writes each file (or symlink) and removes each null. */
+  const target = (changes: Record<string, string | { symlink: string } | null> = {}) => {
+    const env = { ...process.env, GIT_INDEX_FILE: join(repo.path, "..", `target-index-${count += 1}`) };
+    const git = (args: string[], input?: string) =>
+      execFileSync("git", ["-C", repo.path, ...args], { encoding: "utf8", env, input }).trim();
+    git(["read-tree", "HEAD"]);
+    for (const [file, content] of Object.entries(changes)) {
+      if (content === null) {
+        git(["update-index", "--force-remove", file]);
+        continue;
+      }
+      const symlink = typeof content === "object";
+      const blob = git(["hash-object", "-w", "--stdin"], symlink ? content.symlink : content);
+      git(["update-index", "--add", "--cacheinfo", `${symlink ? "120000" : "100644"},${blob},${file}`]);
+    }
+    return git(["commit-tree", git(["write-tree"]), "-p", "HEAD", "-m", "target"]);
+  };
+  return { ...repo, put, target, ignore };
+}
+
+/** Every file and directory under `root`, `.git` included, with its bytes. */
+function snapshot(root: string): Map<string, string> {
+  const seen = new Map<string, string>();
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      const stat = lstatSync(full);
+      const relative = full.slice(root.length);
+      if (stat.isDirectory()) {
+        seen.set(relative, `dir ${stat.mode}`);
+        walk(full);
+      } else {
+        seen.set(relative, `${stat.mode} ${stat.mtimeMs} ${stat.isSymbolicLink() ? readlinkSync(full) : readFileSync(full).toString("base64")}`);
+      }
+    }
+  };
+  walk(root);
+  return seen;
+}
+
+const resetWork = (work: WorktreeResetWork) =>
+  work.status === "work" ? work.entries.map(({ kind, path }) => `${kind} ${path}`) : work.status;
+
+test("reset rule: ignored files a target keeps ignored are not work, and the check writes nothing", async (t) => {
+  const repo = resetFixture(t);
+  for (const file of [".yarn/install-state.gz", ".idea/workspace.xml", "apps/personal-loans/tsconfig.tsbuildinfo", ".env", ".evidence/shot.png", "node_modules/pkg/index.js"]) {
+    repo.put(file);
+  }
+  // A target whose ignore rules match HEAD's, with an unrelated change.
+  const target = repo.target({ "src/new.ts": "export {};\n" });
+  const before = snapshot(repo.path);
+  assert.deepEqual(await worktreeResetWork(repo.path, { targetCommit: target }), { status: "clean" });
+  assert.deepEqual(await worktreeWork(repo.path, { rule: "reset", targetCommit: target }), { status: "clean" });
+  assert.deepEqual(snapshot(repo.path), before, "the slot's files are byte-for-byte unchanged");
+  // The return rule still counts each of them, which is what safe Kill keeps.
+  assert.deepEqual(await worktreeWork(repo.path, { regenerableIgnored: true }), { status: "work", entry: { kind: "ignored", path: ".env" } });
+});
+
+test("reset rule: a tracked change, an untracked file and an unpushed commit are work; conductor scratch is not", async (t) => {
+  const repo = resetFixture(t);
+  const target = repo.target();
+  mkdirSync(join(repo.path, ".pipeline"));
+  writeFileSync(join(repo.path, ".pipeline", "conduct-state.json"), "{}\n");
+  assert.deepEqual(await worktreeResetWork(repo.path, { targetCommit: target }), { status: "clean" });
+  writeFileSync(join(repo.path, "tracked"), "edited\n");
+  repo.put("notes.md");
+  assert.deepEqual(resetWork(await worktreeResetWork(repo.path, { targetCommit: target })), ["tracked tracked", "untracked notes.md"]);
+  repo.git("add", "."); repo.git("commit", "-qm", "local only");
+  assert.deepEqual(resetWork(await worktreeResetWork(repo.path, { targetCommit: target })), ["unpushed HEAD"]);
+});
+
+test("reset rule: an ignored entry the target overwrites or un-ignores is work, and names why", async (t) => {
+  const cases: Array<{
+    name: string;
+    plant: string[];
+    /** A pattern HEAD ignores beyond the fixture's, so the planted entry is ignored now. */
+    headIgnores?: string;
+    changes: Parameters<ReturnType<typeof resetFixture>["target"]>[0] | ((ignore: string) => Parameters<ReturnType<typeof resetFixture>["target"]>[0]);
+    work: Array<{ path: string; because: string }>;
+  }> = [
+    {
+      name: "a target that tracks a file inside the ignored .idea/",
+      plant: [".idea/workspace.xml"],
+      changes: { ".idea/codeStyles/Project.xml": "<x/>\n" },
+      work: [{ path: ".idea/", because: "the target tracks .idea/codeStyles/Project.xml" }],
+    },
+    {
+      name: "a target that tracks the ignored file itself",
+      plant: [".env"],
+      changes: { ".env": "SHARED=1\n" },
+      work: [{ path: ".env", because: "the target tracks .env" }],
+    },
+    {
+      name: "a target whose .gitignore no longer ignores .env or .evidence/",
+      plant: [".env", ".evidence/shot.png", ".yarn/install-state.gz"],
+      changes: (ignore) => ({ ".gitignore": ignore.replace(".env\n", "").replace(".evidence/\n", "") }),
+      work: [
+        { path: ".env", because: "the target's .gitignore files no longer ignore it" },
+        { path: ".evidence/", because: "the target's .gitignore files no longer ignore it" },
+      ],
+    },
+    {
+      name: "a target that stops ignoring node_modules/, which is regenerable",
+      plant: ["node_modules/pkg/index.js"],
+      changes: (ignore) => ({ ".gitignore": ignore.replace("node_modules/\n", "") }),
+      work: [],
+    },
+    {
+      name: "a target with a nested .gitignore that still ignores the entry",
+      plant: [".env"],
+      changes: (ignore) => ({ ".gitignore": ignore.replace(".env\n", ""), "apps/.gitignore": "dist/\n", "keep/.gitignore": "x\n" }),
+      work: [{ path: ".env", because: "the target's .gitignore files no longer ignore it" }],
+    },
+    {
+      name: "a target that tracks apps/foo/.local as a file above an ignored file",
+      plant: ["apps/foo/.local/notes.md"],
+      headIgnores: ".local/\n",
+      changes: { "apps/foo/.local": "file\n" },
+      work: [{ path: "apps/foo/.local/", because: "the target tracks apps/foo/.local" }],
+    },
+    {
+      name: "a target that tracks apps/foo/.local as a symlink above an ignored file",
+      plant: ["apps/foo/.local/notes.md"],
+      headIgnores: ".local/\n",
+      changes: { "apps/foo/.local": { symlink: "../elsewhere" } },
+      work: [{ path: "apps/foo/.local/", because: "the target tracks apps/foo/.local" }],
+    },
+  ];
+  for (const each of cases) {
+    const repo = resetFixture(t);
+    if (each.headIgnores) {
+      writeFileSync(join(repo.path, ".gitignore"), repo.ignore + each.headIgnores);
+      repo.git("commit", "-qam", "ignore more"); repo.git("push", "-q", "origin", "main");
+    }
+    const changes = typeof each.changes === "function" ? each.changes(repo.ignore) : each.changes;
+    for (const file of each.plant) repo.put(file);
+    const target = repo.target(changes);
+    const before = snapshot(repo.path);
+    const work = await worktreeResetWork(repo.path, { targetCommit: target });
+    assert.deepEqual(
+      work.status === "work" ? work.entries : work.status,
+      each.work.length === 0 ? "clean" : each.work.map((entry) => ({ kind: "ignored", ...entry })),
+      each.name,
+    );
+    assert.deepEqual(snapshot(repo.path), before, `${each.name}: the slot's files are unchanged`);
+    if (each.work.length > 0) {
+      assert.deepEqual(await worktreeWork(repo.path, { rule: "reset", targetCommit: target }), {
+        status: "work", entry: { kind: "ignored", path: each.work[0]!.path },
+      }, each.name);
+    }
+  }
+});
+
+for (const ignoreCase of [true, false, undefined]) {
+  test(`reset rule: a target tracking .Idea/x overlaps the ignored .idea/ (core.ignorecase ${ignoreCase ?? "unset"})`, async (t) => {
+    const repo = resetFixture(t, { ignoreCase });
+    repo.put(".idea/workspace.xml");
+    const target = repo.target({ ".Idea/x": "x\n" });
+    assert.deepEqual(await worktreeResetWork(repo.path, { targetCommit: target }), {
+      status: "work",
+      entries: [{ kind: "ignored", path: ".idea/", because: "the target tracks .Idea/x" }],
+      more: false,
+    });
+  });
+}
+
+test("reset rule: a listing or evaluation that fails, overflows or times out counts as work", async (t) => {
+  const repo = resetFixture(t);
+  repo.put(".env");
+  repo.put(".yarn/install-state.gz");
+  const target = repo.target({ ".gitignore": repo.ignore.replace("*.tsbuildinfo\n", "") });
+  const stubbed = (match: (args: string[]) => boolean, result: Partial<RunResult>): typeof run =>
+    async (bin, args, options) => match(args)
+      ? { stdout: "", stderr: "", code: 1, outcomeUnknown: false, overflowed: false, ...result }
+      : run(bin, args, options);
+  const failures: Array<{ name: string; execute: typeof run; because: string }> = [
+    { name: "a failed listing", execute: stubbed((args) => args.includes("ls-tree"), {}), because: "the target's tracked paths could not be listed" },
+    { name: "an overflowed listing", execute: stubbed((args) => args.includes("ls-tree"), { overflowed: true }), because: "the target tracks more paths than the check reads" },
+    { name: "a timed-out .gitignore diff", execute: stubbed((args) => args.includes("diff"), { outcomeUnknown: true, timedOut: true }), because: "the target's .gitignore files could not be compared" },
+    { name: "a failed blob read", execute: stubbed((args) => args.includes("checkout"), { code: 128 }), because: "the target's .gitignore files could not be read" },
+    { name: "a timed-out ignore evaluation", execute: stubbed((args) => args.includes("check-ignore"), { outcomeUnknown: true, timedOut: true }), because: "the target's ignore rules could not be evaluated" },
+    { name: "an unreadable ignore setting", execute: stubbed((args) => args.includes("core.ignorecase") && args.includes("config"), { code: 3 }), because: "the slot's ignore settings could not be read" },
+  ];
+  // Without a stub the target keeps both ignored, so each refusal below is the failure's alone.
+  assert.deepEqual(await worktreeResetWork(repo.path, { targetCommit: target }), { status: "clean" });
+  for (const each of failures) {
+    assert.deepEqual(await worktreeResetWork(repo.path, { targetCommit: target, execute: each.execute }), {
+      status: "work",
+      entries: [
+        { kind: "ignored", path: ".env", because: each.because },
+        { kind: "ignored", path: ".yarn/install-state.gz", because: each.because },
+      ],
+      more: false,
+    }, each.name);
+  }
+  assert.deepEqual(await worktreeResetWork(repo.path, { targetCommit: "0".repeat(40) }), {
+    status: "work",
+    entries: [".env", ".yarn/install-state.gz"].map((path) => ({ kind: "ignored", path, because: "the reset target could not be read" })),
+    more: false,
+  });
+});
+
+test("reset rule: the work set's key ignores why an entry counts, and the description names it", () => {
+  const work = (because: string): WorktreeResetWork => ({ status: "work", entries: [{ kind: "ignored", path: ".env", because }], more: false });
+  assert.equal(worktreeResetWorkKey(work("a")), worktreeResetWorkKey(work("b")));
+  assert.notEqual(worktreeResetWorkKey(work("a")), worktreeResetWorkKey({ status: "clean" }));
+  assert.equal(
+    describeWorktreeResetWork({ kind: "ignored", path: ".idea/", because: "the target tracks .Idea/x" }),
+    "ignored .idea/ (the target tracks .Idea/x)",
+  );
 });

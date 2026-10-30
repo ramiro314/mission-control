@@ -702,13 +702,40 @@ The operations have deliberately narrow meanings:
 - **Recover** brings back a quarantined slot that no live owner references. It is offered on
   every such slot's card, and Settings > Storage lists each quarantined slot as a problem whose
   **Open slot** link jumps to that card. Its preview names the slot's `index.lock` (under the Git
-  directory its `.git` file names), any Git process whose working directory is in the slot, and,
-  when the slot holds uncommitted, untracked, unpushed or ignored work outside the regenerable
-  directories (`node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/`, `.next/`),
-  that the reset discards it, which must be acknowledged. Execute removes `index.lock` only when no
-  Git process uses the worktree and `lsof` shows nothing holding the lock, then runs the same
-  owner-authorized reset Return ends in, and the slot becomes available. A slot with a live or
-  unknown owner, any process inside it, or a lock it cannot prove free is refused. Recover is the
+  directory its `.git` file names), any Git process whose working directory is in the slot, and
+  each entry the reset would discard, which must be acknowledged. Execute removes `index.lock` only
+  when no Git process uses the worktree and `lsof` shows nothing holding the lock, then runs the
+  same owner-authorized reset Return ends in, and the slot becomes available. A slot with a live
+  or unknown owner, any process inside it, or a lock it cannot prove free is refused.
+
+  Recover keeps the slot's folder, so it counts work by the **reset rule**, against origin's
+  default fetched for the preview. A reset runs `checkout --force`, `reset --hard` and
+  `clean -fd`, never `-fdx`, so it keeps an ignored file while that file stays ignored and
+  nothing the default tracks lands on it. Work is an uncommitted change, an untracked file that is
+  not ignored (other than ai-conductor's disposable `.pipeline/` scratch), unpushed commits, or an
+  ignored entry outside the regenerable directories (`node_modules/`, `dist/`, `build/`,
+  `coverage/`, `.cache/`, `.turbo/`, `.next/`) that the reset would overwrite or delete:
+  - the default tracks a path at, under or above it, where above means a file, symlink or
+    submodule in place of one of its parent directories. Paths are compared after Unicode
+    normalization and case folding, always, so `.Idea/x` in the default overlaps an ignored
+    `.idea/` whatever `core.ignorecase` says;
+  - the default's `.gitignore` files no longer ignore it, so `clean -fd` deletes it.
+
+  A warm install (`node_modules/`, `.yarn/install-state.gz`), an IDE folder, build info, `.env` or
+  evidence that the default still ignores and does not track is therefore not work: Recover asks
+  for no acknowledgement and the reset keeps each file where it is. The preview names each entry
+  that is work and why, such as "ignored .idea/ (the target tracks .idea/codeStyles/Project.xml)".
+  The check writes nothing in the slot. It reads a bounded listing of the default's tracked paths
+  and a `.gitignore` diff, and only when a `.gitignore` differs evaluates the default's rules with
+  `git check-ignore` in a private temporary repository, holding the default's `.gitignore` files,
+  the common directory's `info/exclude`, and the slot's `core.excludesFile` and `core.ignorecase`.
+  Any of those steps that fails, overflows or times out counts the entries it could not clear as
+  work. The reset checks the work set again once it has fetched its own target, and Execute
+  refuses when the default moved to a commit whose work set differs from the preview's. Safe Kill
+  and the other return checks keep the stricter rule, which counts every ignored file outside the
+  regenerable directories.
+
+  Recover is the
   way out of the stale-lock quarantine: a Git command that dies holding `index.lock` makes the
   next reset fail with Git's "Unable to create '...index.lock': File exists", and the slot is
   quarantined with that text as its last error.
@@ -716,7 +743,8 @@ The operations have deliberately narrow meanings:
   Each maintenance pass also retries every quarantine whose last error is that text, with no
   operator. It recovers the slot when the lock is gone, or when the lock is more than 10 minutes
   old and the same no-Git-process and no-holder check passes, and only when the slot is clean
-  with regenerable ignored files discounted. A slot holding any other work stays quarantined, with
+  with regenerable ignored files discounted, the stricter rule rather than Recover's reset rule.
+  A slot holding any other work stays quarantined, with
   that work intact, until someone runs Recover and reads its preview. Each refusal is recorded
   with the exact path that blocked it: the first entry the reset would discard, with its kind
   (an uncommitted change, an untracked file, an ignored file or unpushed commits on `HEAD`), or

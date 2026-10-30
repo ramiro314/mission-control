@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
@@ -9,6 +9,7 @@ import { slotGitDirectory } from "../src/server/worktrees/index-lock.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
+import { worktreeResetWorkKey } from "../src/server/git/worktree-return-safety.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const db = openDb();
@@ -82,7 +83,7 @@ test("Recover is offered on an unowned quarantine and its preview names the lock
   assert.equal(preview.allowed, true, preview.blockers.join("; "));
   assert.deepEqual(preview.requiredAcknowledgements, ["dirty"]);
   assert.ok(preview.consequences.includes(`Removes the stale lock ${lock}.`), preview.consequences.join("\n"));
-  assert.ok(preview.consequences.some((line) => line.startsWith("Discards the slot's work: checkout has uncommitted, untracked or ignored work.")));
+  assert.ok(preview.consequences.includes("Discards the slot's work: untracked notes.md."), preview.consequences.join("\n"));
   await assert.rejects(operations.execute(preview.token, []), /missing acknowledgement: dirty/);
 
   const accepted = await operations.preview({ action: "recover", slotId: lease.slotId });
@@ -95,4 +96,148 @@ test("Recover is offered on an unowned quarantine and its preview names the lock
   assert.equal(existsSync(lock), false);
   assert.equal(existsSync(scratch), false, "the acknowledged work was discarded by the reset");
   assert.equal((await slotActions(lease.slotId))?.includes("recover"), false);
+});
+
+const IGNORE = ".yarn/install-state.gz\n.idea/\n*.tsbuildinfo\n.env\n.evidence/\nnode_modules/\n.local/\n";
+const KEPT = [".yarn/install-state.gz", ".idea/workspace.xml", "apps/web/tsconfig.tsbuildinfo", ".env", ".evidence/shot.png", "node_modules/pkg/index.js", "apps/foo/.local/notes.md"];
+
+/**
+ * A slot quarantined by a stale `index.lock` with no live owner, whose origin ignores what a
+ * uwf slot holds, and which holds each of those ignored files. `advance` moves origin's
+ * default: each value is a file's content, a symlink's target, or null to delete it.
+ */
+async function quarantinedSlot(prefix: string) {
+  const { root, origin, clone } = mkOriginAndClone(prefix);
+  after(() => rmSync(root, { recursive: true, force: true }));
+  const advance = (changes: Record<string, string | { symlink: string } | null>) => {
+    for (const [file, content] of Object.entries(changes)) {
+      const full = join(origin, file);
+      rmSync(full, { recursive: true, force: true });
+      if (content === null) continue;
+      mkdirSync(join(full, ".."), { recursive: true });
+      if (typeof content === "string") writeFileSync(full, content);
+      else symlinkSync(content.symlink, full);
+    }
+    gitIn(origin, "add", "-A", "-f");
+    gitIn(origin, "commit", "-qm", "advance");
+  };
+  advance({ ".gitignore": IGNORE });
+  gitIn(clone, "fetch", "-q", "origin");
+  const acquired = await manager.acquire({
+    repositoryPath: clone,
+    baseSha: gitIn(clone, "rev-parse", "origin/main"),
+    owner: { kind: "task", key: `${prefix}:0` },
+  });
+  assert.equal(acquired.outcome, "acquired");
+  const lease = (acquired as { lease: NativeWorktreeLease }).lease;
+  const common = gitIn(lease.path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  writeFileSync(join((await slotGitDirectory(lease.path, common))!, "index.lock"), "");
+  assert.equal((await manager.release(lease, { ownerAuthorized: true })).outcome, "outcomeUnknown");
+  assert.equal(manager.store.slot(lease.slotId)?.state, "quarantined");
+  for (const file of KEPT) {
+    mkdirSync(join(lease.path, file, ".."), { recursive: true });
+    writeFileSync(join(lease.path, file), "local\n");
+  }
+  return { lease, advance };
+}
+
+test("Recover keeps a warm install: ignored files the default keeps ignored ask no acknowledgement and keep their inodes", async () => {
+  const { lease } = await quarantinedSlot("mission-recover-warm-");
+  const inodes = new Map(KEPT.map((file) => [file, statSync(join(lease.path, file)).ino]));
+  const preview = await operations.preview({ action: "recover", slotId: lease.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  assert.deepEqual(preview.requiredAcknowledgements, []);
+  assert.ok(!preview.consequences.some((line) => line.startsWith("Discards")), preview.consequences.join("\n"));
+  assert.ok(preview.consequences.includes(
+    "Keeps every ignored file the remote default still ignores and does not track, such as node_modules/ and .yarn/install-state.gz.",
+  ));
+  assert.equal((await operations.execute(preview.token, [])).ok, true);
+  assert.equal(manager.store.slot(lease.slotId)?.state, "available");
+  for (const [file, inode] of inodes) assert.equal(statSync(join(lease.path, file)).ino, inode, `${file} kept its inode`);
+});
+
+test("Recover asks for acknowledgement only for reset-rule work, and names each entry", async () => {
+  const cases: Array<{ name: string; changes: Record<string, string | { symlink: string } | null>; named: string }> = [
+    {
+      name: "a default that un-ignores .env",
+      changes: { ".gitignore": IGNORE.replace(".env\n", "") },
+      named: "ignored .env (the target's .gitignore files no longer ignore it)",
+    },
+    {
+      name: "a default that tracks a file inside the ignored .idea/",
+      changes: { ".idea/codeStyles/Project.xml": "<x/>\n" },
+      named: "ignored .idea/ (the target tracks .idea/codeStyles/Project.xml)",
+    },
+    {
+      name: "a default that replaces an ignored file's parent directory with a tracked file",
+      changes: { "apps/foo/.local": "file\n" },
+      named: "ignored apps/foo/.local/ (the target tracks apps/foo/.local)",
+    },
+    {
+      name: "a default that replaces an ignored file's parent directory with a tracked symlink",
+      changes: { "apps/foo/.local": { symlink: "../elsewhere" } },
+      named: "ignored apps/foo/.local/ (the target tracks apps/foo/.local)",
+    },
+    {
+      name: "a default that tracks a differently cased path over the ignored .idea/",
+      changes: { ".Idea/x": "x\n" },
+      named: "ignored .idea/ (the target tracks .Idea/x)",
+    },
+  ];
+  for (const [index, each] of cases.entries()) {
+    const { lease, advance } = await quarantinedSlot(`mission-recover-named-${index}-`);
+    advance(each.changes);
+    const preview = await operations.preview({ action: "recover", slotId: lease.slotId });
+    assert.equal(preview.allowed, true, `${each.name}: ${preview.blockers.join("; ")}`);
+    assert.deepEqual(preview.requiredAcknowledgements, ["dirty"], each.name);
+    assert.ok(preview.consequences.includes(`Discards the slot's work: ${each.named}.`), `${each.name}:\n${preview.consequences.join("\n")}`);
+    await assert.rejects(operations.execute(preview.token, []), /missing acknowledgement: dirty/, each.name);
+    assert.equal(manager.store.slot(lease.slotId)?.state, "quarantined", each.name);
+  }
+});
+
+test("Recover's execute refuses when the default moved to a target whose work set differs from the preview's", async () => {
+  const { lease, advance } = await quarantinedSlot("mission-recover-moved-");
+  const preview = await operations.preview({ action: "recover", slotId: lease.slotId });
+  assert.deepEqual(preview.requiredAcknowledgements, []);
+  // The default moves after the preview: execute's own rebuild sees the new work and refuses.
+  advance({ ".gitignore": IGNORE.replace(".env\n", "") });
+  await assert.rejects(operations.execute(preview.token, []), /changed after preview/);
+  assert.equal(manager.store.slot(lease.slotId)?.state, "quarantined");
+  assert.ok(existsSync(join(lease.path, ".env")));
+
+  // The default moves after that rebuild, between its fetch and the reset's: the reset
+  // compares the preview's set with the one at the target it fetched, and refuses.
+  const slot = manager.store.slot(lease.slotId)!;
+  const refused = await manager.recoverSlot({
+    slotId: lease.slotId,
+    expectedVersion: slot.version,
+    allowDirty: false,
+    automatic: false,
+    expectedWork: worktreeResetWorkKey({ status: "clean" }),
+  });
+  assert.equal(refused.outcome, "refused");
+  assert.match((refused as { reason: string }).reason, /the slot's work changed since the preview/);
+  assert.equal(manager.store.slot(lease.slotId)?.state, "quarantined");
+  assert.ok(existsSync(join(lease.path, ".env")), "nothing was discarded");
+
+  // A moved default whose work set is the preview's goes ahead.
+  advance({ "src/unrelated.ts": "export {};\n" });
+  const acknowledged = await operations.preview({ action: "recover", slotId: lease.slotId });
+  assert.deepEqual(acknowledged.requiredAcknowledgements, ["dirty"]);
+  advance({ "src/another.ts": "export {};\n" });
+  const recovered = await manager.recoverSlot({
+    slotId: lease.slotId,
+    expectedVersion: manager.store.slot(lease.slotId)!.version,
+    allowDirty: true,
+    automatic: false,
+    expectedWork: worktreeResetWorkKey({
+      status: "work",
+      entries: [{ kind: "ignored", path: ".env", because: "another reason, which is not part of the set" }],
+      more: false,
+    }),
+  });
+  assert.equal(recovered.outcome, "recovered");
+  assert.equal(existsSync(join(lease.path, ".env")), false, "the acknowledged .env was discarded");
+  assert.ok(existsSync(join(lease.path, "node_modules/pkg/index.js")), "the install was kept");
 });

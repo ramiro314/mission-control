@@ -63,10 +63,14 @@ import {
   type SlotIndexLock,
 } from "./index-lock.ts";
 import {
+  describeWorktreeResetWork,
   describeWorktreeWork,
+  worktreeResetWork,
+  worktreeResetWorkKey,
   worktreeWork,
-  worktreeWorkBlocker,
+  type WorktreeResetWork,
   type WorktreeWork,
+  type WorktreeWorkEntry,
 } from "../git/worktree-return-safety.ts";
 import {
   inspectWorktreeOccupancy,
@@ -2445,7 +2449,8 @@ export class WorktreeManager {
 
   /**
    * The owner-authorized reset every return ends in: fetch origin's default, validate the slot
-   * as a reset target, give `beforeIntent` the last word, persist the return intent, reset,
+   * as a reset target, give `beforeIntent` the last word (with the fetched target, so a check
+   * of what the reset discards is a check of this reset), persist the return intent, reset,
    * prove the result exact, clean and detached, and record the slot available. Anything the
    * reset or its proof cannot establish quarantines the slot.
    */
@@ -2453,7 +2458,7 @@ export class WorktreeManager {
     pool: WorktreePoolRow,
     identity: WorktreeRepositoryIdentity,
     slot: WorktreeSlotRow,
-    beforeIntent: () => Promise<WorktreeReleaseResult | null>,
+    beforeIntent: (target: string) => Promise<WorktreeReleaseResult | null>,
   ): Promise<WorktreeReleaseResult> {
     let target: Awaited<ReturnType<WorktreeGit["fetchDefaultSha"]>>;
     try {
@@ -2472,7 +2477,7 @@ export class WorktreeManager {
         ? { outcome: "outcomeUnknown", reason: resetTarget.reason }
         : { outcome: "refused", reason: resetTarget.reason };
     }
-    const blocked = await beforeIntent();
+    const blocked = await beforeIntent(target.value);
     if (blocked) return blocked;
     let returning: WorktreeSlotRow | null;
     try {
@@ -2540,14 +2545,18 @@ export class WorktreeManager {
    * The lock goes only when no Git process has its working directory in the slot and `lsof`
    * shows nothing holding it. The automatic pass (`automatic`) further requires the lock to be
    * `INDEX_LOCK_STALE_MS` old, the quarantine to be lock-caused, and the slot to be clean with
-   * regenerable ignored files discounted; it never discards work. An operator's Recover
-   * discards work only with `allowDirty`, which its preview's dirty acknowledgement grants.
+   * regenerable ignored files discounted; it never discards work. An operator's Recover counts
+   * work by the reset rule against the commit the reset fetched, so ignored files the target
+   * keeps ignored and untracked are not work. It discards work only with `allowDirty`, which
+   * its preview's dirty acknowledgement grants, and with `expectedWork` it refuses a work set
+   * (`worktreeResetWorkKey`) that differs from the preview's, as when the default moved.
    */
   async recoverSlot(input: {
     slotId: string;
     expectedVersion?: number;
     allowDirty: boolean;
     automatic: boolean;
+    expectedWork?: string;
   }): Promise<WorktreeRecoverResult> {
     if (!this.store.poolForSlot(input.slotId)) return { outcome: "refused", reason: "native slot no longer exists" };
     return this.withSlot(input.slotId, () => this.recoverLocked(input));
@@ -2590,8 +2599,9 @@ export class WorktreeManager {
         : { outcome: "refused", reason: lockBlocker, blocking: { kind: "lock", path: lock.path } };
     }
     // After the lock check, never before it: the clean read is Git in the slot, and it reads
-    // with `--no-optional-locks` so it cannot itself take the lock it is judging.
-    if (!input.allowDirty) {
+    // with `--no-optional-locks` so it cannot itself take the lock it is judging. An operator's
+    // Recover reads its work once the target is fetched, below.
+    if (input.automatic && !input.allowDirty) {
       const work = await this.slotWorkEntry(slot.path);
       if (work.status === "unknown") return { outcome: "refused", reason: `the slot's work could not be read: ${work.reason}` };
       if (work.status === "work") {
@@ -2618,14 +2628,31 @@ export class WorktreeManager {
       }
     }
     const removedLock = lock.exists ? lock.path : null;
-    const reset = await this.resetToDefault(pool, identity, slot, async () => {
+    let blocking: WorktreeWorkEntry | undefined;
+    const reset = await this.resetToDefault(pool, identity, slot, async (target) => {
       const freshBlocker = await this.occupancyBlocker(slot.path);
-      return freshBlocker ? { outcome: "refused", reason: freshBlocker } : null;
+      if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
+      if (input.automatic) return null;
+      const work = await this.resetWork(slot.path, target);
+      if (input.expectedWork !== undefined && worktreeResetWorkKey(work) !== input.expectedWork) {
+        return {
+          outcome: "refused",
+          reason: `the slot's work changed since the preview, against origin's default at ${target.slice(0, 12)}; preview Recover again`,
+        };
+      }
+      if (input.allowDirty) return null;
+      if (work.status === "unknown") return { outcome: "refused", reason: `the slot's work could not be read: ${work.reason}` };
+      if (work.status === "work") {
+        const first = work.entries[0]!;
+        blocking = { kind: first.kind, path: first.path };
+        return { outcome: "refused", reason: `the slot holds work Recover would discard: ${describeWorktreeResetWork(first)}` };
+      }
+      return null;
     });
     if (reset.outcome === "released" || reset.outcome === "alreadyReleased") {
       return { outcome: "recovered", removedLock };
     }
-    return reset;
+    return reset.outcome === "refused" && blocking ? { outcome: "refused", reason: reset.reason, blocking } : reset;
   }
 
   /**
@@ -2658,16 +2685,34 @@ export class WorktreeManager {
   }
 
   /**
-   * The work a reset of this slot would discard, or null when there is none: uncommitted,
+   * The first entry the automatic pass counts as work, by today's return rule: uncommitted,
    * untracked or unpushed work, or an ignored file outside `REGENERABLE_IGNORED_PATHS`.
    */
-  async slotWork(path: string): Promise<string | null> {
-    return worktreeWorkBlocker(await this.slotWorkEntry(path));
-  }
-
-  /** The first entry `slotWork` would name, as its path and kind. */
   slotWorkEntry(path: string): Promise<WorktreeWork> {
     return worktreeWork(path, { regenerableIgnored: true, execute: trackedRun });
+  }
+
+  /**
+   * What an operator's Recover would discard: the reset rule against origin's default, fetched
+   * now, which is the commit the reset moves to. Recover's preview names each entry, and its
+   * execute compares this set again once the reset has fetched its own target.
+   */
+  async slotResetWork(slot: WorktreeSlotRow): Promise<WorktreeResetWork> {
+    const pool = this.store.poolForSlot(slot.id);
+    const identity = pool ? this.identity(pool.mainCheckoutRoot) : null;
+    if (!identity) return { status: "unknown", reason: "pool repository identity can no longer be proven" };
+    let target: Awaited<ReturnType<WorktreeGit["fetchDefaultSha"]>>;
+    try {
+      target = await this.deps.git.fetchDefaultSha(identity);
+    } catch (error) {
+      return { status: "unknown", reason: bounded(String(error)) };
+    }
+    if (!target.ok) return { status: "unknown", reason: `origin's default could not be fetched: ${target.reason}` };
+    return this.resetWork(slot.path, target.value);
+  }
+
+  private resetWork(path: string, targetCommit: string): Promise<WorktreeResetWork> {
+    return worktreeResetWork(path, { targetCommit, execute: trackedRun });
   }
 
   /** The last automatic-recovery refusal of this slot's current quarantine, or null. */
