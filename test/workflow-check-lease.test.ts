@@ -1,7 +1,7 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -982,4 +982,310 @@ test("pinnedPaths contributes no path for a returned or a lost row", async () =>
   const held = await acquire(m, "att-pin-held");
   assert.deepEqual(m.manager.pinnedPaths(), [held]);
   await m.manager.releaseForAttempt("att-pin-held");
+});
+
+// ---- a Git check tree that Git no longer recognizes (S11) --------------------
+//
+// What is at stake: a disposable Git check tree whose `.git` is gone fails
+// `git worktree remove --force` with "validation failed" on every pass, and the sweep leaves it
+// because the lease still names it, so it held its disk forever. Deleting it is right only for
+// a real folder inside `check-worktrees/` with no process in it; deleting anything else, or a
+// tree Git still knows, would lose work or reach outside the directory.
+
+const { CHECK_WORKTREES_DIR } = await import("../src/server/config.ts");
+const { OrphanTreeSweep, ORPHAN_TREE_GRACE_MS, referencedTreePaths } =
+  await import("../src/server/worktrees/orphan-sweep.ts");
+const { InFlightTrees } = await import("../src/server/worktrees/in-flight.ts");
+type Occupancy = import("../src/server/worktrees/occupancy.ts").WorktreeOccupancy;
+type LeaseDeps = ConstructorParameters<typeof CheckLeaseManager>[1];
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+const idle = async (paths: readonly string[]) =>
+  new Map<string, Occupancy>(paths.map((path) => [path, { status: "known", occupants: [] }]));
+const empty: CheckGroupRecovery = async () => "empty";
+
+let gitTrees = 0;
+/**
+ * A repository and one `returning` Git check lease on a tree it registered. `at` places the
+ * tree somewhere other than `check-worktrees/<attempt>`; `leasePath` records another path.
+ */
+function gitCheckTree(opts: { at?: (attemptId: string) => string } = {}) {
+  const repo = realpathSync(mkdtempSync(join(home, "git-repo-")));
+  git(repo, "init", "-q", "-b", "main");
+  git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  mkdirSync(CHECK_WORKTREES_DIR, { recursive: true });
+  const attemptId = `git-check-${++gitTrees}`;
+  const path = opts.at?.(attemptId) ?? join(realpathSync(CHECK_WORKTREES_DIR), attemptId);
+  mkdirSync(join(path, ".."), { recursive: true });
+  git(repo, "worktree", "add", "-q", "--detach", path);
+  store.insertHeld({
+    attemptId, submissionId: `sub-${attemptId}`, nodeId: "gate", repoRoot: repo, leasePath: path,
+    holderToken: `mission-control-check-${attemptId}`, provider: "git", now: Date.now(),
+  });
+  store.setState(attemptId, "returning", Date.now());
+  return { repo, attemptId, path };
+}
+
+function registered(repo: string, path: string): boolean {
+  return git(repo, "worktree", "list", "--porcelain").split("\n").includes(`worktree ${path}`);
+}
+
+/** A manager whose prune is the real orphan sweep's, scoped to this test's state home. */
+function gitManager(repo: string, deps: LeaseDeps = {}) {
+  const sweep = new OrphanTreeSweep({
+    directories: [CHECK_WORKTREES_DIR],
+    stateHome: home,
+    referencedPaths: () => referencedTreePaths(db),
+    slotPaths: () => [],
+    sourceRepositories: () => [repo],
+    inFlight: new InFlightTrees(),
+    occupancy: idle,
+    now: () => Date.now() + 2 * ORPHAN_TREE_GRACE_MS,
+  });
+  const manager = new CheckLeaseManager(db, {
+    verifyBase: async (_repoRoot, sha) => sha,
+    occupancy: idle,
+    pruneRegistrations: () => sweep.pruneRegistrations(),
+    ...deps,
+  });
+  return { manager, sweep };
+}
+
+/** End a case that deliberately leaves its lease `returning`. */
+function abandon(attemptId: string): void {
+  store.setState(attemptId, "returned", Date.now());
+}
+
+test("a returning Git check tree that lost .git is deleted, then settled, then pruned in one pass", async () => {
+  const tree = gitCheckTree();
+  rmSync(join(tree.path, ".git"));
+  writeFileSync(join(tree.path, "build.log"), "22 GB of output\n");
+  store.recordRefusal(tree.attemptId, { reason: "validation failed", processes: [] }, 1);
+  const order: string[] = [];
+  const { manager, sweep } = gitManager(tree.repo, {
+    removeTree: async (path) => {
+      order.push(`delete while ${store.get(tree.attemptId)?.cleanupState}`);
+      rmSync(path, { recursive: true });
+    },
+    pruneRegistrations: async () => {
+      order.push(`prune while ${store.get(tree.attemptId)?.cleanupState}`);
+      assert.deepEqual(manager.refusedReturns(), [], "stuck-return cleared before the prune");
+      assert.deepEqual(await sweep.pruneRegistrations(), [tree.path]);
+    },
+  });
+  assert.deepEqual(manager.refusedReturns().map((each) => each.attemptId), [tree.attemptId]);
+
+  await manager.reclaimLeaked(empty);
+
+  assert.deepEqual(order, ["delete while returning", "prune while returned"]);
+  assert.equal(store.get(tree.attemptId)?.cleanupState, "returned");
+  assert.equal(existsSync(tree.path), false);
+  assert.equal(registered(tree.repo, tree.path), false, "the registration went in the same pass");
+  assert.deepEqual(manager.pinnedPaths(), []);
+});
+
+test("a tree whose .git names a Git directory belonging to another tree is deleted", async () => {
+  const tree = gitCheckTree();
+  const other = gitCheckTree();
+  writeFileSync(join(tree.path, ".git"), readFileSync(join(other.path, ".git")));
+  const { manager } = gitManager(tree.repo);
+  // Git refuses this removal on its own; the point is what happens after it does.
+  git(tree.repo, "worktree", "lock", tree.path);
+
+  assert.deepEqual(await manager.releaseForAttempt(tree.attemptId, empty), { outcome: "returned" });
+  assert.equal(existsSync(tree.path), false);
+  assert.ok(existsSync(other.path), "the tree the stray .git named is untouched");
+  abandon(other.attemptId);
+});
+
+test("a prune that fails is left to the next sweep, which no row stops any more", async () => {
+  const tree = gitCheckTree();
+  rmSync(join(tree.path, ".git"));
+  const { manager, sweep } = gitManager(tree.repo, {
+    pruneRegistrations: async () => {
+      throw new Error("git worktree list timed out");
+    },
+  });
+
+  assert.deepEqual(await manager.releaseForAttempt(tree.attemptId, empty), { outcome: "returned" });
+  assert.equal(existsSync(tree.path), false);
+  assert.ok(registered(tree.repo, tree.path), "the failed prune left the registration");
+
+  const swept = await sweep.sweep();
+  assert.deepEqual(swept.pruned, [tree.path]);
+  assert.equal(registered(tree.repo, tree.path), false);
+});
+
+test("a deletion that fails keeps the lease returning, with why", async () => {
+  const tree = gitCheckTree();
+  rmSync(join(tree.path, ".git"));
+  let pruned = false;
+  const { manager } = gitManager(tree.repo, {
+    removeTree: async () => {
+      throw new Error("EACCES: permission denied");
+    },
+    pruneRegistrations: async () => {
+      pruned = true;
+    },
+  });
+
+  const result = await manager.releaseForAttempt(tree.attemptId, empty);
+  assert.equal(result.outcome, "retry");
+  assert.match(result.outcome === "retry" ? result.reason : "", /validation failed.*deleting the tree failed: EACCES/s);
+  assert.equal(store.get(tree.attemptId)?.cleanupState, "returning");
+  assert.ok(existsSync(tree.path));
+  assert.equal(pruned, false);
+  assert.deepEqual(manager.pinnedPaths(), [tree.path]);
+  abandon(tree.attemptId);
+});
+
+test("a run cut off after the deletion settles on the next pass through the ordinary return", async () => {
+  const tree = gitCheckTree();
+  // The folder is gone and the lease is still returning: exactly what a crash after step 1 leaves.
+  rmSync(tree.path, { recursive: true });
+  let deleted = false;
+  const { manager } = gitManager(tree.repo, {
+    removeTree: async () => {
+      deleted = true;
+    },
+  });
+
+  assert.deepEqual(await manager.releaseForAttempt(tree.attemptId), { outcome: "returned" });
+  assert.equal(deleted, false, "git worktree remove accepted the absent tree on its own");
+  assert.equal(registered(tree.repo, tree.path), false);
+});
+
+test("an absent tree whose ordinary return fails settles through its parent's containment", async () => {
+  const tree = gitCheckTree();
+  git(tree.repo, "worktree", "lock", tree.path);
+  rmSync(tree.path, { recursive: true });
+  const { manager } = gitManager(tree.repo);
+
+  assert.deepEqual(await manager.releaseForAttempt(tree.attemptId), { outcome: "returned" });
+  assert.deepEqual(manager.refusedReturns(), []);
+});
+
+test("an absent tree whose parent resolves outside check-worktrees is refused", async () => {
+  const outside = realpathSync(mkdtempSync(join(home, "outside-")));
+  const link = join(realpathSync(CHECK_WORKTREES_DIR), `link-${gitTrees}`);
+  symlinkSync(outside, link);
+  for (const at of [(id: string) => join(outside, id), (id: string) => join(link, id)]) {
+    const tree = gitCheckTree({ at });
+    // Git records the resolved path; registered through the link, as the lease names it, the
+    // ordinary ownership check still finds it and the return reaches the containment check.
+    writeFileSync(join(tree.repo, ".git", "worktrees", tree.attemptId, "gitdir"), `${join(tree.path, ".git")}\n`);
+    assert.ok(registered(tree.repo, tree.path));
+    git(tree.repo, "worktree", "lock", tree.path);
+    rmSync(tree.path, { recursive: true });
+    const { manager } = gitManager(tree.repo);
+
+    const result = await manager.releaseForAttempt(tree.attemptId, empty);
+    assert.equal(result.outcome, "retry");
+    assert.match(result.outcome === "retry" ? result.reason : "", /locked.*the parent of .* does not resolve to/s);
+    assert.equal(store.get(tree.attemptId)?.cleanupState, "returning");
+    abandon(tree.attemptId);
+  }
+});
+
+test("a recorded path that is now a symlink is refused, whether or not it dangles", async () => {
+  const target = realpathSync(mkdtempSync(join(home, "target-")));
+  writeFileSync(join(target, "keep.txt"), "not ours\n");
+  for (const pointsAt of [target, join(home, "nowhere")]) {
+    const tree = gitCheckTree();
+    git(tree.repo, "worktree", "lock", tree.path);
+    rmSync(tree.path, { recursive: true });
+    symlinkSync(pointsAt, tree.path);
+    const { manager } = gitManager(tree.repo);
+
+    const result = await manager.releaseForAttempt(tree.attemptId, empty);
+    assert.match(result.outcome === "retry" ? result.reason : "", /is a symlink/);
+    assert.equal(store.get(tree.attemptId)?.cleanupState, "returning");
+    assert.ok(existsSync(join(target, "keep.txt")));
+    abandon(tree.attemptId);
+  }
+});
+
+test("deletion is refused while the process group or an occupant may be alive", async () => {
+  const occupant = {
+    pid: 4242, ppid: 1, startRaw: "", startMs: 0, command: "node build.js", cwd: "", knownOwner: null,
+  };
+  const cases: Array<{ deps: LeaseDeps; recovery?: CheckGroupRecovery; reason: RegExp }> = [
+    { deps: {}, recovery: async () => "not-empty", reason: /process group is still running/ },
+    { deps: {}, recovery: async () => "unknown", reason: /process-group state is unknown/ },
+    // The default seam refuses, so a caller that cannot prove the group empty keeps the tree.
+    { deps: {}, reason: /process-group state is unknown/ },
+    {
+      deps: { occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known", occupants: [{ ...occupant, cwd: path }] }])) },
+      recovery: empty,
+      reason: /1 process\(es\) still use it/,
+    },
+    {
+      deps: { occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "unknown", reason: "ps timed out" }])) },
+      recovery: empty,
+      reason: /could not be inspected: ps timed out/,
+    },
+  ];
+  for (const each of cases) {
+    const tree = gitCheckTree();
+    rmSync(join(tree.path, ".git"));
+    const { manager } = gitManager(tree.repo, each.deps);
+
+    const result = each.recovery
+      ? await manager.releaseForAttempt(tree.attemptId, each.recovery)
+      : await manager.releaseForAttempt(tree.attemptId);
+    assert.match(result.outcome === "retry" ? result.reason : "", each.reason);
+    assert.ok(existsSync(tree.path));
+    assert.equal(store.get(tree.attemptId)?.cleanupState, "returning");
+    abandon(tree.attemptId);
+  }
+});
+
+test("deletion is refused for a tree outside check-worktrees and for one reached through a symlink", async () => {
+  const outside = realpathSync(mkdtempSync(join(home, "elsewhere-")));
+  const direct = gitCheckTree({ at: (id) => join(outside, id) });
+  rmSync(join(direct.path, ".git"));
+  const directResult = await gitManager(direct.repo).manager.releaseForAttempt(direct.attemptId, empty);
+  assert.match(directResult.outcome === "retry" ? directResult.reason : "", /does not resolve to a child of/);
+  assert.ok(existsSync(direct.path));
+  abandon(direct.attemptId);
+
+  // The lease names `check-worktrees/<attempt>`, but that is a link to a tree elsewhere.
+  const real = gitCheckTree({ at: (id) => join(outside, `${id}-real`) });
+  rmSync(join(real.path, ".git"));
+  const leasePath = join(realpathSync(CHECK_WORKTREES_DIR), `${real.attemptId}-linked`);
+  symlinkSync(real.path, leasePath);
+  store.insertHeld({
+    attemptId: `${real.attemptId}-linked`, submissionId: "sub", nodeId: "gate", repoRoot: real.repo,
+    leasePath, holderToken: "h", provider: "git", now: Date.now(),
+  });
+  store.setState(`${real.attemptId}-linked`, "returning", Date.now());
+  const linked = await gitManager(real.repo).manager.releaseForAttempt(`${real.attemptId}-linked`, empty);
+  assert.match(linked.outcome === "retry" ? linked.reason : "", /is a symlink/);
+  assert.ok(existsSync(real.path));
+  abandon(real.attemptId);
+  abandon(`${real.attemptId}-linked`);
+});
+
+test("a tree Git still recognizes keeps today's failed return, untouched", async () => {
+  const tree = gitCheckTree();
+  git(tree.repo, "worktree", "lock", tree.path);
+  let deleted = false;
+  const { manager } = gitManager(tree.repo, {
+    removeTree: async () => {
+      deleted = true;
+    },
+  });
+
+  const result = await manager.releaseForAttempt(tree.attemptId, empty);
+  assert.equal(result.outcome, "retry");
+  const reason = result.outcome === "retry" ? result.reason : "";
+  assert.match(reason, /cannot remove a locked working tree/);
+  assert.doesNotMatch(reason, /not deleted|deleting/);
+  assert.equal(deleted, false);
+  assert.ok(existsSync(join(tree.path, ".git")));
+  assert.equal(store.get(tree.attemptId)?.cleanupState, "returning");
+  abandon(tree.attemptId);
 });

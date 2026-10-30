@@ -246,6 +246,28 @@ test("scoped prune removes only missing registrations under the state home", asy
   assert.ok(existsSync(present));
 });
 
+test("the scoped prune alone skips a path a live check lease names, and removes it once the lease settles", async () => {
+  const f = fixture();
+  const gone = addWorktree(f, join(f.checks, "attempt-gone"), "harness/attempt-gone");
+  const kept = addWorktree(f, join(f.checks, "attempt-kept"), "harness/attempt-kept");
+  rmSync(gone, { recursive: true });
+  const leases = new CheckLeaseStore(openDb());
+  leases.insertHeld({
+    attemptId: "attempt-gone", submissionId: "s", nodeId: "gate", repoRoot: f.repo,
+    leasePath: gone, holderToken: "h", provider: "git", now: Date.now(),
+  });
+  leases.setState("attempt-gone", "returning", Date.now());
+  const sweep = sweeper(f, { referencedPaths: () => referencedTreePaths(openDb()) });
+
+  assert.deepEqual(await sweep.pruneRegistrations(), [], "a returning lease still names it");
+  leases.setState("attempt-gone", "returned", Date.now());
+  assert.deepEqual(await sweep.pruneRegistrations(), [gone]);
+  const listed = git(f.repo, "worktree", "list", "--porcelain");
+  assert.ok(!listed.includes(`worktree ${gone}\n`));
+  assert.ok(listed.includes(`worktree ${kept}\n`), "a tree that exists is never pruned");
+  assert.ok(existsSync(kept));
+});
+
 test("a kept folder keeps its problem while skipped, and is reported gone once removed", async () => {
   const f = fixture();
   const dirty = addWorktree(f, join(f.worktrees, "dirty"), "harness/dirty");
