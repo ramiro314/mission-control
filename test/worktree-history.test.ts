@@ -1372,3 +1372,58 @@ test("cut-off seed paths that cannot be removed are why there was no seed", asyn
   ]);
   assert.equal(m.store.slotTimings(first.slotId).seed!.reason, "the paths of the seed that was cut off could not be removed");
 });
+
+test("a reused slot's provisioning runs from its reservation, past the idle gap and through its claim", async () => {
+  const { m, lease, state, origin, clone } = timedManager("mission-history-timing-reused-", { install: 20_000 });
+  const first = await lease("task-first");
+  assert.equal((await m.release(first, { ownerAuthorized: true })).outcome, "released");
+
+  state.now += 3_600_000;
+  writeFileSync(join(origin, ".gitignore"), "deps/\n# a new fingerprint\n");
+  gitIn(origin, "add", "-A");
+  gitIn(origin, "commit", "-qm", "change the fingerprint");
+  gitIn(clone, "fetch", "-q", "origin");
+  const second = await lease("task-second", gitIn(clone, "rev-parse", "origin/main"));
+  assert.equal(second.slotId, first.slotId, "the same slot, stale, so its steps run");
+  assert.deepEqual(timedRows(first.slotId).slice(-2), [
+    ["claim", "succeeded", 20_000, "owner"],
+    ["provisioning", "reused", 20_000, "owner"],
+  ], "the hour it sat idle is no part of it");
+});
+
+test("a Warm's seed rows name the operator, whether it found no seed or took one", async () => {
+  const warm = async (m: WorktreeManager, slotId: string) => {
+    const warmed = await m.warmSlot({
+      slotId, operationId: `op-${slotId}`, signal: new AbortController().signal, output: () => {}, log: null,
+    });
+    assert.equal(warmed.outcome, "warmed", JSON.stringify(warmed));
+  };
+  const makeCold = (slotId: string) =>
+    db.prepare(`UPDATE worktree_slots SET deps_state = 'failed', deps_fingerprint = NULL WHERE id = ?`).run(slotId);
+
+  const unseeded = timedManager("mission-history-timing-warm-unseeded-", {});
+  const only = await unseeded.lease("task-only");
+  assert.equal((await unseeded.m.release(only, { ownerAuthorized: true })).outcome, "released");
+  makeCold(only.slotId);
+  const before = timedRows(only.slotId).length;
+  await warm(unseeded.m, only.slotId);
+  assert.deepEqual(timedRows(only.slotId).slice(before), [
+    ["seed", "none", 0, "operator"],
+    ["claim", "succeeded", 0, "operator"],
+  ]);
+
+  db.exec(`DELETE FROM worktree_slot_history; DELETE FROM worktree_slots; DELETE FROM worktree_pools;`);
+  const seeded = timedManager("mission-history-timing-warm-seeded-", { seed: SEED_DEPS, clone: 5_000 });
+  const source = await seeded.lease("task-source");
+  const target = await seeded.lease("task-target");
+  assert.equal((await seeded.m.release(source, { ownerAuthorized: true })).outcome, "released");
+  assert.equal((await seeded.m.release(target, { ownerAuthorized: true })).outcome, "released");
+  makeCold(target.slotId);
+  const prior = timedRows(target.slotId).length;
+  await warm(seeded.m, target.slotId);
+  assert.deepEqual(timedRows(target.slotId).slice(prior), [
+    ["seed", "placed", 5_000, "operator"],
+    ["claim", "succeeded", 5_000, "operator"],
+  ]);
+  assert.equal(seeded.m.store.slotTimings(target.slotId).seed!.sourceOrdinal, seeded.m.store.slot(source.slotId)!.ordinal);
+});
