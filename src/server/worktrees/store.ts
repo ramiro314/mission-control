@@ -244,13 +244,15 @@ function historyEntry(row: Record<string, unknown>): WorktreeSlotHistoryEntry {
 
 function timingView(row: Record<string, unknown> | undefined): WorktreeTimingView | null {
   if (!row) return null;
-  const source = parsedMeta(nullableString(row.meta))?.sourceOrdinal;
+  const meta = parsedMeta(nullableString(row.meta));
+  const source = meta?.sourceOrdinal;
   return {
     at: Number(row.at),
     outcome: nullableString(row.outcome),
     durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
     reason: nullableString(row.reason),
     sourceOrdinal: typeof source === "number" ? source : null,
+    sourceQuarantined: meta?.sourceQuarantined === true,
   };
 }
 
@@ -850,8 +852,10 @@ export class WorktreeStore {
       now,
       () => this.db
         .prepare(
+          // From here on files may be gone, so nothing may trust this tree's install again.
           `UPDATE worktree_slots SET state = 'pruning', version = version + 1,
-             last_error = NULL, updated_at = ?
+             last_error = NULL, deps_state = NULL, deps_fingerprint = NULL, deps_fingerprint_sha = NULL,
+             updated_at = ?
            WHERE id = ? AND state IN ('available', 'quarantined') AND version = ?
              AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
         )

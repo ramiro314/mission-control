@@ -1394,7 +1394,7 @@ export class WorktreeOperationsService {
     }
     if (target.kind === "pool" && affected.length === 0) blockers.push("No slot in this pool is idle to warm.");
     consequences.push(
-      "Holds each slot under a warm lease, fetches origin, resets the slot to origin's default branch, then seeds it from an idle sibling or runs the pool's claim under its usual rules, and returns it as available.",
+      "Holds each slot under a warm lease, fetches origin, resets the slot to origin's default branch, then seeds it from a sibling or runs the pool's claim under its usual rules, and returns it as available.",
     );
     if (target.kind === "pool") {
       consequences.push("Slots are warmed one at a time, so a later slot can seed from one warmed before it. A slot leased before its turn comes is skipped and listed as skipped.");

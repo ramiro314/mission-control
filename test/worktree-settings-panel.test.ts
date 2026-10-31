@@ -869,9 +869,9 @@ test("a slot card shows the last timings and why a seed had no source, and nothi
   assert.doesNotMatch(cardHtml(), /Last provisioning|Last claim|Last seed/);
   const html = cardHtml({
     timings: {
-      provisioning: { at: 1, outcome: "new", durationMs: 662_000, reason: null, sourceOrdinal: null },
-      claim: { at: 2, outcome: "succeeded", durationMs: 640_000, reason: null, sourceOrdinal: null },
-      seed: { at: 3, outcome: "none", durationMs: 0, reason: "no idle sibling holds a current install", sourceOrdinal: null },
+      provisioning: { at: 1, outcome: "new", durationMs: 662_000, reason: null, sourceOrdinal: null, sourceQuarantined: false },
+      claim: { at: 2, outcome: "succeeded", durationMs: 640_000, reason: null, sourceOrdinal: null, sourceQuarantined: false },
+      seed: { at: 3, outcome: "none", durationMs: 0, reason: "no idle sibling holds a current install", sourceOrdinal: null, sourceQuarantined: false },
     },
   });
   assert.match(html, /<dl class="wt-facts" aria-label="Slot 1 timings">/);
@@ -893,7 +893,7 @@ test("the pool row shows the median and hit rate once history holds a new slot",
 });
 
 test("a timed step reads the same on the card and in History, and a later outcome reads as itself", () => {
-  const timing = { outcome: "failed", durationMs: 3_000, sourceOrdinal: null };
+  const timing = { outcome: "failed", durationMs: 3_000, sourceOrdinal: null, sourceQuarantined: false };
   assert.equal(timingSummary("claim", timing), "failed after 3s");
   assert.equal(timingSummary("claim", { ...timing, outcome: "skipped" }), "skipped, dependencies already matched");
   assert.equal(timingSummary("claim", { ...timing, outcome: "shutdown" }), "stopped by a shutdown after 3s");
@@ -901,6 +901,11 @@ test("a timed step reads the same on the card and in History, and a later outcom
   assert.equal(timingSummary("seed", { ...timing, outcome: "placed", sourceOrdinal: 4 }), "from slot 4 in 3s");
   assert.equal(timingSummary("seed", { ...timing, outcome: "abandoned" }), "abandoned after 3s");
   assert.equal(timingSummary("seed", { ...timing, outcome: "interrupted" }), "cut off after 3s");
+  const quarantined = { ...timing, sourceOrdinal: 4, sourceQuarantined: true };
+  assert.equal(timingSummary("seed", { ...quarantined, outcome: "placed" }), "from quarantined slot 4 in 3s");
+  assert.equal(timingSummary("seed", { ...quarantined, outcome: "abandoned" }), "abandoned copying from quarantined slot 4 after 3s");
+  assert.equal(timingSummary("seed", { ...quarantined, outcome: "interrupted" }), "cut off copying from quarantined slot 4 after 3s");
+  assert.equal(timingSummary("seed", { ...timing, outcome: "abandoned", sourceOrdinal: 4 }), "abandoned copying from slot 4 after 3s");
   assert.equal(timingSummary("seed", { ...timing, outcome: "a-later-outcome" }), "a-later-outcome");
   assert.equal(timingSummary("seed", { ...timing, outcome: null }), "unknown");
 
@@ -912,6 +917,10 @@ test("a timed step reads the same on the card and in History, and a later outcom
   assert.equal(slotHistoryHeadline({ ...entry, kind: "claim", outcome: "succeeded" }), "Claim: succeeded in 12s");
   assert.equal(slotHistoryHeadline({ ...entry, kind: "provisioning", outcome: "new" }), "Provisioned: new slot in 12s");
   assert.equal(slotHistoryHeadline({ ...entry, meta: null }), "Seed: from slot unknown in 12s");
+  assert.equal(
+    slotHistoryHeadline({ ...entry, meta: { sourceOrdinal: 3, sourceQuarantined: true } }),
+    "Seed: from quarantined slot 3 in 12s",
+  );
 });
 
 test("a history row's headline names the change, and a later build's kind reads as itself", () => {

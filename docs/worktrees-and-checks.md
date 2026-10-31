@@ -304,7 +304,7 @@ seeds before its steps run when either of these holds:
   seed was interrupted. A slot whose last claim succeeded is not cold, even when its claim lists
   no fingerprint paths and so recorded no fingerprint, or every lease would copy a sibling's tree
   over its own fresh install;
-- its fingerprint is stale, **and** an idle sibling's fingerprint matches the leased commit's
+- its fingerprint is stale, **and** a sibling's fingerprint matches the leased commit's
   exactly. A slot whose last claim succeeded with no fingerprint, before fingerprint paths were
   configured, is stale as soon as the claim can compute one.
 
@@ -317,8 +317,35 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   read failed is left available with the failure recorded, and is not a source this time. The first choice
   is one whose fingerprint matches the leased commit's, and the next is the one most recently
   claimed successfully, including one whose claim recorded no fingerprint. A stale slot takes
-  only the first choice. The main checkout is never a source. With no idle sibling
-  there is no seed, and the steps run alone.
+  only the first choice. The main checkout is never a source. With no idle sibling, a quarantined
+  one may serve instead. With neither there is no seed, and the steps run alone.
+- **A quarantined source** is the fallback when no idle sibling can be held, so a pool that is
+  mostly quarantined can still seed. Idle siblings always come first, even one that does not match
+  the leased commit, and quarantined ones are ranked among themselves the same way. A quarantined
+  sibling qualifies only when all of these hold, proven under its slot lock, and a seed that finds
+  no source records why each one was passed over:
+  - its last claim succeeded (`deps_state` is `current`), and for a stale slot its fingerprint
+    matches exactly;
+  - its active and last-released owners are both positively gone. An owner that cannot be read or
+    an incomplete identity disqualifies it;
+  - occupancy is known and empty;
+  - no claim runs in it, and no other seed holds it;
+  - its path is the exact one its pool owns, and is a real directory rather than a symlink;
+  - its tree can be trusted as an install. A removal that did not finish ("worktree removal could
+    not be verified", or "startup found an interrupted prune...") may have left only part of it,
+    and "slot belongs to a different Git common directory" means it is another repository's. Each
+    of those is refused, and a removal also clears the slot's `deps_state` the moment it begins,
+    so the slot is never trusted again, whatever its quarantine later says, and starts cold if it
+    returns to the pool. Any other quarantine reason qualifies, because the seed reads no Git in
+    the source, and the target proves each path ignored as it does for any seed.
+
+  A quarantined slot cannot be leased, so the seed holds its **slot lock** for the copy instead of
+  a `warm` lease. The lock is taken only when free, never waited on, so a sibling that is busy is
+  passed over. Nothing about the source changes: it stays quarantined with its reason, version and
+  files as they were, it keeps counting toward the pool's maximum, and a crash leaves it exactly
+  so. The hold ends once the clone is staged, before anything is placed in the target. Meanwhile
+  Recover, Repair and Destroy are refused with "a seed is copying from this slot", and maintenance
+  skips the slot rather than waiting for the clone.
 - **The `warm` lease.** The source is leased to a `warm` owner for the length of the copy,
   through the same reservation, `finalizeLease` and release paths as any lease. Nothing can
   lease, reset or quarantine it meanwhile: a process in a leased slot does not quarantine it, and
@@ -480,8 +507,8 @@ the slot. The occupancy check therefore sees it, and the slot is never handed ou
 
 **Maintenance and shutdown.** The manager keeps an in-memory registry of the claims running
 right now. Periodic maintenance skips a slot whose claim is running instead of waiting for it,
-because a claim may run for hours. The pool's reconciliation record names the skipped slot, and
-the next pass retries it. Shutdown kills every running claim's process group before anything
+because a claim may run for hours, and likewise a quarantined slot a seed is copying from. The
+pool's reconciliation record names the skipped slot, and the next pass retries it. Shutdown kills every running claim's process group before anything
 else stops, and grants no claimed lease from then on. The slot is left `provisioning` with
 `deps_state = claiming`, and the next startup recovers it as above.
 
@@ -591,7 +618,7 @@ For each slot, in order, a Warm:
    processes never count as occupancy of an available slot;
 3. fetches origin and resets the slot to its current default branch;
 4. runs the pool's claim under its usual rules: a matching fingerprint skips the steps, a cold
-   slot (or a stale one an idle sibling matches exactly) is seeded copy-on-write, and the steps
+   slot (or a stale one a sibling matches exactly) is seeded copy-on-write, and the steps
    run otherwise;
 5. proves the tree exactly as an acquired slot is proved before its grant, and quarantines it if
    a step modified a tracked file or attached a branch;
@@ -735,10 +762,12 @@ this order:
   - A **claim** entry records the claim's duration, its seed included, and its outcome: succeeded,
     failed, skipped on a matching fingerprint, or stopped by a shutdown. A failed one keeps the
     failing step's command and reason, never its output.
-  - A **seed** entry names its source slot and duration. One that placed nothing says why: no idle
-    sibling held a current install or matched a stale slot's commit, its siblings could not be read,
-    none could be held, the clone was abandoned or cut off, the paths of an earlier cut-off seed
-    could not be removed, or the pool's claim configures no seed. A slot that wants no seed, because
+  - A **seed** entry names its source slot and duration, and says when that source was quarantined:
+    "from quarantined slot 4 in 12s". A seed abandoned or cut off during its copy names the source
+    too. One that placed nothing says why: no idle sibling held a current install or matched a stale
+    slot's commit, its siblings could not be read, none could be held (naming why each quarantined
+    sibling was passed over), the clone was abandoned or cut off, the paths of an earlier cut-off
+    seed could not be removed, or the pool's claim configures no seed. A slot that wants no seed, because
     its install still matches, adds no entry, so the last seed stays readable.
 
   The pool row shows the **median new slot** provisioning time and the **seed hit rate** over the

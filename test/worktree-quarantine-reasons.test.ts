@@ -100,9 +100,7 @@ const OTHER_QUARANTINE_REASONS = new Set([
   "return reset failed",
   "return verification failed",
   "startup found an interrupted provisioning intent",
-  "startup found an interrupted prune with filesystem state still present",
   "warmed slot verification failed",
-  "worktree removal could not be verified",
 ]);
 
 test("no quarantine reason in the manager escapes classification", () => {
@@ -112,8 +110,8 @@ test("no quarantine reason in the manager escapes classification", () => {
     ...source.matchAll(/this\.quarantine\(\s*\w+,\s*"([^"]+)"/g),
   ].map((match) => match[1]!);
   assert.ok(written.length >= OTHER_QUARANTINE_REASONS.size, "the patterns still find the writers");
-  // A registration or identity reason goes through the constants, so a literal that is not
-  // listed above is a new reason nobody has decided about yet.
+  // A registration, identity or unfinished-removal reason goes through the constants, so a
+  // literal that is not listed above is a new reason nobody has decided about yet.
   for (const reason of written) assert.ok(OTHER_QUARANTINE_REASONS.has(reason), `unclassified: ${reason}`);
   for (const reason of OTHER_QUARANTINE_REASONS) assert.ok(written.includes(reason), `no longer written: ${reason}`);
 });

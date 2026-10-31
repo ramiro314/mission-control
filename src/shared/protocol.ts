@@ -3134,8 +3134,8 @@ const WorktreeClaimSeedExcludeSchema = z
   );
 
 /**
- * Which ignored dependency trees a cold slot clones copy-on-write from an idle sibling before
- * its steps run, and what to leave out of the clone.
+ * Which ignored dependency trees a cold slot clones copy-on-write from a sibling before its
+ * steps run, and what to leave out of the clone.
  */
 const WorktreeClaimSeedSchema = z
   .object({
