@@ -1581,6 +1581,9 @@ test("with no idle sibling, a qualifying quarantined sibling seeds a new slot an
   const removed = await m.removeSlot({ slotId: source.id, allowDirty: true, allowUnmerged: true });
   assert.equal(removed.outcome, "refused");
   assert.match((removed as { reason: string }).reason, refusal);
+  const forgotten = await m.forgetSlot({ slotId: source.id });
+  assert.equal(forgotten.outcome, "refused");
+  assert.match((forgotten as { reason: string }).reason, refusal);
   await within(m.reconcile(), "a reconcile during the clone");
   await within(m.recoverQuarantines(), "an automatic recovery pass during the clone");
   assert.deepEqual(quarantineFields(m, source.id), fieldsBefore);
@@ -1842,6 +1845,7 @@ for (const reason of [
   "startup found an interrupted prune with filesystem state still present",
   "worktree removal could not be verified",
   "slot belongs to a different Git common directory",
+  "a Forget was cut off before its folder was gone",
 ]) {
   test(`a quarantined slot whose tree cannot be trusted is never a source: ${reason}`, async () => {
     const seen = await neverASource(`mission-seed-never-tree-${reason.length}-`, (_m, slot) => {

@@ -33,7 +33,7 @@ export const WORKTREE_HISTORY_ACTORS = ["automatic", "operator", "owner"] as con
 export type WorktreeHistoryActor = (typeof WORKTREE_HISTORY_ACTORS)[number];
 
 /** Which operation an `operation` row records (`.operation`). Append-only, like the kinds. */
-export const WORKTREE_HISTORY_OPERATIONS = ["return", "destroy", "prune", "warm", "recover", "repair", "kill"] as const;
+export const WORKTREE_HISTORY_OPERATIONS = ["return", "destroy", "prune", "warm", "recover", "repair", "kill", "forget"] as const;
 export type WorktreeHistoryOperation = (typeof WORKTREE_HISTORY_OPERATIONS)[number];
 
 /** How an `operation` row's operation ended (`.outcome`). Append-only, like the kinds. */
@@ -280,9 +280,10 @@ export interface NativeWorktreeSlotView {
    * `recover` is offered on a quarantined slot no live owner references: it removes a stale
    * `index.lock` when no Git process uses the slot, then resets it to available. `return` is
    * offered on a leased slot, and on a quarantined one whose active owner is still referenced:
-   * that owner's ordinary return brings it back.
+   * that owner's ordinary return brings it back. `forget` is the fallback when Repair refuses or
+   * cannot prove a result: it deletes the folder, the registration and the row, from a preview.
    */
-  actions: Array<"return" | "destroy" | "warm" | "recover" | "repair">;
+  actions: Array<"return" | "destroy" | "warm" | "recover" | "repair" | "forget">;
   /** Null when the pool has no dependency claim configured. */
   dependencies: WorktreeSlotDependenciesView | null;
   /**
@@ -382,6 +383,8 @@ export type WorktreeActionRequest =
   | { action: "recover"; slotId: string }
   /** Run Git's own fixes on a slot quarantined for its registration, then recover it. */
   | { action: "repair"; slotId: string }
+  /** Delete a quarantined slot's folder, registration and row. Offered only from its card. */
+  | { action: "forget"; slotId: string }
   /**
    * Discard and remove a folder under `worktrees/` or `check-worktrees/` that no task or
    * check names and that the orphan tree sweep kept because it holds work. `path` must be the

@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Page } from "@playwright/test";
 import { storageProblem, type StorageView } from "../../src/shared/storage-health.ts";
@@ -43,6 +43,9 @@ import { mkSession } from "../../test/helpers/session-fixture.ts";
  * that owner on the next maintenance pass with its work and its process exactly as they were. The
  * lease, the dirty file, the process and the restart are real; the one seeded fact is the
  * quarantine, which this build no longer writes for a failed read.
+ *
+ * Forget: when Repair has no answer, a slot's card previews deleting its folder, registration and
+ * row, and Execute waits for the discard acknowledgement.
  *
  * Repair: a slot quarantined for its Git registration has a Repair of its own, because Recover needs
  * the registration it is missing. The preview names Git's fix, Execute runs it for real and then
@@ -485,6 +488,124 @@ test("Repair runs Git's own fix from the slot card through its preview, and a sl
   expect(existsSync(locked(holdingWork.path))).toBe(false);
   expect(readFileSync(notes, "utf8")).toBe("not committed anywhere\n");
   await shoot(dashboard, "13-repaired-holds-work");
+});
+
+test("Forget runs from the slot card through its preview when Repair has no answer, and requires the discard acknowledgement", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const lease = async (label: string) => {
+    const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(acquired.status()).toBe(201);
+    return await acquired.json() as { path: string; leaseId: string };
+  };
+  const folderGone = await lease("folder gone");
+  const pruneCutOff = await lease("prune cut off");
+  for (const { leaseId } of [folderGone, pruneCutOff]) {
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId } });
+    expect(returned.ok()).toBe(true);
+  }
+  const quarantine = (path: string, reason: string) => withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+              quarantine_reason = ?, last_error = NULL
+        WHERE path = ? AND state = 'available'`,
+    ).run(Date.now(), reason, path);
+    expect(Number(changed.changes)).toBe(1);
+  });
+  quarantine(folderGone.path, "slot path or Git registration is missing");
+  quarantine(pruneCutOff.path, "startup found an interrupted prune with filesystem state still present");
+  rmSync(folderGone.path, { recursive: true });
+  const notes = join(pruneCutOff.path, "notes.md");
+  writeFileSync(notes, "not committed anywhere\n");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const slot = dashboard.locator(".wt-slot", { hasText: folderGone.path });
+  await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
+  await dashboard.setViewportSize({ width: 1280, height: 1100 });
+  await slot.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "14-slot-card-forget");
+  await slot.getByRole("button", { name: "Forget", exact: true }).click();
+
+  const preview = dashboard.getByRole("dialog", { name: "forget worktree preview" });
+  await expect(preview.getByRole("heading", { name: "Forget worktree" })).toBeVisible();
+  await expect(preview.getByText("Repair has no answer here: the slot's folder is gone.")).toBeVisible();
+  await expect(preview.getByText(`The folder ${folderGone.path} is already gone.`)).toBeVisible();
+  await expect(preview.getByText("Removes the Git registration that names this path.")).toBeVisible();
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "15-forget-preview");
+
+  // Cancel changes nothing: the card and the registration stay.
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(slot).toBeVisible();
+
+  await slot.getByRole("button", { name: "Forget", exact: true }).click();
+  const execute = preview.getByRole("button", { name: "Execute" });
+  await expect(preview.getByText("I understand: The slot's row is deleted for good, and nothing can bring it back")).toBeVisible();
+  await expect(execute).toBeDisabled();
+  await preview.getByRole("checkbox").check();
+  await execute.click();
+  await expect(preview).toHaveCount(0);
+  await expect(slot).toHaveCount(0, { timeout: EXECUTES_MS });
+  const worktrees = () => execFileSync("git", ["-C", daemon.repo, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+  expect(worktrees()).not.toContain(`worktree ${folderGone.path}\n`);
+
+  // A folder that still holds work names it, and deleting it is what the acknowledgement covers.
+  const kept = dashboard.locator(".wt-slot", { hasText: pruneCutOff.path });
+  await kept.getByRole("button", { name: "Forget", exact: true }).click();
+  await expect(preview.getByText("Repair has no answer here: a prune was interrupted with files still present.")).toBeVisible();
+  await expect(preview.getByText(`Deletes the folder ${pruneCutOff.path} and every file in it, without following symlinks.`)).toBeVisible();
+  await expect(preview.getByText("Files it deletes include: notes.md (untracked).")).toBeVisible();
+  await expect(preview.getByText("Discards the slot's work: checkout has uncommitted, untracked or ignored work.")).toBeVisible();
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "16-forget-preview-work");
+  await expect(preview.getByText("I understand: Every file in the folder will be discarded, including uncommitted, untracked, unpushed or ignored work")).toBeVisible();
+  await expect(execute).toBeDisabled();
+  await preview.getByRole("checkbox").check();
+  await execute.click();
+  await expect(preview).toHaveCount(0);
+  await expect(kept).toHaveCount(0, { timeout: EXECUTES_MS });
+  // The pane is left at the foot of the settings, so the pool the cards sat in is brought into frame.
+  await dashboard.locator(".wt-pool-head").first().evaluate((head) => head.scrollIntoView({ block: "start" }));
+  await shoot(dashboard, "17-forgotten-slots-gone");
+  expect(existsSync(pruneCutOff.path)).toBe(false);
+  expect(worktrees()).not.toContain(`worktree ${pruneCutOff.path}\n`);
+});
+
+test("a Forget cut off with its Git registration intact offers Forget and no Recover, so a partly deleted install never comes back", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "forget cut off" },
+  });
+  expect(acquired.status()).toBe(201);
+  const { path, leaseId } = await acquired.json() as { path: string; leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId } });
+  expect(returned.ok()).toBe(true);
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+              quarantine_reason = 'a Forget was cut off before its folder was gone', last_error = NULL
+        WHERE path = ? AND state = 'available'`,
+    ).run(Date.now(), path);
+    expect(Number(changed.changes)).toBe(1);
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const slot = dashboard.locator(".wt-slot", { hasText: path });
+  await expect(slot).toContainText("a Forget was cut off before its folder was gone");
+  await expect(slot.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  await slot.getByRole("button", { name: "Forget", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "forget worktree preview" });
+  await expect(preview.getByText("Repair has no answer here: an earlier Forget was cut off with files still present.")).toBeVisible();
+  await expectContentClearsBorder(preview);
 });
 
 test("Recover keeps a warm install: it names an ignored path the default would overwrite, and asks nothing once it would not", async ({

@@ -117,6 +117,7 @@ const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
   return: "Return",
   recover: "Recover",
   repair: "Repair",
+  forget: "Forget",
   prune: "Prune",
   reconcile: "Reconcile",
   destroy: "Destroy",
@@ -865,6 +866,13 @@ function SlotCard({
           <Tooltip label="Preview repairing this slot's Git registration with Git's own fixes, then recovering it. Work is never discarded">
             <button className="btn btn-secondary" type="button" onClick={(event) => onAction({ action: "repair", slotId: slot.id }, event.currentTarget)}>
               Repair
+            </button>
+          </Tooltip>
+        )}
+        {!pending && slot.actions.includes("forget") && (
+          <Tooltip label="Preview deleting this slot's folder, its Git registration and its row, when Repair has no answer. Work in the folder is discarded">
+            <button className="btn btn-danger" type="button" onClick={(event) => onAction({ action: "forget", slotId: slot.id }, event.currentTarget)}>
+              Forget
             </button>
           </Tooltip>
         )}

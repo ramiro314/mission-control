@@ -104,6 +104,17 @@ export function registrationRepairQuarantine(reason: string | null): boolean {
   return reasonIn(REGISTRATION_REPAIR_REASONS, reason);
 }
 
+/**
+ * Forget's write-ahead, recorded before its first delete. A recursive delete is not atomic and can
+ * take the `.git` file a cause was read from, so this reason keeps Forget offered on what is left.
+ * Nothing but a finished Forget or Destroy leaves it: a reset keeps ignored files and the slot's
+ * dependency state, so Recover would hand a partly deleted install to the next lease as a warm one,
+ * and a seed could copy it.
+ * `WorktreeStore.quarantine` keeps it through any later quarantine, a cut-off Destroy included.
+ */
+export const INTERRUPTED_FORGET = "a Forget was cut off before its folder was gone";
+export const RECOVER_REFUSES_INTERRUPTED_FORGET = "a Forget was cut off here and may have deleted part of its install, so only Forget or Destroy can finish it";
+
 /** A removal that began and did not finish: whatever survives of the tree is left at this path. */
 export const REMOVAL_UNFINISHED = {
   interrupted: "startup found an interrupted prune with filesystem state still present",
@@ -117,8 +128,14 @@ export const REMOVAL_UNFINISHED = {
  */
 const UNTRUSTED_TREE_REASONS: ReadonlySet<string> = new Set([
   ...Object.values(REMOVAL_UNFINISHED),
+  INTERRUPTED_FORGET,
   REGISTRATION_OR_IDENTITY.commonDirectory,
 ]);
+
+/** A removal that stopped before its slot was gone. Forget is the way out of either. */
+export function interruptedPruneQuarantine(reason: string | null): boolean {
+  return reason === REMOVAL_UNFINISHED.interrupted || reason === REMOVAL_UNFINISHED.unverified;
+}
 
 export function untrustedTreeQuarantine(reason: string | null): boolean {
   return reasonIn(UNTRUSTED_TREE_REASONS, reason);

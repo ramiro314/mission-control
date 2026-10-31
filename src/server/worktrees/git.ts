@@ -61,7 +61,8 @@ export interface WorktreeGit {
   observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>>;
-  remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean): Promise<GitResult<void>>;
+  /** `"locked"` also removes a registration whose lock would stop a plain `--force`. */
+  remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean | "locked"): Promise<GitResult<void>>;
   unlock(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<void>>;
   repair(identity: WorktreeRepositoryIdentity, path?: string): Promise<GitResult<void>>;
 }
@@ -405,7 +406,7 @@ export class NativeWorktreeGit implements WorktreeGit {
   async remove(
     identity: WorktreeRepositoryIdentity,
     path: string,
-    force: boolean,
+    force: boolean | "locked",
   ): Promise<GitResult<void>> {
     if (!force) {
       const status = await this.status(path);
@@ -427,6 +428,7 @@ export class NativeWorktreeGit implements WorktreeGit {
     // Keep Git's final dirty check: newly arrived work must still prevent safe removal.
     const args = ["-C", identity.mainCheckoutRoot, "worktree", "remove"];
     if (force) args.push("--force");
+    if (force === "locked") args.push("--force");
     args.push(path);
     const result = await this.execute("git", args, { timeoutMs: 60_000 });
     if (commandFailed(result)) return failure("git worktree remove", result);

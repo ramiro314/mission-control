@@ -65,9 +65,11 @@ import { bothAttempts, OBSERVATION_RETRY_DELAY_MS, pauseFor } from "./observatio
 import {
   AVAILABLE_SLOT_DIRTY,
   clearableQuarantineReason,
+  INTERRUPTED_FORGET,
   isObservationFailure,
   OBSERVATION_FAILURE,
   observationFailureText,
+  RECOVER_REFUSES_INTERRUPTED_FORGET,
   REGISTRATION_OR_IDENTITY,
   registrationOrIdentityQuarantine,
   registrationRepairQuarantine,
@@ -82,6 +84,7 @@ import {
 import {
   describeRegistrationFix,
   diagnoseRegistration,
+  forgetCause,
   type RegistrationDiagnosis,
   type RegistrationFix,
 } from "./registration-repair.ts";
@@ -233,6 +236,23 @@ export type WorktreeRepairResult =
   /** The registration is repaired, and the slot stays quarantined for the work it holds. */
   | { outcome: "heldWork"; reason: string };
 
+export type WorktreeForgetResult =
+  | { outcome: "forgotten" }
+  | { outcome: "refused"; reason: string }
+  | { outcome: "outcomeUnknown"; reason: string };
+
+/** What Forget would act on, read fresh. Occupancy is here because a missing folder has its own read. */
+export interface SlotForgetFacts {
+  cause: string | null;
+  /** Whether anything stands at the slot's path, and whether that is a real directory. */
+  present: boolean;
+  directory: boolean;
+  /** The Git registrations that name the path, and whether a lock is on any of them. */
+  registrations: number;
+  locked: boolean;
+  occupancy: WorktreeOccupancy;
+}
+
 /** What an operation came to, as its history entry says it. */
 export type WorktreeOperationSettled =
   | { outcome: "done"; reason: null }
@@ -255,6 +275,8 @@ export interface NativeSlotStatus {
   mergedIntoDefault: boolean | null;
   /** The last automatic-recovery refusal of the quarantine this slot is in now, or null. */
   recoveryRefusal: WorktreeRecoveryRefusalView | null;
+  /** On a quarantined slot, why Forget is its way out, or null when it is not. */
+  forgetCause: string | null;
 }
 
 export interface NativePoolStatus {
@@ -311,6 +333,8 @@ export interface WorktreeManagerDeps {
   runClaimStep: (request: ClaimStepRequest) => Promise<ClaimStepResult>;
   /** The blobs recorded at a commit, read from objects, for the claim fingerprint. */
   treeBlobs: (cwd: string, sha: string) => Promise<GitResult<TreeBlob[]>>;
+  /** Deletes a slot's folder for Forget. Never follows a symlink, in the tree or at its path. */
+  removeTree: (path: string) => Promise<void>;
   publishChanged: () => void;
   now: () => number;
   randomId: () => string;
@@ -356,6 +380,7 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
   claimEnvironment,
   runClaimStep,
   treeBlobs: readTreeBlobs,
+  removeTree: (path) => rm(path, { recursive: true, force: true }),
   publishChanged: () => {},
   now: Date.now,
   randomId: randomUUID,
@@ -611,11 +636,19 @@ function resetWorkRefusal(
   };
 }
 
+/** Every registration that names this path. Git can hold more than one. */
+function registrationsFor(
+  registrations: readonly WorktreeRegistration[],
+  path: string,
+): WorktreeRegistration[] {
+  return registrations.filter((registration) => registration.path === path);
+}
+
 function registrationFor(
   registrations: readonly WorktreeRegistration[],
   path: string,
 ): WorktreeRegistration | null {
-  return registrations.find((registration) => registration.path === path) ?? null;
+  return registrationsFor(registrations, path)[0] ?? null;
 }
 
 function referenceFrom(
@@ -3124,6 +3157,7 @@ export class WorktreeManager {
     if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {
       return { outcome: "refused", reason: "slot changed after it was observed" };
     }
+    if (slot.quarantineReason === INTERRUPTED_FORGET) return { outcome: "refused", reason: RECOVER_REFUSES_INTERRUPTED_FORGET };
     if (input.automatic && !input.repaired && !automaticRecoveryCandidate(slot)) {
       return { outcome: "refused", reason: "automatic recovery does not clear this quarantine" };
     }
@@ -3297,6 +3331,141 @@ export class WorktreeManager {
       this.quarantine(current, REGISTRATION_OR_IDENTITY.repairedHoldsWork, recovered.reason);
     }
     return { outcome: "heldWork", reason: recovered.reason };
+  }
+
+  /**
+   * Forget one quarantined slot, the fallback when Repair refuses or cannot prove a result: delete
+   * its folder, remove any registration that names its path, then delete its row. Every proof
+   * Recover needs about the owner, the pool and the occupancy is taken again here, under the slot
+   * lock. It records `INTERRUPTED_FORGET` before its first delete, so a delete that stops partway,
+   * or a restart during it, leaves a slot that still offers Forget even once the `.git` file a cause
+   * was read from is gone, and it can always be finished. It never runs without an operator: no pass
+   * calls this, because it discards whatever the folder holds.
+   */
+  async forgetSlot(input: { slotId: string; expectedVersion?: number }): Promise<WorktreeForgetResult> {
+    if (!this.store.poolForSlot(input.slotId)) return { outcome: "refused", reason: "native slot no longer exists" };
+    if (this.claims.has(input.slotId)) return { outcome: "refused", reason: "a dependency claim is running in this slot" };
+    if (this.heldSeedSources.has(input.slotId)) return { outcome: "refused", reason: SEED_SOURCE_HELD };
+    return this.withSlot(input.slotId, () => this.forgetLocked(input));
+  }
+
+  private async forgetLocked(input: { slotId: string; expectedVersion?: number }): Promise<WorktreeForgetResult> {
+    const pool = this.store.poolForSlot(input.slotId);
+    const slot = this.store.slot(input.slotId);
+    if (!pool || !slot) return { outcome: "refused", reason: "native slot no longer exists" };
+    if (slot.state !== "quarantined") return { outcome: "refused", reason: `slot is ${slot.state}, not quarantined` };
+    if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {
+      return { outcome: "refused", reason: "slot changed after it was observed" };
+    }
+    const proof = await this.quarantinedSlotProof(pool, slot);
+    if (typeof proof === "string") return { outcome: "refused", reason: proof };
+    const { identity } = proof;
+    const read = await this.readForgetFacts(pool, identity, slot);
+    if (!read.ok) return { outcome: "outcomeUnknown", reason: read.reason };
+    const { cause, occupancy } = read.value;
+    if (cause === null) return { outcome: "refused", reason: "this slot has a way out that keeps its folder" };
+    if (occupancy.status === "unknown") return { outcome: "refused", reason: occupancy.reason };
+    if (occupancy.occupants.length > 0) {
+      return { outcome: "refused", reason: "one or more processes still occupy the worktree" };
+    }
+    // The path is proven against the pool as spelled, so a symlinked parent is what is left.
+    const parent = await realpath(dirname(slot.path)).catch(() => null);
+    if (parent !== null && parent !== dirname(slot.path)) {
+      return { outcome: "refused", reason: `${dirname(slot.path)} resolves outside its pool` };
+    }
+    // The cause replaces `last_error`, so an old lock error cannot make what is left a candidate for
+    // automatic recovery.
+    const intent = this.store.quarantine(slot.id, INTERRUPTED_FORGET, bounded(cause), this.deps.now(), slot.version, false, "operator");
+    if (!intent) return { outcome: "refused", reason: "slot changed after it was observed" };
+    this.publish();
+    try {
+      await this.deps.removeTree(slot.path);
+    } catch (error) {
+      return { outcome: "outcomeUnknown", reason: `the slot's folder could not be removed: ${bounded(String(error))}` };
+    }
+    // Only now: Git refuses to remove a registration whose folder it can no longer validate, and
+    // accepts one whose folder is gone. It also lists a path through whatever stood there, so the
+    // listing that decides this is taken with the path empty. One naming another path is that
+    // checkout's, and stays.
+    const naming = await this.registrationsNaming(identity, slot.path);
+    if (!naming.ok) return { outcome: "outcomeUnknown", reason: naming.reason };
+    for (let index = 0; index < naming.value.length; index += 1) {
+      let removed: Awaited<ReturnType<WorktreeGit["remove"]>>;
+      try {
+        removed = await this.deps.git.remove(identity, slot.path, "locked");
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+      }
+      if (!removed.ok) return { outcome: "outcomeUnknown", reason: removed.reason };
+    }
+    const after = await this.registrationsNaming(identity, slot.path);
+    if (!after.ok) return { outcome: "outcomeUnknown", reason: after.reason };
+    if (after.value.length > 0) return { outcome: "outcomeUnknown", reason: "Git still lists a registration for the slot's path" };
+    if (!this.store.forget(intent.id, intent.version, this.deps.now())) {
+      return { outcome: "outcomeUnknown", reason: "the forgotten slot's row could not be settled" };
+    }
+    console.log(oneLine(`[worktrees] forgot ${this.slotLabel(slot)}: ${cause}`));
+    this.publish();
+    return { outcome: "forgotten" };
+  }
+
+  /** The Git registrations that name this path, from a fresh listing. */
+  private async registrationsNaming(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<WorktreeRegistration[]>> {
+    let listed: Awaited<ReturnType<WorktreeGit["list"]>>;
+    try {
+      listed = await this.deps.git.list(identity);
+    } catch (error) {
+      return { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
+    }
+    if (!listed.ok) return listed;
+    return { ok: true, value: registrationsFor(listed.value, path) };
+  }
+
+  /** The facts Forget judges, the occupancy first, because its own Git reads have this cwd. */
+  private async readForgetFacts(
+    pool: WorktreePoolRow,
+    identity: WorktreeRepositoryIdentity,
+    slot: WorktreeSlotRow,
+  ): Promise<GitResult<SlotForgetFacts>> {
+    const occupancy = (await this.withObservation(() => this.occupancy([slot.path]))).get(slot.path) ??
+      { status: "unknown" as const, reason: "slot occupancy is unknown" };
+    const naming = await this.registrationsNaming(identity, slot.path);
+    if (!naming.ok) return naming;
+    const stat = await lstat(slot.path).catch(() => null);
+    const directory = Boolean(stat?.isDirectory());
+    let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>> | null = null;
+    if (directory) {
+      try {
+        inspection = await this.deps.git.inspect(slot.path);
+      } catch {
+        inspection = null;
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        cause: await forgetCause({
+          slotPath: slot.path,
+          quarantineReason: slot.quarantineReason,
+          commonDirectory: pool.gitCommonDirectory,
+          registration: naming.value[0] ?? null,
+          inspection: inspection?.ok === true ? inspection.value : null,
+        }),
+        present: stat !== null,
+        directory,
+        registrations: naming.value.length,
+        locked: naming.value.some((registration) => registration.locked),
+        occupancy,
+      },
+    };
+  }
+
+  /** What Forget would act on now, for its preview. Null when the pool cannot be proven. */
+  async slotForgetFacts(slot: WorktreeSlotRow): Promise<GitResult<SlotForgetFacts> | null> {
+    const pool = this.store.poolForSlot(slot.id);
+    const identity = pool ? this.identity(pool.mainCheckoutRoot) : null;
+    if (!pool || !identity) return null;
+    return this.readForgetFacts(pool, identity, slot);
   }
 
   /** Which of Git's fixes this slot needs, from a fresh listing. */
@@ -3742,6 +3911,12 @@ export class WorktreeManager {
           else this.publish();
           continue;
         }
+        // Git drops a registration as its removal finishes, so a prune with its folder still here
+        // and no registration was cut off, and Forget is its way out.
+        if (slot.state === "pruning" && existsSync(slot.path) && !registration) {
+          reject(REMOVAL_UNFINISHED.interrupted);
+          continue;
+        }
         if (!existsSync(slot.path) || !registration) {
           reject(REGISTRATION_OR_IDENTITY.missingRegistration);
           continue;
@@ -4030,6 +4205,15 @@ export class WorktreeManager {
           ownerReferenced: referenced,
           mergedIntoDefault,
           recoveryRefusal: this.recoveryRefusal(slot),
+          forgetCause: slot.state === "quarantined"
+            ? await forgetCause({
+              slotPath: slot.path,
+              quarantineReason: slot.quarantineReason,
+              commonDirectory: pool.gitCommonDirectory,
+              registration: listed?.ok === true ? registration : undefined,
+              inspection: inspection?.ok === true ? inspection.value : null,
+            })
+            : null,
         };
       });
       const policy = this.deps.resolvePolicy(pool.gitCommonDirectory);

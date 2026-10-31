@@ -236,6 +236,48 @@ async function listedFiles(path: string): Promise<{ files: string[]; moreFiles: 
 }
 
 /**
+ * The worktree's changed, untracked and ignored paths, as `git status` lists them, or null when
+ * Git cannot read it. Ignored paths are read in matching mode, as the work check reads them, so a
+ * file an ignore pattern names is listed by itself rather than folded into its directory. One the
+ * delete rule discounts is labelled regenerable: it is deleted too, but loses no work.
+ */
+async function statusFiles(
+  path: string,
+  seed: RegenerableSeed,
+  execute: typeof run,
+): Promise<{ files: string[]; moreFiles: boolean } | null> {
+  const status = await execute(
+    "git",
+    ["--no-optional-locks", "-C", path, "status", "--porcelain", "--ignored=matching", "--untracked-files=normal"],
+    { timeoutMs: GIT_TIMEOUT_MS },
+  );
+  if (!ok(status)) return null;
+  const lines = status.stdout.split("\n").filter(Boolean).map((line) => {
+    const code = line.slice(0, 2);
+    const name = line.slice(3);
+    if (code === "??") return `${name} (untracked)`;
+    if (code === "!!") return `${name} (${regenerableIgnoredPath(name, seed) ? "regenerable" : "ignored"})`;
+    return `${name} (changed)`;
+  });
+  return { files: lines.slice(0, DESCRIBED_FILES), moreFiles: lines.length > DESCRIBED_FILES };
+}
+
+/** What a discard preview states about a folder Git may or may not be able to read. */
+export type TreeDiscard = Pick<UnownedTreeDescription, "worktree" | "work" | "files" | "moreFiles" | "signature">;
+
+/**
+ * What deleting this folder loses, by the delete rule when Git can read it, and otherwise up to
+ * `DESCRIBED_FILES` of its files. `seed` is the owning pool's; a tree with no pool gets `NO_SEED`.
+ */
+export async function describeTreeDiscard(path: string, seed: RegenerableSeed, execute: typeof run = run): Promise<TreeDiscard> {
+  const worktree = (await gitMarker(path)).kind === "worktree";
+  const status = worktree ? await statusFiles(path, seed, execute) : null;
+  const work = worktree ? await worktreeDiscardedWork(path, { regenerableIgnored: true, seed, execute }) : [];
+  const { files, moreFiles } = status ?? await listedFiles(path);
+  return { worktree, work, files, moreFiles, signature: await treeSignature(path, seed) };
+}
+
+/**
  * Lists the children of the overflow and check-fallback directories and removes the ones no
  * live owner references and that are provably disposable. One pass runs at a time; a caller
  * that asks while one runs waits for it.
@@ -303,11 +345,7 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     const worktree = (await gitMarker(tree.path)).kind === "worktree";
     // The delete rule: a folder with no repository has no pool, so only the built-in list applies.
     const seed = worktree ? this.deps.seed(tree.path) : NO_SEED;
-    const work = worktree
-      ? await worktreeDiscardedWork(tree.path, { regenerableIgnored: true, seed, execute: this.deps.execute })
-      : [];
-    const { files, moreFiles } = worktree ? await this.statusFiles(tree.path, seed) : await listedFiles(tree.path);
-    return { ...tree, worktree, work, files, moreFiles, signature: await treeSignature(tree.path, seed) };
+    return { ...tree, ...await describeTreeDiscard(tree.path, seed, this.deps.execute) };
   }
 
   discard(path: string): Promise<string | null> {
@@ -372,29 +410,6 @@ export class OrphanTreeSweep implements UnownedTreeDiscards {
     this.gone.push(subject);
     this.unreferencedTrees = this.unreferencedTrees.filter((each) => each !== path);
     return null;
-  }
-
-  /**
-   * The worktree's changed, untracked and ignored paths, as `git status` lists them. Ignored
-   * paths are read in matching mode, as the work check reads them, so a file an ignore pattern
-   * names is listed by itself rather than folded into its directory. One the delete rule
-   * discounts is labelled regenerable: it is deleted too, but loses no work.
-   */
-  private async statusFiles(path: string, seed: RegenerableSeed): Promise<{ files: string[]; moreFiles: boolean }> {
-    const status = await this.deps.execute(
-      "git",
-      ["--no-optional-locks", "-C", path, "status", "--porcelain", "--ignored=matching", "--untracked-files=normal"],
-      { timeoutMs: GIT_TIMEOUT_MS },
-    );
-    if (!ok(status)) return { files: [], moreFiles: false };
-    const lines = status.stdout.split("\n").filter(Boolean).map((line) => {
-      const code = line.slice(0, 2);
-      const name = line.slice(3);
-      if (code === "??") return `${name} (untracked)`;
-      if (code === "!!") return `${name} (${regenerableIgnoredPath(name, seed) ? "regenerable" : "ignored"})`;
-      return `${name} (changed)`;
-    });
-    return { files: lines.slice(0, DESCRIBED_FILES), moreFiles: lines.length > DESCRIBED_FILES };
   }
 
   /**

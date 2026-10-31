@@ -2,6 +2,7 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { canonical, type WorktreeRegistration } from "./git.ts";
 import { slotGitDirectory } from "./index-lock.ts";
+import { INTERRUPTED_FORGET, interruptedPruneQuarantine, REGISTRATION_OR_IDENTITY } from "./quarantine-reasons.ts";
 
 /**
  * Git's own fixes for a slot's registration, the only ones that run without an operator:
@@ -16,7 +17,8 @@ export type RegistrationFix = "repairGitFile" | "repairPath" | "unlock";
 export type RegistrationDiagnosis =
   | { status: "healthy" }
   | { status: "fixable"; fixes: RegistrationFix[] }
-  | { status: "refused"; reason: string };
+  /** `elsewhere`: the slot's `.git` names a registration that belongs to another checkout. */
+  | { status: "refused"; reason: string; elsewhere?: boolean };
 
 /**
  * What `git worktree add` writes to `locked` while it runs, under the `LANGUAGE=C` this daemon
@@ -92,7 +94,7 @@ export async function diagnoseRegistration(input: {
     // The folder, not its `.git`: a checkout that lost only that file is still the one registered.
     const elsewhere = recorded[directories.indexOf(pointed)];
     if (elsewhere && (await lstat(dirname(elsewhere)).catch(() => null))) {
-      return refused(`the slot's Git registration names ${dirname(elsewhere)}, which still exists`);
+      return { status: "refused", reason: `the slot's Git registration names ${dirname(elsewhere)}, which still exists`, elsewhere: true };
     }
     administrative = pointed;
     fixes.push("repairPath");
@@ -112,6 +114,38 @@ export async function diagnoseRegistration(input: {
   return registration && !registration.prunable && !registration.locked
     ? { status: "healthy" }
     : refused("Git lists the registration as unsafe, and none of its own fixes applies");
+}
+
+/**
+ * Why Forget is this slot's way out, or null when it is not: the cases Repair refuses or cannot
+ * prove a result for. A registration that is gone while its folder remains is not one of them,
+ * because registering it again keeps the install. These are read from the slot as it stands, not
+ * only from its reason: a quarantine keeps its first reason, whatever happens to the folder later.
+ * `registration` is undefined when Git's listing could not be read, which proves nothing about it.
+ */
+export async function forgetCause(input: {
+  slotPath: string;
+  quarantineReason: string | null;
+  commonDirectory: string;
+  registration: WorktreeRegistration | null | undefined;
+  inspection: { path: string; commonDirectory: string } | null;
+}): Promise<string | null> {
+  const { slotPath, quarantineReason, commonDirectory, registration, inspection } = input;
+  // Only the repository itself is listed as bare, and that is never Forget's to delete.
+  if (registration?.bare) return null;
+  const folder = await lstat(slotPath).catch(() => null);
+  if (!folder?.isDirectory()) return "the slot's folder is gone";
+  if (quarantineReason === INTERRUPTED_FORGET) return "an earlier Forget was cut off with files still present";
+  if (interruptedPruneQuarantine(quarantineReason)) return "a prune was interrupted with files still present";
+  if (
+    quarantineReason === REGISTRATION_OR_IDENTITY.commonDirectory ||
+    (inspection && (inspection.path !== slotPath || inspection.commonDirectory !== commonDirectory))
+  ) {
+    return REGISTRATION_OR_IDENTITY.commonDirectory;
+  }
+  if (registration === undefined) return null;
+  const diagnosis = await diagnoseRegistration({ slotPath, commonDirectory, registration });
+  return diagnosis.status === "refused" && diagnosis.elsewhere ? diagnosis.reason : null;
 }
 
 /** One fix in words, for a preview and the log. */

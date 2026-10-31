@@ -7,6 +7,7 @@ import type { WorktreesConfig, WorktreesConfigPatch } from "@shared/protocol.ts"
 import {
   WORKTREE_INVENTORY_LIMITS,
   type LegacyWorktreeClassification,
+  type NativeWorktreeSlotView,
   type WorktreeActionAffected,
   type WorktreeActionExecuteResult,
   type WorktreeActionPreview,
@@ -75,16 +76,24 @@ import { runAsWorktreeActor } from "./actor.ts";
 import { isTerminalOwnerKey } from "./owners.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
-import { registrationRepairQuarantine, splitObservationFailure } from "./quarantine-reasons.ts";
+import {
+  INTERRUPTED_FORGET,
+  RECOVER_REFUSES_INTERRUPTED_FORGET,
+  registrationRepairQuarantine,
+  splitObservationFailure,
+} from "./quarantine-reasons.ts";
 import { describeRegistrationFix } from "./registration-repair.ts";
-import type { UnownedTreeDiscards } from "./orphan-sweep.ts";
+import { describeTreeDiscard, type TreeDiscard, type UnownedTreeDiscards } from "./orphan-sweep.ts";
 import type { OrphanKillRecord } from "./orphan-processes.ts";
+import { NO_SEED } from "./seed.ts";
 import {
   inspectWorktreeOccupancy,
   type WorktreeOccupancy,
 } from "./occupancy.ts";
 
 const TOKEN_TTL_MS = 2 * 60_000;
+
+type WorktreeSlotAction = NativeWorktreeSlotView["actions"][number];
 
 /** The most often a running Warm's output tail bumps the worktrees revision. */
 const WARM_TAIL_INTERVAL_MS = 1_000;
@@ -156,6 +165,8 @@ export interface WorktreeOperationsDeps {
   discardedWork: typeof worktreeDiscardedWork;
   /** The kept unowned trees behind Worktrees > Unowned trees, and their guarded removal. */
   unownedTrees: UnownedTreeDiscards;
+  /** What deleting a folder loses, for Forget's preview. */
+  describeTree: typeof describeTreeDiscard;
 }
 
 interface Observation {
@@ -377,6 +388,7 @@ function historyOperation(action: WorktreeActionRequest["action"]): WorktreeHist
     case "warm":
     case "recover":
     case "repair":
+    case "forget":
       return action;
     case "reconcile":
     case "removeUnowned":
@@ -559,6 +571,7 @@ export class WorktreeOperationsService {
       warmTailIntervalMs: WARM_TAIL_INTERVAL_MS,
       staleLeases: () => new Map(),
       discardedWork: worktreeDiscardedWork,
+      describeTree: describeTreeDiscard,
       unownedTrees: {
         describe: async () => null,
         discard: async () => "unowned trees are unavailable",
@@ -656,7 +669,7 @@ export class WorktreeOperationsService {
             : { state: "unknown" as const, count: null, reason: compact(entry.occupancy.reason) };
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;
-          const actions: Array<"return" | "destroy" | "warm" | "recover" | "repair"> = [];
+          const actions: WorktreeSlotAction[] = [];
           // A `warm` lease belongs to the seed copying from it, which returns it the moment the
           // copy ends. Nothing an operator could do to it here would be safer than that.
           if (entry.slot.state === "leased") {
@@ -670,8 +683,12 @@ export class WorktreeOperationsService {
             actions.push("destroy");
           }
           // Recover is for a quarantine nobody is still working in: its owner, if it had one,
-          // is positively gone. The preview and the manager each re-read that.
-          if (entry.slot.state === "quarantined" && exact && entry.ownerReferenced === false) {
+          // is positively gone. The preview and the manager each re-read that. A Forget cut off
+          // here is never recovered: only finishing it is safe for what the delete left.
+          if (
+            entry.slot.state === "quarantined" && exact && entry.ownerReferenced === false &&
+            entry.slot.quarantineReason !== INTERRUPTED_FORGET
+          ) {
             actions.push("recover");
           }
           // Repair is Recover's way in when Git's registration is what is wrong, so it asks for
@@ -681,6 +698,14 @@ export class WorktreeOperationsService {
             entry.ownerReferenced === false && pool.identityValid && pool.markerValid && entry.nativePath
           ) {
             actions.push("repair");
+          }
+          // Forget is what is left when Repair has no answer, under the same proofs of the owner
+          // and the pool. Its preview reads every fact again.
+          if (
+            entry.forgetCause !== null && entry.ownerReferenced === false &&
+            pool.identityValid && pool.markerValid && entry.nativePath
+          ) {
+            actions.push("forget");
           }
           // Warm prepares an idle slot ahead of time: one acquisition's own rule calls idle, in a
           // pool whose claim it would run. The preview applies the same rule.
@@ -1256,6 +1281,9 @@ export class WorktreeOperationsService {
     if (request.action === "repair") {
       return this.buildRepairPreview(request, observed, affected, risks, blockers, consequences);
     }
+    if (request.action === "forget") {
+      return this.buildForgetPreview(request, observed, affected, risks, blockers, consequences);
+    }
     if (request.action === "removeUnowned") {
       return this.buildRemoveUnownedPreview(request, observed, affected, risks, blockers, consequences);
     }
@@ -1448,6 +1476,7 @@ export class WorktreeOperationsService {
       diskBytes: null,
     });
     if (slot.slot.state !== "quarantined") blockers.push(`Slot ${ordinal} is ${slot.slot.state}, not quarantined.`);
+    if (slot.slot.quarantineReason === INTERRUPTED_FORGET) blockers.push(RECOVER_REFUSES_INTERRUPTED_FORGET);
     if (slot.ownerReferenced !== false) {
       blockers.push(slot.ownerReferenced === null
         ? `Slot ${ordinal}'s owner could not be read, so it may still be in use.`
@@ -1566,6 +1595,95 @@ export class WorktreeOperationsService {
     }
     consequences.push("Then runs automatic recovery's checks and resets the slot to the fetched remote default, keeping its warm install.");
     consequences.push("A slot that holds work is not reset: it stays quarantined as \"registration repaired; holds work\", for Recover.");
+    return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+  }
+
+  /**
+   * Forget one quarantined slot. The preview names the path, states what is deleted, and lists the
+   * work it can see. Everything it read is bound into the token, the folder's signature included,
+   * so a write the list does not show still makes Execute refuse as stale. The acknowledgement is
+   * always required: the row goes for good, and a folder Git cannot read cannot be proven empty.
+   */
+  private async buildForgetPreview(
+    request: Extract<WorktreeActionRequest, { action: "forget" }>,
+    observed: Observation,
+    affected: WorktreeActionAffected[],
+    risks: WorktreeActionRisk[],
+    blockers: string[],
+    consequences: string[],
+  ): Promise<Omit<WorktreeActionPreview, "token" | "expiresAt">> {
+    const target = this.nativeTargets(observed).find(({ slot }) => slot.slot.id === request.slotId);
+    if (!target) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
+    const { pool, slot } = target;
+    const { ordinal, path } = slot.slot;
+    const read = await this.manager.slotForgetFacts(slot.slot);
+    const facts = read?.ok ? read.value : null;
+    const seed = pool.policy.claim?.seed ?? NO_SEED;
+    let tree: TreeDiscard | null = null;
+    // Only with the path proven, so nothing here ever reads a folder a row merely names. A folder
+    // that cannot be described has no work to name and no signature to bind, so it is refused.
+    if (facts?.directory && slot.nativePath) {
+      try {
+        tree = await this.deps.describeTree(path, seed);
+      } catch (error) {
+        blockers.push(`What the folder holds could not be read, so its work cannot be named; try again: ${compact(String(error))}.`);
+      }
+    }
+    affected.push({
+      provider: "mission",
+      id: slot.slot.id,
+      path,
+      owner: null,
+      version: slot.slot.version,
+      safetyRevision: digest({
+        state: slot.slot.state,
+        version: slot.slot.version,
+        ownerReferenced: slot.ownerReferenced,
+        facts,
+        tree,
+      }),
+      diskBytes: null,
+    });
+    if (slot.slot.state !== "quarantined") blockers.push(`Slot ${ordinal} is ${slot.slot.state}, not quarantined.`);
+    else if (facts && facts.cause === null) {
+      blockers.push(`Forget is for a slot Repair has no answer for; slot ${ordinal} has a way out that keeps its folder.`);
+    }
+    if (slot.ownerReferenced !== false) {
+      blockers.push(slot.ownerReferenced === null
+        ? `Slot ${ordinal}'s owner could not be read, so it may still be in use.`
+        : `A live owner still references slot ${ordinal}; return it through that owner instead.`);
+    }
+    if (!pool.identityValid || !pool.markerValid || !slot.nativePath) {
+      blockers.push("Exact native pool, marker and slot path are not all proven.");
+    }
+    if (observed.pending.has(path)) blockers.push(`Slot ${ordinal} already has an operation queued; wait for it to finish.`);
+    if (this.manager.claims.has(slot.slot.id)) blockers.push(`A dependency claim is running in slot ${ordinal}.`);
+    risks.push(risk("quarantined", "The slot is quarantined", false));
+    if (read === null) blockers.push("The pool's repository identity cannot be proven.");
+    else if (!read.ok) blockers.push(`The slot's Git registration could not be read; try again: ${read.reason}.`);
+    if (facts?.occupancy.status === "unknown") {
+      risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
+      blockers.push(facts.occupancy.reason);
+    } else if (facts && facts.occupancy.occupants.length > 0) {
+      risks.push(risk("occupied", `${facts.occupancy.occupants.length} process(es) occupy the slot`, false));
+      blockers.push("Known processes must exit before Forget can delete the slot.");
+    }
+    risks.push(risk("dirty", facts?.present === false
+      ? "The slot's row is deleted for good, and nothing can bring it back"
+      : "Every file in the folder will be discarded, including uncommitted, untracked, unpushed or ignored work", true));
+    if (facts?.cause) consequences.push(`Repair has no answer here: ${facts.cause}.`);
+    if (facts?.directory) consequences.push(`Deletes the folder ${path} and every file in it, without following symlinks.`);
+    else if (facts?.present) consequences.push(`Removes what stands at ${path} without following it. It is not a folder.`);
+    else if (facts) consequences.push(`The folder ${path} is already gone.`);
+    else consequences.push(`What stands at ${path} could not be read, so nothing runs.`);
+    if (tree && tree.work.length > 0) consequences.push(`Discards the slot's work: ${tree.work.join("; ")}.`);
+    if (tree && tree.files.length > 0) {
+      consequences.push(`Files it deletes include: ${tree.files.join(", ")}${tree.moreFiles ? ", and more" : ""}.`);
+    }
+    if (facts && facts.registrations > 0) {
+      consequences.push(`Removes the Git registration that names this path${facts.locked ? ", and its lock" : ""}.`);
+    }
+    consequences.push(`Deletes slot ${ordinal}'s row. Its ordinal is never reused, and a new slot starts from its own install.`);
     return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
   }
 
@@ -2259,6 +2377,21 @@ export class WorktreeOperationsService {
         result.outcome === "outcomeUnknown" ? "unavailable" : "changed",
       );
     }
+    if (request.action === "forget") {
+      const target = preview.affected[0]!;
+      const result = await this.manager.forgetSlot({ slotId: target.id, expectedVersion: target.version ?? undefined });
+      if (result.outcome === "forgotten") {
+        finished(target);
+        return;
+      }
+      // An unknown outcome past the write-ahead may have deleted part of the folder.
+      progress.moved = result.outcome === "outcomeUnknown" && this.manager.store.slot(target.id)?.version !== target.version;
+      throw new WorktreeOperationError(
+        result.outcome === "outcomeUnknown" ? 503 : 409,
+        result.reason,
+        result.outcome === "outcomeUnknown" ? "unavailable" : "changed",
+      );
+    }
     if (request.action === "removeUnowned") {
       const refused = await this.deps.unownedTrees.discard(preview.affected[0]!.path);
       if (refused) throw new WorktreeOperationError(409, `Unowned tree was not removed: ${refused}`, "changed");
@@ -2339,7 +2472,7 @@ export class WorktreeOperationsService {
    */
   private removalTargets(preview: WorktreeActionPreview): WorktreeActionAffected[] {
     const request = preview.request;
-    if (request.action === "prune") return preview.affected;
+    if (request.action === "prune" || request.action === "forget") return preview.affected;
     if (request.action !== "destroy") return [];
     return preview.affected.filter((target) => {
       if (target.provider !== "mission") return false;
@@ -2403,6 +2536,7 @@ export class WorktreeOperationsService {
       case "return": return "Worktree returned to warm capacity.";
       case "recover": return "Quarantined worktree recovered to warm capacity.";
       case "repair": return "Registration repaired. A slot that holds work stays quarantined for Recover.";
+      case "forget": return "Slot forgotten: its folder, registration and row are gone.";
       case "removeUnowned": return "Unowned tree discarded and removed.";
       case "prune": return "Safe candidate set pruned.";
       case "reconcile": return "Pool re-observed; a slot whose read failed was left as it was.";

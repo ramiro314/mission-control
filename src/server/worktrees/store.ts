@@ -14,7 +14,7 @@ import {
   type WorktreeTimingView,
 } from "../../shared/worktrees.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
-import { splitObservationFailure } from "./quarantine-reasons.ts";
+import { INTERRUPTED_FORGET, splitObservationFailure } from "./quarantine-reasons.ts";
 
 export const WORKTREE_SLOT_STATES = [
   "provisioning",
@@ -341,7 +341,7 @@ export class WorktreeStore {
    * One slot transition: `write` changes the row, and its one history row commits with it. A
    * compare-and-swap that misses writes no row, and a row that cannot be written rolls the
    * transition back, so history cannot drift from the slot. Every write that raises `version`
-   * comes through here, or through `reserveNew` and `removePruned`, which record the same way.
+   * comes through here, or through `reserveNew`, `removePruned` and `forget`, which record the same way.
    */
   private transition(
     slotId: string,
@@ -868,6 +868,10 @@ export class WorktreeStore {
    * `withdrawGrant` is for a reservation quarantined before its lease was ever handed to the
    * owner: the owner cannot hold or release an identity it never received, so the slot keeps
    * its quarantine but drops the active identity in the same compare-and-swap.
+   *
+   * A slot a Forget was cut off in keeps that reason whatever quarantines it next, a cut-off Destroy
+   * included, because it is what keeps Recover and Repair away from a partly deleted install. The
+   * reason that arrived is kept as the detail.
    */
   quarantine(
     slotId: string,
@@ -876,11 +880,15 @@ export class WorktreeStore {
     now: number,
     expectedVersion?: number,
     withdrawGrant = false,
+    actor: WorktreeHistoryActor = "automatic",
   ): WorktreeSlotRow | null {
+    const kept = this.slot(slotId)?.quarantineReason === INTERRUPTED_FORGET && reason !== INTERRUPTED_FORGET;
+    const recordedReason = kept ? INTERRUPTED_FORGET : reason;
+    const recordedError = kept ? error ?? reason : error;
     const where = expectedVersion === undefined ? "id = ?" : "id = ? AND version = ?";
     const args = expectedVersion === undefined
-      ? [now, reason, error, now, slotId]
-      : [now, reason, error, now, slotId, expectedVersion];
+      ? [now, recordedReason, recordedError, now, slotId]
+      : [now, recordedReason, recordedError, now, slotId, expectedVersion];
     const withdraw = withdrawGrant
       ? "active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL,"
       : "";
@@ -897,7 +905,7 @@ export class WorktreeStore {
              quarantine_reason = ?, last_error = ?, updated_at = ? WHERE ${where}`,
         )
         .run(...args),
-      () => ({ reason, detail: error, actor: "automatic" }),
+      () => ({ reason: recordedReason, detail: recordedError, actor }),
     );
   }
 
@@ -1125,6 +1133,31 @@ export class WorktreeStore {
         toState: null,
         reason: "slot removed",
         actor,
+        meta: { version: before.version, head: before.currentHeadSha },
+      });
+      return true;
+    });
+  }
+
+  /**
+   * Delete a quarantined slot's row for good, once Forget has removed its folder and registration.
+   * The pool's high-water mark is left alone, so the ordinal is never reused. Its history stays, as
+   * `removePruned`'s does, and names the operator, because only a slot card reaches this.
+   */
+  forget(slotId: string, version: number, now: number = Date.now()): boolean {
+    return this.transact(() => {
+      const before = this.slot(slotId);
+      const changed = this.db
+        .prepare(`DELETE FROM worktree_slots WHERE id = ? AND state = 'quarantined' AND version = ?`)
+        .run(slotId, version);
+      if (!before || Number(changed.changes) !== 1) return false;
+      this.record(before, {
+        at: now,
+        kind: "transition",
+        fromState: before.state,
+        toState: null,
+        reason: "slot forgotten",
+        actor: "operator",
         meta: { version: before.version, head: before.currentHeadSha },
       });
       return true;

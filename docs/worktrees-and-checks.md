@@ -344,7 +344,7 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   passed over. Nothing about the source changes: it stays quarantined with its reason, version and
   files as they were, it keeps counting toward the pool's maximum, and a crash leaves it exactly
   so. The hold ends once the clone is staged, before anything is placed in the target. Meanwhile
-  Recover, Repair and Destroy are refused with "a seed is copying from this slot", and maintenance
+  Recover, Repair, Forget and Destroy are refused with "a seed is copying from this slot", and maintenance
   skips the slot rather than waiting for the clone.
 - **The `warm` lease.** The source is leased to a `warm` owner for the length of the copy,
   through the same reservation, `finalizeLease` and release paths as any lease. Nothing can
@@ -729,7 +729,7 @@ this order:
 
   Operation results go into the same list, beside the transitions they caused. Every operation
   this page accepts writes one entry per slot it targeted once it finishes: Return, Destroy,
-  Prune, Warm, Recover, Repair and Kill. The entry names the outcome: done, refused with its reason
+  Prune, Warm, Recover, Repair, Forget and Kill. The entry names the outcome: done, refused with its reason
   (the slot was left as it was, such as a preview that went stale), partly done, or failed (the
   outcome is unknown, or the work began and may have changed the slot). A partly done entry says
   whether its slot finished before the operation stopped, and a Repair that kept the slot
@@ -982,7 +982,8 @@ The operations have deliberately narrow meanings:
   worktree's `.git` file in the repository that is already broken, and the preview says so.
 
   A bare registration, a folder that is gone, a `.git` that is not a file, and a registration no
-  administrative directory can be traced to all refuse, and the card shows why. A `git worktree
+  administrative directory can be traced to all refuse, and the card shows why, with **Forget**
+  as the fallback where it applies. A `git worktree
   list` that fails says nothing about the slot, so its preview asks you to try again, and nothing
   runs. Moving a folder aside to register it again never happens here. After a fix, Repair reads
   the registration again instead of trusting Git's exit code, then takes automatic recovery's
@@ -996,6 +997,39 @@ The operations have deliberately narrow meanings:
   here too: without an index every tracked file reads as a change, which cannot be told from
   work. A recovery refused for any other reason, such as an unreachable origin, leaves the fix in
   place and the reason as it was, so the next pass, finding the registration healthy, finishes it.
+- **Forget** is the fallback when Repair refuses or cannot prove a result. A quarantined slot's card
+  offers it, once the slot's owner is positively gone, in four cases: the folder is gone, the slot
+  belongs to a different Git common directory, the slot's registration belongs to another path that
+  still exists, or a prune was interrupted with files still present (including one whose removal
+  could not be verified). These are read from the slot as it stands, because a quarantine keeps its
+  first reason whatever happens to the folder later. A registration that is gone while its folder
+  remains is not one of them. No maintenance pass runs Forget: it runs only from the card.
+
+  The preview names the path and states that the folder and the slot's row are deleted. It lists
+  the work it can see: the delete rule, with the pool's `seed.paths` counted as regenerable, when
+  Git can read the tree, and otherwise up to ten files, as Unowned trees does. Execute always
+  requires the discard acknowledgement, even with nothing listed, because a tree Git cannot read
+  cannot be proven empty and the row does not come back.
+
+  It refuses a slot with an occupant, a live or unknown owner or a running claim. A Git listing
+  that fails refuses too, because a registration may name the path, and so does a folder whose
+  contents cannot be read, because its work cannot be named. Execute refuses a changed
+  preview: the preview binds a signature of the folder's entries, as Unowned trees does, so a write
+  the list does not show still stops it. Execute refuses a running claim, then takes the owner, pool
+  and occupancy proofs again under the slot lock. It records "a Forget was cut off before its folder
+  was gone" as the quarantine reason, deletes the folder without following a symlink, in the tree or
+  at its path, removes any registration that names the path, a locked one included, and deletes the
+  row. A registration that names another path is that checkout's and stays. The pool's ordinal
+  high-water mark stays too, so the ordinal is never reused.
+
+  A delete is not atomic, and it can take the `.git` file a cause was read from. That recorded
+  reason keeps Forget on the card however far the delete got, a restart included, so the slot can
+  always be finished. No maintenance pass clears it or repairs the slot, and the card stops offering
+  Recover, which refuses it: a reset keeps ignored files and the slot's dependency state, so it could
+  hand a partly deleted install to the next lease as a warm one. A seed refuses it as a source for
+  the same reason. Forget or Destroy finishes it. The
+  reason stays through any later quarantine, so a Destroy that is itself cut off does not bring
+  Recover back, and the card shows the newer reason as its detail.
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
   adapter. There is no force action for unverifiable or foreign resources.
 - **Warm** prepares idle slots ahead of time: it holds each under a `warm` lease, fetches, resets

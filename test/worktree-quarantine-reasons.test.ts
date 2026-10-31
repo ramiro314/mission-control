@@ -4,14 +4,18 @@ import test from "node:test";
 import { lockCausedQuarantine } from "../src/server/worktrees/index-lock.ts";
 import {
   clearableQuarantineReason,
+  INTERRUPTED_FORGET,
   isObservationFailure,
   OBSERVATION_FAILURE,
   OBSERVATION_FAILURE_REASONS,
   REGISTRATION_OR_IDENTITY,
   REGISTRATION_OR_IDENTITY_REASONS,
   registrationOrIdentityQuarantine,
+  registrationRepairQuarantine,
+  REMOVAL_UNFINISHED,
   RESERVATION_NOT_HANDED_BACK,
   splitObservationFailure,
+  untrustedTreeQuarantine,
   withObservationFailure,
   withoutObservationFailure,
 } from "../src/server/worktrees/quarantine-reasons.ts";
@@ -103,6 +107,13 @@ const OTHER_QUARANTINE_REASONS = new Set([
   "warmed slot verification failed",
 ]);
 
+test("Forget's write-ahead is a reason no pass may clear or repair", () => {
+  assert.equal(clearableQuarantineReason(INTERRUPTED_FORGET), false);
+  assert.equal(isObservationFailure(INTERRUPTED_FORGET), false);
+  assert.equal(registrationRepairQuarantine(INTERRUPTED_FORGET), false);
+  assert.equal(untrustedTreeQuarantine(INTERRUPTED_FORGET), true, "a seed never copies what a Forget may have half deleted");
+});
+
 test("no quarantine reason in the manager escapes classification", () => {
   const source = readFileSync(new URL("../src/server/worktrees/manager.ts", import.meta.url), "utf8");
   const written = [
@@ -114,4 +125,8 @@ test("no quarantine reason in the manager escapes classification", () => {
   // literal that is not listed above is a new reason nobody has decided about yet.
   for (const reason of written) assert.ok(OTHER_QUARANTINE_REASONS.has(reason), `unclassified: ${reason}`);
   for (const reason of OTHER_QUARANTINE_REASONS) assert.ok(written.includes(reason), `no longer written: ${reason}`);
+  for (const [name, reason] of Object.entries(REMOVAL_UNFINISHED)) {
+    assert.match(source, new RegExp(`(?:reject\\(|this\\.quarantine\\(\\w+, )REMOVAL_UNFINISHED\\.${name}\\)`), `no longer written: ${name}`);
+    assert.equal(registrationOrIdentityQuarantine(reason), false, reason);
+  }
 });
