@@ -2271,3 +2271,22 @@ test("History records a Forget that failed before its write-ahead as failed, bec
   const [row] = operationRows(m, slot.slotId);
   assert.deepEqual([row?.operation, row?.outcome], ["forget", "failed"]);
 });
+
+test("History keeps a Forget that finished as finished when something after it fails", async () => {
+  const { clone, sha } = repository("mission-forget-history-after-");
+  const m = managerWith();
+  const service = operationsFor(m);
+  const slot = await quarantinedSlot(m, clone, sha, "task-forget-history-after", REMOVAL_UNFINISHED.interrupted);
+  const preview = await service.preview({ action: "forget", slotId: slot.slotId });
+  const runChangeBatch = m.runChangeBatch.bind(m);
+  m.runChangeBatch = async (...args) => {
+    await runChangeBatch(...args);
+    throw new Error("the change could not be published");
+  };
+
+  await assert.rejects(service.execute(preview.token, [...FORGET_ACK]), /could not be published/);
+  assert.equal(m.store.slot(slot.slotId), null);
+  const [row] = operationRows(m, slot.slotId);
+  assert.deepEqual([row?.operation, row?.outcome], ["forget", "partial"]);
+  assert.match(row?.reason ?? "", /^This slot finished, and the operation stopped at a later step/);
+});
