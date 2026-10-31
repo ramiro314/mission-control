@@ -104,6 +104,26 @@ export function registrationRepairQuarantine(reason: string | null): boolean {
   return reasonIn(REGISTRATION_REPAIR_REASONS, reason);
 }
 
+/** A removal that began and did not finish: whatever survives of the tree is left at this path. */
+export const REMOVAL_UNFINISHED = {
+  interrupted: "startup found an interrupted prune with filesystem state still present",
+  unverified: "worktree removal could not be verified",
+} as const;
+
+/**
+ * The reasons that say this tree's files cannot be trusted as an install, whatever `deps_state`
+ * reads: part of it may be gone, or it may be another repository's. Rows quarantined before a
+ * removal cleared `deps_state` still read `current`, so a seed refuses these by reason.
+ */
+const UNTRUSTED_TREE_REASONS: ReadonlySet<string> = new Set([
+  ...Object.values(REMOVAL_UNFINISHED),
+  REGISTRATION_OR_IDENTITY.commonDirectory,
+]);
+
+export function untrustedTreeQuarantine(reason: string | null): boolean {
+  return reasonIn(UNTRUSTED_TREE_REASONS, reason);
+}
+
 /** A dirty available slot, and the reason older builds gave it before occupied was split off. */
 export const AVAILABLE_SLOT_DIRTY = "available slot is dirty";
 const AVAILABLE_SLOT_OCCUPIED_OR_DIRTY = "available slot is occupied or dirty";

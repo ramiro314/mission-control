@@ -70,9 +70,11 @@ import {
   REGISTRATION_OR_IDENTITY,
   registrationOrIdentityQuarantine,
   registrationRepairQuarantine,
+  REMOVAL_UNFINISHED,
   RESERVATION_NOT_HANDED_BACK,
   sameObservationFailure,
   splitObservationFailure,
+  untrustedTreeQuarantine,
   withObservationFailure,
   withoutObservationFailure,
 } from "./quarantine-reasons.ts";
@@ -2133,8 +2135,9 @@ export class WorktreeManager {
     if (slot?.state !== "quarantined") return "it is no longer quarantined";
     if (!this.installSeeds(slot, input)) return "its install no longer qualifies";
     if (this.claims.has(slot.id)) return "a dependency claim is running in it";
+    if (untrustedTreeQuarantine(slot.quarantineReason)) return `its tree cannot be trusted as an install: ${slot.quarantineReason}`;
     if (!exactSlotPath(input.pool, input.identity, slot)) return REGISTRATION_OR_IDENTITY.inexactPath;
-    // A quarantine can mean the folder is not what the row says, and nothing below reads Git.
+    // A quarantine can mean the folder is not what the row says, and nothing here reads Git.
     const physical = await physicalDirectoryProblem(slot.path);
     if (physical) return physical;
     const owner = await this.recoverOwnerBlocker(slot);
@@ -3575,7 +3578,7 @@ export class WorktreeManager {
           if (slot.state === "provisioning") {
             this.quarantine(slot, "startup found an interrupted provisioning intent");
           } else if (slot.state === "pruning" && existsSync(slot.path)) {
-            this.quarantine(slot, "startup found an interrupted prune with filesystem state still present");
+            this.quarantine(slot, REMOVAL_UNFINISHED.interrupted);
           } else {
             this.noteObservationFailure(slot, reason, detail);
           }
@@ -3664,7 +3667,7 @@ export class WorktreeManager {
           continue;
         }
         if (slot.state === "pruning") {
-          reject("startup found an interrupted prune with filesystem state still present");
+          reject(REMOVAL_UNFINISHED.interrupted);
           continue;
         }
         let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
@@ -4104,8 +4107,8 @@ export class WorktreeManager {
         return { outcome: "outcomeUnknown", reason: after.reason };
       }
       if (existsSync(slot.path) || registrationFor(after.value, slot.path)) {
-        this.quarantine(pruning, "worktree removal could not be verified");
-        return { outcome: "outcomeUnknown", reason: "worktree removal could not be verified" };
+        this.quarantine(pruning, REMOVAL_UNFINISHED.unverified);
+        return { outcome: "outcomeUnknown", reason: REMOVAL_UNFINISHED.unverified };
       }
       if (!this.store.removePruned(pruning.id, pruning.version, this.deps.now(), "operator")) {
         return { outcome: "outcomeUnknown", reason: "removed worktree row could not be settled" };

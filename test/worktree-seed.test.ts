@@ -1837,6 +1837,65 @@ test("a quarantined slot whose folder is gone is never a source", async () => {
   assert.match(reason, /slot path could not be physically verified/);
 });
 
+// A row quarantined by an earlier build still reads `current`, so the reason alone must refuse it.
+for (const reason of [
+  "startup found an interrupted prune with filesystem state still present",
+  "worktree removal could not be verified",
+  "slot belongs to a different Git common directory",
+]) {
+  test(`a quarantined slot whose tree cannot be trusted is never a source: ${reason}`, async () => {
+    const seen = await neverASource(`mission-seed-never-tree-${reason.length}-`, (_m, slot) => {
+      db.prepare("UPDATE worktree_slots SET quarantine_reason = ? WHERE id = ?").run(reason, slot.id);
+      rmrf(join(slot.path, "deps", "marker"));
+    });
+    assert.match(seen, new RegExp(`slot 1: its tree cannot be trusted as an install: ${reason}`));
+  });
+}
+
+/** Real Git, except that a removal reports success and leaves part of the tree behind. */
+class PartialRemovalGit extends NativeWorktreeGit {
+  override async remove(_identity: Parameters<NativeWorktreeGit["remove"]>[0], path: string) {
+    rmrf(join(path, "more"));
+    return { ok: true as const, value: undefined };
+  }
+}
+
+test("a removal that left part of a slot behind clears its install, so it never seeds", async () => {
+  const fixture = repository("mission-seed-never-partial-removal-");
+  const sources: string[] = [];
+  const m = manager(claimWith(SEED), { cloneTree: recordingClone(sources), git: new PartialRemovalGit() }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 1, "partial");
+  const slot = slotAt(m, 1);
+
+  const removed = await m.removeSlot({ slotId: slot.id, allowDirty: true, allowUnmerged: true });
+  assert.equal(removed.outcome, "outcomeUnknown", JSON.stringify(removed));
+  const left = m.store.slot(slot.id)!;
+  assert.deepEqual([left.state, left.quarantineReason], ["quarantined", "worktree removal could not be verified"]);
+  assert.deepEqual([left.depsState, left.depsFingerprint, left.depsFingerprintSha], [null, null, null]);
+
+  // A later failure can rewrite the reason, and the install stays untrusted: only the row says so.
+  assert.ok(m.store.quarantine(slot.id, QUARANTINE, null, Date.now(), left.version));
+  const target = leased(await acquire(m, fixture.clone, fixture.sha, "partial:target"));
+  assert.deepEqual(sources, [], "the partial tree was not cloned");
+  assert.equal(m.store.slotTimings(target.lease.slotId).seed!.reason, "no idle sibling holds a current install");
+  assert.equal(runCount(target.lease.path), 1, "the steps ran instead");
+  await m.release(target.lease);
+});
+
+test("an interrupted removal clears the install before reconcile quarantines it", async () => {
+  const fixture = repository("mission-seed-never-interrupted-removal-");
+  const m = manager(claimWith(SEED), {}, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 1, "interrupted");
+  const slot = slotAt(m, 1);
+  assert.ok(m.store.markPruning(slot.id, slot.version, Date.now()));
+  await m.reconcile();
+  const left = m.store.slot(slot.id)!;
+  assert.deepEqual(
+    [left.state, left.quarantineReason, left.depsState],
+    ["quarantined", "startup found an interrupted prune with filesystem state still present", null],
+  );
+});
+
 test("a quarantined slot with a running claim is never a source", async () => {
   const fixture = repository("mission-seed-never-claim-");
   const sources: string[] = [];

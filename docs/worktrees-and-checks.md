@@ -330,9 +330,14 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
     an incomplete identity disqualifies it;
   - occupancy is known and empty;
   - no claim runs in it, and no other seed holds it;
-  - its path is the exact one its pool owns, and is a real directory rather than a symlink. Any
-    quarantine reason otherwise qualifies, because the seed reads no Git in the source, and the
-    target proves each path ignored as it does for any seed.
+  - its path is the exact one its pool owns, and is a real directory rather than a symlink;
+  - its tree can be trusted as an install. A removal that did not finish ("worktree removal could
+    not be verified", or "startup found an interrupted prune...") may have left only part of it,
+    and "slot belongs to a different Git common directory" means it is another repository's. Each
+    of those is refused, and a removal also clears the slot's `deps_state` the moment it begins,
+    so the slot is never trusted again, whatever its quarantine later says, and starts cold if it
+    returns to the pool. Any other quarantine reason qualifies, because the seed reads no Git in
+    the source, and the target proves each path ignored as it does for any seed.
 
   A quarantined slot cannot be leased, so the seed holds its **slot lock** for the copy instead of
   a `warm` lease. The lock is taken only when free, never waited on, so a sibling that is busy is
