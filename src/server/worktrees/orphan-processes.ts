@@ -102,12 +102,24 @@ interface ReportedTree {
 
 export type OrphanKillResult =
   | { ok: true; signal: "SIGTERM" | "SIGKILL" }
-  | { ok: false; error: string };
+  /** `failed`: the guards passed and the signal itself did not land. Otherwise a refusal. */
+  | { ok: false; error: string; failed?: true };
+
+/** One finished Kill. Never its command: `recordKill` says why. */
+export interface OrphanKillRecord {
+  slotId: string | null;
+  path: string;
+  pid: number;
+  startedAt: number;
+  result: OrphanKillResult;
+}
 
 export interface OrphanProcessDeps {
   trees: () => FinishedTree[];
   /** Retry the return a finished owner is waiting on. A slot, in either state, has none. */
   retryReturn: (owner: FinishedTreeOwner) => unknown;
+  /** Every finished Kill, refused or not, for the slot's history. */
+  killFinished?: (kill: OrphanKillRecord) => void;
   /** After a scan or a kill, so the storage aggregate recomputes. */
   changed?: () => void;
   /** Where a tree that is not a pool slot may sit. Children only, never the root itself. */
@@ -206,6 +218,20 @@ export class OrphanProcessMonitor {
   }
 
   async kill(request: OrphanProcessKillRequest): Promise<OrphanKillResult> {
+    const startedAt = Date.now();
+    // Read first: a successful Kill's own scan drops the tree from the report.
+    const real = await realPath(request.path);
+    const slotId = (real === null ? null : this.reported.get(real)?.slotId) ?? null;
+    const result = await this.guardedKill(request);
+    try {
+      this.deps.killFinished?.({ slotId, path: real ?? request.path, pid: request.pid, startedAt, result });
+    } catch (error) {
+      console.warn(`[worktrees] a Kill's result could not be recorded: ${errorMessage(error)}`);
+    }
+    return result;
+  }
+
+  private async guardedKill(request: OrphanProcessKillRequest): Promise<OrphanKillResult> {
     const tree = await realPath(request.path);
     const reported = tree === null ? undefined : this.reported.get(tree);
     if (!reported) return { ok: false, error: "that path is not a tree with a reported orphan process" };
@@ -243,7 +269,7 @@ export class OrphanProcessMonitor {
         }
       }
     } catch (error) {
-      return { ok: false, error: `process ${request.pid} could not be signalled: ${errorMessage(error)}` };
+      return { ok: false, error: `process ${request.pid} could not be signalled: ${errorMessage(error)}`, failed: true };
     }
 
     for (const owner of reported.owners) {

@@ -700,6 +700,32 @@ this order:
   entry in the same transaction as the change, and a failed read adds an entry only when it starts
   and when it clears. See [the database guide](database-and-migrations.md) for retention.
 
+  Operation results go into the same list, beside the transitions they caused. Every operation
+  this page accepts writes one entry per slot it targeted once it finishes: Return, Destroy,
+  Prune, Warm, Recover, Repair and Kill. The entry names the outcome: done, refused with its reason
+  (the slot was left as it was, such as a preview that went stale), partly done, or failed (the
+  outcome is unknown, or the work began and may have changed the slot). A partly done entry says
+  whether its slot finished before the operation stopped, and a Repair that kept the slot
+  quarantined for its work is partly done too. A task's trees are torn down together, so a Return
+  that brought one back and not another is partly done, one that brought none back after trying
+  is failed, and one refused before teardown reached a tree, such as by a terminal that would not
+  close, is refused. Destroying one slot of a task
+  returns the task's other slots, so their entries read Return, not Destroy. A Warm decides each slot on its own turn, so each entry carries that slot's own result:
+  a slot skipped reads refused, a failed claim or a Cancel that reached the slot reads partly done,
+  and a slot Cancel stopped before its turn was never touched and has no entry. Automatic Recover
+  and Repair write the same entries as automatic; a refusal or an unknown outcome writes one when
+  its reason changes, so a pass repeating it stays quiet. On either path, a Recover or Repair whose
+  outcome is unknown reads refused when the slot's version did not move, because its read failed
+  before the reset began and the slot is as it was, and failed when the version moved. Git's fixes
+  change the registration and no version, so a Repair that ran one never reads refused: it reads
+  failed when the registration was not proven healthy afterwards, and partly done when it was and
+  the recovery after it did not finish. A Kill entry
+  names the PID and never the command. The operations list above the pools keeps its behavior, and dismissing a report there leaves the history alone.
+  An Unowned trees operation has no slot, so it is logged to the daemon log only. A request refused
+  before it was accepted (an expired token, a target with a cleanup already queued) answers the
+  dialog and writes nothing, and a return a task or check makes on its own is recorded by its
+  transitions.
+
   History also holds the timed steps, and the card shows the last of each as **Last provisioning**,
   **Last claim** and **Last seed**:
 

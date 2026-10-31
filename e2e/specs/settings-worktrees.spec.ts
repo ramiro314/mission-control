@@ -916,12 +916,133 @@ test("a closed History reads nothing, and a Return from Settings is recorded as 
   const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
   const entries = history.getByRole("listitem");
   await history.getByRole("button", { name: "History" }).click();
-  await expect(entries).toHaveCount(5);
+  await expect(entries).toHaveCount(6);
   expect(reads).toBe(1);
-  await expect(entries.nth(0)).toContainText("returning → available");
+  await expect(entries.nth(0)).toContainText("Return done");
   await expect(entries.nth(0)).toContainText("by the operator");
-  await expect(entries.nth(1)).toContainText("leased → returning");
+  await expect(entries.nth(1)).toContainText("returning → available");
   await expect(entries.nth(1)).toContainText("by the operator");
+  await expect(entries.nth(2)).toContainText("leased → returning");
+  await expect(entries.nth(2)).toContainText("by the operator");
+});
+
+/**
+ * An outcome beside the transitions, and the report it outlives. The Return is refused for real:
+ * its lease goes back through the owner's own route while the preview is open, so Execute's safety
+ * rebuild no longer matches. The list stays open throughout, because a refusal moves no slot and
+ * only the inventory's history head tells it there is a row to read.
+ */
+test("History lists a refused operation's outcome and reason, and dismissing its report keeps them", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history refused operation" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+  const entries = history.getByRole("listitem");
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries).toHaveCount(3);
+
+  await slot.getByRole("button", { name: "Return", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+  await preview.getByRole("button", { name: "Execute" }).click();
+
+  const background = dashboard.getByRole("region", { name: "Background cleanup" });
+  await expect(background.getByText("State changed after this preview.")).toBeVisible({ timeout: EXECUTES_MS });
+  const refused = entries.filter({ hasText: "Return refused" });
+  await expect(refused).toHaveCount(1, { timeout: EXECUTES_MS });
+  await expect(refused).toContainText("worktree state changed after preview; refresh before executing");
+  await expect(refused).toContainText("by the operator");
+  await expect(entries.nth(0)).toContainText("Return refused");
+  await expect(entries.nth(1)).toContainText("returning → available");
+  await history.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "26-slot-history-refused-operation");
+
+  await background.getByRole("button", { name: "Dismiss" }).click();
+  await expect(background).toHaveCount(0);
+  await dashboard.reload();
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries.filter({ hasText: "Return refused" })).toHaveCount(1);
+});
+
+/**
+ * A Kill's outcome reaches History only through the daemon's own wiring between the orphan monitor
+ * and the operations service, which nothing below the built daemon composes. A stray process in an
+ * available slot is the real path: the refusal keeps it reported, and the Kill that lands drops
+ * the tree from the report before its entry is written, so that entry proves the slot was named
+ * ahead of the Kill. The list stays open, because neither one moves the slot.
+ */
+test("History lists a Kill's outcome, refused and done, by PID and never by command", async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history kill" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+
+  const marker = "history-kill-stray-marker";
+  const stray = spawn(process.execPath, ["-e", `setInterval(() => {}, 1000) // ${marker}`], {
+    cwd: lease.path,
+    stdio: "ignore",
+  });
+  await once(stray, "spawn");
+  const pid = stray.pid!;
+
+  try {
+    // Storage scans before it answers, which is what puts the process on the slot's card.
+    await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+    const problem = dashboard.getByRole("list", { name: "Storage problems" })
+      .getByRole("listitem").filter({ hasText: `Process ${pid}` });
+    await problem.getByRole("button", { name: "Open slot" }).click();
+    const slot = dashboard.locator(".wt-slot", { hasText: lease.path });
+    const orphans = slot.getByRole("region", { name: /Orphan processes in slot/ });
+    await expect(orphans).toContainText(`PID ${pid}`);
+    const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+    const entries = history.getByRole("listitem");
+    await history.getByRole("button", { name: "History" }).click();
+    await expect(entries).toHaveCount(5);
+
+    const refused = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/processes/kill`, {
+      data: { path: lease.path, pid, startedAt: 1, command: "not this process" },
+    });
+    expect(refused.status()).toBe(409);
+    await expect(entries.nth(0)).toContainText("Kill refused", { timeout: EXECUTES_MS });
+    await expect(entries.nth(0)).toContainText(`process ${pid} does not match the reported start time and command`);
+    await expect(entries.nth(0)).toContainText("by the operator");
+
+    await orphans.getByRole("button", { name: `Kill process ${pid}` }).click();
+    const confirm = dashboard.getByRole("dialog", { name: "Kill orphan process" });
+    const killed = dashboard.waitForResponse((response) => response.url().endsWith("/api/worktrees/processes/kill"));
+    await confirm.getByRole("button", { name: "Kill process" }).click();
+    expect((await killed).status()).toBe(200);
+    await expect(orphans).toHaveCount(0);
+    await expect(entries.nth(0)).toContainText("Kill done", { timeout: EXECUTES_MS });
+    await expect(entries.nth(0)).toContainText(`Stopped process ${pid} with SIGTERM.`);
+    await expect(entries.nth(0)).toContainText("by the operator");
+    await expect(entries.filter({ hasText: marker })).toHaveCount(0);
+    await expect(entries).toHaveCount(7);
+  } finally {
+    stray.kill("SIGKILL");
+  }
 });
 
 /**

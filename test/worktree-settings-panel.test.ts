@@ -925,6 +925,10 @@ test("a history row's headline names the change, and a later build's kind reads 
   assert.equal(slotHistoryHeadline({ ...entry, kind: "observation", outcome: "started" }), "Failed read");
   assert.equal(slotHistoryHeadline({ ...entry, kind: "observation", outcome: "cleared" }), "Failed read cleared");
   assert.equal(slotHistoryHeadline({ ...entry, kind: "a-later-kind" }), "a-later-kind");
+  const operation = { ...entry, kind: "operation", fromState: null, toState: null, operation: "destroy", outcome: "partial" };
+  assert.equal(slotHistoryHeadline(operation), "Destroy partly done");
+  assert.equal(slotHistoryHeadline({ ...operation, operation: "kill", outcome: "refused" }), "Kill refused");
+  assert.equal(slotHistoryHeadline({ ...operation, operation: "a-later-operation", outcome: "a-later-outcome" }), "a-later-operation a-later-outcome");
 });
 
 test("a refresh adds what is newer to an open list and keeps its older rows and cursor", () => {

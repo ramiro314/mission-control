@@ -342,7 +342,7 @@ test("a Git that reports a fix but leaves the registration unsafe is refused, no
   const row = m.store.slot(slot.slotId)!;
 
   assert.deepEqual(await m.repairSlot({ slotId: slot.slotId }), {
-    outcome: "refused", reason: "Git's repair did not leave the registration healthy",
+    outcome: "refused", reason: "Git's repair did not leave the registration healthy", repair: "attempted",
   });
   assert.deepEqual(m.store.slot(slot.slotId), row);
 });
@@ -363,6 +363,128 @@ test("a killed repair reports an unknown outcome and the slot stays as it was", 
 
   assert.deepEqual(m.store.slot(slot.slotId), row);
   assert.equal(m.recoveryRefusal(row)?.reason, "git worktree unlock timed out after 30 s");
+});
+
+/** Oldest first: what the slot's history says about Repair, with the version it never moved. */
+function repairRows(m: WorktreeManager, slotId: string) {
+  return m.store.slotHistory(slotId).entries
+    .filter((entry) => entry.kind === "operation")
+    .reverse()
+    .map((entry) => [entry.operation, entry.outcome, entry.actor, entry.reason]);
+}
+
+test("a fix Git did not finish is no refusal, though the slot's version never moved", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const killed = "git worktree unlock timed out after 30 s";
+  class KilledUnlock extends NativeWorktreeGit {
+    override async unlock() { return { ok: false as const, reason: killed, outcomeUnknown: true }; }
+  }
+  const { clone, sha } = repository("mission-repair-history-killed-");
+  const m = managerWith(new KilledUnlock());
+  const slot = await quarantinedSlot(m, clone, sha, "task-history-killed");
+  lockInitializing(slot.administrative);
+  const { version } = m.store.slot(slot.slotId)!;
+
+  await m.recoverQuarantines();
+  await m.recoverQuarantines();
+
+  assert.equal(m.store.slot(slot.slotId)?.version, version, "a real unmoved version, not a fake's");
+  assert.deepEqual(repairRows(m, slot.slotId), [["repair", "failed", "automatic", killed]], "and once, however often it repeats");
+  const result = await m.repairSlot({ slotId: slot.slotId });
+  assert.deepEqual(m.recoverySettled(slot.slotId, version, result), { outcome: "failed", reason: killed }, "an operator's reads the same");
+});
+
+test("a read that fails after a fix is no refusal: the fix may stand", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const unread = "git worktree list timed out after 30 s, and after 60 s on retry";
+  let fixed = false;
+  class BlindAfterFix extends NativeWorktreeGit {
+    override async repair(...args: Parameters<NativeWorktreeGit["repair"]>) {
+      const result = await super.repair(...args);
+      fixed = true;
+      return result;
+    }
+    override async list(...args: Parameters<NativeWorktreeGit["list"]>) {
+      return fixed ? { ok: false as const, reason: unread, outcomeUnknown: true } : super.list(...args);
+    }
+  }
+  const { clone, sha } = repository("mission-repair-history-blind-");
+  const m = managerWith(new BlindAfterFix());
+  const slot = await quarantinedSlot(m, clone, sha, "task-history-blind");
+  rmSync(join(slot.path, ".git"));
+
+  await m.recoverQuarantines();
+
+  assert.equal(existsSync(join(slot.path, ".git")), true, "the fix landed");
+  assert.deepEqual(repairRows(m, slot.slotId), [["repair", "failed", "automatic", unread]]);
+});
+
+test("a fix Git reported that left the registration unsafe reads failed, and keeps the card's refusal", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  class NoOpRepair extends NativeWorktreeGit {
+    override async repair() { return { ok: true as const, value: undefined }; }
+  }
+  const { clone, sha } = repository("mission-repair-history-unproven-");
+  const m = managerWith(new NoOpRepair());
+  const slot = await quarantinedSlot(m, clone, sha, "task-history-unproven");
+  rmSync(join(slot.path, ".git"));
+
+  await m.recoverQuarantines();
+
+  const reason = "Git's repair did not leave the registration healthy";
+  assert.deepEqual(repairRows(m, slot.slotId), [["repair", "failed", "automatic", reason]]);
+  assert.equal(m.recoveryRefusal(m.store.slot(slot.slotId)!)?.reason, reason);
+});
+
+test("Git refusing the first fix changed nothing, and refusing a later one is no refusal", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const refused = "fatal: this worktree cannot be unlocked";
+  class RefusingUnlock extends NativeWorktreeGit {
+    override async unlock() { return { ok: false as const, reason: refused, outcomeUnknown: false }; }
+  }
+  const { clone, sha } = repository("mission-repair-history-refused-");
+  const m = managerWith(new RefusingUnlock());
+
+  const first = await quarantinedSlot(m, clone, sha, "task-history-first");
+  lockInitializing(first.administrative);
+  await m.recoverQuarantines();
+  assert.deepEqual(repairRows(m, first.slotId), [["repair", "refused", "automatic", refused]]);
+
+  const later = await quarantinedSlot(m, clone, sha, "task-history-later");
+  lockInitializing(later.administrative);
+  rmSync(join(later.path, ".git"));
+  await m.recoverQuarantines();
+  assert.equal(existsSync(join(later.path, ".git")), true, "git worktree repair had already landed");
+  assert.deepEqual(repairRows(m, later.slotId), [["repair", "failed", "automatic", refused]]);
+});
+
+test("a proven repair whose recovery did not finish reads partly done, and the next pass finishes it", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const { clone, sha } = repository("mission-repair-history-proven-");
+  let failFetch = false;
+  class FlakyFetch extends NativeWorktreeGit {
+    override async fetchDefaultSha(identity: Parameters<NativeWorktreeGit["fetchDefaultSha"]>[0]) {
+      return failFetch
+        ? { ok: false as const, reason: "origin could not be reached", outcomeUnknown: false }
+        : super.fetchDefaultSha(identity);
+    }
+  }
+  const m = managerWith(new FlakyFetch());
+  const slot = await quarantinedSlot(m, clone, sha, "task-history-proven");
+  rmSync(join(slot.path, ".git"));
+
+  failFetch = true;
+  await m.recoverQuarantines();
+  const refusal = m.recoveryRefusal(m.store.slot(slot.slotId)!)?.reason ?? "";
+  assert.match(refusal, /^the slot's work could not be read: .*origin could not be reached/, "the card keeps the bare reason");
+  assert.deepEqual(repairRows(m, slot.slotId), [
+    ["repair", "partial", "automatic", `The registration is repaired, and the slot's recovery did not finish: ${refusal}`],
+  ]);
+
+  failFetch = false;
+  await m.recoverQuarantines();
+  assertRecovered(m, slot);
+  assert.deepEqual(repairRows(m, slot.slotId).at(-1), ["repair", "done", "automatic", null]);
 });
 
 test("a repair blocked by index.lock keeps its fix and its reason, and a later pass finishes it", async () => {
@@ -765,7 +887,7 @@ for (const fix of ["unlock", "repair"] as const) {
     assert.equal(preview.allowed, true, preview.blockers.join("; "));
 
     assert.deepEqual(await m.repairSlot({ slotId: slot.slotId }), {
-      outcome: "outcomeUnknown", reason: "Error: spawn git EAGAIN",
+      outcome: "outcomeUnknown", reason: "Error: spawn git EAGAIN", repair: "attempted",
     });
     await m.recoverQuarantines();
     assert.equal(m.recoveryRefusal(row)?.reason, "Error: spawn git EAGAIN");

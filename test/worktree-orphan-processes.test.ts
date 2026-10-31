@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { after, mock, test } from "node:test";
 import { processInspector, flattenProcessText } from "../src/server/process-inspection/index.ts";
 import { inspectWorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import {
@@ -12,6 +12,7 @@ import {
   OrphanProcessMonitor,
   type FinishedTree,
   type FinishedTreeOwner,
+  type OrphanKillRecord,
   type OrphanProcessDeps,
 } from "../src/server/worktrees/orphan-processes.ts";
 import type { WorktreeSlotRow } from "../src/server/worktrees/store.ts";
@@ -291,6 +292,47 @@ test("Kill sends SIGTERM, the process exits, the pending return is retried and t
   assert.equal(alive(child.pid!), false);
   assert.deepEqual(retried, [taskOwner, check]);
   assert.deepEqual(monitor.problems(), []);
+});
+
+test("every finished Kill is reported, refused or not, naming the slot the report held", async () => {
+  const { root, tree } = fixture();
+  const child = await occupant(tree);
+  const finished: OrphanKillRecord[] = [];
+  const { monitor } = harness([{ path: tree, slotId: "slot-1", owner: taskOwner }], root, {
+    killFinished: (kill) => { finished.push(kill); },
+  });
+  const { process: reported } = await reportedProcess(monitor, child.pid!);
+  const request = { path: reported.tree, pid: reported.pid, startedAt: reported.startedAt, command: reported.command };
+
+  const refused = await monitor.kill({ ...request, command: "something else" });
+  assert.equal(refused.ok, false);
+  assert.deepEqual((await monitor.kill(request)).ok, true);
+
+  assert.deepEqual(finished.map((kill) => [kill.slotId, kill.path, kill.pid, kill.result.ok]), [
+    ["slot-1", reported.tree, reported.pid, false],
+    ["slot-1", reported.tree, reported.pid, true],
+  ]);
+  assert.ok(!JSON.stringify(finished).includes(reported.command), "the record never carries the command");
+});
+
+test("a signal that fails is a failed Kill, and a listener that throws does not change its answer", async () => {
+  const { root, tree } = fixture();
+  const child = await occupant(tree);
+  const { monitor } = harness([{ path: tree, slotId: "slot-1", owner: taskOwner }], root, {
+    signal: () => { throw Object.assign(new Error("not permitted"), { code: "EPERM" }); },
+    killFinished: () => { throw new Error("database is busy"); },
+  });
+  const { process: reported } = await reportedProcess(monitor, child.pid!);
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    const result = await monitor.kill({ path: reported.tree, pid: reported.pid, startedAt: reported.startedAt, command: reported.command });
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.failed, true);
+    assert.match(String(warned.mock.calls[0]?.arguments[0]), /could not be recorded/);
+  } finally {
+    warned.mock.restore();
+    child.kill("SIGKILL");
+  }
 });
 
 test("Kill sends SIGKILL 5 s after a SIGTERM the process ignores", async () => {

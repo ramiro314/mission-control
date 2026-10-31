@@ -495,6 +495,7 @@ const orphanProcesses = new OrphanProcessMonitor({
     // A fresh pass: one already running may have read occupancy before the kill.
     if (owner.kind === "unowned") return orphanTrees.sweepFresh().then((): void => recomputeStorageHealth());
   },
+  killFinished: (kill) => worktreeOperations.recordKill(kill),
   changed: () => storageHealth.recompute(),
 });
 // A task or check return refused for over an hour is a `stuck-return` problem. Its first

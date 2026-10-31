@@ -11,6 +11,7 @@ import {
   type WorktreeHistoryActor,
   type WorktreeOwnerKind,
   type WorktreeRecoveryRefusalView,
+  type WorktreeOperationOutcome,
 } from "@shared/worktrees.ts";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
@@ -110,6 +111,7 @@ import {
   depsCutOff,
   isDepsWriteAhead,
   type WorktreeClaimSlotState,
+  type WorktreeOperationEntry,
   type WorktreePoolRow,
   type WorktreeSlotRow,
   type WorktreeTimingEntry,
@@ -219,9 +221,20 @@ export type WorktreeRecoverResult =
   | { outcome: "outcomeUnknown"; reason: string };
 
 export type WorktreeRepairResult =
-  | WorktreeRecoverResult
+  | Extract<WorktreeRecoverResult, { outcome: "recovered" }>
+  /**
+   * `repair` says how far Git's fixes got before this ended, which no slot version can show,
+   * because they change the registration and not the row: `attempted` when one ran and the
+   * registration was not proven healthy after it, `proven` when it was.
+   */
+  | (Extract<WorktreeRecoverResult, { outcome: "refused" | "outcomeUnknown" }> & { repair?: "attempted" | "proven" })
   /** The registration is repaired, and the slot stays quarantined for the work it holds. */
   | { outcome: "heldWork"; reason: string };
+
+/** What an operation came to, as its history entry says it. */
+export type WorktreeOperationSettled =
+  | { outcome: "done"; reason: null }
+  | { outcome: Exclude<WorktreeOperationOutcome, "done">; reason: string };
 
 export type NativeLeaseLookup =
   | { state: "active" | "released"; lease: NativeWorktreeLease }
@@ -821,6 +834,8 @@ export class WorktreeManager {
    * memory: the next maintenance pass, which runs at startup, records it again.
    */
   private readonly recoveryRefusals = new Map<string, { version: number; refusal: WorktreeRecoveryRefusalView }>();
+  /** Each slot's last unknown automatic outcome, so a pass repeating it writes no second entry. */
+  private readonly recoveryFailures = new Map<string, string>();
 
   /**
    * Manual acquires running in the background because their pool has a claim. `make session`
@@ -3144,17 +3159,19 @@ export class WorktreeManager {
     if (diagnosis.value.status === "refused") return { outcome: "refused", reason: diagnosis.value.reason };
     if (diagnosis.value.status === "fixable") {
       const { fixes } = diagnosis.value;
-      for (const fix of fixes) {
+      for (const [index, fix] of fixes.entries()) {
         const fixed = await this.applyRegistrationFix(identity, slot.path, fix);
-        if (fixed) return fixed;
+        // Git's own refusal of the first fix is the one failure that changed nothing.
+        if (fixed) return fixed.outcome === "refused" && index === 0 ? fixed : { ...fixed, repair: "attempted" };
       }
       const repaired = await this.readRegistration(pool, identity, slot);
-      if (!repaired.ok) return { outcome: "outcomeUnknown", reason: repaired.reason };
+      if (!repaired.ok) return { outcome: "outcomeUnknown", reason: repaired.reason, repair: "attempted" };
       if (repaired.value.status !== "healthy") {
-        return { outcome: "refused", reason: "Git's repair did not leave the registration healthy" };
+        return { outcome: "refused", reason: "Git's repair did not leave the registration healthy", repair: "attempted" };
       }
       console.log(oneLine(`[worktrees] repaired ${this.slotLabel(slot)}: ${fixes.map(describeRegistrationFix).join("; ")}`));
     }
+    const fixedRegistration = diagnosis.value.status === "fixable";
     const recovered = await this.recoverLocked({
       slotId: slot.id,
       expectedVersion: slot.version,
@@ -3162,7 +3179,10 @@ export class WorktreeManager {
       automatic: true,
       repaired: true,
     });
-    if (recovered.outcome !== "refused" || !recovered.blocking || recovered.blocking.kind === "lock") return recovered;
+    if (recovered.outcome === "recovered") return recovered;
+    if (recovered.outcome !== "refused" || !recovered.blocking || recovered.blocking.kind === "lock") {
+      return fixedRegistration ? { ...recovered, repair: "proven" } : recovered;
+    }
     const current = this.store.slot(slot.id);
     if (current?.version === slot.version) {
       this.quarantine(current, REGISTRATION_OR_IDENTITY.repairedHoldsWork, recovered.reason);
@@ -3198,7 +3218,7 @@ export class WorktreeManager {
     identity: WorktreeRepositoryIdentity,
     path: string,
     fix: RegistrationFix,
-  ): Promise<WorktreeRepairResult | null> {
+  ): Promise<Extract<WorktreeRepairResult, { outcome: "refused" | "outcomeUnknown" }> | null> {
     let result: Awaited<ReturnType<WorktreeGit["repair"]>>;
     try {
       result = fix === "unlock"
@@ -3343,9 +3363,12 @@ export class WorktreeManager {
     // A slot that is no longer a candidate keeps no refusal: it left that quarantine, or is gone.
     const ids = new Set(candidates.map((slot) => slot.id));
     for (const id of this.recoveryRefusals.keys()) if (!ids.has(id)) this.recoveryRefusals.delete(id);
+    for (const id of this.recoveryFailures.keys()) if (!ids.has(id)) this.recoveryFailures.delete(id);
     for (const slot of candidates) {
       if (this.stopped) return;
-      const result = registrationRepairQuarantine(slot.quarantineReason)
+      const startedAt = this.deps.now();
+      const repairing = registrationRepairQuarantine(slot.quarantineReason);
+      const result = repairing
         ? await this.repairSlot({ slotId: slot.id, expectedVersion: slot.version })
         : await this.recoverSlot({
           slotId: slot.id,
@@ -3353,7 +3376,10 @@ export class WorktreeManager {
           allowDirty: false,
           automatic: true,
         });
-      // An unknown outcome that moved no version never reached the reset: its read failed.
+      const priorFailure = this.recoveryFailures.get(slot.id);
+      this.recoveryFailures.delete(slot.id);
+      const settled = this.recoverySettled(slot.id, slot.version, result);
+      // An unknown outcome that moved no version is the card's refusal, whatever History calls it.
       const untouched = result.outcome === "outcomeUnknown" && this.store.slot(slot.id)?.version === slot.version;
       if (result.outcome === "refused" || untouched) {
         const prior = this.recoveryRefusals.get(slot.id);
@@ -3367,6 +3393,7 @@ export class WorktreeManager {
         // one repeated on a later pass reaches neither.
         if (prior?.version !== slot.version || prior.refusal.reason !== refusal.reason ||
           prior.refusal.blocking?.path !== refusal.blocking?.path) {
+          this.recordAutomaticOperation(slot.id, repairing, settled, startedAt);
           this.publish();
           console.warn(oneLine(
             `[worktrees] automatic recovery of ${this.slotLabel(slot)} refused: ${refusal.reason}` +
@@ -3376,9 +3403,74 @@ export class WorktreeManager {
         continue;
       }
       this.recoveryRefusals.delete(slot.id);
-      if (result.outcome === "outcomeUnknown") {
-        console.warn(`[worktrees] automatic recover of slot ${slot.ordinal} did not finish: ${result.reason}`);
+      if (settled.outcome === "failed") {
+        console.warn(`[worktrees] automatic recover of slot ${slot.ordinal} did not finish: ${settled.reason}`);
+        this.recoveryFailures.set(slot.id, settled.reason);
+        if (priorFailure === settled.reason) continue;
       }
+      this.recordAutomaticOperation(slot.id, repairing, settled, startedAt);
+      this.publish();
+    }
+  }
+
+  /**
+   * What a Recover or Repair of a slot at `version` came to, whoever ran it. An unknown outcome
+   * that moved no version never reached the reset: its read failed and the slot is as it was,
+   * so it reads as a refusal. Git's fixes change the registration and no version, so a Repair
+   * that ran one says so itself, and never reads as a refusal.
+   */
+  recoverySettled(slotId: string, version: number | null, result: WorktreeRepairResult): WorktreeOperationSettled {
+    switch (result.outcome) {
+      case "recovered":
+        return { outcome: "done", reason: null };
+      case "heldWork":
+        return {
+          outcome: "partial",
+          reason: `The registration is repaired, and the slot stays quarantined for its work: ${result.reason}`,
+        };
+      case "refused":
+      case "outcomeUnknown":
+        if (result.repair === "proven") {
+          return {
+            outcome: "partial",
+            reason: `The registration is repaired, and the slot's recovery did not finish: ${result.reason}`,
+          };
+        }
+        if (result.repair === "attempted") return { outcome: "failed", reason: result.reason };
+        return {
+          outcome: result.outcome === "refused" || this.store.slot(slotId)?.version === version ? "refused" : "failed",
+          reason: result.reason,
+        };
+    }
+  }
+
+  /**
+   * One slot's entry for an automatic Recover or Repair. A pass that repeats a refusal or an
+   * unknown outcome does not reach this, so retention keeps what happened instead of a 5-minute
+   * heartbeat.
+   */
+  private recordAutomaticOperation(
+    slotId: string,
+    repairing: boolean,
+    settled: WorktreeOperationSettled,
+    startedAt: number,
+  ): void {
+    const at = this.deps.now();
+    this.recordOperation(slotId, {
+      ...settled,
+      at,
+      operation: repairing ? "repair" : "recover",
+      actor: "automatic",
+      durationMs: at - startedAt,
+    });
+  }
+
+  /** The record of an operation that already happened, so losing it never changes that result. */
+  recordOperation(slotId: string, entry: WorktreeOperationEntry): void {
+    try {
+      this.store.recordOperation(slotId, entry);
+    } catch (error) {
+      console.warn(`[worktrees] a finished operation's history entry was lost: ${bounded(String(error))}`);
     }
   }
 

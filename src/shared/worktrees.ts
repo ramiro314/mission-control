@@ -32,6 +32,14 @@ export type WorktreeHistoryKind = (typeof WORKTREE_HISTORY_KINDS)[number];
 export const WORKTREE_HISTORY_ACTORS = ["automatic", "operator", "owner"] as const;
 export type WorktreeHistoryActor = (typeof WORKTREE_HISTORY_ACTORS)[number];
 
+/** Which operation an `operation` row records (`.operation`). Append-only, like the kinds. */
+export const WORKTREE_HISTORY_OPERATIONS = ["return", "destroy", "prune", "warm", "recover", "repair", "kill"] as const;
+export type WorktreeHistoryOperation = (typeof WORKTREE_HISTORY_OPERATIONS)[number];
+
+/** How an `operation` row's operation ended (`.outcome`). Append-only, like the kinds. */
+export const WORKTREE_OPERATION_OUTCOMES = ["done", "refused", "partial", "failed"] as const;
+export type WorktreeOperationOutcome = (typeof WORKTREE_OPERATION_OUTCOMES)[number];
+
 export const WORKTREE_HISTORY_LIMITS = {
   /** One page of `GET /api/worktrees/:slotId/history`. */
   pageEntries: 50,
