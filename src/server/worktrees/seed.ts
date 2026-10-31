@@ -8,8 +8,8 @@ import { processLifetime } from "../platform/process-lifetime.ts";
 import { describeCommandFailure, run } from "../util/exec.ts";
 import { trackOwnWorktreeProcess } from "./own-processes.ts";
 
-// Seeding: a cold slot clones the pool's `seed.paths` copy-on-write from an idle sibling, so it
-// inherits the sibling's installed dependency trees instead of paying a full install.
+// Seeding: a cold slot clones the pool's `seed.paths` copy-on-write from a sibling, so it inherits
+// the sibling's installed dependency trees instead of paying a full install.
 //
 // Three rules hold everything here together:
 //

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, mock, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
@@ -10,8 +11,8 @@ import { QueueManager } from "../src/server/queue.ts";
 import { buildApp } from "../src/server/routes.ts";
 import { buildClaimEnvironment, type ClaimStepResult } from "../src/server/worktrees/claim.ts";
 import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
-import { WorktreeManager, type WorktreeManagerDeps } from "../src/server/worktrees/manager.ts";
-import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
+import { WorktreeManager, type NativeWorktreeLease, type WorktreeManagerDeps } from "../src/server/worktrees/manager.ts";
+import { WorktreeOperationsService, type WorktreeOperationsDeps } from "../src/server/worktrees/operations.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
@@ -23,8 +24,13 @@ import {
   WORKTREE_HISTORY_ACTORS,
   WORKTREE_HISTORY_KINDS,
   WORKTREE_HISTORY_LIMITS,
+  WORKTREE_HISTORY_OPERATIONS,
+  WORKTREE_OPERATION_OUTCOMES,
 } from "../src/shared/worktrees.ts";
+import { MULTIPLEXERS } from "../src/server/terminal/registry.ts";
+import type { Task } from "../src/shared/types.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { FAIL, OK, fakeMultiplexer } from "./helpers/terminal-fakes.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 const db = openDb();
@@ -108,6 +114,11 @@ function noRowFrom(write: () => unknown): void {
 test("the kind and actor vocabularies are the plan's, in the plan's order", () => {
   assert.deepEqual(WORKTREE_HISTORY_KINDS, ["transition", "operation", "observation", "claim", "seed", "provisioning"]);
   assert.deepEqual(WORKTREE_HISTORY_ACTORS, ["automatic", "operator", "owner"]);
+});
+
+test("the operation and outcome vocabularies are append-only, in the order they shipped", () => {
+  assert.deepEqual(WORKTREE_HISTORY_OPERATIONS, ["return", "destroy", "prune", "warm", "recover", "repair", "kill", "forget"]);
+  assert.deepEqual(WORKTREE_OPERATION_OUTCOMES, ["done", "refused", "partial", "failed"]);
 });
 
 test("the limits are the numbers the operator chose, not whatever the constant says", () => {
@@ -886,6 +897,936 @@ test("a setup command that prints a claim variable leaves its name in history, n
   assert.ok(!JSON.stringify(db.prepare(`SELECT * FROM worktree_slot_history`).all()).includes(CLAIM_SECRET));
 });
 
+function operationsFor(m: WorktreeManager, deps: Partial<WorktreeOperationsDeps> = {}): WorktreeOperationsService {
+  const legacy = new LegacyTreehouseService(db);
+  return new WorktreeOperationsService(m, {
+    legacy,
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks: new CheckLeaseManager(db, { manager: m, legacy }),
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async () => 0,
+    ...deps,
+  });
+}
+
+async function manualLease(m: WorktreeManager, clone: string, sha: string, key: string) {
+  const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "manual", key } });
+  assert.equal(acquired.outcome, "acquired");
+  if (acquired.outcome !== "acquired") throw new Error("not acquired");
+  return acquired.lease;
+}
+
+/** Slots an owner returned, so Destroy, Prune and Warm may each take them. */
+async function idleSlots(m: WorktreeManager, clone: string, sha: string, count: number): Promise<string[]> {
+  const leases = [];
+  for (let index = 0; index < count; index += 1) leases.push(await manualLease(m, clone, sha, `idle-${index}`));
+  for (const lease of leases) assert.equal((await m.release(lease, { ownerAuthorized: true })).outcome, "released");
+  return leases.map((lease) => lease.slotId);
+}
+
+/** A pool with a claim, so its slots are Warm targets. */
+function warmingManager(): WorktreeManager {
+  return realManager({
+    resolvePolicy: () => ({
+      enabled: true,
+      maxSlots: 4,
+      setupArgv: null,
+      claim: { steps: [{ argv: [process.execPath, "-e", ""], env: [] }], timeoutMinutes: 1, fingerprintPaths: [] },
+    }),
+    claimEnvironment: async (names) => claimEnvironment(names),
+  });
+}
+
+/** Oldest first, one `operation` row per entry. */
+function operationRows(slotId: string) {
+  return historyOf(slotId).filter((entry) => entry.kind === "operation").reverse();
+}
+
+test("each finished operation writes one entry per slot, and a removed slot still takes its entry", async () => {
+  const { clone, sha } = repository("mission-history-op-done-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const lease = await manualLease(m, clone, sha, "op-return");
+  const [first, second] = await idleSlots(m, clone, sha, 2);
+
+  const returning = await operations.preview({ action: "return", slotId: lease.slotId });
+  await operations.execute(returning.token, []);
+  const [returned] = operationRows(lease.slotId);
+  assert.equal(returned?.operation, "return");
+  assert.equal(returned?.outcome, "done");
+  assert.equal(returned?.actor, "operator");
+  assert.equal(returned?.reason, null);
+  assert.ok((returned?.durationMs ?? -1) >= 0);
+
+  const destroying = await operations.preview({ action: "destroy", target: { kind: "slots", slotIds: [first!, second!] } });
+  assert.equal(destroying.allowed, true, destroying.blockers.join("; "));
+  operations.submit(destroying.token, []);
+  await operations.idle();
+  for (const slotId of [first!, second!]) {
+    assert.equal(m.store.slot(slotId), null, "the slot row is gone");
+    const rows = operationRows(slotId);
+    assert.deepEqual(rows.map((row) => [row.operation, row.outcome, row.actor]), [["destroy", "done", "operator"]]);
+    assert.equal(rows[0]?.ordinal, historyOf(slotId).at(-1)?.ordinal, "it keeps the slot's own ordinal");
+  }
+});
+
+test("Prune writes an entry for each slot it removed, and Reconcile writes none", async () => {
+  const { clone, sha } = repository("mission-history-op-prune-");
+  let maxSlots = 4;
+  const m = realManager({ resolvePolicy: () => ({ enabled: true, maxSlots, setupArgv: null }) });
+  const operations = operationsFor(m);
+  const slotIds = await idleSlots(m, clone, sha, 2);
+  maxSlots = 1;
+  const { poolId } = m.store.slot(slotIds[0]!)!;
+  const preview = await operations.preview({ action: "prune", poolId, mode: "rightSize" });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const removed = preview.affected.map((target) => target.id);
+  assert.equal(removed.length, 1, "down to the pool's one slot");
+  await operations.execute(preview.token, []);
+  for (const slotId of slotIds) {
+    assert.deepEqual(
+      operationRows(slotId).map((row) => [row.operation, row.outcome]),
+      removed.includes(slotId) ? [["prune", "done"]] : [],
+    );
+  }
+
+  const reconcile = await operations.preview({ action: "reconcile", poolId });
+  const operationRowCount = () => db.prepare(`SELECT COUNT(*) AS n FROM worktree_slot_history WHERE kind = 'operation'`).get();
+  const before = operationRowCount();
+  await operations.execute(reconcile.token, []);
+  assert.deepEqual(operationRowCount(), before);
+});
+
+test("a refused operation records its reason, and dismissing its report keeps the entry", async () => {
+  const { clone, sha } = repository("mission-history-op-refused-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const lease = await manualLease(m, clone, sha, "op-stale");
+  const preview = await operations.preview({ action: "return", slotId: lease.slotId });
+  assert.equal((await m.release(lease, { ownerAuthorized: true })).outcome, "released", "the slot moved after the preview");
+  const head = (await operations.inventory()).repositories[0]!.slots[0]!.lastHistoryId;
+
+  const { operation } = operations.submit(preview.token, []);
+  await operations.idle();
+  const [refused] = operationRows(lease.slotId);
+  assert.equal(refused?.outcome, "refused");
+  assert.equal(refused?.operation, "return");
+  assert.equal(refused?.actor, "operator");
+  assert.equal(refused?.reason, "worktree state changed after preview; refresh before executing");
+  assert.equal(refused?.meta?.operationId, operation.id);
+
+  const inventory = await operations.inventory();
+  assert.equal(inventory.operations.length, 1, "the operations list keeps its failed report");
+  assert.notEqual(inventory.repositories[0]!.slots[0]!.lastHistoryId, head, "an open History hears of a row that moved no state");
+
+  assert.equal(operations.dismiss(operation.id), true);
+  assert.deepEqual((await operations.inventory()).operations, []);
+  assert.deepEqual(operationRows(lease.slotId), [refused], "the entry outlives the report");
+});
+
+test("a partly done operation records its outcome and says which side of the stop each slot fell on", async () => {
+  const { clone, sha } = repository("mission-history-op-partial-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const slotIds = await idleSlots(m, clone, sha, 2);
+  const preview = await operations.preview({ action: "destroy", target: { kind: "slots", slotIds } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const [gone, left] = preview.affected.map((target) => target.id);
+  const remove = m.removeSlot.bind(m);
+  m.removeSlot = async (input) => input.slotId === left
+    ? { outcome: "refused", reason: "one or more processes still occupy the worktree" }
+    : remove(input);
+
+  const { operation } = operations.submit(preview.token, []);
+  await operations.idle();
+  const stop = "one or more processes still occupy the worktree";
+  const [finished] = operationRows(gone!);
+  const [stopped] = operationRows(left!);
+  assert.equal(finished?.outcome, "partial");
+  assert.equal(finished?.reason, `This slot finished, and the operation stopped at a later step: ${stop}`);
+  assert.equal(stopped?.outcome, "partial");
+  assert.equal(stopped?.reason, `The operation stopped partway, before this slot finished: ${stop}`);
+
+  operations.dismiss(operation.id);
+  assert.equal(operationRows(gone!).length, 1);
+  assert.equal(operationRows(left!).length, 1);
+});
+
+test("an unexpected error records failed, never a refusal that left the slot as it was", async () => {
+  const { clone, sha } = repository("mission-history-op-crash-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: slotId! } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  m.removeSlot = async () => { throw new Error("the disk went away"); };
+  const quiet = mock.method(console, "error", () => {});
+  try {
+    const { operation } = operations.submit(preview.token, []);
+    await operations.idle();
+    assert.equal((await operations.inventory()).operations.find((entry) => entry.id === operation.id)?.state, "failed");
+  } finally {
+    quiet.mock.restore();
+  }
+  assert.deepEqual(operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason]), [
+    ["destroy", "failed", "operator", "the disk went away"],
+  ]);
+});
+
+/** A failed task holding one mission slot per clone, through the real TaskManager's reclaim. */
+async function taskHolding(
+  m: WorktreeManager,
+  clones: Array<{ clone: string; sha: string }>,
+  id: string,
+  home: Partial<Pick<Task, "homeName" | "homeBackend" | "terminalResourceId">> = {},
+) {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, undefined, undefined, m);
+  const leases: NativeWorktreeLease[] = [];
+  for (const [position, { clone, sha }] of clones.entries()) {
+    const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key: `${id}:${position}` } });
+    assert.equal(acquired.outcome, "acquired");
+    if (acquired.outcome !== "acquired") throw new Error("not acquired");
+    leases.push(acquired.lease);
+  }
+  const [first, ...others] = leases;
+  registry.upsertTask(mkTask({
+    id,
+    status: "failed",
+    repoRoot: clones[0]!.clone,
+    worktreePath: first!.path,
+    provider: "mission",
+    worktreeLeaseId: first!.leaseId,
+    ...home,
+    extraRepos: others.map((lease, index) => ({
+      repoRoot: clones[index + 1]!.clone,
+      worktreePath: lease.path,
+      branch: null,
+      baseSha: null,
+      provider: "mission",
+      worktreeLeaseId: lease.leaseId,
+      prUrl: null,
+      prState: null,
+      mergedAt: null,
+    })),
+  }));
+  const get: WorktreeOperationsDeps["tasks"]["get"] = (taskId) => taskId === id
+    ? {
+        id,
+        title: "Two repositories",
+        resources: leases.map((lease, position) => ({
+          position,
+          repoRoot: clones[position]!.clone,
+          path: lease.path,
+          provider: "mission",
+          leaseId: lease.leaseId,
+          branch: null,
+        })),
+      }
+    : null;
+  return { leases, get, operations: operationsFor(m, { tasks: { get, reclaim: (taskId) => tasks.reclaim(taskId) } }) };
+}
+
+test("a task Return that brought one tree back reads partly done, never refused, on each side", async () => {
+  const m = realManager();
+  const { leases: [back, stuck], operations } = await taskHolding(
+    m,
+    [repository("mission-history-op-reclaim-a-"), repository("mission-history-op-reclaim-b-")],
+    "task-partial",
+  );
+  const release = m.release.bind(m);
+  m.release = async (lease, options) => lease.slotId === stuck!.slotId
+    ? { outcome: "refused", reason: "one or more processes still occupy the worktree" }
+    : release(lease, options);
+  const preview = await operations.preview({ action: "return", slotId: back!.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+
+  operations.submit(preview.token, []);
+  await operations.idle();
+  assert.equal(m.store.slot(back!.slotId)?.state, "available", "this tree really did come back");
+  assert.equal(m.store.slot(stuck!.slotId)?.state, "leased");
+  const [returned] = operationRows(back!.slotId);
+  const [kept] = operationRows(stuck!.slotId);
+  assert.equal(returned?.operation, "return");
+  assert.equal(returned?.outcome, "partial");
+  assert.match(returned?.reason ?? "", /^This slot finished, and the operation stopped at a later step: could not reclaim/);
+  assert.equal(kept?.operation, "return");
+  assert.equal(kept?.outcome, "partial");
+  assert.match(kept?.reason ?? "", /^The operation stopped partway, before this slot finished: could not reclaim/);
+});
+
+test("a task Return that tried and brought nothing back reads failed, and one refused before teardown reads refused", async () => {
+  const m = realManager();
+  const { clone, sha } = repository("mission-history-op-reclaim-none-");
+  const { leases: [lease], get, operations } = await taskHolding(m, [{ clone, sha }], "task-none");
+  m.release = async () => ({ outcome: "refused", reason: "one or more processes still occupy the worktree" });
+  const tried = await operations.preview({ action: "return", slotId: lease!.slotId });
+  operations.submit(tried.token, []);
+  await operations.idle();
+  assert.deepEqual(operationRows(lease!.slotId).map((row) => row.outcome), ["failed"]);
+
+  const clean = operationsFor(m, {
+    tasks: {
+      get,
+      reclaim: async () => ({ ok: false, error: "this task's resources are already being cleaned up" }),
+    },
+  });
+  const refused = await clean.preview({ action: "return", slotId: lease!.slotId });
+  clean.submit(refused.token, []);
+  await clean.idle();
+  assert.deepEqual(operationRows(lease!.slotId).at(-1)?.outcome, "refused");
+  assert.equal(operationRows(lease!.slotId).at(-1)?.reason, "this task's resources are already being cleaned up");
+});
+
+test("a terminal that would not close stops the reclaim before any tree, so the Return reads refused", async () => {
+  const original = MULTIPLEXERS.tmux;
+  // The first close is the agent's stop, which the reclaim survives. The second is teardown's own.
+  let closes = 0;
+  MULTIPLEXERS.tmux = fakeMultiplexer({
+    bin: { env: null, candidates: [process.execPath], dropEnv: [] },
+    sessions: {
+      ...original.sessions!,
+      alive: async () => true,
+      kill: async () => (closes++ === 0 ? OK : FAIL("the terminal refused")),
+    },
+  });
+  try {
+    const m = realManager();
+    const { clone, sha } = repository("mission-history-op-live-home-");
+    const { leases: [lease], operations } = await taskHolding(m, [{ clone, sha }], "task-live-home", {
+      homeName: "task",
+      homeBackend: "tmux",
+      terminalResourceId: "multiplexer:tmux:live-terminal",
+    });
+    const { version } = m.store.slot(lease!.slotId)!;
+    const preview = await operations.preview({ action: "return", slotId: lease!.slotId });
+    assert.equal(preview.allowed, true, preview.blockers.join("; "));
+    operations.submit(preview.token, []);
+    await operations.idle();
+
+    assert.equal(m.store.slot(lease!.slotId)?.version, version, "no tree was touched");
+    assert.equal(m.store.slot(lease!.slotId)?.state, "leased");
+    const [row] = operationRows(lease!.slotId);
+    assert.equal(row?.outcome, "refused");
+    assert.match(row?.reason ?? "", /worktree preserved/);
+  } finally {
+    MULTIPLEXERS.tmux = original;
+  }
+});
+
+test("a check return that began and failed reads failed, and one blocked before it began reads refused", async () => {
+  const { clone, sha } = repository("mission-history-op-check-");
+  const m = realManager();
+  const legacy = new LegacyTreehouseService(db);
+  const checks = new CheckLeaseManager(db, { manager: m, legacy });
+  const operations = operationsFor(m, { checks, checkRecovery: async () => "empty" });
+  await checks.acquireForAttempt({
+    attemptId: "check-history",
+    submissionId: "submission-history",
+    nodeId: "node-history",
+    repoRoot: clone,
+    headSha: sha,
+  });
+  const slot = m.store.slots().find((each) => each.activeOwnerKey === "check-history")!;
+  checks.handOffForReclaim("check-history");
+  const run = async (result: Awaited<ReturnType<CheckLeaseManager["recoverForOperator"]>>) => {
+    const preview = await operations.preview({ action: "return", slotId: slot.id });
+    assert.equal(preview.allowed, true, preview.blockers.join("; "));
+    checks.recoverForOperator = async () => result;
+    operations.submit(preview.token, []);
+    await operations.idle();
+  };
+  await run({ outcome: "retry", reason: "the return was refused and stays returning" });
+  await run({ outcome: "blocked", reason: "the check's process group is still running" });
+  assert.deepEqual(operationRows(slot.id).map((row) => [row.operation, row.outcome, row.reason]), [
+    ["return", "failed", "the return was refused and stays returning"],
+    ["return", "refused", "the check's process group is still running"],
+  ]);
+});
+
+test("destroying one slot of a task records Destroy on it and Return on the sibling it only returned", async () => {
+  const m = realManager();
+  const { leases: [destroyed, sibling], operations } = await taskHolding(
+    m,
+    [repository("mission-history-op-sibling-a-"), repository("mission-history-op-sibling-b-")],
+    "task-sibling",
+  );
+  const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: destroyed!.slotId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  assert.equal(preview.affected.length, 2, "the preview names the sibling too");
+  operations.submit(preview.token, []);
+  await operations.idle();
+
+  assert.equal(m.store.slot(destroyed!.slotId), null);
+  assert.equal(m.store.slot(sibling!.slotId)?.state, "available", "the sibling still exists");
+  assert.deepEqual(operationRows(destroyed!.slotId).map((row) => [row.operation, row.outcome]), [["destroy", "done"]]);
+  assert.deepEqual(operationRows(sibling!.slotId).map((row) => [row.operation, row.outcome]), [["return", "done"]]);
+});
+
+test("a sibling a task returned before Destroy stopped reads as finished, and the slot Destroy kept as unfinished", async () => {
+  const m = realManager();
+  const { leases: [kept, sibling], operations } = await taskHolding(
+    m,
+    [repository("mission-history-op-sibling-stop-a-"), repository("mission-history-op-sibling-stop-b-")],
+    "task-sibling-stop",
+  );
+  const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: kept!.slotId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  m.removeSlot = async () => ({ outcome: "refused", reason: "slot is available, not removable" });
+  operations.submit(preview.token, []);
+  await operations.idle();
+  const stop = "slot is available, not removable";
+  assert.deepEqual(operationRows(kept!.slotId).map((row) => [row.operation, row.outcome, row.reason]), [
+    ["destroy", "partial", `The operation stopped partway, before this slot finished: ${stop}`],
+  ]);
+  assert.deepEqual(operationRows(sibling!.slotId).map((row) => [row.operation, row.outcome, row.reason]), [
+    ["return", "partial", `This slot finished, and the operation stopped at a later step: ${stop}`],
+  ]);
+});
+
+test("a pool Destroy records Destroy on every slot, though their rows are gone when it writes", async () => {
+  const { clone, sha } = repository("mission-history-op-pool-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const slotIds = await idleSlots(m, clone, sha, 2);
+  const preview = await operations.preview({ action: "destroy", target: { kind: "pool", poolId: m.store.slot(slotIds[0]!)!.poolId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  operations.submit(preview.token, []);
+  await operations.idle();
+  for (const slotId of slotIds) {
+    assert.equal(m.store.slot(slotId), null);
+    assert.deepEqual(operationRows(slotId).map((row) => [row.operation, row.outcome]), [["destroy", "done"]]);
+  }
+});
+
+test("a Prune that stops partway is partly done on both sides of the stop", async () => {
+  const { clone, sha } = repository("mission-history-op-partial-prune-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const slotIds = await idleSlots(m, clone, sha, 2);
+  const preview = await operations.preview({ action: "prune", poolId: m.store.slot(slotIds[0]!)!.poolId, mode: "safe" });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const [gone, left] = preview.affected.map((target) => target.id);
+  assert.ok(gone && left, "both slots are candidates");
+  const remove = m.removeSlot.bind(m);
+  m.removeSlot = async (input) => input.slotId === left
+    ? { outcome: "conflict", reason: "slot version changed after preview" }
+    : remove(input);
+
+  operations.submit(preview.token, []);
+  await operations.idle();
+  const stop = "slot version changed after preview";
+  assert.deepEqual(operationRows(gone).map((row) => [row.operation, row.outcome, row.reason]), [
+    ["prune", "partial", `This slot finished, and the operation stopped at a later step: ${stop}`],
+  ]);
+  assert.deepEqual(operationRows(left).map((row) => [row.operation, row.outcome, row.reason]), [
+    ["prune", "partial", `The operation stopped partway, before this slot finished: ${stop}`],
+  ]);
+});
+
+test("a Destroy that returned its owner's lease and then stopped is partly done, not refused", async () => {
+  const { clone, sha } = repository("mission-history-op-owner-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const lease = await manualLease(m, clone, sha, "op-owner");
+  const preview = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: lease.slotId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  m.removeSlot = async () => ({ outcome: "refused", reason: "slot is available, not removable" });
+
+  operations.submit(preview.token, []);
+  await operations.idle();
+  assert.equal(m.store.slot(lease.slotId)?.state, "available", "its lease really was returned");
+  assert.deepEqual(operationRows(lease.slotId).map((row) => row.outcome), ["partial"]);
+});
+
+test("an operation whose outcome is unknown records failed, and a repair that kept work records partly done", async () => {
+  const { clone, sha } = repository("mission-history-op-failed-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const [unknown] = await idleSlots(m, clone, sha, 1);
+  const destroying = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: unknown! } });
+  m.removeSlot = async () => ({ outcome: "outcomeUnknown", reason: "git worktree remove timed out after 60 s" });
+  operations.submit(destroying.token, []);
+  await operations.idle();
+  const [failed] = operationRows(unknown!);
+  assert.equal(failed?.outcome, "failed");
+  assert.equal(failed?.reason, "git worktree remove timed out after 60 s");
+
+  const slot = m.store.slot(unknown!)!;
+  assert.ok(m.store.quarantine(slot.id, REGISTRATION_OR_IDENTITY.missingRegistration, null, Date.now(), slot.version));
+  m.repairSlot = async () => ({ outcome: "heldWork", reason: "uncommitted change: a.txt" });
+  const repairing = await operations.preview({ action: "repair", slotId: slot.id });
+  assert.equal(repairing.allowed, true, repairing.blockers.join("; "));
+  await operations.execute(repairing.token, []);
+  const repair = operationRows(slot.id).at(-1);
+  assert.equal(repair?.operation, "repair");
+  assert.equal(repair?.outcome, "partial");
+  assert.equal(repair?.reason, "The registration is repaired, and the slot stays quarantined for its work: uncommitted change: a.txt");
+});
+
+test("an operator's Recover left unknown reads as the automatic one does: refused unmoved, failed moved", async () => {
+  const { clone, sha } = repository("mission-history-op-recover-unknown-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const quarantine = () => assert.ok(
+    m.store.quarantine(slotId!, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+  );
+  const recover = async () => {
+    const preview = await operations.preview({ action: "recover", slotId: slotId! });
+    assert.equal(preview.allowed, true, preview.blockers.join("; "));
+    await assert.rejects(operations.execute(preview.token, []), /timed out/);
+  };
+  quarantine();
+  m.recoverSlot = async () => ({ outcome: "outcomeUnknown", reason: "git status timed out after 15 s" });
+  await recover();
+  m.recoverSlot = async () => {
+    quarantine();
+    return { outcome: "outcomeUnknown", reason: "git checkout timed out after 60 s" };
+  };
+  await recover();
+  assert.deepEqual(operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason]), [
+    ["recover", "refused", "operator", "git status timed out after 15 s"],
+    ["recover", "failed", "operator", "git checkout timed out after 60 s"],
+  ]);
+});
+
+test("a Recover records done for the operator, and an entry that cannot be written changes no result", async () => {
+  const { clone, sha } = repository("mission-history-op-recover-");
+  const m = realManager();
+  const operations = operationsFor(m);
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const quarantine = () => assert.ok(
+    m.store.quarantine(slotId!, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+  );
+
+  quarantine();
+  const unrecorded = await operations.preview({ action: "recover", slotId: slotId! });
+  assert.equal(unrecorded.allowed, true, unrecorded.blockers.join("; "));
+  const warned = mock.method(console, "warn", () => {});
+  const record = mock.method(m.store, "recordOperation", () => { throw new Error("database is busy"); });
+  try {
+    assert.equal((await operations.execute(unrecorded.token, [])).ok, true);
+    assert.match(String(warned.mock.calls.at(-1)?.arguments[0]), /history entry was lost/);
+  } finally {
+    record.mock.restore();
+    warned.mock.restore();
+  }
+  assert.equal(m.store.slot(slotId!)?.state, "available");
+  assert.deepEqual(operationRows(slotId!), []);
+
+  quarantine();
+  const recorded = await operations.preview({ action: "recover", slotId: slotId! });
+  await operations.execute(recorded.token, []);
+  assert.deepEqual(operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor]), [["recover", "done", "operator"]]);
+});
+
+test("automatic recovery records done as automatic, and one row for a refusal however often it repeats", async () => {
+  const { clone, sha } = repository("mission-history-op-automatic-");
+  const m = realManager();
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const slot = m.store.slot(slotId!)!;
+  assert.ok(m.store.quarantine(slot.id, "slot Git state is unknown", null, Date.now(), slot.version));
+  const scratch = join(slot.path, "scratch.txt");
+  writeFileSync(scratch, "work\n");
+
+  await m.recoverQuarantines();
+  await m.recoverQuarantines();
+  const refused = operationRows(slot.id);
+  assert.deepEqual(refused.map((row) => [row.operation, row.outcome, row.actor]), [["recover", "refused", "automatic"]]);
+  assert.match(refused[0]?.reason ?? "", /scratch\.txt/);
+
+  rmSync(scratch);
+  const other = join(slot.path, "other.txt");
+  writeFileSync(other, "work\n");
+  await m.recoverQuarantines();
+  await m.recoverQuarantines();
+  const changed = operationRows(slot.id);
+  assert.equal(changed.length, 2, "a new reason is a new entry, once");
+  assert.match(changed[1]?.reason ?? "", /other\.txt/);
+
+  rmSync(other);
+  await m.recoverQuarantines();
+  assert.equal(m.store.slot(slot.id)?.state, "available");
+  assert.deepEqual(operationRows(slot.id).map((row) => [row.operation, row.outcome, row.actor]), [
+    ["recover", "refused", "automatic"],
+    ["recover", "refused", "automatic"],
+    ["recover", "done", "automatic"],
+  ]);
+});
+
+test("an automatic outcome left unknown records failed once per reason, and one that moved nothing reads refused", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-failed-");
+  const m = realManager();
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const quarantine = () => assert.ok(
+    m.store.quarantine(slotId!, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+  );
+  quarantine();
+  let reason = "git checkout timed out after 60 s";
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    m.recoverSlot = async () => {
+      quarantine();
+      return { outcome: "outcomeUnknown", reason };
+    };
+    await m.recoverQuarantines();
+    await m.recoverQuarantines();
+    assert.deepEqual(
+      operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason]),
+      [["recover", "failed", "automatic", reason]],
+      "the reset ran on both passes, and the second has nothing new to say",
+    );
+
+    reason = "git checkout was killed by SIGKILL";
+    await m.recoverQuarantines();
+    assert.deepEqual(operationRows(slotId!).slice(1).map((row) => [row.outcome, row.reason]), [["failed", reason]]);
+
+    // Never reached the reset: its read failed, so the slot stayed exactly as it was.
+    const version = m.store.slot(slotId!)!.version;
+    m.recoverSlot = async () => ({ outcome: "outcomeUnknown", reason: "git status timed out after 15 s" });
+    await m.recoverQuarantines();
+    await m.recoverQuarantines();
+    assert.equal(m.store.slot(slotId!)?.version, version);
+    assert.deepEqual(operationRows(slotId!).slice(2).map((row) => [row.outcome, row.reason]), [
+      ["refused", "git status timed out after 15 s"],
+    ]);
+  } finally {
+    warned.mock.restore();
+  }
+});
+
+test("a different outcome between two passes makes the same failure a new entry", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-between-");
+  const m = realManager();
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const quarantine = () => assert.ok(
+    m.store.quarantine(slotId!, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+  );
+  quarantine();
+  const failure = "git checkout timed out after 60 s";
+  const refusal = "one or more processes still occupy the worktree";
+  const failing: WorktreeManager["recoverSlot"] = async () => {
+    quarantine();
+    return { outcome: "outcomeUnknown", reason: failure };
+  };
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    m.recoverSlot = failing;
+    await m.recoverQuarantines();
+    m.recoverSlot = async () => ({ outcome: "refused", reason: refusal });
+    await m.recoverQuarantines();
+    m.recoverSlot = failing;
+    await m.recoverQuarantines();
+  } finally {
+    warned.mock.restore();
+  }
+  assert.deepEqual(operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason]), [
+    ["recover", "failed", "automatic", failure],
+    ["recover", "refused", "automatic", refusal],
+    ["recover", "failed", "automatic", failure],
+  ]);
+});
+
+test("a slot that left its quarantine forgets its failure, so the same reason later is a new entry", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-forget-");
+  const m = realManager();
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const quarantine = () => assert.ok(
+    m.store.quarantine(slotId!, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+  );
+  const reason = "git checkout timed out after 60 s";
+  const recover = m.recoverSlot.bind(m);
+  const failing: WorktreeManager["recoverSlot"] = async () => {
+    quarantine();
+    return { outcome: "outcomeUnknown", reason };
+  };
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    quarantine();
+    m.recoverSlot = failing;
+    await m.recoverQuarantines();
+    assert.equal(operationRows(slotId!).length, 1);
+
+    // An operator's Recover, outside any pass, so only the next pass can notice it left.
+    assert.equal((await recover({ slotId: slotId!, allowDirty: false, automatic: false })).outcome, "recovered");
+    await m.recoverQuarantines();
+
+    quarantine();
+    await m.recoverQuarantines();
+  } finally {
+    warned.mock.restore();
+  }
+  assert.deepEqual(operationRows(slotId!).map((row) => [row.outcome, row.reason]), [["failed", reason], ["failed", reason]]);
+});
+
+test("a history row lost during an automatic pass changes no recovery, and the pass goes on", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-lost-");
+  const m = realManager();
+  const slotIds = await idleSlots(m, clone, sha, 2);
+  for (const slotId of slotIds) {
+    assert.ok(m.store.quarantine(slotId, "slot Git state is unknown", null, Date.now(), m.store.slot(slotId)!.version));
+  }
+  const record = m.store.recordOperation.bind(m.store);
+  let lost = 0;
+  const failing = mock.method(m.store, "recordOperation", (...args: Parameters<typeof record>) => {
+    if (lost > 0) return record(...args);
+    lost += 1;
+    throw new Error("database is busy");
+  });
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    await m.recoverQuarantines();
+    assert.match(String(warned.mock.calls[0]?.arguments[0]), /history entry was lost: Error: database is busy/);
+  } finally {
+    warned.mock.restore();
+    failing.mock.restore();
+  }
+  assert.equal(failing.mock.callCount(), 2, "the second slot was reached");
+  assert.deepEqual(slotIds.map((slotId) => m.store.slot(slotId)?.state), ["available", "available"]);
+  assert.deepEqual(slotIds.map((slotId) => operationRows(slotId).length).sort(), [0, 1]);
+});
+
+test("an automatic Repair left unknown names Repair", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-repair-failed-");
+  const m = realManager();
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const slot = m.store.slot(slotId!)!;
+  assert.ok(m.store.quarantine(slot.id, REGISTRATION_OR_IDENTITY.missingRegistration, null, Date.now(), slot.version));
+  m.repairSlot = async () => {
+    const current = m.store.slot(slot.id)!;
+    m.store.quarantine(slot.id, REGISTRATION_OR_IDENTITY.missingRegistration, null, Date.now(), current.version);
+    return { outcome: "outcomeUnknown", reason: "git worktree repair timed out after 60 s" };
+  };
+  const warned = mock.method(console, "warn", () => {});
+  try {
+    await m.recoverQuarantines();
+    await m.recoverQuarantines();
+  } finally {
+    warned.mock.restore();
+  }
+  assert.deepEqual(
+    operationRows(slot.id).map((row) => [row.operation, row.outcome, row.actor, row.reason]),
+    [["repair", "failed", "automatic", "git worktree repair timed out after 60 s"]],
+  );
+});
+
+test("automatic Repair names itself, and a repair that kept work records partly done once", async () => {
+  const { clone, sha } = repository("mission-history-op-auto-repair-");
+  const m = realManager();
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const slot = m.store.slot(slotId!)!;
+  assert.ok(m.store.quarantine(slot.id, REGISTRATION_OR_IDENTITY.missingRegistration, null, Date.now(), slot.version));
+  m.repairSlot = async () => {
+    const current = m.store.slot(slot.id)!;
+    m.store.quarantine(slot.id, REGISTRATION_OR_IDENTITY.repairedHoldsWork, null, Date.now(), current.version);
+    return { outcome: "heldWork", reason: "uncommitted change: a.txt" };
+  };
+  await m.recoverQuarantines();
+  await m.recoverQuarantines();
+  assert.deepEqual(
+    operationRows(slot.id).map((row) => [row.operation, row.outcome, row.actor, row.reason]),
+    [["repair", "partial", "automatic", "The registration is repaired, and the slot stays quarantined for its work: uncommitted change: a.txt"]],
+  );
+});
+
+test("a Warm writes each slot's own result as its turn ends, and a slot never reached writes nothing", async () => {
+  const { clone, sha } = repository("mission-history-op-warm-");
+  const m = warmingManager();
+  const operations = operationsFor(m, {
+    warmLogsDirectory: join(tmpdir(), "mission-history-warm-logs"),
+    claimVariablePresence: async () => [],
+  });
+  const slotIds = await idleSlots(m, clone, sha, 3);
+  const preview = await operations.preview({ action: "warm", target: { kind: "pool", poolId: m.store.slot(slotIds[0]!)!.poolId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const [warmed, skipped, unreached] = preview.affected.map((target) => target.id);
+  const warmSlot = m.warmSlot.bind(m);
+  m.warmSlot = async (input) => {
+    if (input.slotId !== skipped) return warmSlot(input);
+    operations.cancel(input.operationId);
+    return { outcome: "skipped", reason: "the slot is leased, and Warm never touches a slot that is not available" };
+  };
+  const { operation } = operations.submit(preview.token, []);
+  await operations.idle();
+
+  assert.deepEqual(operationRows(warmed!).map((row) => [row.operation, row.outcome, row.actor]), [["warm", "done", "operator"]]);
+  const [refused] = operationRows(skipped!);
+  assert.equal(refused?.outcome, "refused");
+  assert.match(refused?.reason ?? "", /Warm never touches/);
+  assert.equal(refused?.meta?.operationId, operation.id);
+  assert.deepEqual(operationRows(unreached!), [], "cancelled before its turn, it was never touched");
+});
+
+test("a Warm's failed and cancelled turns each read as that slot's result, and the slot after a Cancel writes nothing", async () => {
+  const { clone, sha } = repository("mission-history-op-warm-stops-");
+  const m = warmingManager();
+  const operations = operationsFor(m, {
+    warmLogsDirectory: join(tmpdir(), "mission-history-warm-stops-logs"),
+    claimVariablePresence: async () => [],
+  });
+  const slotIds = await idleSlots(m, clone, sha, 4);
+  const preview = await operations.preview({ action: "warm", target: { kind: "pool", poolId: m.store.slot(slotIds[0]!)!.poolId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const [failed, threw, cancelled, unreached] = preview.affected.map((target) => target.id);
+  m.warmSlot = async (input) => {
+    if (input.slotId === failed) return { outcome: "failed", reason: "the Warm lease could not be recorded" };
+    if (input.slotId === threw) throw new Error("the claim runner went away");
+    operations.cancel(input.operationId);
+    return { outcome: "cancelled", reason: "cancelled before the claim began" };
+  };
+  const quiet = mock.method(console, "error", () => {});
+  try {
+    operations.submit(preview.token, []);
+    await operations.idle();
+  } finally {
+    quiet.mock.restore();
+  }
+  const rows = (slotId: string | undefined) => operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason]);
+  assert.deepEqual(rows(failed), [["warm", "failed", "operator", "the Warm lease could not be recorded"]]);
+  assert.deepEqual(rows(threw), [["warm", "failed", "operator", "the claim runner went away"]]);
+  assert.deepEqual(rows(cancelled), [["warm", "partial", "operator", "cancelled before the claim began"]]);
+  assert.deepEqual(rows(unreached), []);
+});
+
+test("a Warm that throws records failed on the slot it left running, and on no slot past it", async () => {
+  const { clone, sha } = repository("mission-history-op-warm-throw-");
+  const m = warmingManager();
+  let armed = false;
+  const operations = operationsFor(m, {
+    warmLogsDirectory: join(tmpdir(), "mission-history-warm-throw-logs"),
+    warmTailIntervalMs: 3_600_000,
+    claimVariablePresence: async () => [],
+    notifyChanged: () => {
+      if (!armed) return;
+      armed = false;
+      throw new Error("the publisher went away");
+    },
+  });
+  const slotIds = await idleSlots(m, clone, sha, 3);
+  const preview = await operations.preview({ action: "warm", target: { kind: "pool", poolId: m.store.slot(slotIds[0]!)!.poolId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const [warmed, running, unreached] = preview.affected.map((target) => target.id);
+  m.warmSlot = async () => {
+    armed = true;
+    return { outcome: "warmed", stepsSkipped: true };
+  };
+  const quiet = mock.method(console, "error", () => {});
+  try {
+    const { operation } = operations.submit(preview.token, []);
+    await operations.idle();
+    assert.equal((await operations.inventory()).operations.find((entry) => entry.id === operation.id)?.state, "failed");
+  } finally {
+    quiet.mock.restore();
+  }
+  assert.deepEqual(operationRows(warmed!).map((row) => row.outcome), ["done"]);
+  assert.deepEqual(operationRows(running!).map((row) => [row.operation, row.outcome, row.actor, row.reason]), [
+    ["warm", "failed", "operator", "the publisher went away"],
+  ]);
+  assert.deepEqual(operationRows(unreached!), []);
+});
+
+test("a Warm whose claim fails is partly done, and neither the claim's value nor its output reaches the entry", async () => {
+  const { clone, sha } = repository("mission-history-op-warm-claim-");
+  const m = realManager({
+    resolvePolicy: () => ({
+      enabled: true,
+      maxSlots: 4,
+      setupArgv: null,
+      claim: {
+        steps: [{
+          argv: [process.execPath, "-e", "console.error(process.env.CLAIM_TOKEN);process.exit(3)"],
+          env: ["CLAIM_TOKEN"],
+        }],
+        timeoutMinutes: 1,
+        fingerprintPaths: [],
+      },
+    }),
+    claimEnvironment: async (names) => claimEnvironment(names),
+  });
+  const operations = operationsFor(m, {
+    warmLogsDirectory: join(tmpdir(), "mission-history-warm-claim-logs"),
+    claimVariablePresence: async () => [],
+  });
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const preview = await operations.preview({ action: "warm", target: { kind: "slot", slotId: slotId! } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  operations.submit(preview.token, []);
+  await operations.idle();
+  const [row] = operationRows(slotId!);
+  assert.equal(row?.operation, "warm");
+  assert.equal(row?.outcome, "partial");
+  assert.match(row?.reason ?? "", /^Step 1 of 1 /);
+  assert.ok(!JSON.stringify(db.prepare(`SELECT * FROM worktree_slot_history`).all()).includes(CLAIM_SECRET));
+});
+
+test("a Kill records done or refused on its slot, by PID and never by command", async () => {
+  const { clone, sha } = repository("mission-history-op-kill-");
+  const m = realManager();
+  let notified = 0;
+  const operations = operationsFor(m, { notifyChanged: () => { notified += 1; } });
+  const [slotId] = await idleSlots(m, clone, sha, 1);
+  const { path } = m.store.slot(slotId!)!;
+  operations.recordKill({ slotId: slotId!, path, pid: 4242, startedAt: Date.now(), result: { ok: true, signal: "SIGTERM" } });
+  operations.recordKill({
+    slotId: null,
+    path,
+    pid: 4243,
+    startedAt: Date.now(),
+    result: { ok: false, error: "that path is not a tree with a reported orphan process" },
+  });
+  operations.recordKill({
+    slotId: slotId!,
+    path,
+    pid: 4244,
+    startedAt: Date.now(),
+    result: { ok: false, error: "process 4244 could not be signalled: EPERM", failed: true },
+  });
+  assert.deepEqual(operationRows(slotId!).map((row) => [row.operation, row.outcome, row.actor, row.reason, row.meta?.pid]), [
+    ["kill", "done", "operator", "Stopped process 4242 with SIGTERM.", 4242],
+    ["kill", "refused", "operator", "that path is not a tree with a reported orphan process", 4243],
+    ["kill", "failed", "operator", "process 4244 could not be signalled: EPERM", 4244],
+  ]);
+  assert.equal(notified, 3, "an open History hears of each");
+});
+
+test("Unowned trees operations have no slot, so a removal and a Kill there are logged and write no row", async () => {
+  const m = realManager();
+  const operations = operationsFor(m, {
+    occupancy: async (paths: readonly string[]) => new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }])),
+    unownedTrees: {
+      describe: async (path: string) => ({ path, reason: "untracked files", work: [], files: [], moreFiles: false, worktree: false }),
+      discard: async () => null,
+    } as unknown as WorktreeOperationsDeps["unownedTrees"],
+  });
+  const lines: unknown[][] = [];
+  const log = mock.method(console, "log", (...args: unknown[]) => { lines.push(args); });
+  try {
+    const preview = await operations.preview({ action: "removeUnowned", path: "/state/worktrees/left-behind" });
+    assert.equal(preview.allowed, true, preview.blockers.join("; "));
+    await operations.execute(preview.token, ["dirty"]);
+    operations.recordKill({ slotId: null, path: "/state/worktrees/left-behind", pid: 7, startedAt: Date.now(), result: { ok: true, signal: "SIGTERM" } });
+  } finally {
+    log.mock.restore();
+  }
+  assert.equal(rowCount(), 0);
+  assert.ok(lines.some((args) => args[0] === "[worktrees] Unowned tree /state/worktrees/left-behind: done"));
+  assert.ok(lines.some((args) => String(args[0]).startsWith("[worktrees] Kill in unowned tree /state/worktrees/left-behind: done")));
+});
+
+test("an operation entry for an id no slot ever had writes nothing", () => {
+  pool();
+  noRowFrom(() => assert.equal(store.recordOperation("never-a-slot", {
+    at: 1,
+    operation: "return",
+    outcome: "refused",
+    reason: null,
+    actor: "operator",
+    durationMs: 0,
+  }), false));
+});
+
 test("the history route pages newest first, 50 at a time, and survives the slot", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
@@ -1016,9 +1957,9 @@ test("a slot's timings are the newest of each kind, each with its duration and o
     kind: "claim", at: 4, durationMs: 50, outcome: "failed", reason: "step 1 of 1 exited", detail: "yarn install", actor: "owner",
   });
   assert.deepEqual(store.slotTimings("slot-a"), {
-    provisioning: { at: 2, outcome: "reused", durationMs: 2_000, reason: null, sourceOrdinal: null },
-    claim: { at: 4, outcome: "failed", durationMs: 50, reason: "step 1 of 1 exited", sourceOrdinal: null },
-    seed: { at: 3, outcome: "placed", durationMs: 40, reason: null, sourceOrdinal: 7 },
+    provisioning: { at: 2, outcome: "reused", durationMs: 2_000, reason: null, sourceOrdinal: null, sourceQuarantined: false },
+    claim: { at: 4, outcome: "failed", durationMs: 50, reason: "step 1 of 1 exited", sourceOrdinal: null, sourceQuarantined: false },
+    seed: { at: 3, outcome: "placed", durationMs: 40, reason: null, sourceOrdinal: 7, sourceQuarantined: false },
   });
   const claim = historyOf("slot-a")[0]!;
   assert.deepEqual([claim.kind, claim.durationMs, claim.detail, claim.toState], ["claim", 50, "yarn install", null]);

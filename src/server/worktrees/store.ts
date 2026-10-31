@@ -5,6 +5,8 @@ import {
   type WorktreeClaimOutcome,
   type WorktreeHistoryActor,
   type WorktreeHistoryKind,
+  type WorktreeHistoryOperation,
+  type WorktreeOperationOutcome,
   type WorktreePoolTimingsView,
   type WorktreeProvisioningOutcome,
   type WorktreeSeedOutcome,
@@ -172,9 +174,21 @@ interface WorktreeHistoryInput {
   reason: string | null;
   /** Never a claim step's output: only a failed read's or a Git command's bounded reason. */
   detail?: string | null;
+  operation?: WorktreeHistoryOperation | null;
   outcome?: string | null;
   actor: WorktreeHistoryActor;
   durationMs?: number | null;
+  meta?: Record<string, unknown> | null;
+}
+
+/** One finished operation's entry for one slot. */
+export interface WorktreeOperationEntry {
+  at: number;
+  operation: WorktreeHistoryOperation;
+  outcome: WorktreeOperationOutcome;
+  reason: string | null;
+  actor: WorktreeHistoryActor;
+  durationMs: number;
   meta?: Record<string, unknown> | null;
 }
 
@@ -230,13 +244,15 @@ function historyEntry(row: Record<string, unknown>): WorktreeSlotHistoryEntry {
 
 function timingView(row: Record<string, unknown> | undefined): WorktreeTimingView | null {
   if (!row) return null;
-  const source = parsedMeta(nullableString(row.meta))?.sourceOrdinal;
+  const meta = parsedMeta(nullableString(row.meta));
+  const source = meta?.sourceOrdinal;
   return {
     at: Number(row.at),
     outcome: nullableString(row.outcome),
     durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
     reason: nullableString(row.reason),
     sourceOrdinal: typeof source === "number" ? source : null,
+    sourceQuarantined: meta?.sourceQuarantined === true,
   };
 }
 
@@ -291,8 +307,8 @@ export class WorktreeStore {
     this.db
       .prepare(
         `INSERT INTO worktree_slot_history
-           (pool_id, slot_id, ordinal, at, kind, from_state, to_state, reason, detail, outcome, actor, duration_ms, meta)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (pool_id, slot_id, ordinal, at, kind, from_state, to_state, reason, detail, operation, outcome, actor, duration_ms, meta)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         slot.poolId,
@@ -304,6 +320,7 @@ export class WorktreeStore {
         entry.toState,
         text(entry.reason),
         text(entry.detail),
+        entry.operation ?? null,
         entry.outcome ?? null,
         entry.actor,
         entry.durationMs ?? null,
@@ -378,6 +395,25 @@ export class WorktreeStore {
       }
       return true;
     });
+  }
+
+  /**
+   * One slot's entry for a finished operation. It changes no slot, and a slot the operation
+   * removed still takes one, so the slot's identity falls back to its own last history row.
+   * False for an id that names neither, which is no slot at all.
+   */
+  recordOperation(slotId: string, entry: WorktreeOperationEntry): boolean {
+    const slot = this.slot(slotId) ?? this.historicalSlot(slotId);
+    if (!slot) return false;
+    this.record(slot, { ...entry, kind: "operation", fromState: null, toState: null });
+    return true;
+  }
+
+  private historicalSlot(slotId: string): Pick<WorktreeSlotRow, "id" | "poolId" | "ordinal"> | null {
+    const row = this.db
+      .prepare(`SELECT pool_id, ordinal FROM worktree_slot_history WHERE slot_id = ? ORDER BY id DESC LIMIT 1`)
+      .get(slotId) as { pool_id: string; ordinal: number } | undefined;
+    return row ? { id: slotId, poolId: row.pool_id, ordinal: Number(row.ordinal) } : null;
   }
 
   /** One page of a slot's history, newest first. A destroyed slot's rows still answer. */
@@ -816,8 +852,10 @@ export class WorktreeStore {
       now,
       () => this.db
         .prepare(
+          // From here on files may be gone, so nothing may trust this tree's install again.
           `UPDATE worktree_slots SET state = 'pruning', version = version + 1,
-             last_error = NULL, updated_at = ?
+             last_error = NULL, deps_state = NULL, deps_fingerprint = NULL, deps_fingerprint_sha = NULL,
+             updated_at = ?
            WHERE id = ? AND state IN ('available', 'quarantined') AND version = ?
              AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
         )

@@ -195,7 +195,9 @@ test("an idle dashboard does not re-render App", async ({ dashboard, daemon }) =
   try {
     await countRenders(dashboard);
     await dashboard.goto(`${dev.origin}/#/fleet`);
-    await expect(dashboard.locator("main.board .tile")).toHaveCount(1);
+    // Navigation finishes at the small bootstrap, before Vite's cold transform of about 550
+    // modules, which took all of the default 20 s on a CI runner. Give startup its own budget.
+    await expect(dashboard.locator("main.board .tile")).toHaveCount(1, { timeout: 90_000 });
     const idle = await idleWindow(dashboard, "App");
     // Before the fix this window held about eight App renders, each one re-rendering the
     // whole board.

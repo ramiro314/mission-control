@@ -104,23 +104,42 @@ export function registrationRepairQuarantine(reason: string | null): boolean {
   return reasonIn(REGISTRATION_REPAIR_REASONS, reason);
 }
 
-/** A prune that stopped before its slot was gone. Forget is the way out of either. */
-export const INTERRUPTED_PRUNE = "startup found an interrupted prune with filesystem state still present";
-export const UNVERIFIED_REMOVAL = "worktree removal could not be verified";
-
-export function interruptedPruneQuarantine(reason: string | null): boolean {
-  return reason === INTERRUPTED_PRUNE || reason === UNVERIFIED_REMOVAL;
-}
-
 /**
  * Forget's write-ahead, recorded before its first delete. A recursive delete is not atomic and can
  * take the `.git` file a cause was read from, so this reason keeps Forget offered on what is left.
  * Nothing but a finished Forget or Destroy leaves it: a reset keeps ignored files and the slot's
- * dependency state, so Recover would hand a partly deleted install to the next lease as a warm one.
+ * dependency state, so Recover would hand a partly deleted install to the next lease as a warm one,
+ * and a seed could copy it.
  * `WorktreeStore.quarantine` keeps it through any later quarantine, a cut-off Destroy included.
  */
 export const INTERRUPTED_FORGET = "a Forget was cut off before its folder was gone";
 export const RECOVER_REFUSES_INTERRUPTED_FORGET = "a Forget was cut off here and may have deleted part of its install, so only Forget or Destroy can finish it";
+
+/** A removal that began and did not finish: whatever survives of the tree is left at this path. */
+export const REMOVAL_UNFINISHED = {
+  interrupted: "startup found an interrupted prune with filesystem state still present",
+  unverified: "worktree removal could not be verified",
+} as const;
+
+/**
+ * The reasons that say this tree's files cannot be trusted as an install, whatever `deps_state`
+ * reads: part of it may be gone, or it may be another repository's. Rows quarantined before a
+ * removal cleared `deps_state` still read `current`, so a seed refuses these by reason.
+ */
+const UNTRUSTED_TREE_REASONS: ReadonlySet<string> = new Set([
+  ...Object.values(REMOVAL_UNFINISHED),
+  INTERRUPTED_FORGET,
+  REGISTRATION_OR_IDENTITY.commonDirectory,
+]);
+
+/** A removal that stopped before its slot was gone. Forget is the way out of either. */
+export function interruptedPruneQuarantine(reason: string | null): boolean {
+  return reason === REMOVAL_UNFINISHED.interrupted || reason === REMOVAL_UNFINISHED.unverified;
+}
+
+export function untrustedTreeQuarantine(reason: string | null): boolean {
+  return reasonIn(UNTRUSTED_TREE_REASONS, reason);
+}
 
 /** A dirty available slot, and the reason older builds gave it before occupied was split off. */
 export const AVAILABLE_SLOT_DIRTY = "available slot is dirty";

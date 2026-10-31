@@ -36,9 +36,11 @@ const STEP_HEADLINES: Record<WorktreeTimedStep, string> = {
  */
 export function timingSummary(
   step: WorktreeTimedStep,
-  { outcome, durationMs, sourceOrdinal }: Pick<WorktreeTimingView, "outcome" | "durationMs" | "sourceOrdinal">,
+  { outcome, durationMs, sourceOrdinal, sourceQuarantined }: Pick<WorktreeTimingView, "outcome" | "durationMs" | "sourceOrdinal" | "sourceQuarantined">,
 ): string {
   const took = (word: "in" | "after") => durationMs === null ? "" : ` ${word} ${duration(durationMs)}`;
+  const source = `${sourceQuarantined ? "quarantined " : ""}slot ${sourceOrdinal ?? "unknown"}`;
+  const copying = sourceOrdinal === null ? "" : ` copying from ${source}`;
   switch (`${step}:${outcome}`) {
     case "provisioning:new": return `new slot${took("in")}`;
     case "provisioning:reused": return `reused slot${took("in")}`;
@@ -46,10 +48,10 @@ export function timingSummary(
     case "claim:failed": return `failed${took("after")}`;
     case "claim:skipped": return "skipped, dependencies already matched";
     case "claim:shutdown": return `stopped by a shutdown${took("after")}`;
-    case "seed:placed": return `from slot ${sourceOrdinal ?? "unknown"}${took("in")}`;
+    case "seed:placed": return `from ${source}${took("in")}`;
     case "seed:none": return "none";
-    case "seed:abandoned": return `abandoned${took("after")}`;
-    case "seed:interrupted": return `cut off${took("after")}`;
+    case "seed:abandoned": return `abandoned${copying}${took("after")}`;
+    case "seed:interrupted": return `cut off${copying}${took("after")}`;
     default: return outcome ?? "unknown";
   }
 }
@@ -59,7 +61,8 @@ export function timingHeadline(entry: WorktreeSlotHistoryEntry): string | null {
   if (entry.kind !== "provisioning" && entry.kind !== "claim" && entry.kind !== "seed") return null;
   const source = entry.meta?.sourceOrdinal;
   const sourceOrdinal = typeof source === "number" ? source : null;
-  return `${STEP_HEADLINES[entry.kind]}: ${timingSummary(entry.kind, { ...entry, sourceOrdinal })}`;
+  const sourceQuarantined = entry.meta?.sourceQuarantined === true;
+  return `${STEP_HEADLINES[entry.kind]}: ${timingSummary(entry.kind, { ...entry, sourceOrdinal, sourceQuarantined })}`;
 }
 
 /** The pool row's line, or null while history holds no new slot to say anything about. */
