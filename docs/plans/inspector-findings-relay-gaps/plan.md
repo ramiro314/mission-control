@@ -1,6 +1,7 @@
 # GitHub Inspector findings that never reach their session
 
 **Status:** Decisions D1 to D4 adopted 2026-11-02 (revision 2). Phased implementation requested.
+Fix 1's CodeRabbit note was clarified in review of PR #721.
 
 **Date:** 2026-11-02
 
@@ -105,8 +106,19 @@ Call sites that stay on `activeWorkflowOwnsSession`, because they ask a differen
 
 The freshness recheck already re-reads workflow ownership right before typing
 (`worker.ts:1091`). An operator who grants rounds, reattaches or resubmits moves the run out of
-`blocked`, so the next decision holds again. The daemon's inject route does not check workflow
-ownership (`foremanWriteRefusal`, `src/server/routes.ts:924`), so nothing changes there.
+`blocked`, so the next decision holds again.
+
+The daemon's inject route has two refusals, and only one of them checks workflow ownership:
+
+- The general Foreman refusal (`foremanWriteRefusal`, `src/server/routes.ts:924`) does not, so
+  findings, CI and conflict nudges into a released session go through.
+- The CodeRabbit guard does. A nudge that carries a CodeRabbit claim is refused at
+  `routes.ts:6456` while any run is open, and that guard stays on `activeWorkflowOwnsSession`.
+
+So the worker also decides with CodeRabbit auto-resolve **off** whenever a session's open runs
+are all released (`activeWorkflowOwnsSession(runs) && !workflowHoldsReviewFollowup(runs)`). It
+never sends a claim the guard would refuse, and CodeRabbit follow-up keeps waiting for the run,
+as it does today. The phased plan's finding 1 has the trace.
 
 ### Behavior after
 
@@ -126,8 +138,15 @@ ownership (`foremanWriteRefusal`, `src/server/routes.ts:924`), so nothing change
 - `decideReviewFollowup` with a blocked `round_limit` run and unresolved findings returns
   `read-findings`, not the gate-6 skip.
 
-`test/foreman-review-followup-relay.test.ts`: a pass where the run is released at the first read
-and back to `waiting_for_new_head` at the freshness recheck types nothing.
+`test/foreman-review-followup-relay.test.ts`:
+
+- a pass where the run is released at the first read and back to `waiting_for_new_head` at the
+  freshness recheck types nothing;
+- a released session's nudge carries no CodeRabbit claim.
+
+`test/code-rabbit-routing.test.ts`: for a session held only by a released blocked run, the
+CodeRabbit candidate (`code-rabbit-delivery.ts:41`) comes back without an error. The route still
+refuses at `routes.ts:6456`, and nothing is typed or claimed.
 
 ## Fix 2: follow the Inspector's adoption when the session card has no PR
 
