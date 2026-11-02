@@ -918,10 +918,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // design - a library that could not be walked is a background failure to log, never a
   // reason a daemon does not start.
   archives.start();
-  // The session scope's probe, and the reset of this instance's failed scopes a previous run
+  // The session scope's probe, and the stop and reset of this instance's scopes a previous run
   // left behind. After the port for the same reason: it runs `systemd-run` and `systemctl`, and
   // a session start that comes first awaits the same probe, bounded at 5 s, never fails on it.
-  void sessionScope.ready();
+  void sessionScope.ready({ stopStale: true });
   // And the captures this daemon already owed when it stopped. Separate from discovery
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips

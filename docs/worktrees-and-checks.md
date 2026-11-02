@@ -1066,6 +1066,12 @@ parent PID, command, start time and tree. Its id is
 `orphan-process:<tree>:<pid>:<start time>`, so it survives a daemon restart. A pass that cannot
 inspect a tree keeps the last report for it rather than dropping it.
 
+An SDK session on Linux rarely leaves one, because its
+[scope](harnesses-and-terminals.md#agent-session-scopes) is stopped when its agent exits, before the
+task's return looks at the tree. What still reaches this report is a process from a terminal-runtime
+session, a Pi command or a check, none of which has that scope, and one that ignored the stop for
+longer than a return's first attempt, which the return's next retry clears.
+
 Such a process blocks the tree's return, because the return guard refuses an occupied tree. In an
 available slot, which has no return, it keeps the slot from being leased, because acquisition
 passes over an occupied slot. Its problem says the tree is one no task or check owns.
