@@ -952,12 +952,57 @@ function bodyFindingsReviewUrl(
 const MAX_DIFF_BUFFER_BYTES = 16 * 1024 * 1024;
 
 /**
+ * One diff media-type read, under the pipe budget. `resource` is relative to the repository
+ * and must be one of the REST resources that answer with a diff.
+ */
+function readDiffResource(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  resource: string,
+): Promise<RunResult> {
+  return run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/${resource}`, "-H", "Accept: application/vnd.github.v3.diff"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, maxBuffer: MAX_DIFF_BUFFER_BYTES },
+  );
+}
+
+/** The `base...head` range of a pull request, spelled the way the compare API takes it. */
+async function fetchCompareRange(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<GhResult<string>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/pulls/${number}`, "--jq", '.base.sha + "..." + .head.sha'],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (diff range)", res, `${owner}/${repo}`);
+  const range = res.stdout.trim();
+  return range ? { ok: true, value: range } : { ok: false, error: "gh api (diff range) returned no range" };
+}
+
+/** GitHub declining to render a diff: a pull request past 300 files or 20,000 lines. */
+function diffRefused(res: RunResult): boolean {
+  return res.code !== 0 && httpStatus(res.stderr) === 406;
+}
+
+/**
  * The whole diff, capped.
  *
  * `maxBytes` is the PROMPT budget and is applied after the fact; `MAX_DIFF_BUFFER_BYTES`
  * is the pipe budget. A response past the pipe budget comes back flagged `tooLarge`,
  * which is a different answer from an ordinary failure: retrying cannot produce fewer
  * bytes, so the tick parks the PR rather than paying for the same overflow every poll.
+ *
+ * GitHub refuses the pull request's own diff with a 406 past its size limits, and the
+ * compare API has no such limit on the same range. It is three-dot, so it is the merge-base
+ * diff the pull request shows, and it answers for a head on a fork. Only a refused PR pays
+ * for the extra reads. A refusal from compare too says the same thing an overflow does:
+ * this head will not fit, so it is `tooLarge`.
  */
 export async function fetchDiff(
   cwd: string | null,
@@ -966,11 +1011,13 @@ export async function fetchDiff(
   number: number,
   maxBytes: number,
 ): Promise<GhResult<{ diff: string; truncated: boolean }>> {
-  const res = await run(
-    ghBin(),
-    ["api", `repos/${owner}/${repo}/pulls/${number}`, "-H", "Accept: application/vnd.github.v3.diff"],
-    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, maxBuffer: MAX_DIFF_BUFFER_BYTES },
-  );
+  let res = await readDiffResource(cwd, owner, repo, `pulls/${number}`);
+  if (diffRefused(res)) {
+    const range = await fetchCompareRange(cwd, owner, repo, number);
+    if (!range.ok || !range.value) return { ...range, value: undefined };
+    res = await readDiffResource(cwd, owner, repo, `compare/${range.value}`);
+    if (diffRefused(res)) return { ...fail("gh api (diff)", res, `${owner}/${repo}`), tooLarge: true };
+  }
   if (res.overflowed) {
     return {
       ok: false,

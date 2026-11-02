@@ -35,6 +35,10 @@ Reviews that dropped off-diff or over-cap findings are reviewed again on the sam
 their retained findings resolve. The existing review-round limit still applies. An unreviewable
 Live diff reports an error with backoff instead of silently waiting for clean publication.
 
+GitHub refuses a pull request's own diff past 300 files or 20,000 lines, so Inspector reads that
+pull request's diff through the compare API instead, which returns the same merge-base diff. Only
+a diff too large for both, or past the 16MB buffer, parks the pull request until a push.
+
 The session chip says **no open findings** and names the reviewed commit. Its Live checkmark means
 the final clean review was confirmed for the observed PR head; a pending or stale review shows an
 ellipsis. Workflow completion remains a separate state. Dry run also requires a review of the
