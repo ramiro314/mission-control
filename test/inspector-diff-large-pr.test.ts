@@ -34,9 +34,11 @@ if (!step) {
   process.stderr.write("unexpected gh call: " + argv.join(" "));
   process.exit(1);
 }
-process.stdout.write(step.stdout ?? "");
+process.stdout.write(step.stdoutBytes ? "x".repeat(step.stdoutBytes) : (step.stdout ?? ""));
 process.stderr.write(step.stderr ?? "");
-process.exit(step.code ?? 0);
+// Not process.exit: that drops whatever the pipe has not taken yet, so a large write would
+// arrive short and never overflow.
+process.exitCode = step.code ?? 0;
 `,
 );
 chmodSync(ghPath, 0o755);
@@ -101,6 +103,16 @@ test("a refusal from compare too parks the pull request as too large", async () 
   assert.equal(res.ok, false);
   assert.equal(res.tooLarge, true, "retrying the same head cannot produce a smaller diff");
   assert.match(res.error ?? "", /maximum number of files/);
+});
+
+test("a compare past the 16MB pipe budget parks the pull request as too large", async () => {
+  script({ pull: REFUSED, range: RANGE, compare: { stdoutBytes: 17 * 1024 * 1024 } });
+  const res = await fetchDiff(null, "acme", "widgets", 7, 1_000);
+  assert.equal(res.ok, false);
+  assert.equal(res.tooLarge, true, "retrying the same head cannot produce fewer bytes");
+  assert.match(res.error ?? "", /larger than 16MB/);
+  assert.equal(calls().length, 3);
+  assert.equal(calls()[2]?.[1], "repos/acme/widgets/compare/aaa111...bbb222", "compare was the last call");
 });
 
 test("a compare that fails for another reason stays an ordinary failure", async () => {
