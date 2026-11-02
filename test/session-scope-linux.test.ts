@@ -183,6 +183,48 @@ test("a straggler that ignores SIGTERM: outcome answers at once, and the unit is
   await waitFor("the unit to be reset", async () => (await loadState(wrapped.unit!)) === "not-found", 20_000);
 });
 
+test("a detached process an agent left behind holds its scope only until outcome stops it", { skip, timeout: 30_000 }, async () => {
+  const scope = scopeFor();
+  await scope.ready();
+  // What `dbus-run-session` leaves: reparented, in a session of its own, ignoring nothing.
+  const wrapped = scope.wrap("/bin/sh", ["-c", "setsid sleep 60 </dev/null >/dev/null 2>&1 & echo $!"], process.env, "sdk:left-behind");
+  const child = spawn(wrapped.bin, wrapped.args, { stdio: ["ignore", "pipe", "ignore"] });
+  let out = "";
+  child.stdout!.on("data", (chunk) => (out += chunk));
+  assert.deepEqual(await exited(child), { code: 0, signal: null });
+  const orphan = Number(out.trim());
+  assert.ok(orphan > 0 && alive(orphan), "the orphan outlived the agent");
+  assert.equal((await systemctlUser("is-active", wrapped.unit!)).trim(), "active", "and it holds the scope open");
+  assert.equal((await scope.outcome(wrapped.unit!))?.oomKilled, false);
+  await waitFor("the orphan to be gone", () => !alive(orphan), 5_000);
+  await waitFor("the scope to be gone", async () => (await loadState(wrapped.unit!)) === "not-found", 20_000);
+});
+
+test("a daemon starting up stops the scope a previous run left, and only its own instance's", { skip, timeout: 30_000 }, async () => {
+  const previous = scopeFor();
+  await previous.ready();
+  const left = previous.wrap("/bin/sleep", ["60"], process.env, "sdk:previous-run");
+  const leftExit = exited(spawn(left.bin, left.args, { stdio: "ignore" }));
+  await waitFor("the previous run's scope", async () => (await systemctlUser("is-active", left.unit!)).trim() === "active", 10_000);
+
+  const otherHome = mkdtempSync(join(tmpdir(), "mission-session-scope-other-"));
+  const other = scopeFor({ stateHome: otherHome });
+  await other.ready();
+  const kept = other.wrap("/bin/sleep", ["60"], process.env, "sdk:other-instance");
+  const keptChild = spawn(kept.bin, kept.args, { stdio: "ignore" });
+  await waitFor("the other instance's scope", async () => (await systemctlUser("is-active", kept.unit!)).trim() === "active", 10_000);
+
+  try {
+    await scopeFor().ready({ stopStale: true });
+    assert.notEqual((await leftExit).code, 0, "the previous run's process was stopped, not finished");
+    assert.equal((await systemctlUser("is-active", kept.unit!)).trim(), "active", "another daemon's scope is untouched");
+  } finally {
+    keptChild.kill();
+    await systemctlUser("stop", kept.unit!);
+    rmSync(otherHome, { recursive: true, force: true });
+  }
+});
+
 test("BindsTo: stopping the daemon's unit stops the session scopes bound to it", { skip, timeout: 30_000 }, async () => {
   const standIn = `mission-control-${instance}-standin-daemon`;
   const daemon = spawn(systemdRun!, [

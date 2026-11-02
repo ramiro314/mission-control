@@ -82,6 +82,7 @@ const show = (fields: Record<string, string>): SessionScopeRunResult => ({
 const isProbe = (call: Call) => call.bin === "/usr/bin/systemd-run";
 const isShow = (call: Call) => call.args[1] === "show";
 const isReset = (call: Call) => call.args[1] === "reset-failed";
+const isStop = (call: Call) => call.args[1] === "stop";
 
 test("Linux with a manager and every executable: the exact argv, bound to the daemon's unit, under choom", async () => {
   const { deps, logs } = fakes();
@@ -372,6 +373,159 @@ test("reset-failed runs once the unit has settled, after a deactivating oom-kill
   await settle();
   assert.equal(calls.filter(isShow).length, 3);
   assert.deepEqual(calls.filter(isReset).map((call) => call.args), [["--user", "reset-failed", "u.scope"]]);
+});
+
+test("outcome: a scope still running once its agent is gone is stopped, so nothing it left holds a checkout", async () => {
+  const left = scripted([{ ActiveState: "active", Result: "success" }]);
+  assert.equal((await createSessionScope(left.deps).outcome("u.scope"))?.oomKilled, false);
+  assert.deepEqual(left.calls.filter(isStop).map((call) => call.args), [["--user", "stop", "u.scope"]]);
+  assert.ok(
+    left.calls.findLastIndex(isShow) < left.calls.findIndex(isStop),
+    "the verdict was final before the stop, so a stop never overwrites an oom-kill Result",
+  );
+
+  // A scope that emptied by itself while the verdict was polled has nothing left to stop.
+  const empty = scripted([{ ActiveState: "active", Result: "success" }, { ActiveState: "inactive", Result: "success" }]);
+  assert.equal((await createSessionScope(empty.deps).outcome("u.scope"))?.oomKilled, false);
+  assert.deepEqual(empty.calls.filter(isStop), []);
+});
+
+test("outcome: a stop that fails, times out or throws still reports the verdict, and the unit is reset", async () => {
+  const stops: Array<() => SessionScopeRunResult> = [
+    () => ({ code: 1, stdout: "", stderr: "" }),
+    () => ({ code: null, stdout: "", stderr: "" }),
+    () => { throw new Error("boom"); },
+  ];
+  for (const stop of stops) {
+    let asked = false;
+    const { deps, calls } = fakes({
+      answer: (call) => {
+        if (isStop(call)) {
+          asked = true;
+          return stop();
+        }
+        // systemd finishes a stop whatever became of the client that asked for it.
+        return isShow(call)
+          ? show({ ActiveState: asked ? "inactive" : "active", Result: "success" })
+          : { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    assert.deepEqual(await createSessionScope(deps).outcome("u.scope"), { oomKilled: false, peakBytes: null });
+    assert.equal(calls.filter(isStop).length, 1);
+    await settle();
+    assert.deepEqual(calls.filter(isReset).map((call) => call.args), [["--user", "reset-failed", "u.scope"]]);
+  }
+});
+
+test("outcome waits for the stop, so the exit a return follows comes after the checkout is free", async () => {
+  for (const result of [{ code: 0 }, { code: null }]) {
+    let finishStop!: (result: SessionScopeRunResult) => void;
+    const budgets: number[] = [];
+    const { deps, calls } = fakes({
+      answer: (call) => isShow(call)
+        ? show({ ActiveState: "active", Result: "success" })
+        : isStop(call)
+          ? new Promise<SessionScopeRunResult>((resolve) => { finishStop = resolve; })
+          : { code: 0, stdout: "", stderr: "" },
+    });
+    const run = deps.run;
+    deps.run = (bin, args, opts) => {
+      if (args[1] === "stop") budgets.push(opts.timeoutMs);
+      return run(bin, args, opts);
+    };
+    let resolved = false;
+    const outcome = createSessionScope(deps).outcome("u.scope").finally(() => { resolved = true; });
+    while (!calls.some(isStop)) await new Promise((resolve) => setImmediate(resolve));
+    await settle();
+    assert.equal(resolved, false, "the verdict is held until the stop has answered");
+    finishStop({ ...result, stdout: "", stderr: "" });
+    assert.equal((await outcome)?.oomKilled, false, `a stop answering ${result.code} releases it`);
+    // A hung stop is `run`'s timeout answering null, so this is what bounds the wait, and it has
+    // to leave the driver's `EXIT_CAUSE_WAIT_MS` room after the 2 s budget and a last `show`.
+    assert.deepEqual(budgets, [1000]);
+    assert.ok(OUTCOME_BUDGET_MS + 2 * budgets[0]! < EXIT_CAUSE_WAIT_MS);
+  }
+});
+
+test("outcome: systemd stopping a scope for an OOM kill needs no stop from the daemon", async () => {
+  const { deps, calls } = scripted([{ ActiveState: "deactivating", Result: "oom-kill", MemoryPeak: "100" }]);
+  assert.equal((await createSessionScope(deps).outcome("u.scope"))?.oomKilled, true);
+  assert.deepEqual(calls.filter(isStop), []);
+});
+
+test("startup: stopStale queues a stop of this instance's scopes before the first probe, and only on a run's first ready", async () => {
+  const owner = fakes({ stateHome: "/tmp/home-a" });
+  await createSessionScope(owner.deps).ready({ stopStale: true });
+  const pattern = `mission-control-${scopeInstance("/tmp/home-a")}-*.scope`;
+  assert.deepEqual(owner.calls.filter(isStop).map((call) => call.args), [
+    ["--user", "stop", "--no-block", pattern],
+  ]);
+  assert.ok(
+    owner.calls.findIndex(isStop) < owner.calls.findIndex(isProbe),
+    "the stop was queued first, so its pattern cannot catch this run's own probe",
+  );
+
+  // Any other caller, and a run whose session start got in first. The daemon's own opt-in is
+  // pinned by e2e/specs/session-scope-startup.spec.ts, the one layer that runs `index.ts`.
+  const other = fakes();
+  const scope = createSessionScope(other.deps);
+  await scope.ready();
+  await scope.ready({ stopStale: true });
+  assert.deepEqual(other.calls.filter(isStop), [], "this run may already have live scopes to lose");
+
+  const refused = fakes({ answer: (call) => ({ code: isStop(call) ? 1 : 0, stdout: "", stderr: "" }) });
+  const started = createSessionScope(refused.deps);
+  await started.ready({ stopStale: true });
+  assert.ok(started.wrap("/bin/agent", [], MANAGER_ENV, "s").unit, "a refused stop costs no session its scope");
+});
+
+test("startup: a stop that throws or times out costs no session its scope", async () => {
+  const thrown = fakes({
+    answer: (call) => {
+      if (isStop(call)) throw new Error("boom");
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+  const afterThrow = createSessionScope(thrown.deps);
+  await afterThrow.ready({ stopStale: true });
+  assert.ok(afterThrow.wrap("/bin/agent", [], MANAGER_ENV, "s").unit);
+  assert.deepEqual(thrown.logs, [], "the probe still decided, and full isolation logs nothing");
+
+  // `run` answers null at its timeout, which is how a hung `systemctl` looks from here.
+  const timedOut = fakes({ answer: (call) => ({ code: isStop(call) ? null : 0, stdout: "", stderr: "" }) });
+  const afterTimeout = createSessionScope(timedOut.deps);
+  await afterTimeout.ready({ stopStale: true });
+  assert.ok(afterTimeout.wrap("/bin/agent", [], MANAGER_ENV, "s").unit);
+  assert.deepEqual(timedOut.logs, []);
+});
+
+test("startup: a stop that never answers spends the probe's budget, leaves sessions unwrapped, and ready settles", async () => {
+  const { deps, calls, logs } = fakes({
+    answer: (call) => (isStop(call) ? new Promise<SessionScopeRunResult>(() => {}) : { code: 0, stdout: "", stderr: "" }),
+  });
+  const scope = createSessionScope(deps);
+  await scope.ready({ stopStale: true });
+  assert.ok(deps.now() >= PROBE_TIMEOUT_MS);
+  assert.deepEqual(calls.filter(isProbe), [], "no probe ran ahead of the stop");
+  assert.equal(scope.wrap("/bin/agent", [], MANAGER_ENV, "s").unit, null);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /isolation is off: the systemd-run probe timed out/);
+});
+
+test("startup: no manager, no systemctl and other platforms stop nothing", async () => {
+  for (const over of [
+    { systemctl: () => null },
+    { socketExists: () => false },
+    { env: {} },
+    { platform: "darwin" as const },
+  ]) {
+    const { deps, calls } = fakes(over);
+    await createSessionScope(deps).ready({ stopStale: true });
+    assert.deepEqual(calls.filter(isStop), []);
+  }
+  const { deps, calls } = fakes();
+  await createSessionScope(deps, { inert: true }).ready({ stopStale: true });
+  assert.deepEqual(calls, [], "under the test runner the production scope touches no manager");
 });
 
 test("a unit that never settles within 15 s is left to the startup reset", async () => {

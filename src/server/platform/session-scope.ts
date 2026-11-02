@@ -66,11 +66,20 @@ export interface ScopedCommand {
 export type CommandScopes = (bin: string, args: readonly string[], env: NodeJS.ProcessEnv) => ScopedCommand;
 
 export interface SessionScope {
-  /** Settles once this daemon run's probe has decided what `wrap` may use. Never rejects. */
-  ready(): Promise<void>;
+  /**
+   * Settles once this daemon run's probe has decided what `wrap` may use. Never rejects.
+   *
+   * `stopStale` is for the daemon's own startup, and only the first call of a run can use it: it
+   * stops every scope of this instance, which nothing but the holder of the state home may do,
+   * and which is only safe while this run has not made one of its own.
+   */
+  ready(options?: { stopStale?: boolean }): Promise<void>;
   /** The argv to spawn in place of `[bin, ...args]`, and the scope's unit when one was made. */
   wrap(bin: string, args: readonly string[], env: NodeJS.ProcessEnv, label: string): ScopedCommand;
-  /** After the wrapped process exited: whether its scope was stopped for an OOM kill. Never throws. */
+  /**
+   * After the wrapped process exited: whether its scope was stopped for an OOM kill. Whatever
+   * that process left running is stopped with it, so its scope ends here. Never throws.
+   */
   outcome(unit: string): Promise<SessionScopeOutcome | null>;
   /**
    * One session launch's short-lived commands, each in a `--collect` scope of its own named
@@ -320,9 +329,27 @@ export function createSessionScope(deps: SessionScopeDeps, options: { inert?: bo
     });
   }
 
-  async function start(): Promise<void> {
+  /**
+   * Stop the scopes a previous run of this daemon left, which a `BindsTo` only does for a daemon
+   * in a unit that stopped with it. No session outlives its daemon, so whatever is left in one is
+   * an orphan. `--no-block` so it only queues: the probes that follow are not in its pattern yet.
+   */
+  async function stopStale(): Promise<void> {
+    const systemctl = deps.systemctl();
+    if (!systemctl || !userManagerReachable(deps.env, deps.socketExists)) return;
+    await deps.run(systemctl, ["--user", "stop", "--no-block", `mission-control-${instance()}-*.scope`], {
+      timeoutMs: SYSTEMCTL_TIMEOUT_MS,
+      env: deps.env,
+    });
+  }
+
+  async function start(stale: boolean): Promise<void> {
     if (deps.platform !== "linux") return;
     void resetStale().catch(() => {});
+    const decideAfterStop = async () => {
+      if (stale) await stopStale().catch(() => {});
+      return decide();
+    };
     const unscoped = (off: string) => ({
       decision: { systemdRun: null, properties: [], choom: deps.choom() },
       problems: [],
@@ -333,7 +360,7 @@ export function createSessionScope(deps: SessionScopeDeps, options: { inert?: bo
       // Each probe already runs under the remaining budget. The race is what makes the bound
       // hold whatever a probe does: a decision that arrives after it is never applied.
       decided = await Promise.race([
-        decide(),
+        decideAfterStop(),
         deps.sleep(PROBE_TIMEOUT_MS).then(() => unscoped("the systemd-run probe timed out")),
       ]);
     } catch {
@@ -402,9 +429,9 @@ export function createSessionScope(deps: SessionScopeDeps, options: { inert?: bo
   }
 
   return {
-    ready() {
+    ready(readyOptions) {
       if (options.inert) return Promise.resolve();
-      readyPromise ??= start().catch(() => {});
+      readyPromise ??= start(readyOptions?.stopStale === true).catch(() => {});
       return readyPromise;
     },
 
@@ -434,6 +461,17 @@ export function createSessionScope(deps: SessionScopeDeps, options: { inert?: bo
           read = (await show(systemctl, unit)) ?? read;
         }
         const verdict = { oomKilled: read.Result === "oom-kill", peakBytes: parsePeak(read.MemoryPeak) };
+        // A scope outlives its agent for as long as anything is left in its cgroup: a detached
+        // child, or a desktop service a private `dbus-run-session` bus activated, which outlives
+        // that bus and keeps the cwd it started in. Left alone, it holds its checkout until a
+        // person kills it. Only after the verdict is final, so this never hides an `oom-kill`.
+        // Past the timeout the stop is still systemd's to finish, and the return retries.
+        if (!verdict.oomKilled && !settled(read.ActiveState)) {
+          await deps.run(systemctl, ["--user", "stop", unit], {
+            timeoutMs: SYSTEMCTL_TIMEOUT_MS,
+            env: deps.env,
+          }).catch(() => {});
+        }
         void resetWhenSettled(systemctl, unit, read).catch(() => {});
         return verdict;
       } catch {
