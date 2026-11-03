@@ -406,3 +406,100 @@ test("a database stamped 11 gains the history catalog through migrate()", () => 
     stamped.close();
   }
 });
+
+test("a changed transcript is re-indexed, resuming from where its last parse stopped", async () => {
+  clearCatalog();
+  const projects = freshProjects();
+  const id = sessionId();
+  const path = writeTranscript(projects, "-w", id, records(id, { cwd: "/w", entrypoint: "cli", prompt: "the first prompt" }));
+  const spec = createClaudeHistory(projects);
+  const previous: (import("../src/server/harness/types.ts").HistoryParsePoint | null)[] = [];
+  const store = new HistoryStore();
+  const reconciler = new HistoryReconciler({
+    store,
+    readers: [{ agent: "claude", spec: { ...spec, summarize: (file, point) => { previous.push(point); return spec.summarize(file, point); } } }],
+    resolveRepository: () => null,
+  });
+  await reconciler.trigger();
+  assert.equal(previous.length, 1);
+  assert.equal(previous[0], null, "a new file is parsed from the top");
+  const firstParsed = store.parsePoint("claude", id)?.parsedBytes;
+  assert.ok(firstParsed && firstParsed > 0);
+
+  // Claude appends to a live session: its size and mtime move, its inode does not.
+  appendFileSync(path, `${JSON.stringify({ type: "ai-title", aiTitle: "Appended later", sessionId: id })}\n`);
+  appendFileSync(path, `${JSON.stringify({ type: "cost-state", sessionId: id, totalCostUSD: 3.25 })}\n`);
+  const later = new Date(Date.now() + 5_000);
+  utimesSync(path, later, later);
+  const pass = await reconciler.trigger();
+  assert.equal(pass.indexed, 1, "the changed file is re-summarized");
+  assert.equal(previous.length, 2);
+  assert.equal(previous[1]?.parsedBytes, firstParsed, "it resumes from the stored parse point");
+
+  const row = store.page({ kinds: ["interactive"], cursor: null, limit: 10, progress: reconciler.progress() }).sessions
+    .find((entry) => entry.agentSessionId === id);
+  assert.equal(row?.aiTitle, "Appended later");
+  assert.equal(row?.costUsd, 3.25);
+  assert.equal(row?.firstPrompt, "the first prompt", "what the earlier bytes said is kept");
+
+  // Once re-indexed, the unchanged file is skipped again.
+  assert.equal((await reconciler.trigger()).indexed, 0);
+  rmSync(projects, { recursive: true, force: true });
+});
+
+test("paging across rows with one last_activity_at returns each row exactly once", async () => {
+  clearCatalog();
+  const projects = freshProjects();
+  const ids: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    const id = sessionId();
+    ids.push(id);
+    writeTranscript(projects, "-w", id, records(id, { cwd: "/w", entrypoint: "cli", at: "2026-10-05T10:00:00.000Z" }));
+  }
+  const history = new HistoryService({ readers: [{ agent: "claude", spec: createClaudeHistory(projects) }], resolveRepository: () => null });
+  await history.reconciler.trigger();
+  const app = buildApp({ registry: new Registry(), reviews: {} as ReviewManager, tasks: {} as TaskManager, queues: {} as QueueManager, history });
+
+  for (const limit of [1, 2]) {
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const query = `limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+      const res = await app.request(`/api/history/sessions?${query}`, { headers: LOOPBACK });
+      assert.equal(res.status, 200);
+      const page = await res.json() as HistoryPage;
+      assert.ok(page.sessions.length <= limit);
+      seen.push(...page.sessions.map((row) => row.agentSessionId));
+      cursor = page.nextCursor;
+      // A cursor that does not advance would page for ever; fail instead of hanging.
+      assert.ok(seen.length <= ids.length, `limit ${limit}: paging repeated a row`);
+    } while (cursor);
+    assert.deepEqual(seen, [...ids].sort().reverse(), `limit ${limit}: every tied row once, in descending id order`);
+  }
+
+  assert.equal((await app.request("/api/history/sessions?limit=200", { headers: LOOPBACK })).status, 200);
+  assert.equal((await app.request("/api/history/sessions?limit=201", { headers: LOOPBACK })).status, 400);
+  rmSync(projects, { recursive: true, force: true });
+});
+
+test("a prompt_snapshot with no tools array counts as no snapshot, never as an empty tool set", async () => {
+  const projects = freshProjects();
+  const reader = createClaudeHistory(projects);
+  const toolless = { type: "attachment", attachment: { type: "prompt_snapshot", systemPrompt: [], contextRendering: "announced" } };
+
+  const alone = sessionId();
+  writeTranscript(projects, "-w", alone, records(alone, { cwd: "/w", snapshot: toolless }));
+  assert.equal((await reader.summarize(await enumerateOne(projects, alone), null))?.summary.kind, "unclassified",
+    "an empty tool set would have read as one_shot");
+
+  // Claude records a second, tool-less snapshot beside the real one; the one with tools decides.
+  const paired = sessionId();
+  const base = envelope(paired, "/w", "sdk-ts", "2026-10-20T10:00:00.000Z");
+  writeTranscript(projects, "-w", paired, [
+    { ...base, ...toolless },
+    { ...base, ...snapshot(["Read", "StructuredOutput"], AGENT_PREFIX) },
+    ...records(paired, { cwd: "/w" }),
+  ]);
+  assert.equal((await reader.summarize(await enumerateOne(projects, paired), null))?.summary.kind, "reviewer");
+  rmSync(projects, { recursive: true, force: true });
+});
