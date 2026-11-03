@@ -289,6 +289,7 @@ test("an original slot another owner holds opens the picker; the chosen slot is 
   const slot = pool.getByRole("article", { name: "Slot 2" });
   await expect(slot.getByText("leased", { exact: true })).toBeVisible();
   await expect(slot.getByText("Resumed History session")).toBeVisible();
+  await slot.scrollIntoViewIfNeeded();
   await capture(dashboard, "09-slot-card");
   await slot.getByRole("button", { name: "Return", exact: true }).click();
   const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
