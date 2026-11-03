@@ -49,6 +49,8 @@ export function useHistoryCatalog(): HistoryCatalog {
   const [landed, setLanded] = useState(0);
   /** Rows the operator has paged to; a refresh asks for at least this many. */
   const depth = useRef<number>(HISTORY_PAGE_LIMITS.defaultLimit);
+  /** Whether a window has ever landed. Only a read with nothing on screen yet can fail the page. */
+  const hasWindow = useRef(false);
   const listAbort = useRef<AbortController | null>(null);
   const moreAbort = useRef<AbortController | null>(null);
 
@@ -62,10 +64,17 @@ export function useHistoryCatalog(): HistoryCatalog {
     void readHistoryWindow((query) => api.historySessions(query, controller.signal), depth.current).then((result) => {
       if (controller.signal.aborted) return;
       if (!result.ok) {
-        setListError(result.error);
-        setListState("error");
+        if (!hasWindow.current) {
+          setListError(result.error);
+          setListState("error");
+          return;
+        }
+        // A background re-read failed (a daemon restart, a busy backfill). The rows on screen
+        // are still the last good answer, so they stay, and the poll tries again on schedule.
+        setLanded((n) => n + 1);
         return;
       }
+      hasWindow.current = true;
       setSessions(result.value.sessions);
       setCursor(result.value.nextCursor);
       setProgress(result.value.progress);

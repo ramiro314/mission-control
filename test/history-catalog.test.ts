@@ -599,3 +599,28 @@ test("a project folder the walk cannot read fails the walk, so nothing in it is 
   assert.equal((await reconciler.trigger()).gone, 1);
   rmSync(projects, { recursive: true, force: true });
 });
+
+test("with two readers, neither one's walk clears the other's empty-file and duplicate-group memory", async () => {
+  clearCatalog();
+  const roots = [freshProjects(), freshProjects()];
+  const counted = roots.map((root) => {
+    // Each root holds an empty transcript and a pair of files carrying one session id.
+    writeFileSync(writeTranscript(root, "-w", sessionId(), []), "");
+    const id = sessionId();
+    writeTranscript(root, "aaa-copy", id, records(id, { cwd: "/work/dup", entrypoint: "cli" }));
+    writeTranscript(root, claudeProjectDir("/work/dup", root).slice(root.length + 1), id, records(id, { cwd: "/work/dup", entrypoint: "cli" }));
+    return countingReader(root);
+  });
+  const reconciler = new HistoryReconciler({
+    store: new HistoryStore(),
+    // The agent names only key the catalog here; both readers are Claude's, over two roots.
+    readers: [{ agent: "claude", spec: counted[0]!.spec }, { agent: "codex", spec: counted[1]!.spec }],
+    resolveRepository: () => null,
+  });
+  await reconciler.trigger();
+  assert.deepEqual(counted.map(({ calls }) => calls.length), [3, 3], "each reads its empty file and both duplicates once");
+  for (const { calls } of counted) calls.length = 0;
+  await reconciler.trigger();
+  assert.deepEqual(counted.map(({ calls }) => calls.length), [0, 0], "and neither reads anything again");
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+});

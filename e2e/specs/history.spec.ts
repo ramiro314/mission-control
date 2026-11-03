@@ -301,6 +301,47 @@ test("a re-read that started before Load more does not undo it when it lands lat
   await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
 });
 
+test("a background re-read that fails keeps the rows on screen and the poll going", async ({ dashboard, daemon }) => {
+  await seedAndRestart(daemon);
+  await backfilled(daemon);
+  // The first read reports indexing, so the page polls. The next re-read fails; the one after
+  // answers truthfully that the backfill is done. A page that dropped its rows for an error on
+  // the failed re-read, or stopped polling there, never shows the finished state.
+  let windowReads = 0;
+  await dashboard.route("**/api/history/sessions**", async (route) => {
+    if (route.request().url().includes("cursor=")) {
+      await route.fulfill({ response: await route.fetch() });
+      return;
+    }
+    windowReads += 1;
+    if (windowReads === 2) {
+      await route.fulfill({ status: 500, json: { error: "the daemon is restarting" } });
+      return;
+    }
+    const response = await route.fetch();
+    if (windowReads === 1) {
+      const body = await response.json() as { progress: unknown };
+      body.progress = { indexing: true, indexed: 50, total: 57 };
+      await route.fulfill({ response, json: body });
+      return;
+    }
+    await route.fulfill({ response });
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/history`);
+  const page = dashboard.getByRole("main", { name: "History" });
+  const rows = page.getByRole("listitem");
+  await expect(page.getByRole("status")).toHaveText("Indexing 50 of 57 sessions");
+  await expect(rows).toHaveCount(50);
+  await expect.poll(() => windowReads, { timeout: 5_000 }).toBeGreaterThanOrEqual(2);
+  await expect(page.getByText("History is unavailable")).toHaveCount(0);
+  await expect(rows).toHaveCount(50);
+  // The poll carried on past the failure and saw the backfill finish.
+  await expect.poll(() => windowReads, { timeout: 5_000 }).toBeGreaterThanOrEqual(3);
+  await expect(page.getByRole("status")).toHaveText("");
+  await expect(rows).toHaveCount(50);
+  await expect(page.getByRole("button", { name: "Load more" })).toBeVisible();
+});
+
 test("a Load more the daemon refuses says why, and keeps the rows and the button", async ({ dashboard, daemon }) => {
   await seedAndRestart(daemon);
   await backfilled(daemon);
