@@ -247,7 +247,7 @@ path always comes from the catalog.
 | `GET /api/history/sessions/:agent/:id/subagents/:agentId/messages?cursor` | `{messages, nextCursor}`: a window of one subagent run's transcript, paged like `messages`. 404 when the run is not in the session's own listing; 410 when the session's transcript is gone. |
 | `GET /api/history/sessions/:agent/:id/resume-options` | `{original: {cwd, resolved, state}, openLaunch, refusal}`: the original directory as recorded, resolved through symlinks, and its state (`usable`, `missing`, `pool_slot`, `unrecorded`); the session's open launch; and the refusal a Resume would meet now, or null. 404 as above. |
 | `POST /api/history/sessions/:agent/:id/resume` | Body `{backend, target: {kind: "original"}}` (`HistoryResumeBodySchema`). `{ok: true, launch, label}` once the terminal opened. A refusal is `{ok: false, code, error, launch?}`: 409 for most, 410 for a gone transcript, 504 when the terminal's outcome is unknown and the launch stays open, 400 for a body the schema refuses. |
-| `POST /api/history/sessions/:agent/:id/resume/cancel` | Body `{launchId}`. Cancel pending resume: `{ok: true, launch}` with the launch released. 404 for a launch of another session; 409 for a launch that is no longer pending or holds a worktree slot. |
+| `POST /api/history/sessions/:agent/:id/resume/cancel` | Body `{launchId}`. Cancel pending resume: `{ok: true, launch}` with the launch released. A refusal is `{ok: false, code, error, launch?}`: 404 `launch_not_found` for a launch of another session; 409 `launch_not_pending` or `launch_has_slot` for a launch that is no longer pending or holds a worktree slot. |
 
 Neither `:toolUseId` nor `:agentId` ever becomes part of a path on its own:
 

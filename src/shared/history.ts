@@ -432,6 +432,9 @@ export const HISTORY_RESUME_REFUSALS = [
   "launch_failed",
   "launch_unknown",
   "cancelled",
+  "launch_not_found",
+  "launch_not_pending",
+  "launch_has_slot",
 ] as const;
 export type HistoryResumeRefusalCode = (typeof HISTORY_RESUME_REFUSALS)[number];
 

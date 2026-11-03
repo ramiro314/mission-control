@@ -514,15 +514,18 @@ test("Cancel pending resume through the route closes the launch and its environm
     const other = sessionId();
     writeConversation(f.projects, other, directory("other"));
     await f.history.reconciler.trigger();
-    assert.equal((await f.post(`/api/history/sessions/claude/${other}/resume/cancel`, { launchId: launch.launchId })).status, 404,
-      "a launch is cancelled only through its own session");
+    const foreign = await f.post(`/api/history/sessions/claude/${other}/resume/cancel`, { launchId: launch.launchId });
+    assert.equal(foreign.status, 404, "a launch is cancelled only through its own session");
+    assert.equal(((await foreign.json()) as { code: string }).code, "launch_not_found");
 
     const cancelled = await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: launch.launchId });
     assert.equal(cancelled.status, 200);
     assert.equal(((await cancelled.json()) as { launch: { state: string } }).launch.state, "released");
     assert.deepEqual(abandoned, [`history-resume:${launch.launchId}`], "the prepared environment is revoked with it");
     assert.equal(abandoned[0], prepared[0]!.id, "revoked under the same owner it was prepared under");
-    assert.equal((await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: launch.launchId })).status, 409);
+    const again = await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: launch.launchId });
+    assert.equal(again.status, 409);
+    assert.equal(((await again.json()) as { code: string }).code, "launch_not_pending", "a refused cancel says why by code");
     assert.equal((await f.resume(id)).status, 200);
   } finally {
     f.done();

@@ -48,8 +48,13 @@ export function HistoryResumeDialog({
   const { agent, agentSessionId } = session;
   const [view, setView] = useState<View>({ state: "loading" });
   const [busy, setBusy] = useState(false);
-  /** A refusal the last write came back with, over what the options said. */
+  /** A refusal the last Resume came back with, over what the options said. */
   const [refused, setRefused] = useState<(HistoryResumeRefusal & { launch?: HistoryResumeLaunch }) | null>(null);
+  /**
+   * Why the last Cancel pending resume was refused. Its own state, so it never stands in for
+   * the options: once they are read again, they alone decide whether a Resume can run.
+   */
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [started, setStarted] = useState<{ launch: HistoryResumeLaunch; label: string } | null>(null);
   const [cancelled, setCancelled] = useState(false);
   const terminals = useTerminalTargets();
@@ -71,6 +76,7 @@ export function HistoryResumeDialog({
   async function launch(target: TerminalTargetView): Promise<void> {
     setBusy(true);
     setRefused(null);
+    setCancelError(null);
     setCancelled(false);
     const result = await api.historyResume(agent, agentSessionId, { backend: target.id, target: { kind: "original" } });
     setBusy(false);
@@ -80,18 +86,18 @@ export function HistoryResumeDialog({
 
   async function cancel(launch: HistoryResumeLaunch): Promise<void> {
     setBusy(true);
+    setCancelError(null);
     const result = await api.historyResumeCancel(agent, agentSessionId, launch.launchId);
     setBusy(false);
+    // Either way, what was started or refused before no longer describes the launch: show why a
+    // refused cancel was refused, and let the options read now say whether a Resume can run.
+    setStarted(null);
+    setRefused(null);
     if (!result.ok) {
-      // Refused because the launch moved on (its agent bound, or it already closed): what was
-      // started is no longer pending, so show the refusal and read where things stand now.
-      setStarted(null);
-      setRefused(result);
+      setCancelError(result.error);
       read();
       return;
     }
-    setStarted(null);
-    setRefused(null);
     setCancelled(true);
     read();
   }
@@ -147,6 +153,7 @@ export function HistoryResumeDialog({
           </p>
         ) : null}
         {cancelled ? <p className="history-resume-note" role="status">The pending resume was cancelled.</p> : null}
+        {cancelError ? <p className="history-resume-error" role="alert">{cancelError}</p> : null}
         {refusal && !started ? <p className="history-resume-error" role="alert">{refusal.error}</p> : null}
 
         {pending && historyResumeCancellable(pending) && (started || refusal?.code === "open_launch" || refusal?.code === "launch_unknown") ? (

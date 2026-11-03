@@ -4097,7 +4097,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const outcome = history.resume.cancel(c.req.param("agent"), c.req.param("id"), parsed.data.launchId, resumeLauncher);
     if (outcome.ok) return c.json({ ok: true, launch: outcome.launch });
-    return c.json({ ok: false, error: outcome.error, ...(outcome.launch ? { launch: outcome.launch } : {}) }, outcome.status);
+    return c.json({ ok: false, code: outcome.code, error: outcome.error, ...(outcome.launch ? { launch: outcome.launch } : {}) }, outcome.status);
   });
 
   // --- The archive library ---

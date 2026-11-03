@@ -180,11 +180,11 @@ test("Resume is offered only on conversations whose transcript is present, and r
   expect(workspaces(daemon)).toHaveLength(0);
 });
 
-test("a Cancel pending resume the daemon refuses after the launch started says why and stops offering it", async ({
+test("a Cancel pending resume the daemon refuses says why, and the dialog offers Resume again once nothing holds it", async ({
   dashboard,
   daemon,
 }) => {
-  const original = join(daemon.home, "projects", "resume-bound");
+  const original = join(daemon.home, "projects", "resume-cancelled-elsewhere");
   mkdirSync(original, { recursive: true });
   const id = writeSession(daemon, { cwd: original, title: "Rename the importer flags", at: "2026-10-30T15:00:00.000Z" });
   await indexed(daemon, id);
@@ -192,26 +192,29 @@ test("a Cancel pending resume the daemon refuses after the launch started says w
   await dashboard.goto(`${daemon.baseURL}/#/history/claude/${id}`);
   await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
-  await dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "cmux" }).click();
+  const menu = dialog.getByRole("menu", { name: "Resume in" });
+  await menu.getByRole("menuitem").filter({ hasText: "cmux" }).click();
   await expect(dialog.getByRole("status")).toContainText("Started in cmux");
 
-  // The agent bound between the launch and the click: the daemon refuses the cancel. No fake
-  // agent runs inside the fake cmux, so the bind is the daemon's own refusal, answered here.
-  await dashboard.route(`**/api/history/sessions/claude/${id}/resume/cancel`, async (route) => {
-    const { launchId } = route.request().postDataJSON() as { launchId: string };
-    await route.fulfill({
-      status: 409,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: false,
-        error: "This launch is no longer pending.",
-        launch: { launchId, agent: "claude", sourceSessionId: id, expectedAgentSessionId: id, cwd: original, slotId: null, launchedAt: 1, mcSessionId: "term:resumed", state: "bound" },
-      }),
-    });
+  // Another tab cancels the same launch first, so this dialog's Cancel finds it already closed.
+  const options = (await (await fetch(`${daemon.baseURL}/api/history/sessions/claude/${id}/resume-options`)).json()) as {
+    openLaunch: { launchId: string };
+  };
+  const elsewhere = await fetch(`${daemon.baseURL}/api/history/sessions/claude/${id}/resume/cancel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ launchId: options.openLaunch.launchId }),
   });
+  expect(elsewhere.status).toBe(200);
+
   await dialog.getByRole("button", { name: "Cancel pending resume" }).click();
   await expect(dialog.getByRole("alert")).toHaveText("This launch is no longer pending.");
   await expect(dialog.getByText(/^Started in cmux/)).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Cancel pending resume" })).toHaveCount(0);
+  // Nothing holds the session now, so the dialog offers Resume again without being reopened.
+  const cmux = menu.getByRole("menuitem").filter({ hasText: "cmux" });
+  await expect(cmux).toBeEnabled();
   await capture(dashboard, "06-cancel-refused");
+  await cmux.click();
+  await expect(dialog.getByRole("status")).toContainText("Started in cmux");
 });

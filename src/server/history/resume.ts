@@ -73,7 +73,7 @@ export type HistoryResumeOutcome =
 
 export type HistoryResumeCancelOutcome =
   | { ok: true; launch: HistoryResumeLaunch }
-  | { ok: false; status: 404 | 409; error: string; launch?: HistoryResumeLaunch };
+  | { ok: false; status: 404 | 409; code: HistoryResumeRefusalCode; error: string; launch?: HistoryResumeLaunch };
 
 const NOT_FOUND = "no such history session";
 
@@ -209,7 +209,7 @@ export class HistoryResume {
     const found = this.deps.find(agent, id);
     const launch = this.deps.launches.get(launchId);
     if (!found || !launch || launch.agent !== found.entry.summary.agent || launch.sourceSessionId !== found.entry.summary.agentSessionId) {
-      return { ok: false, status: 404, error: "no such resume launch for this session" };
+      return { ok: false, status: 404, code: "launch_not_found", error: "no such resume launch for this session" };
     }
     const result = this.deps.launches.cancel(launchId, this.now());
     if (result.ok) {
@@ -222,9 +222,9 @@ export class HistoryResume {
       return { ok: true, launch: result.launch };
     }
     if (result.reason === "has_slot") {
-      return { ok: false, status: 409, error: "This launch holds a worktree slot: Return the slot to close it.", launch: result.launch };
+      return { ok: false, status: 409, code: "launch_has_slot", error: "This launch holds a worktree slot: Return the slot to close it.", launch: result.launch };
     }
-    return { ok: false, status: 409, error: "This launch is no longer pending.", ...(result.launch ? { launch: result.launch } : {}) };
+    return { ok: false, status: 409, code: "launch_not_pending", error: "This launch is no longer pending.", ...(result.launch ? { launch: result.launch } : {}) };
   }
 
   /** Whether this request's launch was released from under it: Cancel pending resume, or its grace window. */
