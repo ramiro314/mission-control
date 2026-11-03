@@ -240,6 +240,9 @@ test("repository, date range, kind and agent filters work together; facets list 
   const sibling = write2({ cwd: "/state/worktree-pools/app-1f2e3d/2/app2", at: "2026-10-15T11:00:00.000Z", prompts: ["sibling pool"] });
   const run = write2({ cwd: "/state/worktree-pools/app-1f2e/3/app", at: "2026-10-15T12:00:00.000Z", entrypoint: "sdk-ts", tools: ["Read"], prompts: ["slot review"] });
   const loose = write2({ cwd: "/nowhere/at/all", at: "2026-10-16T10:00:00.000Z", prompts: ["loose"] });
+  // Exactly on the date range's two bounds below, with no repository.
+  const atFrom = write2({ cwd: "/nowhere/edge", at: "2026-10-10T00:00:00.000Z", prompts: ["on the from bound"] });
+  const atTo = write2({ cwd: "/nowhere/edge", at: "2026-10-16T00:00:00.000Z", prompts: ["on the to bound"] });
   const history = new HistoryService({ readers: [{ agent: "claude", spec: createClaudeHistory(projects) }] });
   await history.reconciler.trigger();
   const server = app(history);
@@ -256,8 +259,13 @@ test("repository, date range, kind and agent filters work together; facets list 
   assert.deepEqual(await ids(server, `${repo}&kind=reviewer`), [run]);
   const from = Date.parse("2026-10-10T00:00:00.000Z");
   const to = Date.parse("2026-10-16T00:00:00.000Z");
-  assert.deepEqual(await ids(server, `${repo}&kind=all&from=${from}&to=${to}`), [run, slotNew], "from is inclusive");
-  assert.deepEqual(await ids(server, `from=${from}&to=${to}`), [sibling, slotNew], "to is exclusive");
+  assert.deepEqual(await ids(server, `${repo}&kind=all&from=${from}&to=${to}`), [run, slotNew]);
+  assert.deepEqual(await ids(server, `from=${from}&to=${to}`), [sibling, slotNew, atFrom],
+    "a session last active exactly at `from` is in; one exactly at `to` is out");
+  assert.deepEqual(await ids(server, `from=${from}&to=${to + 1}`), [atTo, sibling, slotNew, atFrom],
+    "one millisecond later, the session at the old `to` is in");
+  assert.deepEqual(await ids(server, `from=${from + 1}&to=${to}`), [sibling, slotNew],
+    "one millisecond later, the session at the old `from` is out");
   assert.deepEqual(await ids(server, `${repo}&from=${from}&q=slot`), [slotNew]);
   assert.deepEqual(await ids(server, "agent=claude&repo=%2Fcode%2Fapp2"), [sibling]);
   assert.deepEqual(await ids(server, "agent=codex"), []);
@@ -307,9 +315,12 @@ test("repository resolution: a deleted pool slot, a task worktree, a real checko
 });
 
 test("prompt segments overlap at a boundary and stop at the per-prompt cap", () => {
-  const long = `${"a".repeat(3_900)} boundary phrase ${"b".repeat(20_000)}`;
+  // The phrase starts at 3,990 and ends at 4,005, across the first chunk's edge at 4,000.
+  const long = `${"a".repeat(3_989)} boundary phrase ${"b".repeat(20_000)}`;
+  assert.equal(long.indexOf("boundary phrase"), 3_990);
   const segments = historyPromptSegments([long]);
-  assert.ok(segments.some((segment) => segment.includes("boundary phrase")), "a phrase across a chunk edge is whole in one chunk");
+  assert.ok(!segments[0]!.includes("boundary phrase"), "the first chunk cuts the phrase");
+  assert.ok(segments[1]!.includes("boundary phrase"), "the next chunk starts early enough to hold it whole");
   assert.ok(segments.every((segment) => segment.length <= 4_000));
   assert.equal(segments.length, 5, "16,000 characters in chunks of 4,000 that overlap by 200");
   assert.ok(!segments.join("").includes("b".repeat(13_000)), "nothing past the cap is indexed");
