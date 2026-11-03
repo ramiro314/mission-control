@@ -61,13 +61,20 @@ export function resumeConversation(session: Pick<Session, "agent" | "agentSessio
   return `${session.agent}:${session.agentSessionId}`;
 }
 
-/** All fallible provisioning, including the final wrapper, precedes SDK stop. */
+/**
+ * All fallible provisioning, including the final wrapper, precedes SDK stop.
+ *
+ * `forkSessionId`, when set, starts the conversation as a fork under that minted id (History
+ * Resume into a typed directory), so the agent reports that id rather than the source's. The
+ * lease still guards the source conversation.
+ */
 export async function prepareTerminalResume(
-  session: Pick<Session, "id" | "agent" | "agentSessionId" | "permissionMode" | "cwd" | "runtime">,
+  session: Pick<Session, "id" | "agent" | "agentSessionId" | "permissionMode" | "cwd" | "runtime"> & { forkSessionId?: string | null },
   context: ResumeContext,
 ): Promise<PreparedResume> {
   if (!session.cwd || !session.agentSessionId) throw new Error("this conversation has no checkout or native identity to resume");
-  const argv = await resumeArgvFor(session.agent, session.agentSessionId, session.permissionMode);
+  const forkSessionId = session.forkSessionId ?? null;
+  const argv = await resumeArgvFor(session.agent, session.agentSessionId, session.permissionMode, forkSessionId);
   if (!argv) throw new Error(`${session.agent} cannot reopen a conversation`);
   const guard = resumeGuardPath();
   if (!existsSync(guard)) throw new Error("Mission Control's managed resume guard is not built - run: npm run build");
@@ -97,7 +104,7 @@ export async function prepareTerminalResume(
         delete descriptor.env.MISSION_SESSION_ID;
         delete descriptor.env.FLEET_SESSION_ID;
         delete descriptor.env.HARNESS_SESSION_ID;
-        descriptor.env.MISSION_AGENT_SESSION_ID = session.agentSessionId;
+        descriptor.env.MISSION_AGENT_SESSION_ID = forkSessionId ?? session.agentSessionId;
         const checked = await verifyMissionMcpTools(requiredTools, descriptor);
         if (!checked.ok) throw new Error(checked.reason);
       }
@@ -111,7 +118,7 @@ export async function prepareTerminalResume(
     const env = agentSubprocessEnv({}, { stateHome: lease.home, loopbackAccess: true, cwd: session.cwd });
     dropPaneIdentityEnv(env);
     delete env.MISSION_SESSION_ID;
-    env.MISSION_AGENT_SESSION_ID = session.agentSessionId;
+    env.MISSION_AGENT_SESSION_ID = forkSessionId ?? session.agentSessionId;
     writeResumeRecord(join(lease.home, "launch.json"), { argv, env, cwd: session.cwd });
     const wrapper = join(lease.home, LAUNCH_SCRIPT_FILE);
     // This tiny shell holds no config or credential. The guard claims before reading either.

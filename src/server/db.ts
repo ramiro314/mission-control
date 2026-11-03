@@ -4500,7 +4500,8 @@ function rebuildDerivedPartialIndexIfStale(
  * `worktree_slots.state`'s rule (`HISTORY_KINDS`, `HISTORY_TRANSCRIPT_STATES`). `fingerprint`
  * is JSON `{size, mtimeMs, ino}`; `reader_state` is opaque to everything but the harness reader
  * that wrote it, which uses it with `parsed_bytes` to fold in only appended bytes.
- * `resumed_from` is reserved for a History Resume fork and is NULL until that ships.
+ * `resumed_from` names the session a History Resume fork was started from, read from the fork's
+ * launch record (`history_resume_launches.expected_agent_session_id`) when its row is first written.
  */
 function migrateHistoryCatalog(d: DatabaseSync): void {
   d.exec(`

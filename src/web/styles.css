@@ -37260,3 +37260,4 @@ a.history-row-title:focus-visible { outline: 2px solid var(--find); outline-offs
   background: var(--panel);
 }
 .history-resume-body > .btn { align-self: flex-start; }
+.history-resume-directory { display: grid; gap: 4px; }

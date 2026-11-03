@@ -25,6 +25,12 @@ import type { HistoryIndexEntry, HistorySearchWrite, HistoryStore, HistoryUpsert
  * - **Gone follows a COMPLETE walk.** A row is marked gone only when a pass walked every root
  *   of its harness and did not see the file - never because a root could not be read or a
  *   pass was stopped. Rows are never deleted.
+ * - **One row per session id, from its canonical file.** Several files can carry one id once
+ *   a History Resume copies a transcript for a fork. A recorded copy is never canonical; of
+ *   the rest the harness's stable rule chooses (`HistorySpec.canonical`), never scan order.
+ *   A row whose canonical file disappears is marked gone, never repointed at a recorded copy;
+ *   an unrecorded file with its id (a transcript moved with its project folder) competes like
+ *   any other, so an incremental and a rebuilt catalog choose the same file.
  * - **The watcher is a hint; the scan is the authority.** `fs.watch` on each root (recursive
  *   where the platform has it) asks for a pass shortly after a transcript moves, so an open
  *   page sees a session within seconds. Watchers drop events, overflow, and cannot watch a
@@ -341,15 +347,19 @@ export class HistoryReconciler {
       if (this.stopped) return { ...result, complete: false };
       result.scanned += files.length;
       const index = this.store.index(reader.agent);
+      // A transcript a History Resume copied for its fork is never canonical, whatever the
+      // order the walk found it in, so it is left out of the choice entirely.
+      const copies = this.store.copyPaths(reader.agent);
+      const walkedPaths = new Set(files.map((file) => file.path));
       const byId = new Map<string, HistoryFile[]>();
       for (const file of files) {
+        if (copies.has(file.path)) continue;
         const group = byId.get(file.agentSessionId);
         if (group) group.push(file);
         else byId.set(file.agentSessionId, [file]);
       }
       const parsed = new Map<string, HistoryParse>();
       const canonical: HistoryFile[] = [];
-      const walkedPaths = new Set(files.map((file) => file.path));
       for (const path of empty.keys()) if (!walkedPaths.has(path)) empty.delete(path);
       for (const [id, group] of byId) {
         if (group.length === 1) {

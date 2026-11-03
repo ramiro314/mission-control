@@ -24,7 +24,6 @@ export interface HistoryResumeClaim {
   cwd: string;
   slotId?: string | null;
   leaseKey?: string | null;
-  copyPath?: string | null;
 }
 
 /** A Registry session as binding reads it. */
@@ -45,6 +44,7 @@ interface Row {
   expected_agent_session_id: string;
   cwd: string;
   slot_id: string | null;
+  copy_path: string | null;
   launched_at: number;
   mc_session_id: string | null;
   state: string;
@@ -58,6 +58,7 @@ function toLaunch(row: Row): HistoryResumeLaunch {
     expectedAgentSessionId: row.expected_agent_session_id,
     cwd: row.cwd,
     slotId: row.slot_id,
+    copyPath: row.copy_path,
     launchedAt: row.launched_at,
     mcSessionId: row.mc_session_id,
     state: row.state,
@@ -96,7 +97,7 @@ export class HistoryResumeLaunches {
           `INSERT INTO history_resume_launches (
              launch_id, agent, source_session_id, expected_agent_session_id, cwd, slot_id, lease_key,
              copy_path, launched_at, mc_session_id, state, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, 'pending', ?)`,
         ).run(
           launchId,
           input.agent,
@@ -105,7 +106,6 @@ export class HistoryResumeLaunches {
           input.cwd,
           input.slotId ?? null,
           input.leaseKey ?? null,
-          input.copyPath ?? null,
           now,
           now,
         );
@@ -139,6 +139,23 @@ export class HistoryResumeLaunches {
         WHERE agent = ? AND source_session_id = ? AND state IN ('pending', 'expired')`,
     ).get(agent, sourceSessionId) as Row | undefined;
     return row ? toLaunch(row) : null;
+  }
+
+  /**
+   * Record the transcript copy a launch wrote or reused. Called only once the copy exists, so
+   * every recorded path is a History copy: the catalog never takes one as canonical, and a
+   * later Resume of the same session into the same folder reuses it.
+   */
+  recordCopy(launchId: string, copyPath: string, now: number): void {
+    this.db.prepare("UPDATE history_resume_launches SET copy_path = ?, updated_at = ? WHERE launch_id = ?")
+      .run(copyPath, now, launchId);
+  }
+
+  /** Whether `path` is a History copy of this session, recorded by any earlier launch of it. */
+  isCopyOf(agent: AgentType, sourceSessionId: string, path: string): boolean {
+    return this.db.prepare(
+      `SELECT 1 FROM history_resume_launches WHERE agent = ? AND source_session_id = ? AND copy_path = ? LIMIT 1`,
+    ).get(agent, sourceSessionId, path) !== undefined;
   }
 
   /** Every launch in one of `states`, oldest first. */

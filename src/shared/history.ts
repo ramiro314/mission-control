@@ -408,6 +408,11 @@ export interface HistoryResumeLaunch {
   cwd: string;
   /** The worktree slot the launch holds, or null for a directory outside the pool. */
   slotId: string | null;
+  /**
+   * The transcript copy a typed-directory Resume wrote or reused, or null. Recorded only once
+   * the copy exists, so a path here is always a History copy and never canonical.
+   */
+  copyPath: string | null;
   launchedAt: number;
   /** The Mission Control session the launch bound to, once discovery registered it. */
   mcSessionId: string | null;
@@ -435,6 +440,8 @@ export const HISTORY_RESUME_REFUSALS = [
   "launch_not_found",
   "launch_not_pending",
   "launch_has_slot",
+  "directory_relative",
+  "copy_exists",
 ] as const;
 export type HistoryResumeRefusalCode = (typeof HISTORY_RESUME_REFUSALS)[number];
 
@@ -460,19 +467,29 @@ export interface HistoryResumeOptions {
     /** That directory resolved through symlinks, when it still resolves. */
     resolved: string | null;
     state: HistoryResumeDirectoryState;
+    /** Why a Resume in this directory would be refused, or null when it is usable. */
+    refusal: HistoryResumeRefusal | null;
   };
   /** The session's open (`pending` or `expired`) launch, if any. */
   openLaunch: HistoryResumeLaunch | null;
-  /** Why Resume would be refused right now, or null when it would launch. */
+  /** Why no Resume can run right now, whatever the target, or null. */
   refusal: HistoryResumeRefusal | null;
+  /**
+   * The other targets the dialog offers when the original directory cannot be used and
+   * nothing else refuses: a typed directory. Null when the original is usable or a refusal
+   * blocks every target.
+   */
+  picker: { directory: boolean } | null;
 }
 
 /**
- * Where a Resume runs. Only the original directory is offered today; a worktree slot and a
- * typed directory join this union, so a body naming one is refused until then.
+ * Where a Resume runs: the original directory, or a directory the operator typed. A typed
+ * path must be absolute; the daemon refuses a relative one with `directory_relative`, so the
+ * dialog can say why, and resolves the rest once through symlinks.
  */
 export const HistoryResumeTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("original") }).strict(),
+  z.object({ kind: z.literal("directory"), path: z.string().min(1).max(4096) }).strict(),
 ]);
 export type HistoryResumeTarget = z.infer<typeof HistoryResumeTargetSchema>;
 
