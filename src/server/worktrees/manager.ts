@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { lstat, realpath, rm, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import type { HistoryResumeCheckout } from "@shared/history.ts";
 import type { WorktreeClaim, WorktreeClaimSeed } from "@shared/protocol.ts";
 import type { WorktreeProvider } from "@shared/types.ts";
 import {
@@ -56,6 +57,8 @@ import {
 import { resolveWorktreePolicy, type WorktreePolicy } from "./config.ts";
 import {
   NativeWorktreeGit,
+  isCheckoutBranchName,
+  type BranchCheckoutMode,
   type GitResult,
   type WorktreeGit,
   type WorktreeRegistration,
@@ -201,6 +204,11 @@ export type WorktreeLeaseAsIsResult =
   | { outcome: "leased"; lease: NativeWorktreeLease }
   /** Leased, quarantined or gone: not the pool's to hand out, so no lease was taken. */
   | { outcome: "noLease" }
+  | { outcome: "refused"; reason: string }
+  | { outcome: "outcomeUnknown"; reason: string };
+
+export type WorktreeLeaseForResumeResult =
+  | { outcome: "leased"; lease: NativeWorktreeLease; checkout: HistoryResumeCheckout }
   | { outcome: "refused"; reason: string }
   | { outcome: "outcomeUnknown"; reason: string };
 
@@ -1675,42 +1683,9 @@ export class WorktreeManager {
     const answer = this.leaseAsIsAnswer(slotId);
     if (answer) return answer;
     return this.withSlot(slotId, async () => {
-      const settled = this.leaseAsIsAnswer(slotId);
-      if (settled) return settled;
-      const slot = this.store.slot(slotId)!;
-      const pool = this.store.poolForSlot(slotId);
-      const identity = pool ? this.identity(pool.mainCheckoutRoot) : null;
-      if (!pool || !identity || identity.gitCommonDirectory !== pool.gitCommonDirectory || identity.poolPath !== pool.poolPath) {
-        return { outcome: "refused", reason: "the pool's repository identity can no longer be proven" };
-      }
-      const marker = await readWorktreePoolMarker(pool.poolPath);
-      if (marker?.poolId !== pool.id) {
-        return { outcome: "refused", reason: "native pool marker is missing or does not match" };
-      }
-      const screened = await this.screenIdleSlots(pool, identity, [slot]);
-      const idle = screened.ok ? screened.idle.find((entry) => entry.slot.id === slotId) ?? null : null;
-      if (!idle) return { outcome: "refused", reason: notIdleReason(screened, slotId) };
-      if (!idle.headDetached) {
-        return { outcome: "refused", reason: "the slot is attached to a branch, which only a reset can undo" };
-      }
-      const leaseId = this.deps.randomId();
-      let reservation: WorktreeSlotRow | null;
-      try {
-        reservation = await this.withPoolReservation(pool.gitCommonDirectory, async () =>
-          this.store.reserveAvailable({
-            slotId,
-            version: idle.slot.version,
-            leaseId,
-            ownerKind: owner.kind,
-            ownerKey: owner.key,
-            requestedHeadSha: idle.head,
-            now: this.deps.now(),
-            actor: "operator",
-          }));
-      } catch (error) {
-        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
-      }
-      if (!reservation) return { outcome: "refused", reason: "the slot was leased by something else first" };
+      const reserved = await this.reserveIdleDetached(slotId, owner);
+      if (!("reservation" in reserved)) return reserved;
+      const { pool, idle, reservation, leaseId } = reserved;
       try {
         const entered = await this.enteredSinceReservation(reservation, idle.slot, "it was leased", "operator");
         if (entered) return { outcome: entered.returned ? "refused" : "outcomeUnknown", reason: entered.reason };
@@ -1736,6 +1711,167 @@ export class WorktreeManager {
       } catch (error) {
         const reason = bounded(String(error));
         this.quarantineReservation(reservation, "as-is lease outcome is unknown", reason);
+        return { outcome: "outcomeUnknown", reason };
+      }
+    });
+  }
+
+  /**
+   * Screen one available slot exactly as acquisition would, then reserve it for `owner` at the
+   * HEAD it was observed at. The caller holds the slot lock. Only a detached slot is reserved:
+   * with no reset to repair an attached slot, the one thing acquisition proves after its reset
+   * that screening does not is checked here.
+   */
+  private async reserveIdleDetached(
+    slotId: string,
+    owner: WorktreeOwner,
+  ): Promise<
+    | { outcome: "noLease" }
+    | { outcome: "refused" | "outcomeUnknown"; reason: string }
+    | {
+        pool: WorktreePoolRow;
+        identity: WorktreeRepositoryIdentity;
+        idle: { slot: WorktreeSlotRow; head: string };
+        reservation: WorktreeSlotRow;
+        leaseId: string;
+      }
+  > {
+    const settled = this.leaseAsIsAnswer(slotId);
+    if (settled) return settled as { outcome: "noLease" } | { outcome: "refused"; reason: string };
+    const slot = this.store.slot(slotId)!;
+    const pool = this.store.poolForSlot(slotId);
+    const identity = pool ? this.identity(pool.mainCheckoutRoot) : null;
+    if (!pool || !identity || identity.gitCommonDirectory !== pool.gitCommonDirectory || identity.poolPath !== pool.poolPath) {
+      return { outcome: "refused", reason: "the pool's repository identity can no longer be proven" };
+    }
+    const marker = await readWorktreePoolMarker(pool.poolPath);
+    if (marker?.poolId !== pool.id) {
+      return { outcome: "refused", reason: "native pool marker is missing or does not match" };
+    }
+    const screened = await this.screenIdleSlots(pool, identity, [slot]);
+    const idle = screened.ok ? screened.idle.find((entry) => entry.slot.id === slotId) ?? null : null;
+    if (!idle) return { outcome: "refused", reason: notIdleReason(screened, slotId) };
+    if (!idle.headDetached) {
+      return { outcome: "refused", reason: "the slot is attached to a branch, which only a reset can undo" };
+    }
+    const leaseId = this.deps.randomId();
+    let reservation: WorktreeSlotRow | null;
+    try {
+      reservation = await this.withPoolReservation(pool.gitCommonDirectory, async () =>
+        this.store.reserveAvailable({
+          slotId,
+          version: idle.slot.version,
+          leaseId,
+          ownerKind: owner.kind,
+          ownerKey: owner.key,
+          requestedHeadSha: idle.head,
+          now: this.deps.now(),
+          actor: "operator",
+        }));
+    } catch (error) {
+      return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+    }
+    if (!reservation) return { outcome: "refused", reason: "the slot was leased by something else first" };
+    return { pool, identity, idle, reservation, leaseId };
+  }
+
+  /**
+   * Lease an idle slot for a History Resume and check out the session's recorded `branch` in
+   * it. Only an idle, detached slot is leased, exactly as `leaseAsIs` would, so this never
+   * relaxes its refusal of an attached slot.
+   *
+   * Git refuses to check out a branch another worktree holds, so `git worktree list` is read
+   * before the slot is touched. Idle slots are detached, so a worktree holding the branch is
+   * one the pool does not hand out: then the slot checks out the branch's tip detached, and
+   * commits made in it will not move the branch. A branch with no local or remote-tracking ref
+   * here, or no usable branch recorded at all, leaves the slot detached as it stands.
+   *
+   * A checkout that failed and left the slot exactly as it was observed hands the reservation
+   * back, so the slot stays available; anything else quarantines it for reconciliation.
+   */
+  async leaseForResume(slotId: string, owner: WorktreeOwner, branch: string | null): Promise<WorktreeLeaseForResumeResult> {
+    if (!validOwner(owner)) return { outcome: "refused", reason: "owner kind/key is invalid or exceeds its bound" };
+    const answer = this.leaseAsIsAnswer(slotId);
+    if (answer?.outcome === "refused") return answer;
+    if (answer) return { outcome: "refused", reason: "it is leased, quarantined or gone" };
+    return this.withSlot(slotId, async () => {
+      const reserved = await this.reserveIdleDetached(slotId, owner);
+      if (!("reservation" in reserved)) {
+        return reserved.outcome === "noLease" ? { outcome: "refused", reason: "it is leased, quarantined or gone" } : reserved;
+      }
+      const { pool, identity, idle, reservation, leaseId } = reserved;
+      const handBack = (reason: string): WorktreeLeaseForResumeResult => {
+        const returned = this.returnReservation(reservation, idle.slot, reason, null, "operator");
+        return { outcome: returned ? "refused" : "outcomeUnknown", reason };
+      };
+      try {
+        const entered = await this.enteredSinceReservation(reservation, idle.slot, "it was leased", "operator");
+        if (entered) return { outcome: entered.returned ? "refused" : "outcomeUnknown", reason: entered.reason };
+
+        let checkout: HistoryResumeCheckout = { state: "missing", branch };
+        let mode: BranchCheckoutMode | null = null;
+        if (isCheckoutBranchName(branch)) {
+          const listed = await this.deps.git.list(identity);
+          if (!listed.ok) return handBack(listed.reason);
+          const holder = listed.value.find((entry) => entry.branch === `refs/heads/${branch}` && entry.path !== reservation.path);
+          const tips = await this.deps.git.branchTips(identity, branch);
+          if (!tips.ok) return handBack(tips.reason);
+          if (holder && tips.value.local) {
+            checkout = { state: "elsewhere", branch, path: holder.path };
+            mode = "detach";
+          } else if (tips.value.local) {
+            checkout = { state: "branch", branch };
+            mode = "attach";
+          } else if (tips.value.remote) {
+            checkout = { state: "branch", branch };
+            mode = "track";
+          }
+        }
+
+        let head = idle.head;
+        if (mode) {
+          const switched = await this.deps.git.checkoutBranch(reservation.path, branch!, mode);
+          const inspection = await this.deps.git.inspect(reservation.path);
+          const expectDetached = mode === "detach";
+          if (!switched.ok) {
+            const untouched = inspection.ok && inspection.value.head === idle.head && inspection.value.detached &&
+              !inspection.value.dirty && !switched.outcomeUnknown;
+            if (untouched) return handBack(switched.reason);
+            this.quarantineReservation(reservation, "History resume checkout outcome is unknown", switched.reason);
+            return { outcome: "outcomeUnknown", reason: switched.reason };
+          }
+          if (!inspection.ok || inspection.value.dirty || inspection.value.detached !== expectDetached ||
+            inspection.value.commonDirectory !== pool.gitCommonDirectory) {
+            const reason = inspection.ok ? `slot did not settle on ${branch} after its checkout` : inspection.reason;
+            this.quarantineReservation(reservation, "History resume checkout verification failed", reason);
+            return { outcome: "outcomeUnknown", reason };
+          }
+          head = inspection.value.head;
+        }
+
+        const leased = this.store.finalizeLease(reservation.id, reservation.version, head, this.deps.now(), "operator");
+        if (!leased) {
+          this.quarantineReservation(reservation, "lease commit lost its slot compare-and-swap");
+          return { outcome: "outcomeUnknown", reason: "lease commit could not be proven" };
+        }
+        this.publish();
+        return {
+          outcome: "leased",
+          lease: {
+            slotId,
+            poolId: pool.id,
+            path: leased.path,
+            provider: "mission",
+            leaseId,
+            owner,
+            baseSha: head,
+            slotVersion: leased.version,
+          },
+          checkout,
+        };
+      } catch (error) {
+        const reason = bounded(String(error));
+        this.quarantineReservation(reservation, "History resume lease outcome is unknown", reason);
         return { outcome: "outcomeUnknown", reason };
       }
     });

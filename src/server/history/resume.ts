@@ -1,12 +1,14 @@
 import { realpath, stat } from "node:fs/promises";
 import {
+  historyResumeNeedsPicker,
   isHistoryConversationKind,
   type HistoryResumeBody,
-  type HistoryResumeDirectoryState,
+  type HistoryResumeCheckout,
   type HistoryResumeLaunch,
   type HistoryResumeOptions,
   type HistoryResumeRefusal,
   type HistoryResumeRefusalCode,
+  type HistoryResumeSlot,
   type HistorySessionSummary,
 } from "@shared/history.ts";
 import type { Session } from "@shared/types.ts";
@@ -17,8 +19,11 @@ import type { PreparedResume } from "../harness/resume.ts";
 import { TerminalLaunchError } from "../terminal/launch-error.ts";
 import type { ManagedResumeLaunch } from "../terminal/resume-launch.ts";
 import type { TerminalLaunchOutcome } from "../terminal/targets.ts";
+import type { NativeWorktreeLease } from "../worktrees/manager.ts";
+import { historyResumeOwnerKey } from "../worktrees/owners.ts";
 import type { HistoryReader } from "./reconciler.ts";
 import type { HistoryResumeLaunches } from "./resume-launches.ts";
+import { sameRepository, type HistoryResumeObservedSlot, type HistoryResumeSlots } from "./resume-slots.ts";
 import type { HistoryLiveLookup } from "./service.ts";
 import type { HistoryStore } from "./store.ts";
 
@@ -27,8 +32,10 @@ import type { HistoryStore } from "./store.ts";
  * terminal, with no task context and no Mission Control tools. Discovery then registers the
  * agent like any other terminal session, which makes the row Live.
  *
- * Only the original directory is a target here, and only when it is outside every worktree
- * pool: a pool slot is never idle on a branch, so resuming into one is the slot target's job.
+ * Targets are the original directory and worktree pool slots. A pool slot is never idle on a
+ * branch, so an original directory that is a slot is a slot target on that same slot: leased
+ * and its recorded branch checked out when it is idle, and counted as reused when it is not.
+ * A directory gone or reused opens the picker, which offers idle slots of the same repository.
  */
 
 /** The fields of a session a managed terminal resume is prepared from. */
@@ -68,7 +75,7 @@ export type HistoryResumeOptionsRead =
   | { ok: false; status: 404; error: string };
 
 export type HistoryResumeOutcome =
-  | { ok: true; status: 200; launch: HistoryResumeLaunch; label: string }
+  | { ok: true; status: 200; launch: HistoryResumeLaunch; label: string; checkout: HistoryResumeCheckout | null }
   | { ok: false; status: 404 | 409 | 410 | 504; refusal: HistoryResumeRefusal; launch?: HistoryResumeLaunch };
 
 export type HistoryResumeCancelOutcome =
@@ -88,10 +95,16 @@ function refusalStatus(code: HistoryResumeRefusalCode): 409 | 410 | 504 {
   return 409;
 }
 
+type Original = HistoryResumeOptions["original"];
+
+/** Where a launch runs, resolved: a directory outside the pool, or a slot to lease. */
+type Target = { cwd: string; slot: HistoryResumeSlot | null };
+
 function openLaunchRefusal(launch: HistoryResumeLaunch): HistoryResumeRefusal {
+  const close = launch.slotId === null ? "" : " It holds that worktree slot: Return the slot from its card to close it.";
   return refusal(
     "open_launch",
-    `This conversation is already being resumed in ${launch.cwd}, and its agent may still appear there.`,
+    `This conversation is already being resumed in ${launch.cwd}, and its agent may still appear there.${close}`,
   );
 }
 
@@ -103,15 +116,22 @@ export class HistoryResume {
   }
 
   /** What a Resume of this session would do now: its original directory, open launch, and refusal. */
-  async options(agent: string, id: string, live: HistoryLiveLookup): Promise<HistoryResumeOptionsRead> {
+  async options(
+    agent: string,
+    id: string,
+    live: HistoryLiveLookup,
+    slots: HistoryResumeSlots | null = null,
+  ): Promise<HistoryResumeOptionsRead> {
     const found = this.deps.find(agent, id);
     if (!found) return { ok: false, status: 404, error: NOT_FOUND };
     const summary = { ...found.entry.summary, liveSessionId: live(found.entry.summary.agent, found.entry.summary.agentSessionId) };
-    const original = await this.original(summary.cwd);
+    const observed = new SlotObservation(slots);
+    const original = await this.original(summary.cwd, observed);
+    const picker = historyResumeNeedsPicker(original.state) ? await this.picker(summary, observed) : [];
     const openLaunch = this.deps.launches.open(summary.agent, summary.agentSessionId);
     return {
       ok: true,
-      options: { original, openLaunch, refusal: this.refusal(summary, original.state, openLaunch) },
+      options: { original, slots: picker, openLaunch, refusal: this.refusal(summary, original, openLaunch, picker.length > 0) },
     };
   }
 
@@ -127,30 +147,64 @@ export class HistoryResume {
     body: HistoryResumeBody,
     live: HistoryLiveLookup,
     launcher: HistoryResumeLauncher,
+    slots: HistoryResumeSlots | null = null,
   ): Promise<HistoryResumeOutcome> {
     const found = this.deps.find(agent, id);
     if (!found) return { ok: false, status: 404, refusal: refusal("not_resumable", NOT_FOUND) };
     const { reader, entry } = found;
     const summary = { ...entry.summary, liveSessionId: live(entry.summary.agent, entry.summary.agentSessionId) };
-    // The one target this build offers, resolved once: the launch row, the binding and the
-    // terminal all use this value, never the spelling the transcript recorded.
-    const original = await this.original(summary.cwd);
-    const refused = this.refusal(summary, original.state, this.deps.launches.open(summary.agent, summary.agentSessionId));
-    if (refused) return this.refuse(refused, summary);
+    // The target, resolved once: the launch row, the binding and the terminal all use this
+    // value, never the spelling the transcript recorded.
+    const observed = new SlotObservation(slots);
+    const original = await this.original(summary.cwd, observed);
+    const openLaunch = this.deps.launches.open(summary.agent, summary.agentSessionId);
+    const resolved = await this.target(summary, original, body, observed, openLaunch);
+    if (!resolved.ok) return this.refuse(resolved.refusal, summary);
     const hostRefusal = launcher.hostUnavailable(body.backend);
     if (hostRefusal) return this.refuse(refusal("host_unavailable", hostRefusal), summary);
-    const cwd = original.resolved!;
+    const { target } = resolved;
+    const { cwd } = target;
 
     const claimed = this.deps.launches.claim(
-      { agent: summary.agent, sourceSessionId: summary.agentSessionId, expectedAgentSessionId: summary.agentSessionId, cwd },
+      {
+        agent: summary.agent,
+        sourceSessionId: summary.agentSessionId,
+        expectedAgentSessionId: summary.agentSessionId,
+        cwd,
+        slotId: target.slot?.slotId ?? null,
+      },
       this.now(),
     );
     if (!claimed.ok) return { ok: false, status: 409, refusal: openLaunchRefusal(claimed.open), launch: claimed.open };
-    const { launch } = claimed;
-    const failed = (error: string): HistoryResumeOutcome => {
+    let { launch } = claimed;
+    // The lease a slot target took, handed back when a later step fails so the slot is never
+    // left held by a launch that started nothing.
+    let lease: NativeWorktreeLease | null = null;
+    const failed = async (error: string, code: HistoryResumeRefusalCode = "launch_failed"): Promise<HistoryResumeOutcome> => {
+      if (lease && slots && !(await slots.giveBack(lease).catch(() => false))) {
+        error = `${error}. The slot stays leased, so Return it from its card.`;
+      }
       this.deps.launches.release(launch.launchId, this.now());
-      return { ok: false, status: 409, refusal: refusal("launch_failed", error), launch: this.deps.launches.get(launch.launchId) ?? launch };
+      return { ok: false, status: 409, refusal: refusal(code, error), launch: this.deps.launches.get(launch.launchId) ?? launch };
     };
+
+    let checkout: HistoryResumeCheckout | null = null;
+    if (target.slot && slots) {
+      const owner = { kind: "manual" as const, key: historyResumeOwnerKey(launch.launchId) };
+      const taken = await slots.lease(target.slot.slotId, owner, summary.branch).catch((error: unknown) => ({
+        outcome: "outcomeUnknown" as const,
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+      if (taken.outcome !== "leased") {
+        // Nothing was granted: a refused lease left the slot as it was, and one whose outcome
+        // is unknown quarantined it under this launch's owner, which its card Returns.
+        return failed(`Slot ${target.slot.ordinal} could not be leased: ${taken.reason}`, "slot_unavailable");
+      }
+      lease = taken.lease;
+      checkout = taken.checkout;
+      this.deps.launches.attachLease(launch.launchId, lease.leaseId, this.now());
+      launch = this.deps.launches.get(launch.launchId) ?? launch;
+    }
 
     let prepared: PreparedResume;
     try {
@@ -166,7 +220,7 @@ export class HistoryResume {
         runtime: "terminal",
       });
     } catch (error) {
-      return failed(error instanceof Error ? error.message : String(error));
+      return await failed(error instanceof Error ? error.message : String(error));
     }
     // Cancel pending resume can land while this request is still preparing. Its revocation
     // finds no lease to revoke then, because the lease is not pending until the launch begins,
@@ -184,7 +238,7 @@ export class HistoryResume {
     try {
       result = await launcher.launch(body.backend, { name: `resume-${summary.agentSessionId.slice(0, 8)}`, prepared });
     } catch (error) {
-      if (error instanceof TerminalLaunchError && !error.outcomeUnknown) return failed(error.message);
+      if (error instanceof TerminalLaunchError && !error.outcomeUnknown) return await failed(error.message);
       return this.unknown(launch, error instanceof Error ? error.message : String(error));
     }
     // A cancel during the launch itself revoked the lease the terminal's wrapper was about to
@@ -195,9 +249,9 @@ export class HistoryResume {
         `Cancel pending resume closed this launch while ${result.label} was opening. If its agent had already started, it runs as an ordinary session.`,
       );
     }
-    if (result.ok) return { ok: true, status: 200, launch, label: result.label };
+    if (result.ok) return { ok: true, status: 200, launch, label: result.label, checkout };
     if (result.status === 504) return this.unknown(launch, result.error ?? `${result.label} did not report back`);
-    return failed(result.error ?? `${result.label} could not open a window`);
+    return await failed(result.error ?? `${result.label} could not open a window`);
   }
 
   /**
@@ -253,11 +307,15 @@ export class HistoryResume {
     return { ok: false, status: refusalStatus(found.code), refusal: found, ...(launch ? { launch } : {}) };
   }
 
-  /** The first refusal that applies, in the order the page reads them, or null. */
+  /**
+   * The first refusal that applies, in the order the page reads them, or null. `offered` is
+   * whether the picker has a slot to offer when the original directory is gone or reused.
+   */
   private refusal(
     summary: HistorySessionSummary,
-    directory: HistoryResumeDirectoryState,
+    original: Original,
     openLaunch: HistoryResumeLaunch | null,
+    offered: boolean,
   ): HistoryResumeRefusal | null {
     if (!isHistoryConversationKind(summary.kind)) {
       return refusal("not_conversation", "Background runs (one-shot and reviewer) are readable here but cannot be resumed.");
@@ -272,31 +330,105 @@ export class HistoryResume {
       return refusal("not_resumable", `${summary.agent} cannot reopen a conversation in a terminal.`);
     }
     if (openLaunch) return openLaunchRefusal(openLaunch);
-    if (directory === "unrecorded") return refusal("no_directory", "This transcript recorded no working directory to resume in.");
-    if (directory === "missing") {
-      return refusal("directory_missing", `The original directory ${summary.cwd} no longer exists.`);
+    if (original.state === "unrecorded") return refusal("no_directory", "This transcript recorded no working directory to resume in.");
+    if (offered) return null;
+    const noSlot = summary.repoRoot === null
+      ? "no repository could be resolved for it, so there is no slot to offer"
+      : "no idle, clean slot of its repository is free";
+    if (original.state === "missing") {
+      return refusal("directory_missing", `The original directory ${summary.cwd} no longer exists, and ${noSlot}.`);
     }
-    if (directory === "pool_slot") {
+    if (original.state === "slot_reused") {
       return refusal(
-        "pool_slot",
-        `The original directory ${summary.cwd} is a worktree pool slot, which another task may be using. Resuming into a slot is not available yet.`,
+        "slot_reused",
+        `The original directory ${summary.cwd} is a worktree slot that is in use or not idle, and ${noSlot}.`,
       );
     }
     return null;
   }
 
+  /**
+   * The body's target, resolved, or the refusal it meets. Every check here reads state and
+   * touches nothing; whether a slot is still idle is decided by its lease, after the claim.
+   */
+  private async target(
+    summary: HistorySessionSummary,
+    original: Original,
+    body: HistoryResumeBody,
+    observed: SlotObservation,
+    openLaunch: HistoryResumeLaunch | null,
+  ): Promise<{ ok: true; target: Target } | { ok: false; refusal: HistoryResumeRefusal }> {
+    const general = this.refusal(summary, original, openLaunch, true);
+    if (general) return { ok: false, refusal: general };
+    if (body.target.kind === "original") {
+      if (original.state === "usable") return { ok: true, target: { cwd: original.resolved!, slot: null } };
+      // The original's own slot, whatever it was observed as: its lease decides whether it is
+      // still idle, after the claim, so one taken meanwhile is refused and the claim released.
+      if (original.slot) return { ok: true, target: { cwd: await canonicalPath(original.slot.path), slot: original.slot } };
+      return {
+        ok: false,
+        refusal: original.state === "missing"
+          ? refusal("directory_missing", `The original directory ${summary.cwd} no longer exists: choose a slot instead.`)
+          : refusal("slot_reused", `The original directory ${summary.cwd} is in a worktree pool but is no slot this Resume can lease: choose a slot instead.`),
+      };
+    }
+    const { slotId } = body.target;
+    const offered = original.slot?.slotId === slotId
+      ? original.slot
+      : historyResumeNeedsPicker(original.state)
+        ? (await this.picker(summary, observed, true)).find((slot) => slot.slotId === slotId) ?? null
+        : null;
+    if (!offered) {
+      return { ok: false, refusal: refusal("slot_not_offered", "That slot is not one this Resume offers: it belongs to another repository, or is gone.") };
+    }
+    return { ok: true, target: { cwd: await canonicalPath(offered.path), slot: offered } };
+  }
+
+  /**
+   * The picker's slots: idle, clean slots of the session's repository. `includeBusy` keeps the
+   * slots that are not idle now, for a launch whose lease decides that itself, so a slot taken
+   * since the dialog read its options is refused by the lease, and its claim released.
+   */
+  private async picker(summary: HistorySessionSummary, observed: SlotObservation, includeBusy = false): Promise<HistoryResumeSlot[]> {
+    if (summary.repoRoot === null) return [];
+    const slots: HistoryResumeSlot[] = [];
+    for (const entry of await observed.slots()) {
+      if ((includeBusy || entry.idle) && await sameRepository(entry.repository, summary.repoRoot)) slots.push(entry.slot);
+    }
+    return slots;
+  }
+
   /** The recorded directory, resolved once through symlinks, and whether Resume can use it. */
-  private async original(cwd: string | null): Promise<HistoryResumeOptions["original"]> {
-    if (!cwd) return { cwd, resolved: null, state: "unrecorded" };
+  private async original(cwd: string | null, observed: SlotObservation): Promise<Original> {
+    if (!cwd) return { cwd, resolved: null, state: "unrecorded", slot: null };
     let resolved: string;
     try {
       resolved = await realpath(cwd);
-      if (!(await stat(resolved)).isDirectory()) return { cwd, resolved: null, state: "missing" };
+      if (!(await stat(resolved)).isDirectory()) return { cwd, resolved: null, state: "missing", slot: null };
     } catch {
-      return { cwd, resolved: null, state: "missing" };
+      return { cwd, resolved: null, state: "missing", slot: null };
     }
     const pools = await Promise.all(this.deps.store.worktreePools().map(({ poolPath }) => realpath(poolPath).catch(() => poolPath)));
-    if (pools.some((pool) => isInside(pool, resolved))) return { cwd, resolved, state: "pool_slot" };
-    return { cwd, resolved, state: "usable" };
+    if (!pools.some((pool) => isInside(pool, resolved))) return { cwd, resolved, state: "usable", slot: null };
+    // A pool directory is a slot target on its own slot when that slot is idle. Held by another
+    // owner, or not provably idle, it counts as reused.
+    const slot = (await observed.slots()).find((entry) => isInside(entry.canonicalPath, resolved)) ?? null;
+    return { cwd, resolved, state: slot?.idle ? "pool_slot" : "slot_reused", slot: slot?.slot ?? null };
+  }
+}
+
+async function canonicalPath(path: string): Promise<string> {
+  return realpath(path).catch(() => path);
+}
+
+/** One observation of the pool per request, read only when something asks for it. */
+class SlotObservation {
+  private observed: Promise<HistoryResumeObservedSlot[]> | null = null;
+
+  constructor(private readonly source: HistoryResumeSlots | null) {}
+
+  slots(): Promise<HistoryResumeObservedSlot[]> {
+    this.observed ??= this.source ? this.source.observe().catch(() => []) : Promise.resolve([]);
+    return this.observed;
   }
 }

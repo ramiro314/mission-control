@@ -538,7 +538,7 @@ test("a repair removes a stale index.lock when the slot's quarantine was caused 
 });
 
 function registration(path: string, facts: Partial<WorktreeRegistration> = {}): WorktreeRegistration {
-  return { path, head: null, bare: false, detached: true, locked: false, prunable: false, ...facts };
+  return { path, head: null, branch: null, bare: false, detached: true, locked: false, prunable: false, ...facts };
 }
 
 test("a bare registration is refused before any of Git's fixes", async () => {

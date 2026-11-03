@@ -37253,6 +37253,30 @@ a.history-row-title:focus-visible { outline: 2px solid var(--find); outline-offs
 .history-resume-note { margin: 0; color: var(--muted); }
 .history-resume-started { margin: 0; }
 .history-resume-error { margin: 0; color: var(--danger); overflow-wrap: anywhere; }
+.history-resume-warning { margin: 0; color: var(--attention); overflow-wrap: anywhere; }
+.history-resume-slots {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.history-resume-slots legend {
+  padding: 0 4px;
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-resume-slot {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+}
+.history-resume-slot .mono { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
 .history-resume-targets {
   padding: 4px;
   border: 1px solid var(--border);

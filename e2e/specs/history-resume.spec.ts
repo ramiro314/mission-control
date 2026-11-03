@@ -13,7 +13,9 @@ import { recordsIn } from "../fixtures/records.ts";
 /**
  * History Resume in the original directory: the Resume button a conversation offers, the
  * dialog that reads `resume-options`, the terminal it opens, and the pending launch that blocks
- * a second Resume until Cancel pending resume closes it.
+ * a second Resume until Cancel pending resume closes it. Then the slot target: an original
+ * directory that is a worktree slot another owner holds opens the picker, the chosen slot is
+ * leased and named on its card, and Returning it there releases the launch.
  *
  * The terminal is the suite's fake cmux (`CMUX_BIN`, see fake-agents.ts), which records the
  * `new-workspace` it was asked for and runs nothing, so the command a person's terminal would
@@ -38,10 +40,17 @@ function sessionId(): string {
  */
 function writeSession(
   daemon: DaemonHandle,
-  shape: { cwd: string; title: string; at: string; oneShot?: boolean; mode?: string },
+  shape: { cwd: string; title: string; at: string; oneShot?: boolean; mode?: string; branch?: string },
 ): string {
   const id = sessionId();
-  const base = { sessionId: id, cwd: shape.cwd, entrypoint: shape.oneShot ? "sdk-cli" : "cli", version: "2.1.296", gitBranch: "main", isSidechain: false };
+  const base = {
+    sessionId: id,
+    cwd: shape.cwd,
+    entrypoint: shape.oneShot ? "sdk-cli" : "cli",
+    version: "2.1.296",
+    gitBranch: shape.branch ?? "main",
+    isSidechain: false,
+  };
   const lines: Record<string, unknown>[] = [{ ...base, timestamp: shape.at, type: "custom-title", customTitle: shape.title }];
   if (shape.mode) lines.push({ type: "permission-mode", permissionMode: shape.mode, sessionId: id });
   if (shape.oneShot) {
@@ -173,7 +182,7 @@ test("Resume is offered only on conversations whose transcript is present, and r
   const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
   await expect(dialog.getByText("No longer exists", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("alert")).toHaveText(
-    `The original directory ${join(daemon.home, "projects", "deleted-checkout")} no longer exists.`,
+    `The original directory ${join(daemon.home, "projects", "deleted-checkout")} no longer exists, and no repository could be resolved for it, so there is no slot to offer.`,
   );
   await expect(dialog.getByRole("menu", { name: "Resume in" })).toHaveCount(0);
   await capture(dashboard, "05-missing");
@@ -217,4 +226,80 @@ test("a Cancel pending resume the daemon refuses says why, and the dialog offers
   await capture(dashboard, "06-cancel-refused");
   await cmux.click();
   await expect(dialog.getByRole("status")).toContainText("Started in cmux");
+});
+
+test("an original slot another owner holds opens the picker; the chosen slot is leased, named on its card, and Return releases the launch", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Two slots of the fixture repository: the first stays held by a manual lease, which is the
+  // session's original directory; the second is returned, idle and clean.
+  const acquire = async (label: string) => {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    return await response.json() as { path: string; leaseId: string };
+  };
+  const held = await acquire("someone else's work");
+  const spare = await acquire("spare slot");
+  expect((await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: spare.leaseId } })).ok()).toBe(true);
+
+  // Recorded on `main`, which the fixture's main checkout holds: the slot gets its tip detached.
+  const id = writeSession(daemon, { cwd: held.path, title: "Finish the importer", at: "2026-10-31T09:00:00.000Z", branch: "main" });
+  await indexed(daemon, id);
+
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${id}`);
+  const view = detail(dashboard);
+  await view.getByRole("button", { name: "Resume", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
+  await expect(dialog.getByText("A worktree slot that is in use or not idle", { exact: true })).toBeVisible();
+  const picker = dialog.getByRole("group", { name: "Choose an idle slot of this repository" });
+  await expect(picker.getByRole("radio")).toHaveCount(1);
+  await expect(picker.getByRole("radio", { name: /^Slot 2\b/ })).toBeChecked();
+  await expect(picker.getByText(spare.path, { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await expectContentClearsBorder(dialog);
+  await capture(dashboard, "07-picker");
+
+  await dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "cmux" }).click();
+  await expect(dialog.getByRole("status")).toContainText(`Started in cmux, in ${spare.path}`);
+  await expect(dialog.getByRole("status")).toContainText("The slot stays leased to this Resume until you Return it from its card");
+  await expect(dialog.getByRole("alert")).toHaveText(
+    `The branch main is checked out in ${daemon.repo}, so this slot has its tip detached: commits made here will not move the branch.`,
+  );
+  await expect(picker).toBeHidden();
+  await capture(dashboard, "08-started-in-slot");
+  await expect.poll(() => workspaces(daemon).length, { timeout: 15_000 }).toBe(1);
+  expect(flag(workspaces(daemon)[0]!, "--cwd")).toBe(spare.path);
+  expect(launchedCommand(flag(workspaces(daemon)[0]!, "--command")!)).toContain(`'--resume' '${id}'`);
+
+  // Cancel pending resume does not close a slot launch: the open launch names the way out.
+  await dialog.locator(".modal-foot").getByRole("button", { name: "Close", exact: true }).click();
+  await view.getByRole("button", { name: "Resume", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Return the slot from its card to close it.");
+  await expect(dialog.getByRole("button", { name: "Cancel pending resume" })).toHaveCount(0);
+  await dialog.locator(".modal-foot").getByRole("button", { name: "Close", exact: true }).click();
+
+  // The slot card names the History resume owner, and its Return releases the launch.
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = pool.getByRole("article", { name: "Slot 2" });
+  await expect(slot.getByText("leased", { exact: true })).toBeVisible();
+  await expect(slot.getByText("Resumed History session")).toBeVisible();
+  await capture(dashboard, "09-slot-card");
+  await slot.getByRole("button", { name: "Return", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(slot.getByText("available", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(slot.getByText("Resumed History session")).toHaveCount(0);
+
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${id}`);
+  await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await expect(picker.getByRole("radio")).toHaveCount(1);
+  await expect(dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "cmux" })).toBeEnabled();
+  await capture(dashboard, "10-resume-again");
 });

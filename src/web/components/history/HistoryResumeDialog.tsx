@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   historyResumeCancellable,
+  historyResumeCheckoutWarning,
+  historyResumeNeedsPicker,
+  type HistoryResumeCheckout,
   type HistoryResumeDirectoryState,
   type HistoryResumeLaunch,
   type HistoryResumeOptions,
@@ -16,20 +19,23 @@ import { Overlay, OVERLAY_IDS } from "../Overlay.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 
 /**
- * Resume one History conversation in a new terminal, in the directory it was recorded in.
+ * Resume one History conversation in a new terminal, in the directory it was recorded in, or
+ * in a worktree slot of its repository when that directory is gone or reused.
  *
- * The daemon decides everything: whether the directory is still usable, whether a launch of
- * this session is already open, and which terminals can host an agent. The dialog reads
- * `resume-options` when it opens and shows its refusal as it stands, so a person never picks
- * a terminal for a Resume that would be refused. A launch that started waits for discovery to
- * register its agent, which turns the session Live; until then it can be cancelled.
+ * The daemon decides everything: whether the directory is still usable, which slots are idle,
+ * whether a launch of this session is already open, and which terminals can host an agent. The
+ * dialog reads `resume-options` when it opens and shows its refusal as it stands, so a person
+ * never picks a terminal for a Resume that would be refused. A launch that started waits for
+ * discovery to register its agent, which turns the session Live; until then a slotless one can
+ * be cancelled, and one in a slot closes when that slot is Returned from its card.
  */
 
 const DIRECTORY_LABELS: Record<HistoryResumeDirectoryState, string> = {
   usable: "Still there",
   missing: "No longer exists",
-  pool_slot: "A worktree pool slot",
+  pool_slot: "An idle worktree slot: this Resume leases it and checks out the recorded branch",
   unrecorded: "Not recorded",
+  slot_reused: "A worktree slot that is in use or not idle",
 };
 
 type View =
@@ -55,7 +61,9 @@ export function HistoryResumeDialog({
    * the options: once they are read again, they alone decide whether a Resume can run.
    */
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const [started, setStarted] = useState<{ launch: HistoryResumeLaunch; label: string } | null>(null);
+  const [started, setStarted] = useState<{ launch: HistoryResumeLaunch; label: string; checkout: HistoryResumeCheckout | null } | null>(null);
+  /** The slot the picker has selected, when the original directory is gone or reused. */
+  const [slotId, setSlotId] = useState<string | null>(null);
   const [cancelled, setCancelled] = useState(false);
   const terminals = useTerminalTargets();
 
@@ -64,6 +72,10 @@ export function HistoryResumeDialog({
     void api.historyResumeOptions(agent, agentSessionId, signal).then((result) => {
       if (signal?.aborted) return;
       setView(result.ok ? { state: "ready", options: result.value } : { state: "error", error: result.error });
+      // A fresh read offers its own slots; keep the selection only while it is still offered.
+      if (result.ok) {
+        setSlotId((current) => result.value.slots.some((slot) => slot.slotId === current) ? current : result.value.slots[0]?.slotId ?? null);
+      }
     });
   }, [agent, agentSessionId]);
 
@@ -78,9 +90,10 @@ export function HistoryResumeDialog({
     setRefused(null);
     setCancelError(null);
     setCancelled(false);
-    const result = await api.historyResume(agent, agentSessionId, { backend: target.id, target: { kind: "original" } });
+    const where = picking && slotId ? { kind: "slot" as const, slotId } : { kind: "original" as const };
+    const result = await api.historyResume(agent, agentSessionId, { backend: target.id, target: where });
     setBusy(false);
-    if (result.ok) setStarted({ launch: result.launch, label: result.label });
+    if (result.ok) setStarted({ launch: result.launch, label: result.label, checkout: result.checkout ?? null });
     else setRefused(result);
   }
 
@@ -103,6 +116,9 @@ export function HistoryResumeDialog({
   }
 
   const options = view.state === "ready" ? view.options : null;
+  // The original is gone or reused, and the daemon offered slots to resume in instead.
+  const picking = options !== null && historyResumeNeedsPicker(options.original.state) && options.slots.length > 0;
+  const warning = started?.checkout ? historyResumeCheckoutWarning(started.checkout) : null;
   const refusal = refused ?? options?.refusal ?? null;
   // The launch a Cancel would close: the one just started, or the open one a refusal named.
   const pending = started?.launch ?? refused?.launch ?? options?.openLaunch ?? null;
@@ -128,7 +144,8 @@ export function HistoryResumeDialog({
       <div className="history-resume-body">
         <p className="history-resume-lead">
           Opens a new terminal that reopens this conversation in {AGENT_IDENTITY[agent].label}, in the directory it
-          was recorded in. It runs outside Mission Control: no task, and no Mission Control tools.
+          was recorded in, or in a worktree slot of its repository when that directory is gone or in use. It runs
+          outside Mission Control: no task, and no Mission Control tools.
         </p>
         <dl className="history-resume-place">
           <div>
@@ -150,8 +167,12 @@ export function HistoryResumeDialog({
           <p className="history-resume-started" role="status">
             Started in {started.label}, in <span className="mono">{started.launch.cwd}</span>. This session turns Live
             here once Mission Control finds the agent.
+            {started.launch.slotId !== null
+              ? " The slot stays leased to this Resume until you Return it from its card in Settings, Worktrees."
+              : null}
           </p>
         ) : null}
+        {warning ? <p className="history-resume-warning" role="alert">{warning}</p> : null}
         {cancelled ? <p className="history-resume-note" role="status">The pending resume was cancelled.</p> : null}
         {cancelError ? <p className="history-resume-error" role="alert">{cancelError}</p> : null}
         {refusal && !started ? <p className="history-resume-error" role="alert">{refusal.error}</p> : null}
@@ -164,7 +185,27 @@ export function HistoryResumeDialog({
           </Tooltip>
         ) : null}
 
-        {options && !refusal && !started ? (
+        {picking && !refusal && !started ? (
+          <fieldset className="history-resume-slots">
+            <legend>Choose an idle slot of this repository</legend>
+            {options.slots.map((slot) => (
+              <label key={slot.slotId} className="history-resume-slot">
+                <input
+                  type="radio"
+                  name="history-resume-slot"
+                  value={slot.slotId}
+                  checked={slotId === slot.slotId}
+                  onChange={() => setSlotId(slot.slotId)}
+                  disabled={busy}
+                />
+                <span>Slot {slot.ordinal}</span>
+                <span className="mono">{slot.path}</span>
+              </label>
+            ))}
+          </fieldset>
+        ) : null}
+
+        {options && !refusal && !started && (!picking || slotId) ? (
           <div className="history-resume-targets" role="menu" aria-label="Resume in">
             <span className="launch-head">Resume in</span>
             <LaunchList
