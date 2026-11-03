@@ -208,17 +208,32 @@ test("a session the fake agent keeps running shows Live and opens in the Fleet",
   const agentSessionId = live!.agentSessionId!;
   await indexed(daemon, agentSessionId);
 
+  // What the detail asks for: one transcript read, and no live stream.
+  let messageReads = 0;
+  let streams = 0;
+  dashboard.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === `/api/history/sessions/claude/${agentSessionId}/messages`) messageReads += 1;
+    if (path.endsWith("/transcript/stream")) streams += 1;
+  });
+
   await dashboard.goto(`${daemon.baseURL}/#/history`);
   const list = dashboard.getByRole("main", { name: "History" });
   const row = list.getByRole("listitem").filter({ has: dashboard.getByRole("link") }).first();
   await expect(row).toContainText("Live");
+  await capture(dashboard, "live-list");
   await row.getByRole("link").click();
 
   const detail = dashboard.getByRole("main", { name: "History session" });
   await expect(detail.getByText("Live", { exact: true })).toBeVisible();
   const open = detail.getByRole("button", { name: "Open in Fleet" });
   await expect(open).toBeVisible();
+  await expect(detail.getByRole("tabpanel").getByRole("article").first()).toBeVisible();
   await capture(dashboard, "live");
+  // The fake agent keeps running; the detail still read its transcript once and streams nothing.
+  await dashboard.waitForTimeout(1_000);
+  expect(messageReads).toBe(1);
+  expect(streams).toBe(0);
   await open.click();
   await expect(dashboard).toHaveURL(/#\/fleet/);
 });
