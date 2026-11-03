@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import {
   CONFLICT_ESCALATE_RESEND_MS,
   CONFLICT_GIVE_UP_MS,
+  ROUTINE_FOLLOWUP_SKIPS,
+  SKIP_ALREADY_NUDGED,
+  SKIP_STILL_WORKING,
   activeWorkflowOwnsSession,
   advanceFollowupMark,
   buildPayload,
@@ -680,6 +683,22 @@ test("the same feedback state, already nudged, stays quiet", () => {
   // Feed the stamped mark back through the pass's observation: nothing changed.
   const again = decide({ session, mark: observe(session, first.mark) });
   assert.deepEqual(again, { kind: "skip", why: "already nudged this round of feedback" });
+});
+
+test("the routine waiting skips are the exported constants the gates return, and only those", () => {
+  const working = decide({ session: mkSession({ inspector: inspector({ open: 2 }), state: "working" }) });
+  assert.deepEqual(working, { kind: "skip", why: SKIP_STILL_WORKING });
+
+  const session = mkSession({ inspector: inspector({ open: 2, round: 1 }) });
+  const first = decide({ session });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+  const again = decide({ session, mark: observe(session, first.mark) });
+  assert.deepEqual(again, { kind: "skip", why: SKIP_ALREADY_NUDGED });
+
+  assert.deepEqual([...ROUTINE_FOLLOWUP_SKIPS].sort(), [SKIP_ALREADY_NUDGED, SKIP_STILL_WORKING].sort());
+  const held = decide({ session, workflowOwnsSession: true });
+  assert.ok(held.kind === "skip" && !ROUTINE_FOLLOWUP_SKIPS.has(held.why));
 });
 
 test("a later PR resets the mark - no collision with the prior PR at the same round", () => {

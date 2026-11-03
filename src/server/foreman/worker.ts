@@ -96,6 +96,7 @@ import {
 } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
 import {
+  ROUTINE_FOLLOWUP_SKIPS,
   activeWorkflowOwnsSession,
   advanceFollowupMark,
   decideReviewFollowup,
@@ -945,6 +946,24 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
 const reviewNudged = new Map<string, Map<string, FollowupMark>>();
 
 /**
+ * The last hold logged for each session's pull request, as `round|why`, so a held PR is logged
+ * once per round and reason rather than every pass. Pruned with `reviewNudged`.
+ */
+const heldLogged = new Map<string, Map<string, string>>();
+
+function logHeldFindings(session: Session, pr: FollowupPr, why: string): void {
+  const open = pr.inspector?.open ?? 0;
+  if (open === 0 || ROUTINE_FOLLOWUP_SKIPS.has(why)) return;
+  const round = pr.inspector?.round ?? 0;
+  const value = `${round}|${why}`;
+  const logged = heldLogged.get(session.id) ?? new Map<string, string>();
+  if (logged.get(pr.prKey) === value) return;
+  logged.set(pr.prKey, value);
+  heldLogged.set(session.id, logged);
+  log(`${session.name}: holding ${open} GitHub Inspector finding(s) on ${pr.prKey} (round ${round}) - ${why}`);
+}
+
+/**
  * Fold this pass's observation into every one of a session's open pull requests, and forget
  * the ones that are no longer open. Returns the session's marks, which is also what the map
  * now holds for it.
@@ -1040,6 +1059,7 @@ export async function runReviewFollowup(
   // Drop markers for sessions that have gone away, so the map tracks the live fleet.
   const liveIds = new Set(sessions.map((s) => s.id));
   for (const id of reviewNudged.keys()) if (!liveIds.has(id)) reviewNudged.delete(id);
+  for (const id of heldLogged.keys()) if (!liveIds.has(id)) heldLogged.delete(id);
 
   const adopted = await readAdoptedInspections(client);
   const shipping = await client.shippingConfig().catch(() => null);
@@ -1050,7 +1070,10 @@ export async function runReviewFollowup(
     // keyed to.
     const prs = reviewFollowupPrs(session, adopted ?? []);
     if (prs.length === 0) {
-      if (adopted) reviewNudged.delete(session.id);
+      if (adopted) {
+        reviewNudged.delete(session.id);
+        heldLogged.delete(session.id);
+      }
       continue;
     }
 
@@ -1091,7 +1114,10 @@ export async function runReviewFollowup(
         },
         now,
       });
-      if (decision.kind === "skip") continue;
+      if (decision.kind === "skip") {
+        logHeldFindings(session, pr, decision.why);
+        continue;
+      }
       // Handing a conflict to the operator types nothing, so it claims no pane and needs no
       // freshness recheck: a PR that turned mergeable in between has no open episode, and
       // the daemon ignores the escalation. The next pull request is still considered.
@@ -1134,6 +1160,9 @@ export async function runReviewFollowup(
         const carried = reviewNudged.get(session.id);
         if (carried && !reviewNudged.has(fresh.id)) reviewNudged.set(fresh.id, carried);
         reviewNudged.delete(session.id);
+        const held = heldLogged.get(session.id);
+        if (held && !heldLogged.has(fresh.id)) heldLogged.set(fresh.id, held);
+        heldLogged.delete(session.id);
       }
       const freshPrs = reviewFollowupPrs(fresh, freshAdopted ?? []);
       const freshPr = freshPrs.find((candidate) => candidate.prKey === pr.prKey);

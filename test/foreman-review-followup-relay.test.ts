@@ -462,6 +462,71 @@ test("an adopted PR that closes during the findings read is not typed", async ()
   assert.deepEqual(fake.injected, []);
 });
 
+// ---- the held-findings log line ----
+
+const ACTIVE_RUN = WORKFLOW_RUN_STATUSES.find((s) => !["completed", "cancelled", "failed"].includes(s))!;
+
+/** The Foreman lines one pass wrote about `name`. */
+async function heldLines(name: string, fake: ReturnType<typeof fakeDaemon>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+  try {
+    await runReviewFollowup(fake.client, CFG, LEADER);
+  } finally {
+    console.log = original;
+  }
+  return lines.filter((line) => line.startsWith(`[foreman] ${name}: holding`));
+}
+
+function heldDaemon(session: () => Session, runs: () => Array<{ status: string }> = () => [{ status: ACTIVE_RUN }]) {
+  return fakeDaemon({
+    sessions: () => [session()],
+    workflowRuns: runs,
+    findings: async () => assert.fail("a held session reads nothing"),
+  });
+}
+
+test("a held PR with findings is logged once per round and reason", async () => {
+  let round = 3;
+  let runs: Array<{ status: string }> = [{ status: ACTIVE_RUN }];
+  let state: Session["state"] = "idle";
+  const pass = () =>
+    heldLines("held-log", heldDaemon(() => parked("held-log", { state, inspector: summary({ open: 2, round }) }), () => runs));
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-log: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await pass(), [], "the same round and reason is not logged again");
+
+  round = 4;
+  assert.deepEqual(await pass(), [
+    "[foreman] held-log: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 4) - an active workflow owns this session",
+  ]);
+
+  runs = [];
+  state = "awaiting_input";
+  assert.deepEqual(await pass(), [
+    "[foreman] held-log: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 4) - the session needs a human",
+  ]);
+  assert.deepEqual(await pass(), []);
+});
+
+test("a held PR without findings logs nothing", async () => {
+  const fake = heldDaemon(() => parked("held-clean", { inspector: summary({ open: 0 }) }));
+  assert.deepEqual(await heldLines("held-clean", fake), []);
+});
+
+test("the routine waiting skips log nothing", async () => {
+  const working = heldDaemon(() => parked("held-working", { state: "working", lastActivity: Date.now() }), () => []);
+  assert.deepEqual(await heldLines("held-working", working), []);
+
+  const relayed = fakeDaemon({ sessions: () => [parked("held-relayed")], findings: async () => response([draft()]) });
+  assert.equal((await runReviewFollowup(relayed.client, CFG, LEADER)).size, 1);
+  const again = heldDaemon(() => parked("held-relayed"), () => []);
+  assert.deepEqual(await heldLines("held-relayed", again), [], "already nudged this round");
+});
+
 // ---- which failures count (fork: ci-strictness) ----
 //
 // The worker builds the follow-up config twice, once for the pass and once for the recheck

@@ -598,6 +598,12 @@ function decideConflictEscalation(
   return null;
 }
 
+export const SKIP_STILL_WORKING = "still working";
+export const SKIP_ALREADY_NUDGED = "already nudged this round of feedback";
+
+/** The normal waiting states. The worker never logs them as a hold, or the line would repeat every pass. */
+export const ROUTINE_FOLLOWUP_SKIPS: ReadonlySet<string> = new Set([SKIP_STILL_WORKING, SKIP_ALREADY_NUDGED]);
+
 /**
  * Is this session a candidate for a review follow-through nudge? Every branch is an early
  * return and the order is the policy.
@@ -682,7 +688,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   // 8. Only a settled-idle session with a delivery channel. The idle gate is what keeps
   //    this from interrupting an agent already working the fixes: once it acts on a nudge
   //    it is no longer idle, so it is not re-selected until it parks again.
-  if (!settledIdle(s, now, cfg.settleMs)) return skip("still working");
+  if (!settledIdle(s, now, cfg.settleMs)) return skip(SKIP_STILL_WORKING);
   if (!hasPane(s)) return skip("no pane to type into");
 
   // 9. Typing is a live act, so it needs the same clearance a queue send does - live mode
@@ -700,7 +706,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   const ciNew = open.ciFailing && !cur.ciNudged;
   const conflictNew =
     open.conflicting && pr.headSha !== cur.conflictHead && cur.conflictNudges < CONFLICT_NUDGE_CAP;
-  if (!findingsNew && !ciNew && !conflictNew && !open.codeRabbit) return skip("already nudged this round of feedback");
+  if (!findingsNew && !ciNew && !conflictNew && !open.codeRabbit) return skip(SKIP_ALREADY_NUDGED);
 
   // The findings read and this snapshot must describe the same Inspector round, or the payload
   // would carry one round's set under another round's stamp. Nothing is stamped, so the next
