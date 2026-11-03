@@ -357,8 +357,8 @@ When a gate holds a pull request that has unresolved GitHub Inspector findings, 
 logs one line naming the session, the pull request, the number of findings, the Inspector round
 and the gate, for example
 `[foreman] my-session: holding 3 GitHub Inspector finding(s) on owner/repo#123 (round 7) - an active workflow owns this session`.
-It logs once per round and reason, so the line appears again only when the Inspector finishes a
-round or a different gate holds the pull request. A pull request with no unresolved findings is
+It logs once per pull request, round and reason, so the line appears again only when the
+Inspector finishes a round or a gate that has not yet held that pull request this round holds it. A pull request with no unresolved findings is
 never logged, and neither are the normal waiting states: a session that is still working, and a
 round that was already relayed.
 

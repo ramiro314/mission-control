@@ -510,6 +510,31 @@ test("a held PR with findings is logged once per round and reason", async () => 
     "[foreman] held-log: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 4) - the session needs a human",
   ]);
   assert.deepEqual(await pass(), []);
+
+  runs = [{ status: ACTIVE_RUN }];
+  state = "idle";
+  assert.deepEqual(await pass(), [], "a reason already logged this round stays quiet when it returns");
+});
+
+test("two held PRs on one session are each logged once", async () => {
+  const pass = () =>
+    heldLines(
+      "held-pair",
+      fakeDaemon({
+        sessions: () => [parked("held-pair", { gitBranch: BRANCH })],
+        openInspections: async () => [
+          adoptedBy("held-pair", { key: "owner/repo#8", url: "https://github.com/owner/repo/pull/8", number: 8 }),
+        ],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-pair: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+    "[foreman] held-pair: holding 1 GitHub Inspector finding(s) on owner/repo#8 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await pass(), []);
 });
 
 test("a held PR without findings logs nothing", async () => {

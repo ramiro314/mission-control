@@ -946,20 +946,24 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
 const reviewNudged = new Map<string, Map<string, FollowupMark>>();
 
 /**
- * The last hold logged for each session's pull request, as `round|why`, so a held PR is logged
- * once per round and reason rather than every pass. Pruned with `reviewNudged`.
+ * The reasons already logged for each session's pull request in its current Inspector round, so
+ * a held PR is logged once per round and reason rather than every pass. Pruned with `reviewNudged`.
  */
-const heldLogged = new Map<string, Map<string, string>>();
+const heldLogged = new Map<string, Map<string, { round: number; reasons: Set<string> }>>();
 
 function logHeldFindings(session: Session, pr: FollowupPr, why: string): void {
   const open = pr.inspector?.open ?? 0;
   if (open === 0 || ROUTINE_FOLLOWUP_SKIPS.has(why)) return;
   const round = pr.inspector?.round ?? 0;
-  const value = `${round}|${why}`;
-  const logged = heldLogged.get(session.id) ?? new Map<string, string>();
-  if (logged.get(pr.prKey) === value) return;
-  logged.set(pr.prKey, value);
+  const logged = heldLogged.get(session.id) ?? new Map<string, { round: number; reasons: Set<string> }>();
   heldLogged.set(session.id, logged);
+  let held = logged.get(pr.prKey);
+  if (!held || held.round !== round) {
+    held = { round, reasons: new Set() };
+    logged.set(pr.prKey, held);
+  }
+  if (held.reasons.has(why)) return;
+  held.reasons.add(why);
   log(`${session.name}: holding ${open} GitHub Inspector finding(s) on ${pr.prKey} (round ${round}) - ${why}`);
 }
 
