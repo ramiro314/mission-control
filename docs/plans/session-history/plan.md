@@ -395,7 +395,7 @@ flowchart TD
   R["Resume clicked"] --> E{"Conversation, transcript\npresent, not live?"}
   E -- no --> X["No Resume button\n(Live: Open in Fleet)"]
   E -- yes --> O{"Original cwd exists and\nis still this checkout?"}
-  O -- yes --> L1["Lease it if it is an idle pool slot"] --> RUN
+  O -- yes --> L1["Pool slot: lease it and\ncheck out the recorded branch"] --> RUN
   O -- "no, or reused" --> P["Picker: idle clean slot of\nthe same repo, or a directory"]
   P -- slot --> S["Lease slot, check out\nrecorded branch if it exists"] --> RUN
   P -- directory --> C["Copy transcript into that\ndirectory's project folder"] --> F["claude --resume id --fork-session\n--session-id new"]
@@ -412,9 +412,12 @@ flowchart TD
   catalog row (`cwd`, `agentSessionId`, recorded permission mode) with no task context and no
   Mission Control MCP tools. It does not reopen a finished task. Discovery then registers it
   like any other terminal session, which makes it Live in History.
-- **Original directory.** Usable when it exists and is still the same checkout: not a pool
-  slot, or a pool slot on the recorded branch that no other owner holds. An idle pool slot is
-  leased before launch, so acquisition cannot reset it under the session.
+- **Original directory.** A directory outside the pool is usable when it exists. A pool slot
+  never keeps a branch while idle: a return resets it with `git checkout --force --detach`, and
+  `leaseAsIs` refuses a slot attached to a branch. So an original directory that is a pool slot
+  is handled as a **slot target on that same slot**:
+  - When the slot is idle, it is leased and its recorded branch checked out, exactly as below.
+  - When another owner holds it, it counts as reused, and the picker opens.
 - **Picker.** When the original directory is gone or reused, a dialog offers idle, clean slots
   of the session's repository (`observedIdleRefusal`) and a directory field validated to exist.
   A session with no resolvable repository offers only the directory.
@@ -425,21 +428,20 @@ flowchart TD
   row's `cwd`, the terminal's working directory and the binding check. Claude encodes the
   directory it actually runs in, so a symlinked or unresolved spelling could otherwise put the
   copy in a folder Claude never reads.
-- **Slot target.** A new worktree manager operation leases the slot and checks out the
-  session's recorded branch when it exists locally or on the remote; otherwise it leaves the
-  slot as it is and the dialog warns that the code may not match the conversation.
-  Claude's documented lookup covers a project's git worktrees, so the session resumes with no
-  copying.
+- **Slot target.** A new worktree manager operation leases an idle slot, which is always
+  detached, and then checks out the session's recorded branch when it exists locally or on the
+  remote. Otherwise it leaves the slot detached as it is, and the dialog warns that the code may
+  not match the conversation. It only ever leases idle, detached slots, so it does not relax
+  `leaseAsIs`'s refusal of an attached slot. Claude's documented lookup covers a project's git
+  worktrees, so the session resumes with no copying.
 - **Branch already checked out elsewhere.** Git refuses to check out a branch that is attached
   to another worktree, so the operation reads `git worktree list --porcelain` before it
-  touches the slot:
-  - When the branch is attached to an **idle slot of the same pool**, the picker offers that
-    slot first, marked as holding the branch, and leases it as it stands, with no checkout.
-  - When the branch is attached to any **other worktree** (a slot another owner holds, a task
-    worktree, or a checkout outside the pool), the chosen slot checks out the branch tip
-    detached (`git checkout --detach <branch>`). The dialog warns that the branch is checked
-    out in that path, and that commits made here will not move the branch. Such commits are
-    never lost: the release check below keeps the slot leased while they exist.
+  touches the slot. Idle slots are detached, so that other worktree is always one the pool does
+  not hand out: a slot another owner holds, a task worktree, or a checkout outside the pool. The
+  chosen slot then checks out the branch tip detached (`git checkout --detach <branch>`). The
+  dialog warns that the branch is checked out in that path, and that commits made here will
+  not move the branch. Such commits are never lost: the release check below keeps the slot
+  leased while they exist.
 - **Directory target.** For a directory outside the session's repository, the transcript is
   copied into that directory's Claude project folder and the session starts with
   `claude --resume <id> --fork-session`. The original is untouched; the fork gets its own id,
@@ -602,7 +604,9 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
   returns the Mission Control-only record; an id known to neither returns 404.
 - Resume: eligibility, refusals, original-directory and reused-slot detection, branch checkout,
   copy and fork for a directory, release of a clean slot and retention of a dirty one, the
-  startup twin.
+  startup twin. An original directory that is an idle pool slot goes through the slot-target
+  operation on that slot; one held by another owner opens the picker; and the slot-target
+  operation never leases an attached slot.
 - Release on a detached `HEAD`: a slot checked out detached whose session committed and then
   exited with a clean tree stays leased with the "commits on no branch" reason, and its commit
   is still at `HEAD`; the same slot with no new commits is released; and commits on an attached
@@ -624,9 +628,9 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
   grace window, and a later Resume of the same session succeeds; Cancel pending resume closes
   a `pending` slotless launch at once; the startup twin turns a `pending` slotless launch into
   `released`, never `expired`; and no slotless launch is ever left in `expired`.
-- Branch already checked out elsewhere: an idle pool slot holding the branch is offered first
-  and leased as it stands; a branch held by another owner or outside the pool is checked out
-  detached in the chosen slot, with the warning.
+- Branch already checked out elsewhere: a branch attached to a slot another owner holds, a task
+  worktree or a checkout outside the pool is checked out detached in the chosen slot, with the
+  warning.
 - Launch correlation: a launch binds only to a Registry session with its
   `expected_agent_session_id` and its `cwd`, so a session with the right id in another
   directory binds nothing; a second Resume of a session with a `pending` or `expired` launch is
@@ -768,7 +772,9 @@ Recorded from the interview with the operator on 2026-11-02.
 
 The Plan Feasibility Judge asked for five clarifications. None changes a human decision above:
 
-- The branch-elsewhere rule for a slot target (Resume).
+- The branch-elsewhere rule for a slot target (Resume). Its first form preferred an idle slot
+  holding the branch; the GitHub Inspector review below removed that case, which the pool
+  never allows.
 - The launch record, its correlation key, the startup twin's test, and a fork id minted before
   launch with `--session-id`, falling back to the SDK `forkSession` (Resume). The chosen
   `--fork-session` behavior stands.
@@ -780,7 +786,7 @@ The Plan Feasibility Judge asked for five clarifications. None changes a human d
 
 ### Review repairs (GitHub Inspector on #725)
 
-Ten findings over six reviews, none of which changes a human decision above:
+Eleven findings over seven reviews, none of which changes a human decision above:
 
 - An unbound launch past its grace window expires and keeps its lease instead of being
   released, and a late agent still binds (Resume).
@@ -802,6 +808,9 @@ Ten findings over six reviews, none of which changes a human decision above:
   encoding, the copy, the launch `cwd` and the terminal (Resume).
 - A launch without a slot is released after its grace window, or by Cancel pending resume, so it
   can never hold a session's one open launch forever (Resume).
+- Idle pool slots are always detached, so an original directory that is a pool slot goes
+  through the slot-target operation on that slot, and the "idle slot holding the branch" case is
+  removed (Resume).
 
 ### Assumptions stated during the interview
 
