@@ -42,12 +42,30 @@ export function recheckManagedResumes() {
   return reconcileResumeLeases(managedResumeRoot(), Date.now(), preparing);
 }
 
+/**
+ * Revoke the managed resumes prepared for `sourceSessionId` - the `session.id` that
+ * `prepareTerminalResume` records each lease under - that no terminal has claimed yet, so a
+ * window opening late finds nothing to start. A claimed one is left alone: its agent is
+ * already running. Returns how many were revoked.
+ */
+export function revokeUnclaimedResumes(sourceSessionId: string): number {
+  let revoked = 0;
+  for (const status of recheckManagedResumes()) {
+    if (status.lease.sourceSessionId !== sourceSessionId || status.state !== "pending") continue;
+    if (revokeResumeLease(status.lease)) revoked += 1;
+  }
+  return revoked;
+}
+
 export function resumeConversation(session: Pick<Session, "agent" | "agentSessionId">): string {
   return `${session.agent}:${session.agentSessionId}`;
 }
 
 /** All fallible provisioning, including the final wrapper, precedes SDK stop. */
-export async function prepareTerminalResume(session: Session, context: ResumeContext): Promise<PreparedResume> {
+export async function prepareTerminalResume(
+  session: Pick<Session, "id" | "agent" | "agentSessionId" | "permissionMode" | "cwd" | "runtime">,
+  context: ResumeContext,
+): Promise<PreparedResume> {
   if (!session.cwd || !session.agentSessionId) throw new Error("this conversation has no checkout or native identity to resume");
   const argv = await resumeArgvFor(session.agent, session.agentSessionId, session.permissionMode);
   if (!argv) throw new Error(`${session.agent} cannot reopen a conversation`);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, type AgentType, type TranscriptMessage } from "./types.ts";
 
 /**
@@ -383,4 +384,144 @@ export interface HistoryLaunchContext {
   mcp: HistoryMcp | null;
   environment: HistoryEnvironment;
   hooks: HistoryHookRun[] | null;
+}
+
+/**
+ * A History Resume's launch record, `history_resume_launches.state`. `pending` until the
+ * resumed agent is discovered (`bound`), `ended` when that session leaves, and `released`
+ * once nothing holds the launch open. `expired` is a launch WITH a worktree slot whose agent
+ * has not appeared within its grace window; it keeps the slot. `pending` and `expired` are
+ * the open states, and a session has at most one open launch. Persisted and read back as a
+ * string: append, never rename or reorder.
+ */
+export const HISTORY_RESUME_LAUNCH_STATES = ["pending", "expired", "bound", "ended", "released"] as const;
+export type HistoryResumeLaunchState = (typeof HISTORY_RESUME_LAUNCH_STATES)[number];
+
+/** One launch record as the routes serve it. */
+export interface HistoryResumeLaunch {
+  launchId: string;
+  agent: AgentType;
+  sourceSessionId: string;
+  /** The agent session id the launch waits for: the source's own id for a plain resume. */
+  expectedAgentSessionId: string;
+  /** The launch directory, resolved once through symlinks. */
+  cwd: string;
+  /** The worktree slot the launch holds, or null for a directory outside the pool. */
+  slotId: string | null;
+  launchedAt: number;
+  /** The Mission Control session the launch bound to, once discovery registered it. */
+  mcSessionId: string | null;
+  /** Read as a string, see `HISTORY_RESUME_LAUNCH_STATES`. */
+  state: string;
+}
+
+/**
+ * Why a Resume cannot run, as a stable code beside the sentence the page shows. These reach
+ * the browser, so they are append-only like the states above.
+ */
+export const HISTORY_RESUME_REFUSALS = [
+  "not_conversation",
+  "transcript_gone",
+  "live",
+  "open_launch",
+  "no_directory",
+  "directory_missing",
+  "pool_slot",
+  "not_resumable",
+  "host_unavailable",
+  "launch_failed",
+  "launch_unknown",
+  "cancelled",
+  "launch_not_found",
+  "launch_not_pending",
+  "launch_has_slot",
+] as const;
+export type HistoryResumeRefusalCode = (typeof HISTORY_RESUME_REFUSALS)[number];
+
+export interface HistoryResumeRefusal {
+  code: HistoryResumeRefusalCode;
+  error: string;
+}
+
+/**
+ * Where the session was recorded running, and whether Resume can use it. `usable` is an
+ * existing directory outside every worktree pool; `pool_slot` is one inside a pool, which the
+ * slot-target Resume handles; `missing` no longer resolves to a directory; `unrecorded` means
+ * the transcript named no working directory.
+ */
+export const HISTORY_RESUME_DIRECTORY_STATES = ["usable", "missing", "pool_slot", "unrecorded"] as const;
+export type HistoryResumeDirectoryState = (typeof HISTORY_RESUME_DIRECTORY_STATES)[number];
+
+/** `GET /api/history/sessions/:agent/:id/resume-options`. */
+export interface HistoryResumeOptions {
+  original: {
+    /** The first recorded working directory, as the transcript spelled it. */
+    cwd: string | null;
+    /** That directory resolved through symlinks, when it still resolves. */
+    resolved: string | null;
+    state: HistoryResumeDirectoryState;
+  };
+  /** The session's open (`pending` or `expired`) launch, if any. */
+  openLaunch: HistoryResumeLaunch | null;
+  /** Why Resume would be refused right now, or null when it would launch. */
+  refusal: HistoryResumeRefusal | null;
+}
+
+/**
+ * Where a Resume runs. Only the original directory is offered today; a worktree slot and a
+ * typed directory join this union, so a body naming one is refused until then.
+ */
+export const HistoryResumeTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("original") }).strict(),
+]);
+export type HistoryResumeTarget = z.infer<typeof HistoryResumeTargetSchema>;
+
+/** `POST /api/history/sessions/:agent/:id/resume`. */
+export const HistoryResumeBodySchema = z
+  .object({
+    backend: z.enum(TERMINAL_BACKEND_IDS),
+    target: HistoryResumeTargetSchema,
+  })
+  .strict();
+export type HistoryResumeBody = z.infer<typeof HistoryResumeBodySchema>;
+
+/**
+ * Whether Cancel pending resume can close a launch: it is still `pending` and holds no worktree
+ * slot. A launch with a slot closes when that slot is Returned, so the pool never resets it
+ * under an agent that may still appear. The store refuses on this rule and the dialog offers
+ * Cancel on it.
+ */
+export function historyResumeCancellable(launch: Pick<HistoryResumeLaunch, "state" | "slotId">): boolean {
+  return launch.state === "pending" && launch.slotId === null;
+}
+
+/** `POST /api/history/sessions/:agent/:id/resume/cancel`: close a pending launch with no slot. */
+export const HistoryResumeCancelSchema = z
+  .object({ launchId: z.string().uuid() })
+  .strict();
+export type HistoryResumeCancel = z.infer<typeof HistoryResumeCancelSchema>;
+
+/** A launch that started, or whose terminal may have opened (`unknown`). */
+export interface HistoryResumeStarted {
+  ok: true;
+  launch: HistoryResumeLaunch;
+  /** The terminal backend that took it, for the confirmation the page shows. */
+  label: string;
+}
+
+/** A refused Resume, with the open launch it collided with when that is the reason. */
+export interface HistoryResumeRefused extends HistoryResumeRefusal {
+  ok: false;
+  launch?: HistoryResumeLaunch;
+}
+
+/**
+ * Whether a row offers Resume at all: a conversation whose transcript is on disk and which no
+ * Registry session is running. Live sessions offer Open in Fleet instead. A row that offers
+ * it can still be refused for its directory or an open launch; `resume-options` says why.
+ */
+export function historyResumeOffered(
+  row: Pick<HistorySessionSummary, "kind" | "transcriptState" | "liveSessionId">,
+): boolean {
+  return isHistoryConversationKind(row.kind) && row.transcriptState === "present" && row.liveSessionId === null;
 }

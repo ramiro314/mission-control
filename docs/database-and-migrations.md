@@ -59,6 +59,15 @@ re-reads each present transcript from the top and indexes its prompts; a row who
 already gone gets its fields segment from the row itself. User prompts are therefore copied into
 `harness.db`; see [security](security.md#session-history-copies-user-prompts-into-harnessdb).
 
+`history_resume_launches` holds one row per History Resume, written only by
+`HistoryResumeLaunches` (see [Session History](history.md#resume)): the source session, the
+agent session id the launch waits for, its directory resolved through symlinks, the Mission
+Control session it bound to, and its state (`pending`, `expired`, `bound`, `ended`,
+`released`), read back as a string. A partial unique index over `(agent, source_session_id)`
+where the state is `pending` or `expired` allows one open launch per session, which is what makes
+the row's insert a Resume's claim. Rows are never deleted. It arrived with schema version 14, a
+fork entry created in `migrate()` and not gated by the number.
+
 ## Full-database recovery points
 
 Mission Control creates verified recovery points for normal operation and schema upgrades. See

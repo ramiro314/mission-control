@@ -1273,6 +1273,12 @@ export interface HistorySpec {
    */
   launchContext(path: string): Promise<import("@shared/history.ts").HistoryLaunchContext>;
   /**
+   * The permission mode a cataloged transcript last recorded, so a Resume reopens the session
+   * where the operator left it; null when it recorded none. Read on demand from the catalog's
+   * path. Rejects when the file cannot be read.
+   */
+  permissionMode(path: string): Promise<import("@shared/types.ts").PermissionMode | null>;
+  /**
    * The result recorded for one tool call, found by its id in the transcript at
    * `transcriptPath` (already resolved and confined by the caller), or null when no record
    * holds one. A result kept in a sidecar file names that file from its own record; the caller

@@ -205,7 +205,9 @@ let db: DatabaseSync | undefined;
 // 13: fork - History's search text (`history_search_segments`). Created in `migrate()` and not
 //    gated by this number; when the table is new, existing `history_sessions` rows are queued
 //    for a re-read so their prompts are indexed. Renumbering is safe as for 11.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 13;
+// 14: fork - History Resume's launch records (`history_resume_launches`), empty on an upgraded
+//    database. Created in `migrate()` and not gated by this number; renumbering is safe as for 11.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 14;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4544,6 +4546,40 @@ function migrateHistoryCatalog(d: DatabaseSync): void {
       ON history_sessions(repo_root);
   `);
   migrateHistorySearchSegments(d);
+  migrateHistoryResumeLaunches(d);
+}
+
+/**
+ * History Resume's launch records (`docs/history.md`), one row per Resume, written only by
+ * `HistoryResumeLaunches`. A row is written BEFORE anything else a Resume does, and the
+ * partial unique index is what makes that insert the claim: while a launch of a session is
+ * `pending` or `expired`, a second insert for the same session fails, so of two concurrent
+ * Resumes exactly one gets a row and the other touches nothing. `state` is unconstrained TEXT
+ * read back as a string (`HISTORY_RESUME_LAUNCH_STATES`). Rows are never deleted.
+ */
+function migrateHistoryResumeLaunches(d: DatabaseSync): void {
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS history_resume_launches (
+      launch_id                  TEXT    PRIMARY KEY,
+      agent                      TEXT    NOT NULL,
+      source_session_id          TEXT    NOT NULL,
+      expected_agent_session_id  TEXT    NOT NULL,
+      cwd                        TEXT    NOT NULL,
+      slot_id                    TEXT,
+      lease_key                  TEXT,
+      copy_path                  TEXT,
+      launched_at                INTEGER NOT NULL,
+      mc_session_id              TEXT,
+      state                      TEXT    NOT NULL,
+      updated_at                 INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_history_resume_launches_open
+      ON history_resume_launches(agent, source_session_id) WHERE state IN ('pending', 'expired');
+    CREATE INDEX IF NOT EXISTS idx_history_resume_launches_expected
+      ON history_resume_launches(agent, expected_agent_session_id, state);
+    CREATE INDEX IF NOT EXISTS idx_history_resume_launches_session
+      ON history_resume_launches(mc_session_id);
+  `);
 }
 
 /**

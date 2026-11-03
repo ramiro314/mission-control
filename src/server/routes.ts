@@ -275,7 +275,13 @@ import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import type { HistoryLiveLookup, HistoryService } from "./history/service.ts";
-import { HistoryMessagesQuerySchema, HistorySessionsQuerySchema } from "@shared/history.ts";
+import type { HistoryResumeLauncher } from "./history/resume.ts";
+import {
+  HistoryMessagesQuerySchema,
+  HistoryResumeBodySchema,
+  HistoryResumeCancelSchema,
+  HistorySessionsQuerySchema,
+} from "@shared/history.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
@@ -289,7 +295,8 @@ import { runRetro } from "./retro.ts";
 import { startShapeTicketsFollowup } from "./shape-tickets-followup.ts";
 import { setAffectedTestsCommand, startTestingSetup } from "./testing-setup.ts";
 import { harnessFor, sessionMessages } from "./harness/index.ts";
-import { prepareTerminalResume, recheckManagedResumes, resumeConversation, type PreparedResume } from "./harness/resume.ts";
+import { prepareTerminalResume, recheckManagedResumes, resumeConversation, revokeUnclaimedResumes,
+  type PreparedResume } from "./harness/resume.ts";
 import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
@@ -1246,6 +1253,11 @@ export interface RouteDeps {
    */
   history?: HistoryService;
   /**
+   * The terminal half of a History Resume. Absent means the real one: `prepareTerminalResume`
+   * with no task context and no Mission Control tools, launched through the selected backend.
+   */
+  historyResumeLauncher?: HistoryResumeLauncher;
+  /**
    * The Global Command catalog owner. Absent means the catalog routes answer 503 and the
    * legacy config route projects an empty command list. A route-built twin would be a second
    * writer of one catalog and a second emitter on one live stream.
@@ -1340,6 +1352,7 @@ export const ROUTE_DEP_NAMES = [
   "keepAwake",
   "archives",
   "history",
+  "historyResumeLauncher",
   "workflowCommands",
   "testingSettings",
   "commandDocumentProposals",
@@ -1638,6 +1651,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     keepAwake,
     archives,
     history,
+    historyResumeLauncher,
     workflowCommands,
     testingSettings,
     commandDocumentProposals,
@@ -4004,9 +4018,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   // --- Session History ---
   //
-  // Read-only, loopback-only like the rest of `/api/*`, and never exposed as an MCP tool. A
-  // request names no path: rows come from the catalog the daemon's reconciler writes. A session
-  // is addressed by agent and UUID, and its transcript path is the catalog's, never the request's.
+  // Loopback-only like the rest of `/api/*`, and never exposed as an MCP tool. Everything is a
+  // read except Resume, below. A request names no path: rows come from the catalog the daemon's
+  // reconciler writes. A session is addressed by agent and UUID, and its transcript path is the
+  // catalog's, never the request's.
   //
   // "Live" is the Registry's answer, read once per request: a running session whose agent
   // session id matches a row.
@@ -4052,6 +4067,37 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid history query" }, 400);
     const read = await history.subagentMessages(c.req.param("agent"), c.req.param("id"), c.req.param("agentId"), parsed.data);
     return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
+  });
+  // Resume: a new unmanaged terminal running the agent's own resume command in the session's
+  // original directory, with no task context and no Mission Control tools. The directory is
+  // the catalog's, resolved by the daemon; the body names only a backend and a target kind.
+  const resumeLauncher: HistoryResumeLauncher = historyResumeLauncher ?? {
+    hostUnavailable: (backend) => agentHostUnavailable(backend, configuredTerminalTargetDeps),
+    prepare: (session) => prepareTerminalResume(session, { managed: false, requiredTools: [], extraDirs: [] }),
+    launch: (backend, input) => launchManagedAgentTerminal(backend, input, terminalLauncher),
+    abandon: (owner) => { revokeUnclaimedResumes(owner); },
+  };
+  app.get("/api/history/sessions/:agent/:id/resume-options", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const read = await history.resume.options(c.req.param("agent"), c.req.param("id"), liveHistorySessions());
+    return read.ok ? c.json(read.options) : c.json({ error: read.error }, read.status);
+  });
+  app.post("/api/history/sessions/:agent/:id/resume", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const parsed = await parseBody(c, HistoryResumeBodySchema);
+    if (!parsed.ok) return parsed.res;
+    const outcome = await history.resume.resume(c.req.param("agent"), c.req.param("id"), parsed.data,
+      liveHistorySessions(), resumeLauncher);
+    if (outcome.ok) return c.json({ ok: true, launch: outcome.launch, label: outcome.label });
+    return c.json({ ok: false, ...outcome.refusal, ...(outcome.launch ? { launch: outcome.launch } : {}) }, outcome.status);
+  });
+  app.post("/api/history/sessions/:agent/:id/resume/cancel", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const parsed = await parseBody(c, HistoryResumeCancelSchema);
+    if (!parsed.ok) return parsed.res;
+    const outcome = history.resume.cancel(c.req.param("agent"), c.req.param("id"), parsed.data.launchId, resumeLauncher);
+    if (outcome.ok) return c.json({ ok: true, launch: outcome.launch });
+    return c.json({ ok: false, code: outcome.code, error: outcome.error, ...(outcome.launch ? { launch: outcome.launch } : {}) }, outcome.status);
   });
 
   // --- The archive library ---

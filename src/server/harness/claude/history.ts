@@ -3,7 +3,7 @@ import { lstat, open, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { isHistorySubagentId, type HistoryKind } from "@shared/history.ts";
-import type { TranscriptMessage } from "@shared/types.ts";
+import { PERMISSION_MODES, type PermissionMode, type TranscriptMessage } from "@shared/types.ts";
 import type {
   HistoryFile,
   HistoryParse,
@@ -495,6 +495,28 @@ function isMissing(error: unknown): boolean {
   return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }
 
+/**
+ * The mode a transcript last recorded, from its `permission-mode` records: Claude writes one
+ * when a session starts and again each time the mode changes, so the last one is where the
+ * operator left it. Only lines naming the record type are parsed.
+ */
+async function lastPermissionMode(path: string): Promise<PermissionMode | null> {
+  const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
+  let mode: PermissionMode | null = null;
+  for await (const line of lines) {
+    if (!line.includes('"permission-mode"')) continue;
+    try {
+      const record = JSON.parse(line) as { type?: unknown; permissionMode?: unknown };
+      if (record.type === "permission-mode" && (PERMISSION_MODES as readonly unknown[]).includes(record.permissionMode)) {
+        mode = record.permissionMode as PermissionMode;
+      }
+    } catch {
+      // A malformed line is skipped, as everywhere else in this reader.
+    }
+  }
+  return mode;
+}
+
 /** Built over a projects directory so a test can point it at a fixture store. */
 export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): HistorySpec {
   return {
@@ -502,6 +524,7 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
     messages: claudeHistoryMessages,
     subagentMessages: claudeSubagentMessages,
     launchContext: readClaudeLaunchContext,
+    permissionMode: lastPermissionMode,
 
     async toolResult(transcriptPath, agentSessionId, toolUseId): Promise<HistoryRecordedToolResult | null> {
       const found = await findToolResult(transcriptPath, toolUseId);
