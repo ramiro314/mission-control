@@ -258,12 +258,18 @@ export function readCurrentTodo(path: string): string | null {
   return latestTodoNarration(text ? text.split("\n") : []);
 }
 
+/**
+ * Claude Code's JSONL read as conversation, wherever the path came from: a live session's
+ * located file here, or a cataloged one in Session History (`history.ts`).
+ */
+export const claudeMessages = jsonlMessages({ parse: toMessage, narration: readCurrentTodo });
+
 /** Claude Code's transcript capability: a located JSONL file, read as messages and as meta. */
 export const claudeTranscript: TranscriptSpec = {
   metaSource: "transcript",
   locate: (session) => resolveTranscriptPath(session),
   passiveRead: claudePassiveRead,
-  messages: jsonlMessages({ parse: toMessage, narration: readCurrentTodo }),
+  messages: claudeMessages,
   // Locating is two `existsSync` calls off fields the session already carries, so there
   // is nothing worth caching and nothing to prune.
   retain: null,

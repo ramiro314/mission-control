@@ -4281,7 +4281,9 @@ export function App(): React.JSX.Element {
           history={
             // Mounted only on its own route, like Scouts, so the catalog fetch never runs
             // while somebody is on another page.
-            route.page === "history" ? <HistoryPage route={route} replace={replace} revision={historyRevision} /> : null
+            route.page === "history" ? (
+              <HistoryPage route={route} navigate={navigate} replace={replace} revision={historyRevision} onOpenSession={openSessionOnFleet} />
+            ) : null
           }
           shipped={
             // The Ship log owns its own `ExecutionPage` frame, unlike the two above: the

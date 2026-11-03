@@ -1261,6 +1261,11 @@ export interface HistorySpec {
    * settings each time it is asked, or null when it deletes none. Never written.
    */
   retention(): Omit<import("@shared/history.ts").HistoryRetention, "agent"> | null;
+  /**
+   * A cataloged transcript read as conversation: the same path-based window reads a live
+   * session uses, handed the path the catalog stored, never one a request named.
+   */
+  messages: TranscriptMessages;
 }
 
 /**

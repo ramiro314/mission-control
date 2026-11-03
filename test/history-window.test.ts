@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readHistoryWindow, type HistoryPageRead } from "../src/web/components/history/history-window.ts";
+import {
+  EMPTY_WINDOW_HOPS,
+  readConversationWindow,
+  readHistoryWindow,
+  type HistoryMessagesRead,
+  type HistoryPageRead,
+} from "../src/web/components/history/history-window.ts";
 import { HISTORY_PAGE_LIMITS, HISTORY_SEARCH_LIMITS, encodeHistoryCursor, type HistorySessionSummary } from "../src/shared/history.ts";
+import type { TranscriptMessage } from "../src/shared/types.ts";
 
 /** A catalog of `total` rows, served the way the route serves it: capped pages and a cursor. */
 function catalog(total: number): { read: (query: { cursor?: string; limit: number }) => Promise<HistoryPageRead>; asked: { cursor?: string; limit: number }[] } {
@@ -147,4 +154,54 @@ test("the route's filters become the list query: local days, with an exclusive e
 test("a search longer than the route accepts is cut to its limit, not sent to be refused", async () => {
   const { historyFilterQuery } = await import("../src/web/components/history/history-window.ts");
   assert.equal(historyFilterQuery({ q: "x".repeat(250) }).q, "x".repeat(HISTORY_SEARCH_LIMITS.queryChars));
+});
+
+/**
+ * A transcript served as the messages route serves it: `windows[i]` is the turns in window i,
+ * and every window but the last carries a cursor to the next. An empty entry is a window that
+ * crossed no complete turn, which the reader returns when one record outgrows its budget.
+ */
+function transcript(windows: string[][]): { read: (cursor: string | null) => Promise<HistoryMessagesRead>; asked: (string | null)[] } {
+  const asked: (string | null)[] = [];
+  return {
+    asked,
+    read: async (cursor) => {
+      asked.push(cursor);
+      const i = cursor === null ? 0 : Number(cursor);
+      const messages = windows[i]!.map((text) => ({ id: text, role: "assistant", text, tools: [], ts: 0 }) as TranscriptMessage);
+      return { ok: true, value: { messages, nextCursor: i + 1 < windows.length ? String(i + 1) : null } };
+    },
+  };
+}
+
+test("a conversation read steps over windows that held no turn, to the turns after them", async () => {
+  const t = transcript([[], [], ["Question 000", "Answer 000."], ["Question 001"]]);
+  const result = await readConversationWindow(t.read, null);
+  assert.ok(result.ok);
+  assert.deepEqual(result.value.messages.map((m) => m.text), ["Question 000", "Answer 000."]);
+  assert.equal(result.value.nextCursor, "3", "and continues from the window after the one it returned");
+  assert.deepEqual(t.asked, [null, "1", "2"]);
+});
+
+test("a conversation read stops at the hop cap and hands back a cursor, rather than reading for ever", async () => {
+  const t = transcript([...Array.from({ length: EMPTY_WINDOW_HOPS + 5 }, () => []), ["Late turn"]]);
+  const first = await readConversationWindow(t.read, null);
+  assert.ok(first.ok);
+  assert.deepEqual(first.value.messages, []);
+  assert.equal(t.asked.length, EMPTY_WINDOW_HOPS + 1, "the first window plus the capped number of hops");
+  assert.equal(first.value.nextCursor, String(EMPTY_WINDOW_HOPS + 1), "the empty window it stopped on still says there is more");
+  const next = await readConversationWindow(t.read, first.value.nextCursor);
+  assert.ok(next.ok);
+  assert.deepEqual(next.value.messages.map((m) => m.text), ["Late turn"]);
+  assert.equal(next.value.nextCursor, null);
+});
+
+test("a conversation read returns a refusal as it is, and an empty last window as the end", async () => {
+  const refused = await readConversationWindow(async () => ({ ok: false, error: "transcript removed", status: 410 }), null);
+  assert.deepEqual(refused, { ok: false, error: "transcript removed", status: 410 });
+  const t = transcript([[]]);
+  const empty = await readConversationWindow(t.read, null);
+  assert.ok(empty.ok);
+  assert.equal(empty.value.nextCursor, null);
+  assert.equal(t.asked.length, 1);
 });

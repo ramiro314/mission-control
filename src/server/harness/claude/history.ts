@@ -10,7 +10,7 @@ import type {
 } from "../types.ts";
 import { claudeCleanupPeriodDays } from "@shared/claude-settings.ts";
 import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "./project-dir.ts";
-import { toMessage } from "./transcript.ts";
+import { claudeMessages, toMessage } from "./transcript.ts";
 
 /**
  * Claude Code's history reader: `~/.claude/projects/<encoded cwd>/<sessionId>.jsonl`.
@@ -330,6 +330,7 @@ function isMissing(error: unknown): boolean {
 export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): HistorySpec {
   return {
     roots: () => [projectsDir],
+    messages: claudeMessages,
 
     async enumerate(root) {
       let projects;

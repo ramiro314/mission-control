@@ -17,7 +17,7 @@ import {
   type ArchiveKind,
 } from "@shared/archives.ts";
 import { pipelineRepoKey, type PipelineProviderId } from "@shared/pipeline.ts";
-import { HISTORY_KIND_FILTERS, type HistoryKindFilter } from "@shared/history.ts";
+import { HISTORY_KIND_FILTERS, isHistorySessionId, type HistoryKindFilter } from "@shared/history.ts";
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
@@ -302,10 +302,15 @@ export type MissionRoute =
   | {
       /**
        * Session History: every agent session this machine holds on disk, whether or not
-       * Mission Control ever saw it, newest activity first. A session's detail joins the
-       * hash when that surface ships.
+       * Mission Control ever saw it, newest activity first, and one session's detail.
        */
       page: "history";
+      /** The session whose detail is open, addressed as the API addresses it. */
+      session?: { agent: AgentType; id: string };
+      /**
+       * The list's filters. A detail carries the ones it was opened from, so Back returns to
+       * that list rather than the bare one.
+       */
       filters?: HistoryFilters;
     }
   | { page: "settings"; category: SettingsCategoryId };
@@ -420,10 +425,17 @@ export function parseMissionRoute(hash: string): MissionRoute {
       ...(withScoutFilters ? { filters: withScoutFilters } : {}),
     };
   }
-  // A deeper path names a surface this build does not have yet, so it lands on the list.
   if (path === "/history" || path.startsWith("/history/")) {
     const historyFilters = parseHistoryFilters(params);
-    return { page: "history", ...(historyFilters ? { filters: historyFilters } : {}) };
+    const withFilters = historyFilters ? { filters: historyFilters } : {};
+    // An agent this build does not know, an id that is not a UUID, or a deeper path names no
+    // session, so it lands on the list - the same rule a malformed archive key takes.
+    const detail = /^\/history\/([^/]+)\/([^/]+)$/.exec(path);
+    const agent = detail ? segment(detail[1]!) : null;
+    const id = detail ? segment(detail[2]!) : null;
+    return agent && id && (AGENT_TYPES as readonly string[]).includes(agent) && isHistorySessionId(id)
+      ? { page: "history", session: { agent: agent as AgentType, id }, ...withFilters }
+      : { page: "history", ...withFilters };
   }
   if (path === "/library") return { page: "library" };
   const library = /^\/library\/([^/]+)(?:\/([^/]+))?$/.exec(path);
@@ -574,7 +586,12 @@ export function missionRouteHash(route: MissionRoute): string {
     if (filters?.kind && (HISTORY_KIND_FILTERS as readonly string[]).includes(filters.kind)) params.set("kind", filters.kind);
     if (filters?.agent && (AGENT_TYPES as readonly string[]).includes(filters.agent)) params.set("agent", filters.agent);
     const query = params.toString();
-    return query ? `#/history?${query}` : "#/history";
+    // The session is emitted only when well formed, mirroring the parser, so the codec round-trips.
+    const session = route.session;
+    const path = session && (AGENT_TYPES as readonly string[]).includes(session.agent) && isHistorySessionId(session.id)
+      ? `#/history/${session.agent}/${encodeURIComponent(session.id)}`
+      : "#/history";
+    return query ? `${path}?${query}` : path;
   }
   if (route.page === "scouts") {
     // The key is emitted only when it is well formed, mirroring the parser. A hand-built

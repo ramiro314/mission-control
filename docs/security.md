@@ -58,6 +58,12 @@ same agent from calling the `/api/*` route directly. The same holds for
 step on the MCP surface, and the apply route it leads to accepts a document from any loopback
 caller with no proposal and no review.
 
+The same holds for reads. [Session History](history.md#api) serves every Claude transcript
+under `~/.claude/projects` as recorded, including anything a tool printed, to any loopback
+caller. Its routes take an agent name and a session UUID, never a path; the transcript path
+comes from the catalog and is read only when it resolves, through symlinks, under that harness's
+root. None of them is exposed as an MCP tool.
+
 Requiring the daemon token, or an equivalent, for writes to executable settings (pool policy,
 Commands, testing settings and bulk apply) is a recorded follow-up:
 [tokenless loopback writes](plans/worktree-claims-and-monorepo-testing/plan.md#follow-ups-not-in-this-plan).

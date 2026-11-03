@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  HISTORY_KIND_LABELS,
   HISTORY_KINDS,
   HISTORY_SEARCH_LIMITS,
   historyTitle,
@@ -12,27 +13,23 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type { AgentType } from "@shared/types.ts";
 import { fmtUsd } from "@shared/cost.ts";
 import { duration, repoLeaf, shortenCwd } from "../../lib/format.ts";
-import type { HistoryFilters, MissionRoute } from "../../workflows/useWorkflowRoute.ts";
+import { missionRouteHash, type HistoryFilters, type MissionRoute } from "../../workflows/useWorkflowRoute.ts";
 import { Tooltip } from "../Tooltip.tsx";
+import { HistorySessionView } from "./HistorySessionView.tsx";
 import { useHistoryCatalog } from "./useHistoryCatalog.ts";
 
 /**
  * The History page: every agent session this machine holds on disk, newest activity first,
- * grouped by day. Conversations by default; the Kind filter adds background runs. Search and
- * filters live in the route, which the page replaces as they change. A session's own detail is
- * a later surface of the same catalog (`docs/history.md`).
+ * grouped by day, and one session's detail when the route names it. Conversations by default;
+ * the Kind filter adds background runs. Search and filters live in the route, which the page
+ * replaces as they change (`docs/history.md`).
+ *
+ * The list's catalog is held here, above both views, so opening a session and coming Back
+ * returns to the rows already paged to rather than to a fresh first page.
  */
 
 /** How long typing settles before the search reaches the route, as on the Scouts page. */
 const SEARCH_DEBOUNCE_MS = 220;
-
-const KIND_LABEL: Record<string, string> = {
-  interactive: "Interactive",
-  sdk: "SDK",
-  one_shot: "One-shot",
-  reviewer: "Reviewer",
-  unclassified: "Unclassified",
-};
 
 function dayLabel(at: number): string {
   return new Date(at).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
@@ -65,14 +62,25 @@ function RetentionLine({ retention }: { retention: HistoryRetention }): React.JS
   );
 }
 
-function HistoryRow({ row }: { row: HistorySessionSummary }): React.JSX.Element {
+function HistoryRow({ row, filters }: { row: HistorySessionSummary; filters: HistoryFilters | undefined }): React.JSX.Element {
   const place = row.repoRoot ? repoLeaf(row.repoRoot) : shortenCwd(row.cwd);
   const gone = row.transcriptState === "gone";
+  // A link, so the row opens through the router like any other address (and Back undoes it),
+  // and a session can be opened in a new tab or copied. It carries the list's filters, so the
+  // detail's Back returns to this list.
+  const href = missionRouteHash({
+    page: "history",
+    session: { agent: row.agent, id: row.agentSessionId },
+    ...(filters ? { filters } : {}),
+  });
   return (
     <li className={`history-row${gone ? " is-gone" : ""}`}>
       <div className="history-row-head">
-        <span className="history-row-title">{historyTitle(row)}</span>
-        <span className="history-badge">{KIND_LABEL[row.kind] ?? row.kind}</span>
+        <Tooltip label="Open this session: its header and its conversation">
+          <a className="history-row-title" href={href}>{historyTitle(row)}</a>
+        </Tooltip>
+        <span className="history-badge">{HISTORY_KIND_LABELS[row.kind] ?? row.kind}</span>
+        {row.liveSessionId ? <span className="history-badge history-badge-live">Live</span> : null}
         {gone ? <span className="history-badge history-badge-gone">Transcript gone</span> : null}
       </div>
       <div className="history-row-meta">
@@ -91,13 +99,17 @@ function HistoryRow({ row }: { row: HistorySessionSummary }): React.JSX.Element 
 
 export function HistoryPage({
   route,
+  navigate,
   replace,
   revision,
+  onOpenSession,
 }: {
   route: Extract<MissionRoute, { page: "history" }>;
+  navigate: (route: MissionRoute) => boolean;
   replace: (route: MissionRoute) => void;
   /** `historyRevision` from the event stream: bumps per changing reconcile pass and per reconnect. */
   revision: number;
+  onOpenSession: (sessionId: string) => void;
 }): React.JSX.Element {
   const filters = route.filters;
   const catalog = useHistoryCatalog(filters, revision);
@@ -144,6 +156,18 @@ export function HistoryPage({
     }
     return out;
   }, [catalog.sessions]);
+
+  if (route.session) {
+    return (
+      <HistorySessionView
+        key={`${route.session.agent}:${route.session.id}`}
+        agent={route.session.agent}
+        id={route.session.id}
+        onBack={() => navigate({ page: "history", ...(filters ? { filters } : {}) })}
+        onOpenSession={onOpenSession}
+      />
+    );
+  }
 
   return (
     <main className="workflow-page history-page" aria-label="History">
@@ -223,7 +247,7 @@ export function HistoryPage({
             >
               <option value="">Conversations</option>
               <option value="all">All kinds</option>
-              {HISTORY_KINDS.map((kind) => <option key={kind} value={kind}>{KIND_LABEL[kind] ?? kind}</option>)}
+              {HISTORY_KINDS.map((kind) => <option key={kind} value={kind}>{HISTORY_KIND_LABELS[kind] ?? kind}</option>)}
             </select>
           </Tooltip>
         </label>
@@ -287,7 +311,7 @@ export function HistoryPage({
           <section key={group.day} className="history-group" aria-label={group.day}>
             <h3 className="history-day">{group.day}</h3>
             <ul className="history-rows">
-              {group.rows.map((row) => <HistoryRow key={`${row.agent}:${row.agentSessionId}`} row={row} />)}
+              {group.rows.map((row) => <HistoryRow key={`${row.agent}:${row.agentSessionId}`} row={row} filters={filters} />)}
             </ul>
           </section>
         ))

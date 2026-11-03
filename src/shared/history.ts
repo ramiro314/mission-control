@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AGENT_TYPES, type AgentType } from "./types.ts";
+import { AGENT_TYPES, type AgentType, type TranscriptMessage } from "./types.ts";
 
 /**
  * Session History: the catalog of every agent session this machine holds on disk, whether or
@@ -89,6 +89,11 @@ export interface HistorySessionSummary {
   prUrls: string[];
   continuedIn: string | null;
   subagentCount: number;
+  /**
+   * The Registry session running this conversation right now, or null. Joined when the row is
+   * served, never stored: the catalog records what is on disk, the Registry what is running.
+   */
+  liveSessionId: string | null;
 }
 
 /** First-run progress: how much of what the last walk found is already in the catalog. */
@@ -176,7 +181,55 @@ export const HistorySessionsQuerySchema = z
   .strict();
 export type HistorySessionsQuery = z.infer<typeof HistorySessionsQuerySchema>;
 
+/** How the page names a kind. A kind a later build appends shows as its raw value. */
+export const HISTORY_KIND_LABELS: Readonly<Record<string, string>> = {
+  interactive: "Interactive",
+  sdk: "SDK",
+  one_shot: "One-shot",
+  reviewer: "Reviewer",
+  unclassified: "Unclassified",
+};
+
 /** The title a row shows: custom title, AI title, then the first prompt. */
 export function historyTitle(row: Pick<HistorySessionSummary, "customTitle" | "aiTitle" | "firstPrompt">): string {
   return row.customTitle?.trim() || row.aiTitle?.trim() || row.firstPrompt?.trim() || "Untitled session";
 }
+
+/**
+ * An agent's own session id as History addresses it: a UUID, nothing else. Checked before the
+ * catalog is asked, so a request can never steer a lookup with a path-shaped id.
+ */
+const HISTORY_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isHistorySessionId(raw: string): boolean {
+  return HISTORY_SESSION_ID.test(raw);
+}
+
+/** `GET /api/history/sessions/:agent/:id`: one row and whether it is running now. */
+export interface HistorySessionDetail {
+  session: HistorySessionSummary;
+}
+
+/** `GET /api/history/sessions/:agent/:id/messages`: one window of turns, read forward. */
+export interface HistoryMessagesPage {
+  messages: TranscriptMessage[];
+  /** Opaque; pass back as `cursor` for the next, later window. Null once the last turn is read. */
+  nextCursor: string | null;
+}
+
+/** Turns per conversation window. */
+export const HISTORY_MESSAGES_PAGE_TURNS = 100;
+
+/**
+ * `GET /api/history/sessions/:agent/:id/messages`. The cursor is the byte offset the previous
+ * window ended at; anything else is refused rather than read from the top.
+ */
+export const HistoryMessagesQuerySchema = z
+  .object({
+    cursor: z
+      .string()
+      .regex(/^\d{1,15}$/, "invalid history messages cursor")
+      .optional(),
+  })
+  .strict();
+export type HistoryMessagesQuery = z.infer<typeof HistoryMessagesQuerySchema>;

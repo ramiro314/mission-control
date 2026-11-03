@@ -62,6 +62,26 @@ unknown kind, an impossible day) is dropped from the URL rather than sent.
   so it is hidden.
 - **Clear filters** drops every filter and keeps the search words.
 
+## A session
+
+Select a row's title, or open `#/history/claude/<id>`, to read one session. **← History**
+returns to the list as it was, with its search and filters and the rows already paged to:
+the detail's URL carries the list's filters (`#/history/claude/<id>?q=&kind=`). A deep link naming an agent
+this build does not know, or an id that is not a UUID, lands on the list; a well-formed id
+History has not indexed says so.
+
+- **Header.** Title, kind, repository, branch, working directory, model, start and last
+  activity, duration and cost, each shown when the transcript recorded it.
+- **Conversation.** The session's messages, rendered by the same component the live
+  conversation panel uses (`ConversationMessages` in `TranscriptPanel.tsx`), read from the
+  transcript on disk from the top. **Load more messages** reads the next window. It is
+  read-only: there is no composer.
+- **Transcript gone.** The header stays, with the **Transcript gone** badge, and the
+  conversation says it was removed by Claude Code's retention.
+- **Live.** A session the Registry is running carries a **Live** badge in the list and in its
+  detail, and the detail offers **Open in Fleet**, which selects its card. The detail reads the
+  transcript when it opens; it does not stream. Live status is read when the row is served.
+
 ## Session kinds
 
 A Claude session's kind comes from its transcript, by these rules in order; the first match
@@ -131,6 +151,19 @@ milliseconds on last activity, `from` inclusive and `to` exclusive. `kind` is `a
 kind; absent means conversations. It is loopback-only like the rest of `/api/*`, takes no path,
 and is not exposed as an MCP tool. A malformed cursor, an out-of-range limit, an unknown kind
 or agent, a query over 200 characters, or any parameter it does not know is refused with 400.
+
+Every route is loopback-only like the rest of `/api/*`, takes no path, and is not exposed as an
+MCP tool. A session is addressed as `:agent/:id`, where `:id` must be a UUID; its transcript
+path always comes from the catalog.
+
+| Route | Returns |
+|---|---|
+| `GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent` | The list, described above. |
+| `GET /api/history/sessions/:agent/:id` | `{session}`: the catalog row. 404 for an agent with no reader, a non-UUID id, or an id the catalog does not know. |
+| `GET /api/history/sessions/:agent/:id/messages?cursor` | `{messages, nextCursor}`: a window of turns read forward from the byte offset `cursor` (the top when absent), through the same path-based window reads a live session uses. A window is at least 100 turns and 512 KB. 410 when the transcript file is gone (missing on disk, whether or not a walk has marked it yet); 500 naming the reason (`EACCES`, `ELOOP`, not a regular file) when it is there but cannot be read, so it is never shown as removed, empty or finished; 404 as above, or when the cataloged path does not resolve, through symlinks, under one of its harness's roots. A malformed cursor is refused with 400. |
+
+Every row carries `liveSessionId`: the Registry session running that conversation now, joined
+when the row is served and never stored.
 
 ## Settings
 

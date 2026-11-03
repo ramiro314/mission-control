@@ -51,7 +51,7 @@ import {
 } from "../lib/transcript-history.ts";
 import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
-import { mergeConversation } from "../lib/episodes.ts";
+import { mergeConversation, type ConversationRow } from "../lib/episodes.ts";
 import { projectLaunchPresentation } from "../lib/launch-presentation.ts";
 import { collapseSteerEchoes } from "@shared/message-delivery.ts";
 import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
@@ -1164,67 +1164,21 @@ export function TranscriptPanel({
         {status !== "unavailable" && rows.length === 0 && (
           <p className="transcript-empty">{status === "connecting" ? "Loading…" : "No messages yet."}</p>
         )}
-        {rows.map((row) =>
-              row.kind === "episode" ? (
-                <div
-                  key={`ep-${row.episode.id}`}
-                  className="transcript-episode"
-                  data-episode-marker={row.episode.marker}
-                >
-                  <ForemanEpisodeCard episode={row.episode} absoluteTime />
-                </div>
-              ) : row.kind === "review" ? (
-                <ReviewAnswerCard key={`rv-${row.review.id}`} review={row.review} />
-              ) : row.kind === "tools" ? (
-                terminal ? (
-                  <TerminalToolRun
-                    key={row.id}
-                    tools={row.tools}
-                    ts={row.ts}
-                    endTs={row.endTs}
-                    agentLabel={agentLabel}
-                    find={findFor(hits, row.id, find?.query ?? "", currentKey)}
-                  />
-                ) : (
-                  <ToolRun
-                    key={row.id}
-                    tools={row.tools}
-                    ts={row.ts}
-                    agentLabel={agentLabel}
-                    find={findFor(hits, row.id, find?.query ?? "", currentKey)}
-                  />
-                )
-              ) : terminal ? (
-                <TerminalTurn
-                  key={row.id}
-                  m={row.message}
-                  sessionId={sessionId}
-                  agentLabel={agentLabel}
-                  cwd={promptCwd}
-                  fullCwd={session.cwd}
-                  onOpenFile={linkHandler}
-                  onCommentInFiles={commentHandler}
-                  onViewInFiles={viewHandler}
-                  filePaths={filePaths}
-                  find={findFor(hits, row.id, find?.query ?? "", currentKey)}
-                  flashed={row.id === flashedTurnId}
-                />
-              ) : (
-                <Turn
-                  key={row.id}
-                  m={row.message}
-                  sessionId={sessionId}
-                  agentLabel={agentLabel}
-                  onOpenFile={linkHandler}
-                  onCommentInFiles={commentHandler}
-                  onViewInFiles={viewHandler}
-                  filePaths={filePaths}
-                  find={findFor(hits, row.id, find?.query ?? "", currentKey)}
-                  flashed={row.id === flashedTurnId}
-                  receivedBy={received.has(row.message.id) ? agentLabel : undefined}
-                />
-              ),
-        )}
+        <ConversationMessages
+          rows={rows}
+          agentLabel={agentLabel}
+          terminal={terminal}
+          sessionId={sessionId}
+          cwd={promptCwd}
+          fullCwd={session.cwd}
+          onOpenFile={linkHandler}
+          onCommentInFiles={commentHandler}
+          onViewInFiles={viewHandler}
+          filePaths={filePaths}
+          find={find ? { hits, query: find.query, currentKey } : null}
+          flashedTurnId={flashedTurnId}
+          received={received}
+        />
         {inProgress && (
           <InProgressRow
             agentLabel={agentLabel}
@@ -1548,6 +1502,121 @@ export function ConversationViewToggle({
         <span className="session-toolbar-check" aria-hidden="true">{terminal === (view === "terminal") ? "✓" : ""}</span>
       </button></Tooltip>)}</>}
     </SessionToolbarMenu>
+  );
+}
+
+/**
+ * The conversation's rows, drawn - the message rendering both the live panel and History's
+ * read-only reader use.
+ *
+ * Takes rows built from messages (`transcriptRows`, merged with Foreman's record by
+ * `mergeConversation` where there is one) rather than a session, so a transcript read from
+ * disk renders exactly as a live one does. Everything live - the stream, the composer, the
+ * pending and steered rows - stays in `TranscriptPanel`, which draws those around this.
+ */
+export function ConversationMessages({
+  rows,
+  agentLabel,
+  terminal,
+  sessionId,
+  cwd,
+  fullCwd,
+  onOpenFile,
+  onCommentInFiles,
+  onViewInFiles,
+  filePaths,
+  find,
+  flashedTurnId = null,
+  received = NO_IDS,
+}: {
+  rows: readonly ConversationRow[];
+  agentLabel: string;
+  terminal: boolean;
+  /**
+   * Whose files a presented artifact opens from, and the key its discovered artifacts are
+   * kept under. A reader with no checkout passes no `filePaths`, so it discovers none.
+   */
+  sessionId: string;
+  /** The terminal prompt's working directory as it is drawn. */
+  cwd: string;
+  /** The whole path `cwd` stands for, for the tooltip. */
+  fullCwd: string | null;
+  onOpenFile?: WorkspaceLinkHandler;
+  onCommentInFiles?: (path: string) => void;
+  onViewInFiles?: (path: string) => void;
+  filePaths?: ReadonlySet<string> | null;
+  /** The open search, already scoped, or null when find is closed. */
+  find?: { hits: FindHit[]; query: string; currentKey: string | null } | null;
+  flashedTurnId?: string | null;
+  /** Turns that just replaced a steered row. */
+  received?: ReadonlySet<string>;
+}): React.JSX.Element {
+  const hits = find?.hits ?? [];
+  const currentKey = find?.currentKey ?? null;
+  return (
+    <>
+      {rows.map((row) =>
+            row.kind === "episode" ? (
+              <div
+                key={`ep-${row.episode.id}`}
+                className="transcript-episode"
+                data-episode-marker={row.episode.marker}
+              >
+                <ForemanEpisodeCard episode={row.episode} absoluteTime />
+              </div>
+            ) : row.kind === "review" ? (
+              <ReviewAnswerCard key={`rv-${row.review.id}`} review={row.review} />
+            ) : row.kind === "tools" ? (
+              terminal ? (
+                <TerminalToolRun
+                  key={row.id}
+                  tools={row.tools}
+                  ts={row.ts}
+                  endTs={row.endTs}
+                  agentLabel={agentLabel}
+                  find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                />
+              ) : (
+                <ToolRun
+                  key={row.id}
+                  tools={row.tools}
+                  ts={row.ts}
+                  agentLabel={agentLabel}
+                  find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                />
+              )
+            ) : terminal ? (
+              <TerminalTurn
+                key={row.id}
+                m={row.message}
+                sessionId={sessionId}
+                agentLabel={agentLabel}
+                cwd={cwd}
+                fullCwd={fullCwd}
+                onOpenFile={onOpenFile}
+                onCommentInFiles={onCommentInFiles}
+                onViewInFiles={onViewInFiles}
+                filePaths={filePaths}
+                find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                flashed={row.id === flashedTurnId}
+              />
+            ) : (
+              <Turn
+                key={row.id}
+                m={row.message}
+                sessionId={sessionId}
+                agentLabel={agentLabel}
+                onOpenFile={onOpenFile}
+                onCommentInFiles={onCommentInFiles}
+                onViewInFiles={onViewInFiles}
+                filePaths={filePaths}
+                find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                flashed={row.id === flashedTurnId}
+                receivedBy={received.has(row.message.id) ? agentLabel : undefined}
+              />
+            ),
+      )}
+    </>
   );
 }
 

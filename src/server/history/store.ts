@@ -143,6 +143,7 @@ function toSummary(row: Row): HistorySessionSummary {
     prUrls: parseUrls(row.pr_urls),
     continuedIn: row.continued_in,
     subagentCount: row.subagent_count,
+    liveSessionId: null,
   };
 }
 
@@ -182,6 +183,14 @@ export class HistoryStore {
     return out;
   }
 
+  /** One row and the transcript path it was built from, or null when the catalog has no such row. */
+  entry(agent: AgentType, agentSessionId: string): { summary: HistorySessionSummary; transcriptPath: string } | null {
+    const row = this.db
+      .prepare("SELECT * FROM history_sessions WHERE agent = ? AND agent_session_id = ?")
+      .get(agent, agentSessionId) as unknown as Row | undefined;
+    return row ? { summary: toSummary(row), transcriptPath: row.transcript_path } : null;
+  }
+
   /** Where the last parse of a row's file stopped, for an incremental re-summarize. */
   parsePoint(agent: AgentType, agentSessionId: string): HistoryParsePoint | null {
     const row = this.db
@@ -190,8 +199,15 @@ export class HistoryStore {
     if (!row) return null;
     const fingerprint = parseFingerprint(row.fingerprint);
     if (!fingerprint) return null;
-    const { agent: _agent, agentSessionId: _id, transcriptState: _state, goneAt: _goneAt, repoRoot: _repo, ...summary } =
-      toSummary(row);
+    const {
+      agent: _agent,
+      agentSessionId: _id,
+      transcriptState: _state,
+      goneAt: _goneAt,
+      repoRoot: _repo,
+      liveSessionId: _live,
+      ...summary
+    } = toSummary(row);
     return {
       parsedBytes: row.parsed_bytes,
       ino: fingerprint.ino,
