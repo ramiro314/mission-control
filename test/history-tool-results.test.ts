@@ -369,6 +369,7 @@ test("the detail lists subagent runs from the session's own listing, and each pa
 
   const detail = await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail;
   assert.deepEqual(detail.subagents.map((run) => run.agentId), ["0123abcd", "89abcdef"], "oldest first, listed files only");
+  assert.equal(detail.session.subagentCount, detail.subagents.length, "the row counts exactly the runs the detail lists");
   assert.deepEqual(
     { agentType: detail.subagents[0]!.agentType, description: detail.subagents[0]!.description, firstPrompt: detail.subagents[0]!.firstPrompt },
     { agentType: "Explore", description: "Find the retry loop", firstPrompt: "subagent question 0" },

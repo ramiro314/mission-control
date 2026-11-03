@@ -32,7 +32,6 @@ import { claudeHistoryMessages, claudeSubagentMessages, toHistoryMessage, toMess
  */
 
 const SESSION_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
-const SUBAGENT_FILE = /^agent-[^/]+\.jsonl$/;
 /** The first prompt is a title fallback and a search seed, not a transcript. */
 const FIRST_PROMPT_CAP = 500;
 const READ_CHUNK = 1 << 20;
@@ -319,10 +318,14 @@ async function foldFrom(path: string, offset: number, acc: Accumulator, prompts:
   }
 }
 
+/**
+ * How many subagent runs a session's detail will list: the same regular files with an id in
+ * the route's format that `subagents` lists, so the row's count and the detail always agree.
+ */
 async function countSubagents(transcriptPath: string, agentSessionId: string): Promise<number> {
   try {
-    const names = await readdir(join(dirname(transcriptPath), agentSessionId, "subagents"));
-    return names.filter((name) => SUBAGENT_FILE.test(name)).length;
+    const entries = await readdir(join(dirname(transcriptPath), agentSessionId, SUBAGENT_DIR), { withFileTypes: true });
+    return entries.filter((entry) => entry.isFile() && subagentIdOf(entry.name) !== null).length;
   } catch {
     return 0;
   }
@@ -332,6 +335,12 @@ async function countSubagents(transcriptPath: string, agentSessionId: string): P
 const SIDECAR_DIR = "tool-results";
 const SUBAGENT_DIR = "subagents";
 const SUBAGENT_ID = /^agent-(.+)\.jsonl$/;
+
+/** The run id a listed file name carries, or null when it is not a subagent run History can address. */
+function subagentIdOf(name: string): string | null {
+  const agentId = SUBAGENT_ID.exec(name)?.[1];
+  return agentId && isHistorySubagentId(agentId) ? agentId : null;
+}
 /** The bytes of a subagent transcript read for its label and start time. */
 const SUBAGENT_HEAD_BYTES = 64 * 1024;
 const SUBAGENT_PROMPT_CAP = 200;
@@ -507,8 +516,8 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
       const folder = join(dirname(transcriptPath), agentSessionId, SUBAGENT_DIR);
       const files = await subagentListing(folder);
       const runs = await Promise.all([...files].map(async (name): Promise<HistorySubagentFile | null> => {
-        const agentId = SUBAGENT_ID.exec(name)?.[1];
-        if (!agentId || !isHistorySubagentId(agentId)) return null;
+        const agentId = subagentIdOf(name);
+        if (!agentId) return null;
         const path = join(folder, name);
         const metaName = `agent-${agentId}.meta.json`;
         const meta = files.has(metaName) ? await subagentMeta(join(folder, metaName)) : { agentType: null, description: null };

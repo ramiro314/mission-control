@@ -218,6 +218,8 @@ test("the walk yields top-level sessions only: subagent transcripts are counted,
   const id = sessionId();
   writeTranscript(projects, "-w", id, records(id, { cwd: "/w", entrypoint: "cli" }));
   mkdirSync(join(projects, "-w", id, "subagents"), { recursive: true });
+  writeFileSync(join(projects, "-w", id, "subagents", "agent-abc12345.jsonl"), "{}\n");
+  // Outside the subagent id format, so the detail cannot list it, and the count does not either.
   writeFileSync(join(projects, "-w", id, "subagents", "agent-abc123.jsonl"), "{}\n");
   writeFileSync(join(projects, "-w", "notes.txt"), "not a session");
   const reader = createClaudeHistory(projects);

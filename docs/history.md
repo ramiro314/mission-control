@@ -144,7 +144,9 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   incremental summarize, the stable rule that chooses between two files carrying one
   session id, and the on-demand conversation and launch-context readers. Claude's walks `~/.claude/projects` (a custom `CLAUDE_CONFIG_DIR` is not
   followed), lists only top-level `<sessionId>.jsonl` files, and counts subagent runs under
-  `<sessionId>/subagents/` without listing them as sessions. It reads `cwd` from records, never from the
+  `<sessionId>/subagents/` without listing them as sessions. The count is exactly the runs a
+  session's detail lists: regular `agent-<agentId>.jsonl` files whose id is in the subagent
+  route's format. It reads `cwd` from records, never from the
   project folder name, and skips record and attachment types it does not know.
 - **Store.** `history_sessions` in `harness.db`, one row per agent and session id, and
   `history_search_segments`, its folded search text (fields at ordinal 0, prompts after, in
