@@ -428,6 +428,28 @@ test("paging a subagent run looks up its one file, without reading every run to 
   rmSync(projects, { recursive: true, force: true });
 });
 
+test("a session with hundreds of subagent runs labels every one", async () => {
+  const f = await fixture();
+  const id = sessionId();
+  writeSession(f.projects, id, []);
+  const subagents = join(sessionDir(f.projects, id), "subagents");
+  mkdirSync(subagents, { recursive: true });
+  const ids = Array.from({ length: 300 }, (_, i) => i.toString(16).padStart(8, "0"));
+  for (const agentId of ids) {
+    writeLines(join(subagents, `agent-${agentId}.jsonl`), [{ ...base(id), isSidechain: true, timestamp: at(1), uuid: `s-${agentId}`, type: "user", message: { role: "user", content: `run ${agentId}` } }]);
+    writeFileSync(join(subagents, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "Explore", description: `look ${agentId}` }));
+  }
+  await f.history.reconciler.trigger();
+  const detail = await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail;
+  assert.equal(detail.subagents.length, 300);
+  assert.equal(detail.session.subagentCount, 300);
+  for (const run of detail.subagents) {
+    assert.equal(run.description, `look ${run.agentId}`, run.agentId);
+    assert.equal(run.firstPrompt, `run ${run.agentId}`, run.agentId);
+  }
+  f.done();
+});
+
 test("a gone transcript answers 410 for its results and runs, and lists no subagents", async () => {
   const f = await fixture();
   const id = sessionId();

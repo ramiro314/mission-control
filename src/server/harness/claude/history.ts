@@ -14,6 +14,7 @@ import type {
   HistorySummary,
 } from "../types.ts";
 import { claudeCleanupPeriodDays } from "@shared/claude-settings.ts";
+import { mapBounded } from "../../util/map-bounded.ts";
 import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "./project-dir.ts";
 import { readClaudeLaunchContext } from "./launch-context.ts";
 import { claudeHistoryMessages, claudeSubagentMessages, toHistoryMessage, toMessage } from "./transcript.ts";
@@ -344,6 +345,8 @@ function subagentIdOf(name: string): string | null {
 /** The bytes of a subagent transcript read for its label and start time. */
 const SUBAGENT_HEAD_BYTES = 64 * 1024;
 const SUBAGENT_PROMPT_CAP = 200;
+/** Subagent runs whose label is read at once: each holds up to two files open. */
+const SUBAGENT_LABEL_CONCURRENCY = 8;
 /** How Claude Code wraps the preview of an output it saved to a sidecar file, and closes it. */
 const PERSISTED_OUTPUT = "<persisted-output>";
 const PERSISTED_OUTPUT_END = "</persisted-output>";
@@ -515,14 +518,17 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
     async subagents(transcriptPath, agentSessionId): Promise<HistorySubagentFile[]> {
       const folder = join(dirname(transcriptPath), agentSessionId, SUBAGENT_DIR);
       const files = await subagentListing(folder);
-      const runs = await Promise.all([...files].map(async (name): Promise<HistorySubagentFile | null> => {
+      // Bounded: each label read holds a file open across its awaits, and a session can have
+      // hundreds of runs. An unbounded fan-out could exhaust file descriptors, and the readers
+      // would then answer EMFILE with blank labels.
+      const runs = await mapBounded([...files], SUBAGENT_LABEL_CONCURRENCY, async (name): Promise<HistorySubagentFile | null> => {
         const agentId = subagentIdOf(name);
         if (!agentId) return null;
         const path = join(folder, name);
         const metaName = `agent-${agentId}.meta.json`;
         const meta = files.has(metaName) ? await subagentMeta(join(folder, metaName)) : { agentType: null, description: null };
         return { agentId, path, folder, ...meta, ...(await subagentHead(path)) };
-      }));
+      });
       return runs
         .filter((run): run is HistorySubagentFile => run !== null)
         .sort((a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity) || (a.agentId < b.agentId ? -1 : 1));
