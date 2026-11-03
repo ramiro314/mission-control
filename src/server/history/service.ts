@@ -9,6 +9,7 @@ import {
   isHistorySessionId,
   isHistorySubagentId,
   isHistoryToolUseId,
+  type HistoryLaunchContext,
   type HistoryMessagesPage,
   type HistoryMessagesQuery,
   type HistoryPage,
@@ -40,8 +41,15 @@ export type HistoryRead<T> =
 
 type HistoryRefusal = { ok: false; status: 404 | 410 | 500; error: string };
 
+type HistoryEntry = NonNullable<ReturnType<HistoryStore["entry"]>>;
+
 const UNKNOWN: HistoryRefusal = { ok: false, status: 404, error: "no such history session" };
 const GONE: HistoryRefusal = { ok: false, status: 410, error: "transcript removed by Claude Code's retention" };
+
+/** A session's launch context, or why there is none, on the same terms as `HistoryMessagesRead`. */
+export type HistoryLaunchContextRead =
+  | { ok: true; context: HistoryLaunchContext }
+  | { ok: false; status: 404 | 410 | 500; error: string };
 
 /** Only a missing file is a removed transcript; anything else is a read that failed. */
 function isMissing(error: unknown): boolean {
@@ -145,9 +153,9 @@ export class HistoryService {
     const found = this.find(agent, id);
     if (!found) return null;
     const { summary } = found.entry;
-    const transcript = await this.transcript(agent, id);
-    const subagents = transcript.ok
-      ? (await found.reader.spec.subagents(transcript.page.path, summary.agentSessionId))
+    const resolved = await this.transcript(agent, id);
+    const subagents = resolved.ok
+      ? (await found.reader.spec.subagents(resolved.path, summary.agentSessionId))
         .map(({ path: _path, folder: _folder, ...run }) => run)
       : [];
     return { session: { ...summary, liveSessionId: live(summary.agent, summary.agentSessionId) }, subagents };
@@ -155,13 +163,26 @@ export class HistoryService {
 
   /**
    * One window of a session's conversation, read forward from `cursor` (the top when absent).
-   * The path is the catalog's, and it is read only when it resolves under one of its harness's
-   * roots, so neither a request nor a rewritten row can point a read anywhere else.
    */
   async messages(agent: string, id: string, query: HistoryMessagesQuery): Promise<HistoryMessagesRead> {
-    const transcript = await this.transcript(agent, id);
-    if (!transcript.ok) return transcript;
-    return readWindow(transcript.page.reader.spec.messages, transcript.page.path, query);
+    const resolved = await this.transcript(agent, id);
+    if (!resolved.ok) return resolved;
+    const page = resolved.reader.spec.messages.after(resolved.path, Number(query.cursor ?? 0), HISTORY_MESSAGES_PAGE_TURNS);
+    return { ok: true, page: { messages: page.messages, nextCursor: page.atEnd ? null : String(page.end) } };
+  }
+
+  /**
+   * What a session was launched with, parsed from its transcript now. Never cached: the
+   * transcript is the only copy, and reading it again is what keeps it the only copy.
+   */
+  async launchContext(agent: string, id: string): Promise<HistoryLaunchContextRead> {
+    const resolved = await this.transcript(agent, id);
+    if (!resolved.ok) return resolved;
+    try {
+      return { ok: true, context: await resolved.reader.spec.launchContext(resolved.path) };
+    } catch (error) {
+      return isMissing(error) ? GONE : unreadable(error);
+    }
   }
 
   /**
@@ -172,9 +193,9 @@ export class HistoryService {
    */
   async toolResult(agent: string, id: string, toolUseId: string): Promise<HistoryRead<HistoryToolResult>> {
     if (!isHistoryToolUseId(toolUseId)) return { ok: false, status: 404, error: "no such tool call" };
-    const transcript = await this.transcript(agent, id);
-    if (!transcript.ok) return transcript;
-    const { reader, entry, path } = transcript.page;
+    const resolved = await this.transcript(agent, id);
+    if (!resolved.ok) return resolved;
+    const { reader, entry, path } = resolved;
     let recorded;
     try {
       recorded = await reader.spec.toolResult(path, entry.summary.agentSessionId, toolUseId);
@@ -237,9 +258,9 @@ export class HistoryService {
   async subagentMessages(agent: string, id: string, agentId: string, query: HistoryMessagesQuery): Promise<HistoryMessagesRead> {
     const unknown: HistoryRefusal = { ok: false, status: 404, error: "no such subagent run" };
     if (!isHistorySubagentId(agentId)) return unknown;
-    const transcript = await this.transcript(agent, id);
-    if (!transcript.ok) return transcript;
-    const { reader, entry, path } = transcript.page;
+    const resolved = await this.transcript(agent, id);
+    if (!resolved.ok) return resolved;
+    const { reader, entry, path } = resolved;
     const run = await reader.spec.subagentFile(path, entry.summary.agentSessionId, agentId);
     if (!run) return unknown;
     let real: string;
@@ -253,14 +274,14 @@ export class HistoryService {
   }
 
   /**
-   * The session's transcript, resolved: its real path, confirmed under one of its harness's
-   * roots. A gone row or a missing file is 410; a file there but unreadable is a 500.
+   * The transcript a session's reads open, or why there is none. The path is the catalog's,
+   * and it is read only when it resolves under one of its harness's roots, so neither a
+   * request nor a rewritten row can point a read anywhere else.
    */
-  private async transcript(agent: string, id: string): Promise<HistoryRead<{
-    reader: HistoryReader;
-    entry: NonNullable<ReturnType<HistoryStore["entry"]>>;
-    path: string;
-  }>> {
+  private async transcript(agent: string, id: string): Promise<
+    | { ok: true; reader: HistoryReader; entry: HistoryEntry; path: string }
+    | { ok: false; status: 404 | 410 | 500; error: string }
+  > {
     const found = this.find(agent, id);
     if (!found) return UNKNOWN;
     const { reader, entry } = found;
@@ -276,7 +297,20 @@ export class HistoryService {
     }
     const roots = await Promise.all(reader.spec.roots().map((root) => realpath(root).catch(() => null)));
     if (!roots.some((root) => root !== null && isInside(root, real))) return UNKNOWN;
-    return { ok: true, page: { reader, entry, path: real } };
+    // `after()` answers an unreadable file with an empty, finished page, which is right for a
+    // collector and wrong here: it would read as an empty conversation, or end one early. So
+    // the file is opened first, and only a readable regular file reaches a reader.
+    try {
+      const handle = await open(real, "r");
+      try {
+        if (!(await handle.stat()).isFile()) return unreadable(new Error("not a regular file"));
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      return isMissing(error) ? GONE : unreadable(error);
+    }
+    return { ok: true, reader, entry, path: real };
   }
 
   /** The reader and the row for a request's agent and id, or null for anything History cannot address. */

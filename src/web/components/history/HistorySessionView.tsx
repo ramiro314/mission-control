@@ -14,12 +14,14 @@ import { transcriptRows } from "../../lib/tools.ts";
 import { agentAccentStyle } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { ConversationMessages } from "../TranscriptPanel.tsx";
+import { HistoryLaunchContextView } from "./HistoryLaunchContext.tsx";
 import { HistorySubagentRuns } from "./HistorySubagentRuns.tsx";
 import { HistoryToolCalls } from "./HistoryToolCalls.tsx";
 import { useHistoryConversation } from "./useHistoryConversation.ts";
 
 /**
- * One History session: a header of what the catalog recorded, then its conversation, read-only.
+ * One History session: a header of what the catalog recorded, then two read-only tabs - its
+ * conversation, and the context it was launched with.
  *
  * The conversation is read from disk when the view opens and paged forward from the top. A
  * session the Registry is running still reads this way - it never streams here; Open in Fleet
@@ -150,6 +152,80 @@ function HistoryConversation({
   );
 }
 
+type HistoryTab = "conversation" | "launch";
+
+const HISTORY_TABS: { id: HistoryTab; label: string; hint: string }[] = [
+  { id: "conversation", label: "Conversation", hint: "The session's messages, read from its transcript on disk" },
+  {
+    id: "launch",
+    label: "Launch context",
+    hint: "Instruction files, prompts, skills, MCP servers, environment and hooks, as the transcript recorded them",
+  },
+];
+
+/**
+ * The detail's two tabs. A tab's panel mounts the first time it is chosen and then stays,
+ * hidden while the other shows, so switching back never reads its transcript again.
+ */
+function HistorySessionTabs({
+  session,
+  subagents,
+}: {
+  session: HistorySessionSummary;
+  subagents: HistorySubagent[];
+}): React.JSX.Element {
+  const [tab, setTab] = useState<HistoryTab>("conversation");
+  const [opened, setOpened] = useState<ReadonlySet<HistoryTab>>(() => new Set(["conversation"]));
+  const choose = (next: HistoryTab) => {
+    setTab(next);
+    setOpened((prev) => (prev.has(next) ? prev : new Set([...prev, next])));
+  };
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const at = HISTORY_TABS.findIndex((t) => t.id === tab);
+    const next = HISTORY_TABS[(at + (event.key === "ArrowRight" ? 1 : -1) + HISTORY_TABS.length) % HISTORY_TABS.length]!;
+    choose(next.id);
+    document.getElementById(`history-tab-${next.id}`)?.focus();
+  };
+  return (
+    <>
+      <div className="history-tabs" role="tablist" aria-label="Session view" onKeyDown={onKeyDown}>
+        {HISTORY_TABS.map((t) => (
+          <Tooltip key={t.id} label={t.hint}>
+            <button
+              type="button"
+              role="tab"
+              id={`history-tab-${t.id}`}
+              aria-selected={tab === t.id}
+              aria-controls={`history-panel-${t.id}`}
+              tabIndex={tab === t.id ? 0 : -1}
+              className={tab === t.id ? "history-tab is-active" : "history-tab"}
+              onClick={() => choose(t.id)}
+            >
+              {t.label}
+            </button>
+          </Tooltip>
+        ))}
+      </div>
+      {HISTORY_TABS.filter((t) => opened.has(t.id)).map((t) => (
+        <section
+          key={t.id}
+          role="tabpanel"
+          id={`history-panel-${t.id}`}
+          aria-labelledby={`history-tab-${t.id}`}
+          className="history-tabpanel"
+          hidden={tab !== t.id}
+        >
+          {t.id === "conversation"
+            ? <HistoryConversation session={session} subagents={subagents} />
+            : <HistoryLaunchContextView session={session} retentionMessage={RETENTION_MESSAGE} />}
+        </section>
+      ))}
+    </>
+  );
+}
+
 export function HistorySessionView({
   agent,
   id,
@@ -199,16 +275,7 @@ export function HistorySessionView({
       ) : (
         <>
           <HistorySessionHeader session={detail.session} onOpenSession={onOpenSession} />
-          <div className="history-tabs" role="tablist" aria-label="Session view">
-            <Tooltip label="The session's messages, read from its transcript on disk">
-              <button type="button" role="tab" aria-selected="true" className="history-tab is-active" id="history-tab-conversation">
-                Conversation
-              </button>
-            </Tooltip>
-          </div>
-          <section role="tabpanel" aria-labelledby="history-tab-conversation" className="history-tabpanel">
-            <HistoryConversation session={detail.session} subagents={detail.subagents} />
-          </section>
+          <HistorySessionTabs session={detail.session} subagents={detail.subagents} />
         </>
       )}
     </main>

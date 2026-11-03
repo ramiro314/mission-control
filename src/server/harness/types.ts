@@ -1268,6 +1268,11 @@ export interface HistorySpec {
    */
   messages: TranscriptMessages;
   /**
+   * What a cataloged session was launched with, parsed from the transcript at the catalog's
+   * path on demand and never stored. Rejects only when that file cannot be read.
+   */
+  launchContext(path: string): Promise<import("@shared/history.ts").HistoryLaunchContext>;
+  /**
    * The result recorded for one tool call, found by its id in the transcript at
    * `transcriptPath` (already resolved and confined by the caller), or null when no record
    * holds one. A result kept in a sidecar file names that file from its own record; the caller

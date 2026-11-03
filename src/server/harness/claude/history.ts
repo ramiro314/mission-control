@@ -15,6 +15,7 @@ import type {
 } from "../types.ts";
 import { claudeCleanupPeriodDays } from "@shared/claude-settings.ts";
 import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "./project-dir.ts";
+import { readClaudeLaunchContext } from "./launch-context.ts";
 import { claudeHistoryMessages, claudeSubagentMessages, toHistoryMessage, toMessage } from "./transcript.ts";
 
 /**
@@ -488,6 +489,7 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
     roots: () => [projectsDir],
     messages: claudeHistoryMessages,
     subagentMessages: claudeSubagentMessages,
+    launchContext: readClaudeLaunchContext,
 
     async toolResult(transcriptPath, agentSessionId, toolUseId): Promise<HistoryRecordedToolResult | null> {
       const found = await findToolResult(transcriptPath, toolUseId);

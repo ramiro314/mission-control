@@ -65,7 +65,10 @@ comes from the catalog and is read only when it resolves, through symlinks, unde
 root. A tool result's sidecar file and a subagent transcript are confined further: a sidecar is
 read only through the file name its parent transcript's own record gives, a subagent only when
 the session's own listing holds it, and either only when it resolves inside that session's own
-`tool-results/` or `subagents/` folder. None of them is exposed as an MCP tool.
+`tool-results/` or `subagents/` folder. None of them is exposed as an MCP tool. A session's
+launch context is parsed from the same transcript on each request, so the instruction files,
+standing instructions, appended system prompt and git status it shows are never copied into
+`harness.db`.
 
 Requiring the daemon token, or an equivalent, for writes to executable settings (pool policy,
 Commands, testing settings and bulk apply) is a recorded follow-up:

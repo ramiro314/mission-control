@@ -88,8 +88,34 @@ History has not indexed says so.
   opening prompt). Each opens its own transcript in place, paged with **Load more subagent
   messages**. Its prompts are bylined as delegated from the parent session. A subagent's own
   tool calls show their input; their results are not read here.
-- **Transcript gone.** The header stays, with the **Transcript gone** badge, and the
-  conversation says it was removed by Claude Code's retention.
+- **Launch context.** The second tab: what the session was launched with, as its transcript
+  recorded it, parsed on demand and never copied into the catalog. Each section lists what was
+  recorded, or says **Not recorded** when the transcript holds no record of it. A missing record
+  is never read as "none": Claude Code writes no `instructions` record both when a session
+  loads no files and when `--setting-sources` restricts them.
+  - **Instruction files.** CLAUDE.md, AGENTS.md and memory files from `instructions`
+    attachments, each with its path, scope (`User`, `Project`, `AutoMem`), why it loaded
+    (`session_start`, `compaction`) and its text as that session loaded it, which may differ
+    from the file today. A file reloaded unchanged for the same reason is listed once.
+  - **Standing instructions** and **Appended system prompt**, from `prompt_snapshot.systemPrompt`.
+    Mission Control's standing-instructions block is recognized by its heading; every other
+    appended block is listed after it.
+  - **Skills.** Available, from `skill_listing`; used, from the `Skill` tool, `attributionSkill`,
+    `invoked_skills`, and slash commands that name a listed skill.
+  - **MCP servers and tools**, from `deferred_tools_delta`, `mcp_instructions_delta` and the
+    snapshot's tool list: each server's latest status (connected, pending, needs
+    authentication, failed), the instructions it sent, and the MCP tools offered.
+  - **Environment.** Working directory, branch, git status at launch, worktree and repository
+    flags, additional directories, platform, model, effort and permission mode, all from the
+    session's own records: a subagent's records and attachments never set them. The account
+    email Claude Code records beside the git status is not served.
+  - **Hooks** that ran (`stop_hook_summary`, `hook_cancelled`), grouped by event and command
+    with their run count, total and longest duration, and how many failed. A failed run is a
+    cancelled one, or one whose summary recorded `hookErrors`: a summary of one hook charges
+    its errors to that hook, and a summary of several charges only a hook whose command an
+    error names.
+- **Transcript gone.** The header stays, with the **Transcript gone** badge, and both tabs say
+  the transcript was removed by Claude Code's retention.
 - **Live.** A session the Registry is running carries a **Live** badge in the list and in its
   detail, and the detail offers **Open in Fleet**, which selects its card. The detail reads the
   transcript when it opens; it does not stream. Live status is read when the row is served.
@@ -115,8 +141,8 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
 
 - **Reader.** Each harness declares a nullable `history` slot (`HistorySpec` in
   `src/server/harness/types.ts`): the roots to walk, how to enumerate transcripts, an
-  incremental summarize, and the stable rule that chooses between two files carrying one
-  session id. Claude's walks `~/.claude/projects` (a custom `CLAUDE_CONFIG_DIR` is not
+  incremental summarize, the stable rule that chooses between two files carrying one
+  session id, and the on-demand conversation and launch-context readers. Claude's walks `~/.claude/projects` (a custom `CLAUDE_CONFIG_DIR` is not
   followed), lists only top-level `<sessionId>.jsonl` files, and counts subagent runs under
   `<sessionId>/subagents/` without listing them as sessions. It reads `cwd` from records, never from the
   project folder name, and skips record and attachment types it does not know.
@@ -173,6 +199,7 @@ path always comes from the catalog.
 | `GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent` | The list, described above. |
 | `GET /api/history/sessions/:agent/:id` | `{session, subagents}`: the catalog row, and the subagent runs the session's own `subagents/` folder lists (empty once the transcript is gone). 404 for an agent with no reader, a non-UUID id, or an id the catalog does not know. |
 | `GET /api/history/sessions/:agent/:id/messages?cursor` | `{messages, nextCursor}`: a window of turns read forward from the byte offset `cursor` (the top when absent), through the same path-based window reads a live session uses. A window is at least 100 turns and 512 KB. 410 when the transcript file is gone (missing on disk, whether or not a walk has marked it yet); 500 naming the reason (`EACCES`, `ELOOP`, not a regular file) when it is there but cannot be read, so it is never shown as removed, empty or finished; 404 as above, or when the cataloged path does not resolve, through symlinks, under one of its harness's roots. A malformed cursor is refused with 400. |
+| `GET /api/history/sessions/:agent/:id/launch-context` | `{instructionFiles, systemPrompt, skills, mcp, environment, hooks}` (`HistoryLaunchContext`), parsed from the transcript on each request by the harness's `launchContext` reader. A section is `null` when the transcript holds no record of it. 404, 410 and 500 as for `messages`. |
 | `GET /api/history/sessions/:agent/:id/tool-results/:toolUseId` | `{toolUseId, source, isError, text, truncated}`: one tool call's result, `inline` from its transcript record or `sidecar` from the file that record names. 404 when no record holds a result for the id, or its sidecar is missing or not reachable; 410 when the transcript is gone. |
 | `GET /api/history/sessions/:agent/:id/subagents/:agentId/messages?cursor` | `{messages, nextCursor}`: a window of one subagent run's transcript, paged like `messages`. 404 when the run is not in the session's own listing; 410 when the session's transcript is gone. |
 

@@ -180,7 +180,14 @@ import type {
   ArchivePage,
   ArchiveSearchQuery,
 } from "@shared/archives.ts";
-import type { HistoryMessagesPage, HistoryPage, HistorySessionDetail, HistorySessionsQuery, HistoryToolResult } from "@shared/history.ts";
+import type {
+  HistoryLaunchContext,
+  HistoryMessagesPage,
+  HistoryPage,
+  HistorySessionDetail,
+  HistorySessionsQuery,
+  HistoryToolResult,
+} from "@shared/history.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
 import type {
@@ -2279,6 +2286,13 @@ export const api = {
     archiveJson<HistoryMessagesPage>(
       `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/messages`
         + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""),
+      signal,
+    ),
+
+  /** What a History session was launched with, parsed from its transcript; a 410 means it is gone. */
+  historyLaunchContext: (agent: string, id: string, signal?: AbortSignal) =>
+    archiveJson<HistoryLaunchContext>(
+      `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/launch-context`,
       signal,
     ),
 

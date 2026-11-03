@@ -4033,6 +4033,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const read = await history.messages(c.req.param("agent"), c.req.param("id"), parsed.data);
     return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
   });
+  app.get("/api/history/sessions/:agent/:id/launch-context", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const read = await history.launchContext(c.req.param("agent"), c.req.param("id"));
+    return read.ok ? c.json(read.context) : c.json({ error: read.error }, read.status);
+  });
   // Neither `:toolUseId` nor `:agentId` is ever joined into a path: the service format-checks
   // each, finds the result through the parent transcript's own record or the subagent through
   // the session's own listing, and confines what it resolves to the session's own folder.
