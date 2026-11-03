@@ -104,6 +104,8 @@ test("Resume opens a terminal in the original directory, and a pending launch bl
   const view = detail(dashboard);
   await expect(view.getByRole("heading", { name: "Tidy the release notes", level: 2 })).toBeVisible();
   await expect(view.getByRole("button", { name: "Open in Fleet" })).toHaveCount(0);
+  await expect(view.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
+  await capture(dashboard, "00-button");
   await view.getByRole("button", { name: "Resume", exact: true }).click();
 
   const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
