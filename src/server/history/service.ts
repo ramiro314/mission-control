@@ -1,16 +1,21 @@
 import { open, realpath } from "node:fs/promises";
+import { join } from "node:path";
 import {
   HISTORY_MESSAGES_PAGE_TURNS,
   HISTORY_PAGE_LIMITS,
+  HISTORY_TOOL_RESULT_CAP,
   decodeHistoryCursor,
   historyFilterKinds,
   isHistorySessionId,
+  isHistorySubagentId,
+  isHistoryToolUseId,
   type HistoryLaunchContext,
   type HistoryMessagesPage,
   type HistoryMessagesQuery,
   type HistoryPage,
   type HistorySessionDetail,
   type HistorySessionsQuery,
+  type HistoryToolResult,
 } from "@shared/history.ts";
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 import { isInside } from "../archives/paths.ts";
@@ -21,6 +26,8 @@ import { HistoryResume } from "./resume.ts";
 import { HistoryResumeLaunches, trackHistoryResumeLaunches, type HistoryResumeRegistry } from "./resume-launches.ts";
 import { historySearchNeedle } from "./search.ts";
 import { HistoryStore } from "./store.ts";
+import { clipUtf8Bytes, decodeUtf8Whole, utf8Bytes } from "../util/utf8.ts";
+import type { TranscriptMessages } from "../harness/types.ts";
 
 /** Discovery's cadence when the poller is switched off: expiry still has to run. */
 const RESUME_TICK_FALLBACK_MS = 1_500;
@@ -40,9 +47,19 @@ export type HistoryLiveLookup = (agent: AgentType, agentSessionId: string) => st
  * A conversation window, or why there is none: unknown to History (404), its transcript gone
  * (410), or a transcript still there that could not be read (500, with the reason).
  */
-export type HistoryMessagesRead =
-  | { ok: true; page: HistoryMessagesPage }
+export type HistoryMessagesRead = HistoryRead<HistoryMessagesPage>;
+
+/** A History read that is either its value, or a refusal with the HTTP status that says why. */
+export type HistoryRead<T> =
+  | { ok: true; page: T }
   | { ok: false; status: 404 | 410 | 500; error: string };
+
+type HistoryRefusal = { ok: false; status: 404 | 410 | 500; error: string };
+
+type HistoryEntry = NonNullable<ReturnType<HistoryStore["entry"]>>;
+
+const UNKNOWN: HistoryRefusal = { ok: false, status: 404, error: "no such history session" };
+const GONE: HistoryRefusal = { ok: false, status: 410, error: "transcript removed by Claude Code's retention" };
 
 /** A session's launch context, or why there is none, on the same terms as `HistoryMessagesRead`. */
 export type HistoryLaunchContextRead =
@@ -55,11 +72,31 @@ function isMissing(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
-const GONE = { ok: false, status: 410, error: "transcript removed by Claude Code's retention" } as const;
-
 function unreadable(error: unknown): { ok: false; status: 500; error: string } {
   const reason = (error as NodeJS.ErrnoException | null)?.code ?? (error instanceof Error ? error.message : String(error));
   return { ok: false, status: 500, error: `could not read this transcript (${reason})` };
+}
+
+/**
+ * One forward window of a transcript already resolved and confined.
+ *
+ * `after()` answers an unreadable file with an empty, finished page, which is right for a
+ * collector and wrong here: it would read as an empty conversation, or end one early. So the
+ * file is opened first, and only a readable regular file reaches it.
+ */
+async function readWindow(reader: TranscriptMessages, path: string, query: HistoryMessagesQuery): Promise<HistoryMessagesRead> {
+  try {
+    const handle = await open(path, "r");
+    try {
+      if (!(await handle.stat()).isFile()) return unreadable(new Error("not a regular file"));
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    return isMissing(error) ? GONE : unreadable(error);
+  }
+  const page = reader.after(path, Number(query.cursor ?? 0), HISTORY_MESSAGES_PAGE_TURNS);
+  return { ok: true, page: { messages: page.messages, nextCursor: page.atEnd ? null : String(page.end) } };
 }
 
 /**
@@ -149,12 +186,20 @@ export class HistoryService {
     };
   }
 
-  /** One session's row and live status, or null when History does not know it. */
-  detail(agent: string, id: string, live: HistoryLiveLookup): HistorySessionDetail | null {
+  /**
+   * One session's row, live status and subagent runs, or null when History does not know it.
+   * The subagents are listed only while the transcript is there and readable.
+   */
+  async detail(agent: string, id: string, live: HistoryLiveLookup): Promise<HistorySessionDetail | null> {
     const found = this.find(agent, id);
     if (!found) return null;
     const { summary } = found.entry;
-    return { session: { ...summary, liveSessionId: live(summary.agent, summary.agentSessionId) } };
+    const resolved = await this.transcript(agent, id);
+    const subagents = resolved.ok
+      ? (await found.reader.spec.subagents(resolved.path, summary.agentSessionId))
+        .map(({ path: _path, folder: _folder, ...run }) => run)
+      : [];
+    return { session: { ...summary, liveSessionId: live(summary.agent, summary.agentSessionId) }, subagents };
   }
 
   /**
@@ -182,16 +227,106 @@ export class HistoryService {
   }
 
   /**
+   * One tool call's result. `toolUseId` is format-checked and then only looked up in the
+   * parent transcript; it never becomes part of a path. A result kept in a sidecar file is
+   * read through the file name its own record gives, and only when that file resolves inside
+   * the session's own `tool-results/` folder.
+   */
+  async toolResult(agent: string, id: string, toolUseId: string): Promise<HistoryRead<HistoryToolResult>> {
+    if (!isHistoryToolUseId(toolUseId)) return { ok: false, status: 404, error: "no such tool call" };
+    const resolved = await this.transcript(agent, id);
+    if (!resolved.ok) return resolved;
+    const { reader, entry, path } = resolved;
+    let recorded;
+    try {
+      recorded = await reader.spec.toolResult(path, entry.summary.agentSessionId, toolUseId);
+    } catch (error) {
+      return isMissing(error) ? GONE : unreadable(error);
+    }
+    if (!recorded) return { ok: false, status: 404, error: "no result is recorded for this tool call" };
+    // Both paths cap in UTF-8 bytes and cut only on a character boundary, so "cut at 1 MB"
+    // means the same amount wherever the result came from, and never ends in U+FFFD.
+    if (!recorded.sidecar) {
+      const truncated = utf8Bytes(recorded.text) > HISTORY_TOOL_RESULT_CAP;
+      return {
+        ok: true,
+        page: {
+          toolUseId,
+          source: "inline",
+          isError: recorded.isError,
+          text: truncated ? clipUtf8Bytes(recorded.text, HISTORY_TOOL_RESULT_CAP) : recorded.text,
+          truncated,
+        },
+      };
+    }
+    const unavailable: HistoryRefusal = { ok: false, status: 404, error: "this result's file is not available" };
+    const { folder, name } = recorded.sidecar;
+    let real: string;
+    try {
+      real = await realpath(join(folder, name));
+    } catch {
+      return unavailable;
+    }
+    if (real === folder || !isInside(folder, real)) return unavailable;
+    try {
+      const handle = await open(real, "r");
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile()) return unavailable;
+        const buffer = Buffer.alloc(Math.min(stat.size, HISTORY_TOOL_RESULT_CAP));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        return {
+          ok: true,
+          page: {
+            toolUseId,
+            source: "sidecar",
+            isError: recorded.isError,
+            text: decodeUtf8Whole(buffer.subarray(0, bytesRead)),
+            truncated: stat.size > HISTORY_TOOL_RESULT_CAP,
+          },
+        };
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      return unavailable;
+    }
+  }
+
+  /**
+   * One window of a subagent run's transcript. `agentId` is format-checked and names a file
+   * only when the session's own `subagents/` listing holds it, and that file is read only when
+   * it resolves inside that folder.
+   */
+  async subagentMessages(agent: string, id: string, agentId: string, query: HistoryMessagesQuery): Promise<HistoryMessagesRead> {
+    const unknown: HistoryRefusal = { ok: false, status: 404, error: "no such subagent run" };
+    if (!isHistorySubagentId(agentId)) return unknown;
+    const resolved = await this.transcript(agent, id);
+    if (!resolved.ok) return resolved;
+    const { reader, entry, path } = resolved;
+    const run = await reader.spec.subagentFile(path, entry.summary.agentSessionId, agentId);
+    if (!run) return unknown;
+    let real: string;
+    try {
+      real = await realpath(run.path);
+    } catch {
+      return unknown;
+    }
+    if (real === run.folder || !isInside(run.folder, real)) return unknown;
+    return readWindow(reader.spec.subagentMessages, real, query);
+  }
+
+  /**
    * The transcript a session's reads open, or why there is none. The path is the catalog's,
    * and it is read only when it resolves under one of its harness's roots, so neither a
    * request nor a rewritten row can point a read anywhere else.
    */
   private async transcript(agent: string, id: string): Promise<
-    | { ok: true; reader: HistoryReader; path: string }
+    | { ok: true; reader: HistoryReader; entry: HistoryEntry; path: string }
     | { ok: false; status: 404 | 410 | 500; error: string }
   > {
     const found = this.find(agent, id);
-    if (!found) return { ok: false, status: 404, error: "no such history session" };
+    if (!found) return UNKNOWN;
     const { reader, entry } = found;
     if (entry.summary.transcriptState === "gone") return GONE;
     let real: string;
@@ -204,9 +339,7 @@ export class HistoryService {
       return isMissing(error) ? GONE : unreadable(error);
     }
     const roots = await Promise.all(reader.spec.roots().map((root) => realpath(root).catch(() => null)));
-    if (!roots.some((root) => root !== null && isInside(root, real))) {
-      return { ok: false, status: 404, error: "no such history session" };
-    }
+    if (!roots.some((root) => root !== null && isInside(root, real))) return UNKNOWN;
     // `after()` answers an unreadable file with an empty, finished page, which is right for a
     // collector and wrong here: it would read as an empty conversation, or end one early. So
     // the file is opened first, and only a readable regular file reaches a reader.
@@ -220,7 +353,7 @@ export class HistoryService {
     } catch (error) {
       return isMissing(error) ? GONE : unreadable(error);
     }
-    return { ok: true, reader, path: real };
+    return { ok: true, reader, entry, path: real };
   }
 
   /** The reader and the row for a request's agent and id, or null for anything History cannot address. */

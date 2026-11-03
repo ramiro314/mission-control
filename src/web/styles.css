@@ -37084,6 +37084,86 @@ a.history-row-title:focus-visible { outline: 2px solid var(--find); outline-offs
 .history-tabpanel { padding: 12px 0 0; }
 .history-conversation { display: flex; flex-direction: column; gap: 10px; }
 .history-gone { margin: 0; padding: 14px 0; font-size: 13px; color: var(--muted); }
+/* A row's tool calls, each opening to its whole input and its result read on demand. */
+.history-tool-calls { display: flex; flex-direction: column; gap: 2px; margin: -4px 0 0; padding: 0 0 0 12px; list-style: none; }
+.history-tool-toggle,
+.history-subagent-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: 12px/1.4 var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+.history-tool-toggle:hover,
+.history-subagent-toggle:hover { color: var(--fg); background: var(--panel); }
+.history-tool-name { font-weight: 600; }
+.history-tool-detail,
+.history-subagent-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-tool-body { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 8px 14px; }
+.history-tool-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-tool-pre {
+  max-height: 420px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--panel);
+  font: 12px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.history-tool-note { margin: 0; font-size: 12px; color: var(--muted); }
+.history-tool-failed { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+/* Where the agent compacted its context, drawn across the conversation. */
+.transcript-compaction {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--dim);
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.transcript-compaction::before,
+.transcript-compaction::after { content: ""; flex: 1; border-top: 1px dashed var(--border-soft); }
+.transcript-compaction .turn-time { order: 3; letter-spacing: normal; text-transform: none; font-weight: 400; }
+.transcript-compaction-summary { font-size: 12.5px; color: var(--muted); }
+.transcript-compaction-summary summary { cursor: pointer; }
+.transcript-compaction-summary-text { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.history-subagents { padding: 0 0 10px; border-bottom: 1px solid var(--border-soft); }
+.history-subagents h3 {
+  margin: 0 0 4px;
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-subagents ul { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.history-subagent-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 6px 0 10px 14px;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--border-soft);
+}
 /* Launch context: each section lists what the transcript recorded, or says it was not. */
 .history-launch { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .history-launch-note { margin: 0; font-size: 12px; color: var(--muted); }

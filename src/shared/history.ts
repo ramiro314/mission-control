@@ -206,9 +206,11 @@ export function isHistorySessionId(raw: string): boolean {
   return HISTORY_SESSION_ID.test(raw);
 }
 
-/** `GET /api/history/sessions/:agent/:id`: one row and whether it is running now. */
+/** `GET /api/history/sessions/:agent/:id`: one row, whether it is running now, and its subagent runs. */
 export interface HistorySessionDetail {
   session: HistorySessionSummary;
+  /** The subagent runs the session's own folder lists, oldest first; empty once the transcript is gone. */
+  subagents: HistorySubagent[];
 }
 
 /** `GET /api/history/sessions/:agent/:id/messages`: one window of turns, read forward. */
@@ -216,6 +218,64 @@ export interface HistoryMessagesPage {
   messages: TranscriptMessage[];
   /** Opaque; pass back as `cursor` for the next, later window. Null once the last turn is read. */
   nextCursor: string | null;
+}
+
+/**
+ * Where History cuts one tool call's serialized input. The live view cuts at 1,800 characters
+ * to keep its windows small; History reads one session at a time and shows the call in full
+ * up to this.
+ */
+export const HISTORY_TOOL_INPUT_CAP = 256 * 1024;
+
+/**
+ * Where History cuts one tool result's text, in UTF-8 bytes, inline or read from its sidecar
+ * file alike. The cut falls on a character boundary, so it can leave up to 3 bytes unused.
+ */
+export const HISTORY_TOOL_RESULT_CAP = 1024 * 1024;
+
+/**
+ * A tool call's id as `GET .../tool-results/:toolUseId` accepts it. Checked before anything is
+ * read, and never joined into a path: the result is found by this id in the parent transcript.
+ */
+const HISTORY_TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isHistoryToolUseId(raw: string): boolean {
+  return HISTORY_TOOL_USE_ID.test(raw);
+}
+
+/**
+ * A subagent run's id as `GET .../subagents/:agentId/messages` accepts it. It names a file only
+ * when that file is in the session's own `subagents/` listing.
+ */
+const HISTORY_SUBAGENT_ID = /^[0-9a-f]{8,64}$/;
+
+export function isHistorySubagentId(raw: string): boolean {
+  return HISTORY_SUBAGENT_ID.test(raw);
+}
+
+/** One subagent run a session started, as its detail lists it. */
+export interface HistorySubagent {
+  agentId: string;
+  /** The subagent's type (`Explore`, `general-purpose`), when its metadata records one. */
+  agentType: string | null;
+  /** What the parent asked for, when its metadata records a description. */
+  description: string | null;
+  /** The subagent's opening prompt, capped, as a fallback label. */
+  firstPrompt: string | null;
+  startedAt: number | null;
+}
+
+/**
+ * `GET /api/history/sessions/:agent/:id/tool-results/:toolUseId`: one tool call's result.
+ * `sidecar` when the transcript recorded a preview and named the file holding the whole output.
+ */
+export interface HistoryToolResult {
+  toolUseId: string;
+  source: "inline" | "sidecar";
+  isError: boolean;
+  text: string;
+  /** True when `text` was cut at `HISTORY_TOOL_RESULT_CAP`. */
+  truncated: boolean;
 }
 
 /** Turns per conversation window. */

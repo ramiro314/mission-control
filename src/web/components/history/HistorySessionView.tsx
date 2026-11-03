@@ -1,22 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   HISTORY_KIND_LABELS,
   historyResumeOffered,
   historyTitle,
   type HistorySessionSummary,
+  type HistorySubagent,
 } from "@shared/history.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { fmtUsd } from "@shared/cost.ts";
-import type { AgentType, TranscriptMessage } from "@shared/types.ts";
+import type { AgentType } from "@shared/types.ts";
 import { api } from "../../lib/api.ts";
 import { duration, promptPath } from "../../lib/format.ts";
 import { transcriptRows } from "../../lib/tools.ts";
 import { agentAccentStyle } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { ConversationMessages } from "../TranscriptPanel.tsx";
-import { readConversationWindow } from "./history-window.ts";
 import { HistoryLaunchContextView } from "./HistoryLaunchContext.tsx";
 import { HistoryResumeDialog } from "./HistoryResumeDialog.tsx";
+import { HistorySubagentRuns } from "./HistorySubagentRuns.tsx";
+import { HistoryToolCalls } from "./HistoryToolCalls.tsx";
+import { useHistoryConversation } from "./useHistoryConversation.ts";
 
 /**
  * One History session: a header of what the catalog recorded, then two read-only tabs - its
@@ -24,7 +27,8 @@ import { HistoryResumeDialog } from "./HistoryResumeDialog.tsx";
  *
  * The conversation is read from disk when the view opens and paged forward from the top. A
  * session the Registry is running still reads this way - it never streams here; Open in Fleet
- * is where it is live.
+ * is where it is live. Each tool call opens to its whole input and its result, read on demand,
+ * and each subagent run opens its own transcript in place.
  */
 
 const RETENTION_MESSAGE =
@@ -36,63 +40,9 @@ function stamp(at: number | null): string | null {
 
 type DetailState =
   | { state: "loading" }
-  | { state: "ready"; session: HistorySessionSummary }
+  | { state: "ready"; session: HistorySessionSummary; subagents: HistorySubagent[] }
   | { state: "missing" }
   | { state: "error"; error: string };
-
-type ConversationState = "loading" | "ready" | "gone" | "error";
-
-function useHistoryConversation(agent: AgentType, id: string, enabled: boolean) {
-  const [messages, setMessages] = useState<TranscriptMessage[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [state, setState] = useState<ConversationState>("loading");
-  const [error, setError] = useState<string | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const abort = useRef<AbortController | null>(null);
-
-  const read = useCallback((from: string | null, append: boolean) => {
-    const controller = new AbortController();
-    abort.current?.abort();
-    abort.current = controller;
-    if (append) setLoadingMore(true);
-    setError(null);
-    void readConversationWindow((next) => api.historyMessages(agent, id, next, controller.signal), from).then((result) => {
-      if (controller.signal.aborted) return;
-      setLoadingMore(false);
-      if (!result.ok) {
-        if (result.status === 410) setState("gone");
-        else if (append) setError(result.error);
-        else {
-          setError(result.error);
-          setState("error");
-        }
-        return;
-      }
-      setMessages((prev) => (append ? [...prev, ...result.value.messages] : result.value.messages));
-      setCursor(result.value.nextCursor);
-      setState("ready");
-    });
-  }, [agent, id]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    setMessages([]);
-    setCursor(null);
-    setState("loading");
-    read(null, false);
-    return () => abort.current?.abort();
-  }, [enabled, read]);
-
-  return {
-    messages,
-    state,
-    error,
-    loadingMore,
-    hasMore: cursor !== null,
-    loadMore: () => { if (cursor && !loadingMore) read(cursor, true); },
-    retry: () => read(null, false),
-  };
-}
 
 function MetaItem({ label, children }: { label: string; children: React.ReactNode }): React.JSX.Element | null {
   if (children === null || children === undefined || children === "") return null;
@@ -151,8 +101,19 @@ function HistorySessionHeader({
   );
 }
 
-function HistoryConversation({ session }: { session: HistorySessionSummary }): React.JSX.Element {
-  const conversation = useHistoryConversation(session.agent, session.agentSessionId, session.transcriptState === "present");
+function HistoryConversation({
+  session,
+  subagents,
+}: {
+  session: HistorySessionSummary;
+  subagents: HistorySubagent[];
+}): React.JSX.Element {
+  const { agent, agentSessionId: id } = session;
+  const conversation = useHistoryConversation(
+    (cursor, signal) => api.historyMessages(agent, id, cursor, signal),
+    `${agent}:${id}`,
+    session.transcriptState === "present",
+  );
   const rows = useMemo(() => transcriptRows(conversation.messages), [conversation.messages]);
   if (session.transcriptState === "gone" || conversation.state === "gone") {
     return <p className="history-gone" role="note">{RETENTION_MESSAGE}</p>;
@@ -170,6 +131,7 @@ function HistoryConversation({ session }: { session: HistorySessionSummary }): R
   }
   return (
     <div className="history-conversation" style={agentAccentStyle(session.agent)}>
+      <HistorySubagentRuns agent={agent} id={id} cwd={session.cwd} subagents={subagents} />
       {conversation.state === "loading" ? <p className="history-loading">Reading the transcript…</p> : null}
       {conversation.state === "ready" && rows.length === 0 && !conversation.hasMore ? (
         <p className="transcript-empty">This transcript holds no messages.</p>
@@ -182,6 +144,7 @@ function HistoryConversation({ session }: { session: HistorySessionSummary }): R
         sessionId={`history:${session.agent}:${session.agentSessionId}`}
         cwd={promptPath(session.cwd)}
         fullCwd={session.cwd}
+        toolDetails={(_rowId, tools) => <HistoryToolCalls agent={agent} id={id} tools={tools} />}
       />
       {conversation.hasMore && conversation.state === "ready" ? (
         <div className="history-foot">
@@ -214,7 +177,13 @@ const HISTORY_TABS: { id: HistoryTab; label: string; hint: string }[] = [
  * The detail's two tabs. A tab's panel mounts the first time it is chosen and then stays,
  * hidden while the other shows, so switching back never reads its transcript again.
  */
-function HistorySessionTabs({ session }: { session: HistorySessionSummary }): React.JSX.Element {
+function HistorySessionTabs({
+  session,
+  subagents,
+}: {
+  session: HistorySessionSummary;
+  subagents: HistorySubagent[];
+}): React.JSX.Element {
   const [tab, setTab] = useState<HistoryTab>("conversation");
   const [opened, setOpened] = useState<ReadonlySet<HistoryTab>>(() => new Set(["conversation"]));
   const choose = (next: HistoryTab) => {
@@ -259,7 +228,7 @@ function HistorySessionTabs({ session }: { session: HistorySessionSummary }): Re
           hidden={tab !== t.id}
         >
           {t.id === "conversation"
-            ? <HistoryConversation session={session} />
+            ? <HistoryConversation session={session} subagents={subagents} />
             : <HistoryLaunchContextView session={session} retentionMessage={RETENTION_MESSAGE} />}
         </section>
       ))}
@@ -286,7 +255,7 @@ export function HistorySessionView({
     setDetail({ state: "loading" });
     void api.historySession(agent, id, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
-      if (result.ok) setDetail({ state: "ready", session: result.value.session });
+      if (result.ok) setDetail({ state: "ready", session: result.value.session, subagents: result.value.subagents });
       else if (result.status === 404) setDetail({ state: "missing" });
       else setDetail({ state: "error", error: result.error });
     });
@@ -316,7 +285,7 @@ export function HistorySessionView({
       ) : (
         <>
           <HistorySessionHeader session={detail.session} onOpenSession={onOpenSession} />
-          <HistorySessionTabs session={detail.session} />
+          <HistorySessionTabs session={detail.session} subagents={detail.subagents} />
         </>
       )}
     </main>

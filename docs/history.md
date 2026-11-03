@@ -76,6 +76,18 @@ History has not indexed says so.
   conversation panel uses (`ConversationMessages` in `TranscriptPanel.tsx`), read from the
   transcript on disk from the top. **Load more messages** reads the next window. It is
   read-only: there is no composer.
+- **Tool calls.** Under each turn that called tools, every call opens to its whole input (up to
+  256 KB, where the live view cuts at 1,800 characters) and its result, read only when the call
+  is opened. A result Claude Code moved to a `tool-results/` sidecar file is read whole from
+  that file. Either is cut at 1 MB of UTF-8, on a character boundary. A call with no recorded
+  result, or whose sidecar file is gone or not reachable, says **Result unavailable** and why.
+- **Compaction.** Where Claude Code compacted the context, a divider reads "Context compacted"
+  with its trigger and the token count before it. The summary Claude carried past it is
+  folded under **Summary carried past the compaction**, not drawn as the operator speaking.
+- **Subagent runs.** Listed above the conversation, labelled by type and description (or
+  opening prompt). Each opens its own transcript in place, paged with **Load more subagent
+  messages**. Its prompts are bylined as delegated from the parent session. A subagent's own
+  tool calls show their input; their results are not read here.
 - **Launch context.** The second tab: what the session was launched with, as its transcript
   recorded it, parsed on demand and never copied into the catalog. Each section lists what was
   recorded, or says **Not recorded** when the transcript holds no record of it. A missing record
@@ -173,7 +185,9 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   incremental summarize, the stable rule that chooses between two files carrying one
   session id, and the on-demand conversation and launch-context readers. Claude's walks `~/.claude/projects` (a custom `CLAUDE_CONFIG_DIR` is not
   followed), lists only top-level `<sessionId>.jsonl` files, and counts subagent runs under
-  `<sessionId>/subagents/` without listing them. It reads `cwd` from records, never from the
+  `<sessionId>/subagents/` without listing them as sessions. The count is exactly the runs a
+  session's detail lists: regular `agent-<agentId>.jsonl` files whose id is in the subagent
+  route's format. It reads `cwd` from records, never from the
   project folder name, and skips record and attachment types it does not know.
 - **Store.** `history_sessions` in `harness.db`, one row per agent and session id, and
   `history_search_segments`, its folded search text (fields at ordinal 0, prompts after, in
@@ -226,12 +240,35 @@ path always comes from the catalog.
 | Route | Returns |
 |---|---|
 | `GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent` | The list, described above. |
-| `GET /api/history/sessions/:agent/:id` | `{session}`: the catalog row. 404 for an agent with no reader, a non-UUID id, or an id the catalog does not know. |
+| `GET /api/history/sessions/:agent/:id` | `{session, subagents}`: the catalog row, and the subagent runs the session's own `subagents/` folder lists (empty once the transcript is gone). 404 for an agent with no reader, a non-UUID id, or an id the catalog does not know. |
 | `GET /api/history/sessions/:agent/:id/messages?cursor` | `{messages, nextCursor}`: a window of turns read forward from the byte offset `cursor` (the top when absent), through the same path-based window reads a live session uses. A window is at least 100 turns and 512 KB. 410 when the transcript file is gone (missing on disk, whether or not a walk has marked it yet); 500 naming the reason (`EACCES`, `ELOOP`, not a regular file) when it is there but cannot be read, so it is never shown as removed, empty or finished; 404 as above, or when the cataloged path does not resolve, through symlinks, under one of its harness's roots. A malformed cursor is refused with 400. |
 | `GET /api/history/sessions/:agent/:id/launch-context` | `{instructionFiles, systemPrompt, skills, mcp, environment, hooks}` (`HistoryLaunchContext`), parsed from the transcript on each request by the harness's `launchContext` reader. A section is `null` when the transcript holds no record of it. 404, 410 and 500 as for `messages`. |
+| `GET /api/history/sessions/:agent/:id/tool-results/:toolUseId` | `{toolUseId, source, isError, text, truncated}`: one tool call's result, `inline` from its transcript record or `sidecar` from the file that record names. 404 when no record holds a result for the id, or its sidecar is missing or not reachable; 410 when the transcript is gone. |
+| `GET /api/history/sessions/:agent/:id/subagents/:agentId/messages?cursor` | `{messages, nextCursor}`: a window of one subagent run's transcript, paged like `messages`. 404 when the run is not in the session's own listing; 410 when the session's transcript is gone. |
 | `GET /api/history/sessions/:agent/:id/resume-options` | `{original: {cwd, resolved, state}, openLaunch, refusal}`: the original directory as recorded, resolved through symlinks, and its state (`usable`, `missing`, `pool_slot`, `unrecorded`); the session's open launch; and the refusal a Resume would meet now, or null. 404 as above. |
 | `POST /api/history/sessions/:agent/:id/resume` | Body `{backend, target: {kind: "original"}}` (`HistoryResumeBodySchema`). `{ok: true, launch, label}` once the terminal opened. A refusal is `{ok: false, code, error, launch?}`: 409 for most, 410 for a gone transcript, 504 when the terminal's outcome is unknown and the launch stays open, 400 for a body the schema refuses. |
 | `POST /api/history/sessions/:agent/:id/resume/cancel` | Body `{launchId}`. Cancel pending resume: `{ok: true, launch}` with the launch released. 404 for a launch of another session; 409 for a launch that is no longer pending or holds a worktree slot. |
+
+Neither `:toolUseId` nor `:agentId` ever becomes part of a path on its own:
+
+- `:toolUseId` must match `^[A-Za-z0-9_-]{1,128}$`. The result is found by that id in the parent
+  transcript. A result kept in a sidecar names its file inside its own record: only the "saved
+  to" line of a result that opens with Claude Code's `<persisted-output>` preview counts, so a
+  result that merely mentions a `tool-results/` path (a `wc -l` on a saved output, an error
+  naming one) or quotes another record's preview (a grep over transcripts) stays its own inline
+  result. Only that path's last segment is taken, and it is read from this session's own
+  `<sessionId>/tool-results/` folder. A sidecar no record names is never reachable.
+- `:agentId` must match `^[0-9a-f]{8,64}$`. It names `agent-<agentId>.jsonl` only when that
+  regular file is in the session's own `<sessionId>/subagents/` listing; a listing reached
+  through a symlinked folder lists nothing.
+- Every resolved file goes through `realpath` and must lie under that session's own
+  `tool-results/` or `subagents/` folder, not merely under the harness root. Anything else,
+  including a format failure, an encoded separator or a symlink out of the folder, is a 404.
+
+History's reading of a transcript differs from the live view's only in what it adds: each tool
+call carries its `tool_use` id, input is cut at 256 KB rather than 1,800 characters, and a
+`compact_boundary` record and the summary after it are marked (`presentation.kind` `compaction`
+and `compaction_summary`). The live readers do none of this.
 
 Every row carries `liveSessionId`: the Registry session running that conversation now, joined
 when the row is served and never stored.

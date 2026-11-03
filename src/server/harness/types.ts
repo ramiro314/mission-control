@@ -13,6 +13,7 @@ import type {
   TranscriptMessage,
 } from "@shared/types.ts";
 import type { HarnessCapabilities } from "@shared/harness-capabilities.ts";
+import type { HistorySubagent } from "@shared/history.ts";
 import type { StandingInstructionsMechanism } from "@shared/standing-instructions.ts";
 import type {
   HarnessModelCatalogChoice,
@@ -1277,6 +1278,45 @@ export interface HistorySpec {
    * path. Rejects when the file cannot be read.
    */
   permissionMode(path: string): Promise<import("@shared/types.ts").PermissionMode | null>;
+  /**
+   * The result recorded for one tool call, found by its id in the transcript at
+   * `transcriptPath` (already resolved and confined by the caller), or null when no record
+   * holds one. A result kept in a sidecar file names that file from its own record; the caller
+   * reads it only after confining it to `sidecar.folder`.
+   */
+  toolResult(transcriptPath: string, agentSessionId: string, toolUseId: string): Promise<HistoryRecordedToolResult | null>;
+  /**
+   * The subagent runs the session's own folder lists, oldest first. Only files the listing
+   * holds are returned, each with the folder the caller must confine it to.
+   */
+  subagents(transcriptPath: string, agentSessionId: string): Promise<HistorySubagentFile[]>;
+  /**
+   * One subagent run's file, when the session's own listing holds it, or null. The same
+   * listing as `subagents`, without reading any run to label it, so paging one run costs one
+   * listing rather than a read of every run.
+   */
+  subagentFile(transcriptPath: string, agentSessionId: string, agentId: string): Promise<{ path: string; folder: string } | null>;
+  /** A subagent transcript, read as conversation like `messages`. */
+  subagentMessages: TranscriptMessages;
+}
+
+/** One tool call's result as its transcript record holds it. */
+export interface HistoryRecordedToolResult {
+  isError: boolean;
+  /** The result as recorded: the whole output, or the preview of one kept in a sidecar. */
+  text: string;
+  /**
+   * The sidecar holding the whole output, when the record names one: a bare file name taken
+   * from the record, and the session's own folder it must resolve inside.
+   */
+  sidecar: { folder: string; name: string } | null;
+}
+
+/** A subagent transcript in a session's own listing. */
+export interface HistorySubagentFile extends HistorySubagent {
+  path: string;
+  /** The session's own `subagents/` folder, which `path` must resolve inside. */
+  folder: string;
 }
 
 /**
