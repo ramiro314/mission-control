@@ -227,37 +227,41 @@ export function HistoryResumeDialog({
               <fieldset className="history-resume-slots">
                 <legend>Choose an idle slot of this repository</legend>
                 {picker.slots.map((slot) => (
-                  <label key={slot.slotId} className="history-resume-slot">
-                    <input
-                      type="radio"
-                      name="history-resume-slot"
-                      value={slot.slotId}
-                      checked={choice === slot.slotId}
-                      onChange={() => {
-                        setChoice(slot.slotId);
-                        setRefused(null);
-                      }}
-                      disabled={busy}
-                    />
-                    <span>Slot {slot.ordinal}</span>
-                    <span className="mono">{slot.path}</span>
-                  </label>
+                  <Tooltip key={slot.slotId} label={`Lease slot ${slot.ordinal} for this Resume and check out the recorded branch in it`}>
+                    <label className="history-resume-slot">
+                      <input
+                        type="radio"
+                        name="history-resume-slot"
+                        value={slot.slotId}
+                        checked={choice === slot.slotId}
+                        onChange={() => {
+                          setChoice(slot.slotId);
+                          setRefused(null);
+                        }}
+                        disabled={busy}
+                      />
+                      <span>Slot {slot.ordinal}</span>
+                      <span className="mono">{slot.path}</span>
+                    </label>
+                  </Tooltip>
                 ))}
                 {picker.directory ? (
-                  <label className="history-resume-slot">
-                    <input
-                      type="radio"
-                      name="history-resume-slot"
-                      value={DIRECTORY_CHOICE}
-                      checked={choice === DIRECTORY_CHOICE}
-                      onChange={() => {
-                        setChoice(DIRECTORY_CHOICE);
-                        setRefused(null);
-                      }}
-                      disabled={busy}
-                    />
-                    <span>Another directory</span>
-                  </label>
+                  <Tooltip label="Type a directory instead: the transcript is copied there and resumed as a fork">
+                    <label className="history-resume-slot">
+                      <input
+                        type="radio"
+                        name="history-resume-slot"
+                        value={DIRECTORY_CHOICE}
+                        checked={choice === DIRECTORY_CHOICE}
+                        onChange={() => {
+                          setChoice(DIRECTORY_CHOICE);
+                          setRefused(null);
+                        }}
+                        disabled={busy}
+                      />
+                      <span>Another directory</span>
+                    </label>
+                  </Tooltip>
                 ) : null}
               </fieldset>
             ) : null}
