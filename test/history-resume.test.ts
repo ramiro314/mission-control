@@ -904,3 +904,38 @@ test("the checkout warning says the code may not match for a missing branch, and
     "The branch main is checked out in /repo, so this slot has its tip detached: commits made here will not move the branch.",
   );
 });
+
+test("a slot launch whose lease was never recorded closes after a restart, by its owner key", async () => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-unrecorded-", registry);
+  const f = await fixture(fakeLauncher().launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(2);
+  try {
+    const [granted, never] = p.slots;
+    const claim = (slotId: string) => {
+      const claimed = f.history.launches.claim(
+        { agent: "claude", sourceSessionId: sessionId(), expectedAgentSessionId: "x", cwd: "/x", slotId },
+        1_000,
+      );
+      assert.ok(claimed.ok);
+      return claimed.launch.launchId;
+    };
+    // The daemon stopped after the lease was granted, before the row recorded it; and another
+    // stopped before any lease was granted at all.
+    const held = claim(granted!.slotId);
+    assert.equal((await p.m.leaseForResume(granted!.slotId, { kind: "manual", key: historyResumeOwnerKey(held) }, null)).outcome, "leased");
+    const lost = claim(never!.slotId);
+
+    // In the daemon that made them, a launch with no lease key may still be taking its lease.
+    assert.deepEqual(f.history.launches.slotsReturned(2_000, 1_000), []);
+    // After a restart, none can be: the one no slot is owned by closes at once.
+    assert.deepEqual(f.history.launches.slotsReturned(2_000, 1_500).map((launch) => launch.launchId), [lost]);
+    assert.equal(f.history.launches.get(held)?.state, "pending", "its slot is still leased to it");
+
+    // Returning that slot from its card releases the other.
+    await p.returnSlot(granted!.slotId);
+    assert.deepEqual(f.history.launches.slotsReturned(3_000, 1_500).map((launch) => launch.launchId), [held]);
+  } finally {
+    f.done();
+  }
+});

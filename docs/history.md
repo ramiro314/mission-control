@@ -165,8 +165,12 @@ the agent like any other terminal session, which turns the row **Live**.
 - **Returning a slot.** A launch with a slot stays open, and holds the slot, until the operator
   Returns the slot from its card in Settings, Worktrees. The launch row records the slot and
   its lease, and once that lease is gone (on the Registry's `worktrees_changed`, and on every
-  expiry tick) the launch is `released`, so a new Resume can start. Cancel pending resume never
-  closes a launch with a slot.
+  expiry tick) the launch is `released`, so a new Resume can start. A slot also still holds a
+  launch while its active owner is that launch's `history-resume-<launchId>`, which covers a
+  daemon that stopped after granting the lease and before recording it. A launch a previous
+  daemon made with no lease recorded is judged by that owner alone, since no lease can still be
+  in flight after a restart: if no slot carries its owner, it is released. Cancel pending resume
+  never closes a launch with a slot.
 - **One open launch per session.** Every Resume first writes one row to
   `history_resume_launches`, before it prepares or opens anything. A partial unique index on
   the session over the `pending` and `expired` states makes that insert the claim: of two

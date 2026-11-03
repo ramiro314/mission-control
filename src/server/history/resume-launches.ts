@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { historyResumeCancellable, type HistoryResumeLaunch } from "@shared/history.ts";
 import type { AgentType, ServerEvent, Session } from "@shared/types.ts";
 import { openDb } from "../db.ts";
+import { historyResumeOwnerKey } from "../worktrees/owners.ts";
 
 /**
  * History Resume's launch records (`history_resume_launches`, `docs/history.md`): the claim a
@@ -170,18 +171,28 @@ export class HistoryResumeLaunches {
   /**
    * Release every launch whose slot lease is gone: the operator Returned the slot from its card
    * (or it was destroyed, or recovered). The slot row is the authority, so whichever way the
-   * lease ended, the launch it held closes with it and a new Resume can start. A launch still
-   * taking its lease has no lease key yet, and is left alone.
+   * lease ended, the launch it held closes with it and a new Resume can start. A slot still
+   * holds a launch while its active lease is the launch's, or its active owner is the launch's
+   * own `historyResumeOwnerKey`, which covers a lease granted just before a daemon stopped and
+   * never recorded on the row.
+   *
+   * A launch with no lease key made by this daemon (at or after `before`, its start) may still
+   * be taking its lease, and is left alone. One made before it cannot be: no request survives a
+   * restart, so it is judged by its owner key alone, and a lease that was never granted
+   * releases it rather than holding its session's one open launch forever.
    */
-  slotsReturned(now: number): HistoryResumeLaunch[] {
+  slotsReturned(now: number, before: number): HistoryResumeLaunch[] {
     const rows = this.db.prepare(
       `SELECT * FROM history_resume_launches AS launch
-        WHERE launch.lease_key IS NOT NULL AND launch.state != 'released'
+        WHERE launch.slot_id IS NOT NULL AND launch.state != 'released'
+          AND (launch.lease_key IS NOT NULL OR launch.launched_at < ?)
           AND NOT EXISTS (
             SELECT 1 FROM worktree_slots AS slot
-             WHERE slot.id = launch.slot_id AND slot.active_lease_id = launch.lease_key
+             WHERE slot.id = launch.slot_id
+               AND (slot.active_lease_id = launch.lease_key
+                 OR (slot.active_owner_kind = 'manual' AND slot.active_owner_key = ? || launch.launch_id))
           )`,
-    ).all() as unknown as Row[];
+    ).all(before, historyResumeOwnerKey("")) as unknown as Row[];
     return rows.flatMap((row) =>
       this.transition(row.launch_id, ["pending", "expired", "bound", "ended"], "released", now) ? [this.get(row.launch_id)!] : []);
   }
@@ -332,7 +343,7 @@ export function trackHistoryResumeLaunches(
     if (event.type === "session_upsert") guarded("binding", () => launches.bind(event.session, now()));
     else if (event.type === "session_remove") guarded("end", () => launches.sessionRemoved(event.id, now()));
     // A slot Returned from its card releases the launch that held it.
-    else if (event.type === "worktrees_changed") guarded("slot release", () => launches.slotsReturned(now()));
+    else if (event.type === "worktrees_changed") guarded("slot release", () => launches.slotsReturned(now(), startedAt));
   });
   const unobserved = registry.onSessionsObserved(() =>
     guarded("startup check", () => launches.startup(registry.liveSessions(), now(), startedAt)));
@@ -340,7 +351,7 @@ export function trackHistoryResumeLaunches(
   // daemon was down.
   const timer = setInterval(() => {
     guarded("expiry", () => launches.expire(now(), options.graceMs));
-    guarded("slot release", () => launches.slotsReturned(now()));
+    guarded("slot release", () => launches.slotsReturned(now(), startedAt));
   }, options.tickMs);
   timer.unref?.();
   return () => {
