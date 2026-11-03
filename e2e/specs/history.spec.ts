@@ -409,7 +409,7 @@ test.describe("search and filters", () => {
    * and a background run in the pool. The pool row is what an earlier daemon would have left;
    * the restart is the first run that indexes them.
    */
-  async function seedFilters(daemon: DaemonHandle): Promise<void> {
+  async function seedFilters(daemon: DaemonHandle, filler = 0): Promise<void> {
     withDaemonDb(daemon, (db) => {
       db.prepare(
         `INSERT INTO worktree_pools (id, git_common_dir, main_checkout_root, pool_path, created_at, updated_at)
@@ -435,6 +435,13 @@ test.describe("search and filters", () => {
       prompt: "Generate a commit message",
       extra: [{ type: "user", message: { role: "user", content: "A second background prompt about the walrus" } }],
     });
+    for (let i = 0; i < filler; i++) {
+      writeSession(daemon, {
+        cwd: "/projects/plain",
+        at: new Date(Date.UTC(2026, 9, 26, 12, 0, 0) + i * 60_000).toISOString(),
+        prompt: `Plain filler ${String(i).padStart(2, "0")}`,
+      });
+    }
     await daemon.crash();
     await daemon.restart();
   }
@@ -512,5 +519,61 @@ test.describe("search and filters", () => {
     await dashboard.reload();
     await expect(page.getByText("Claude Code keeps transcripts for 14 days.")).toBeVisible();
     await capture(dashboard, "retention-configured");
+  });
+
+  test("a filter change withdraws Load more until its own list lands, and a failed read never shows the old list", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await seedFilters(daemon, 55);
+    await backfilled(daemon);
+    // Reads under the Repository filter wait for the spec to let them through, or fail on cue.
+    // That is the window in which the rows on screen still belong to the unfiltered list.
+    let release: () => void = () => {};
+    let held = new Promise<void>((resolve) => { release = resolve; });
+    let failFiltered = false;
+    await dashboard.route("**/api/history/sessions**", async (route) => {
+      if (route.request().url().includes("repo=")) {
+        if (failFiltered) {
+          await route.fulfill({ status: 500, json: { error: "the catalog is busy" } });
+          return;
+        }
+        await held;
+      }
+      try {
+        await route.fulfill({ response: await route.fetch() });
+      } catch {
+        // The page cancelled this read.
+      }
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    const loadMore = page.getByRole("button", { name: "Load more" });
+    const repository = page.getByRole("combobox", { name: "Repository", exact: true });
+    await expect(rows).toHaveCount(50);
+    await expect(loadMore).toBeVisible();
+
+    // The unfiltered list's cursor would continue the wrong list, so Load more goes at once,
+    // while the filtered read is still held.
+    await repository.selectOption("/projects/app");
+    await expect(loadMore).toHaveCount(0);
+    release();
+    await expect(rows).toHaveCount(2);
+    await expect(rows.filter({ hasText: "Plain" })).toHaveCount(0);
+    await expect(loadMore).toHaveCount(0);
+
+    // A filtered read that fails is not covered by the rows of another list.
+    await repository.selectOption("");
+    await expect(rows).toHaveCount(50);
+    held = new Promise<void>((resolve) => { release = resolve; });
+    release();
+    failFiltered = true;
+    await repository.selectOption("/projects/app");
+    await expect(page.getByText("History is unavailable")).toBeVisible();
+    await expect(rows).toHaveCount(0);
+    failFiltered = false;
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect(rows).toHaveCount(2);
   });
 });

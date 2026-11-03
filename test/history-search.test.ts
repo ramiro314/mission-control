@@ -366,3 +366,23 @@ test("a gone row with no search text is seeded from its row, and stays searchabl
   assert.equal((await ids(server, "q=w%2Fzoo")).length, 1);
   rmSync(projects, { recursive: true, force: true });
 });
+
+test("a compaction summary is Claude's own words, so it is not indexed as a prompt", async () => {
+  reset();
+  const projects = mkdtempSync(join(tmpdir(), "mission-history-search-projects-"));
+  const id = sessionId();
+  const records = lines(id, { cwd: "/w", at: "2026-10-24T10:00:00.000Z", prompts: ["the operator asked about lemurs"] });
+  // As Claude Code 2.1.296 records it: a `user` record, not `isMeta`, flagged as the summary.
+  records.push({
+    ...records[0], type: "user", isCompactSummary: true, isVisibleInTranscriptOnly: true,
+    message: { role: "user", content: "This session is being continued. Summary: the tool printed a capybara token." },
+  });
+  write(projects, id, records, "2026-10-24T10:00:00.000Z");
+  const history = new HistoryService({ readers: [{ agent: "claude", spec: createClaudeHistory(projects) }], resolveRepository: () => null });
+  await history.reconciler.trigger();
+  const server = app(history);
+  assert.deepEqual(await ids(server, "q=lemurs"), [id]);
+  assert.deepEqual(await ids(server, "q=capybara"), [], "the summary is not searchable");
+  assert.equal(segmentCount(id), 2, "fields plus the one real prompt");
+  rmSync(projects, { recursive: true, force: true });
+});

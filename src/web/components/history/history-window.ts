@@ -1,5 +1,6 @@
 import {
   HISTORY_PAGE_LIMITS,
+  HISTORY_SEARCH_LIMITS,
   type HistoryPage,
   type HistorySessionSummary,
   type HistorySessionsQuery,
@@ -18,11 +19,12 @@ function localDay(day: string, days = 0): number {
 /**
  * The route's filters as the list route takes them. The date range is the operator's local
  * calendar days, both inclusive, so `to` becomes the next local midnight, which the route
- * treats as exclusive.
+ * treats as exclusive. A search longer than the route accepts, from a pasted link, is cut to
+ * that length rather than sent to be refused.
  */
 export function historyFilterQuery(filters: HistoryFilters | undefined): HistoryFilterQuery {
   return {
-    ...(filters?.q?.trim() ? { q: filters.q.trim() } : {}),
+    ...(filters?.q?.trim() ? { q: filters.q.trim().slice(0, HISTORY_SEARCH_LIMITS.queryChars) } : {}),
     ...(filters?.repo ? { repo: filters.repo } : {}),
     ...(filters?.from ? { from: localDay(filters.from) } : {}),
     ...(filters?.to ? { to: localDay(filters.to, 1) } : {}),

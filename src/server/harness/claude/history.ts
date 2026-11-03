@@ -214,7 +214,9 @@ function foldClaudeRecord(acc: Accumulator, record: unknown, prompts: string[] |
       return;
     }
   }
-  if (sidechain || (acc.firstPrompt !== null && prompts === null)) return;
+  // A compaction summary arrives as a `user` record but is Claude's own words, not the
+  // operator's, so it is neither a prompt to index nor a title.
+  if (sidechain || rec.isCompactSummary === true || (acc.firstPrompt !== null && prompts === null)) return;
   const message = toMessage(rec);
   if (message?.role !== "user" || !message.text) return;
   prompts?.push(message.text);

@@ -44,7 +44,8 @@ unknown kind, an impossible day) is dropped from the URL rather than sent.
   prompts. It narrows the list without reordering it.
 - **What is indexed.** A conversation indexes every user prompt, up to 16,000 characters each.
   A one-shot or reviewer run indexes only its first prompt, capped at 500 characters, because
-  its prompts are large generated diffs. User prompts are therefore copied into `harness.db`;
+  its prompts are large generated diffs. A compaction summary, which Claude Code records as a
+  user message, is Claude's own words and is not indexed. User prompts are therefore copied into `harness.db`;
   see [security](security.md#session-history-copies-user-prompts-into-harnessdb).
 - **Repository** lists every repository a session resolved to (see Repository below), so the
   slots of one worktree pool appear once, as their repository.

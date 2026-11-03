@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readHistoryWindow, type HistoryPageRead } from "../src/web/components/history/history-window.ts";
-import { HISTORY_PAGE_LIMITS, type HistorySessionSummary } from "../src/shared/history.ts";
+import { HISTORY_PAGE_LIMITS, HISTORY_SEARCH_LIMITS, type HistorySessionSummary } from "../src/shared/history.ts";
 
 /** A catalog of `total` rows, served the way the route serves it: capped pages and a cursor. */
 function catalog(total: number): { read: (query: { cursor?: string; limit: number }) => Promise<HistoryPageRead>; asked: { cursor?: string; limit: number }[] } {
@@ -64,4 +64,9 @@ test("the route's filters become the list query: local days, with an exclusive e
   const query = historyFilterQuery({ from: "2026-10-01", to: "2026-10-01" });
   assert.equal(query.from, new Date(2026, 9, 1).getTime(), "from is local midnight that day");
   assert.equal(query.to, new Date(2026, 9, 2).getTime(), "to is local midnight the day after, so the whole day is in");
+});
+
+test("a search longer than the route accepts is cut to its limit, not sent to be refused", async () => {
+  const { historyFilterQuery } = await import("../src/web/components/history/history-window.ts");
+  assert.equal(historyFilterQuery({ q: "x".repeat(250) }).q, "x".repeat(HISTORY_SEARCH_LIMITS.queryChars));
 });

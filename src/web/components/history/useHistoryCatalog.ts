@@ -54,6 +54,13 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryC
   const query = useMemo(() => JSON.parse(filterKey) as ReturnType<typeof historyFilterQuery>, [filterKey]);
   /** The filters the depth below was paged under; another set starts again from one page. */
   const depthKey = useRef(filterKey);
+  /**
+   * The filters the rows on screen were read under, or null before any landed. While it differs
+   * from the current filters, the rows belong to another list: Load more is not offered, since
+   * its cursor would continue that list under the new filters, and a failed read cannot fall
+   * back on them.
+   */
+  const windowKey = useRef<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [listState, setListState] = useState<HistoryListState>("first");
   const [listError, setListError] = useState<string | null>(null);
@@ -80,11 +87,12 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryC
     if (depthKey.current !== filterKey) {
       depthKey.current = filterKey;
       depth.current = HISTORY_PAGE_LIMITS.defaultLimit;
+      setCursor(null);
     }
     void readHistoryWindow((page) => api.historySessions({ ...query, ...page }, controller.signal), depth.current).then((result) => {
       if (controller.signal.aborted) return;
       if (!result.ok) {
-        if (!hasWindow.current) {
+        if (!hasWindow.current || windowKey.current !== filterKey) {
           setListError(result.error);
           setListState("error");
           return;
@@ -95,6 +103,7 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryC
         return;
       }
       hasWindow.current = true;
+      windowKey.current = filterKey;
       setSessions(result.value.sessions);
       setCursor(result.value.nextCursor);
       setProgress(result.value.progress);
@@ -120,7 +129,7 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryC
   }, [indexing, landed, loadingMore]);
 
   const loadMore = useCallback(() => {
-    if (!cursor || loadingMore) return;
+    if (!cursor || loadingMore || windowKey.current !== filterKey) return;
     const controller = new AbortController();
     moreAbort.current?.abort();
     moreAbort.current = controller;
@@ -147,7 +156,7 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryC
       setProgress(result.value.progress);
       setFacets(result.value.facets);
     });
-  }, [cursor, loadingMore, query]);
+  }, [cursor, loadingMore, query, filterKey]);
 
   const refresh = useCallback(() => setTick((n) => n + 1), []);
 

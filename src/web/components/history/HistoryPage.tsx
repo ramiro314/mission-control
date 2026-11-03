@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   HISTORY_KINDS,
+  HISTORY_SEARCH_LIMITS,
   historyTitle,
   type HistoryKindFilter,
   type HistoryProgress,
@@ -163,6 +164,7 @@ export function HistoryPage({
           placeholder="Search titles, prompts, paths, branches..."
           autoComplete="off"
           spellCheck={false}
+          maxLength={HISTORY_SEARCH_LIMITS.queryChars}
           value={draftQuery}
           onChange={(event) => setDraftQuery(event.target.value)}
         />
