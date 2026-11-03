@@ -17,6 +17,8 @@ import {
   type ArchiveKind,
 } from "@shared/archives.ts";
 import { pipelineRepoKey, type PipelineProviderId } from "@shared/pipeline.ts";
+import { isHistorySessionId } from "@shared/history.ts";
+import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
 // dashboard has - fleet, Library, Runs, Ensembles, Settings - is a variant of `MissionRoute`
@@ -256,10 +258,12 @@ export type MissionRoute =
   | {
       /**
        * Session History: every agent session this machine holds on disk, whether or not
-       * Mission Control ever saw it, newest activity first. Bare for now - filters and a
-       * session's detail join the hash when those surfaces ship.
+       * Mission Control ever saw it, newest activity first. Filters join the hash when that
+       * surface ships.
        */
       page: "history";
+      /** The session whose detail is open, addressed as the API addresses it. */
+      session?: { agent: AgentType; id: string };
     }
   | { page: "settings"; category: SettingsCategoryId };
 
@@ -373,8 +377,16 @@ export function parseMissionRoute(hash: string): MissionRoute {
       ...(withScoutFilters ? { filters: withScoutFilters } : {}),
     };
   }
-  // A deeper path names a surface this build does not have yet, so it lands on the list.
-  if (path === "/history" || path.startsWith("/history/")) return { page: "history" };
+  if (path === "/history" || path.startsWith("/history/")) {
+    // An agent this build does not know, an id that is not a UUID, or a deeper path names no
+    // session, so it lands on the list - the same rule a malformed archive key takes.
+    const detail = /^\/history\/([^/]+)\/([^/]+)$/.exec(path);
+    const agent = detail ? segment(detail[1]!) : null;
+    const id = detail ? segment(detail[2]!) : null;
+    return agent && id && (AGENT_TYPES as readonly string[]).includes(agent) && isHistorySessionId(id)
+      ? { page: "history", session: { agent: agent as AgentType, id } }
+      : { page: "history" };
+  }
   if (path === "/library") return { page: "library" };
   const library = /^\/library\/([^/]+)(?:\/([^/]+))?$/.exec(path);
   if (library) {
@@ -513,7 +525,13 @@ export function missionRouteHash(route: MissionRoute): string {
   // compile - it silently serializes to `#/ensembles`, and `navigate({page:"shipped"})`
   // lands on the wrong page with no error anywhere.
   if (route.page === "shipped") return "#/shipped";
-  if (route.page === "history") return "#/history";
+  if (route.page === "history") {
+    // Emitted only when well formed, mirroring the parser, so the codec round-trips.
+    const session = route.session;
+    return session && (AGENT_TYPES as readonly string[]).includes(session.agent) && isHistorySessionId(session.id)
+      ? `#/history/${session.agent}/${encodeURIComponent(session.id)}`
+      : "#/history";
+  }
   if (route.page === "scouts") {
     // The key is emitted only when it is well formed, mirroring the parser. A hand-built
     // route carrying a malformed key would otherwise serialize to a hash that parses back

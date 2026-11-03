@@ -36998,3 +36998,65 @@ body.foreman-sidecar-open .modal-backdrop {
 .history-empty .empty-title { font-size: 14px; color: var(--fg); margin: 0 0 6px; }
 .history-empty .empty-sub { margin: 0 0 12px; font-size: 12.5px; }
 .history-loading { padding: 18px 0; color: var(--muted); }
+a.history-row-title { color: var(--fg); text-decoration: none; }
+a.history-row-title:hover { text-decoration: underline; }
+a.history-row-title:focus-visible { outline: 2px solid var(--find); outline-offset: 2px; }
+.history-badge-live { color: var(--working); border-color: currentColor; }
+
+/* One session: a header of what the catalog recorded, then its read-only conversation. The
+   conversation is the live view's rows, so it takes the page's height rather than the
+   card's capped scroll box. */
+.history-back {
+  margin: 0 0 10px;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.history-back:hover { color: var(--fg); }
+.history-detail-head { margin: 0 0 12px; }
+.history-detail-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+/* Two lines at most: an untitled session is named by its first prompt, which can run to 500
+   characters of generated launch text. The whole of it is the conversation's first turn. */
+.history-detail-title h2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: 0;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.history-detail-action { margin-left: auto; }
+.history-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px 16px;
+  margin: 12px 0 0;
+}
+.history-meta-item { min-width: 0; }
+.history-meta-item dt {
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-meta-item dd { margin: 2px 0 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.history-tabs { display: flex; gap: 4px; padding: 0 0 6px; border-bottom: 1px solid var(--border-soft); }
+.history-tab {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font: 600 10px/1 var(--sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-tab[aria-selected="true"] { color: var(--fg); background: var(--panel); }
+.history-tabpanel { padding: 12px 0 0; }
+.history-conversation { display: flex; flex-direction: column; gap: 10px; }
+.history-gone { margin: 0; padding: 14px 0; font-size: 13px; color: var(--muted); }

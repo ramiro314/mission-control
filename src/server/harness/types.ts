@@ -1247,6 +1247,11 @@ export interface HistorySpec {
    * never scan order, so a rebuilt catalog chooses the same file.
    */
   canonical(candidates: readonly { path: string; summary: HistorySummary }[]): string;
+  /**
+   * A cataloged transcript read as conversation: the same path-based window reads a live
+   * session uses, handed the path the catalog stored, never one a request named.
+   */
+  messages: TranscriptMessages;
 }
 
 /**

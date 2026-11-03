@@ -1,23 +1,25 @@
 import { useMemo } from "react";
-import { historyTitle, type HistoryProgress, type HistorySessionSummary } from "@shared/history.ts";
+import {
+  HISTORY_KIND_LABELS,
+  historyTitle,
+  type HistoryProgress,
+  type HistorySessionSummary,
+} from "@shared/history.ts";
 import { fmtUsd } from "@shared/cost.ts";
 import { duration, repoLeaf, shortenCwd } from "../../lib/format.ts";
+import { missionRouteHash, type MissionRoute } from "../../workflows/useWorkflowRoute.ts";
 import { Tooltip } from "../Tooltip.tsx";
+import { HistorySessionView } from "./HistorySessionView.tsx";
 import { useHistoryCatalog } from "./useHistoryCatalog.ts";
 
 /**
  * The History page: every agent session this machine holds on disk, newest activity first,
- * grouped by day. Conversations only for now; background runs, filters and a session's own
- * detail are later surfaces of the same catalog (`docs/history.md`).
+ * grouped by day, and one session's detail when the route names it. Conversations only for
+ * now; background runs and filters are later surfaces of the same catalog (`docs/history.md`).
+ *
+ * The list's catalog is held here, above both views, so opening a session and coming Back
+ * returns to the rows already paged to rather than to a fresh first page.
  */
-
-const KIND_LABEL: Record<string, string> = {
-  interactive: "Interactive",
-  sdk: "SDK",
-  one_shot: "One-shot",
-  reviewer: "Reviewer",
-  unclassified: "Unclassified",
-};
 
 function dayLabel(at: number): string {
   return new Date(at).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
@@ -38,11 +40,15 @@ export function historyProgressLine(progress: HistoryProgress | null): string | 
 function HistoryRow({ row }: { row: HistorySessionSummary }): React.JSX.Element {
   const place = row.repoRoot ? repoLeaf(row.repoRoot) : shortenCwd(row.cwd);
   const gone = row.transcriptState === "gone";
+  // A link, so the row opens through the router like any other address (and Back undoes it),
+  // and a session can be opened in a new tab or copied.
+  const href = missionRouteHash({ page: "history", session: { agent: row.agent, id: row.agentSessionId } });
   return (
     <li className={`history-row${gone ? " is-gone" : ""}`}>
       <div className="history-row-head">
-        <span className="history-row-title">{historyTitle(row)}</span>
-        <span className="history-badge">{KIND_LABEL[row.kind] ?? row.kind}</span>
+        <a className="history-row-title" href={href}>{historyTitle(row)}</a>
+        <span className="history-badge">{HISTORY_KIND_LABELS[row.kind] ?? row.kind}</span>
+        {row.liveSessionId ? <span className="history-badge history-badge-live">Live</span> : null}
         {gone ? <span className="history-badge history-badge-gone">Transcript gone</span> : null}
       </div>
       <div className="history-row-meta">
@@ -59,7 +65,15 @@ function HistoryRow({ row }: { row: HistorySessionSummary }): React.JSX.Element 
   );
 }
 
-export function HistoryPage(): React.JSX.Element {
+export function HistoryPage({
+  route,
+  navigate,
+  onOpenSession,
+}: {
+  route: Extract<MissionRoute, { page: "history" }>;
+  navigate: (route: MissionRoute) => boolean;
+  onOpenSession: (sessionId: string) => void;
+}): React.JSX.Element {
   const catalog = useHistoryCatalog();
   const progressLine = historyProgressLine(catalog.progress);
 
@@ -73,6 +87,18 @@ export function HistoryPage(): React.JSX.Element {
     }
     return out;
   }, [catalog.sessions]);
+
+  if (route.session) {
+    return (
+      <HistorySessionView
+        key={`${route.session.agent}:${route.session.id}`}
+        agent={route.session.agent}
+        id={route.session.id}
+        onBack={() => navigate({ page: "history" })}
+        onOpenSession={onOpenSession}
+      />
+    );
+  }
 
   return (
     <main className="workflow-page history-page" aria-label="History">

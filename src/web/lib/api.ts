@@ -180,7 +180,7 @@ import type {
   ArchivePage,
   ArchiveSearchQuery,
 } from "@shared/archives.ts";
-import type { HistoryPage } from "@shared/history.ts";
+import type { HistoryMessagesPage, HistoryPage, HistorySessionDetail } from "@shared/history.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
 import type {
@@ -2265,6 +2265,21 @@ export const api = {
     const search = params.toString();
     return archiveJson<HistoryPage>(search ? `/api/history/sessions?${search}` : "/api/history/sessions", signal);
   },
+
+  /** One History session's row and live status; a 404 means History does not know it. */
+  historySession: (agent: string, id: string, signal?: AbortSignal) =>
+    archiveJson<HistorySessionDetail>(
+      `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}`,
+      signal,
+    ),
+
+  /** One forward window of a History session's conversation; a 410 means its transcript is gone. */
+  historyMessages: (agent: string, id: string, cursor: string | null, signal?: AbortSignal) =>
+    archiveJson<HistoryMessagesPage>(
+      `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/messages`
+        + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""),
+      signal,
+    ),
 
   // ---- Archives ----
 

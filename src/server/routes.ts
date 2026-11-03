@@ -274,8 +274,8 @@ import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
-import type { HistoryService } from "./history/service.ts";
-import { HistorySessionsQuerySchema } from "@shared/history.ts";
+import type { HistoryLiveLookup, HistoryService } from "./history/service.ts";
+import { HistoryMessagesQuerySchema, HistorySessionsQuerySchema } from "@shared/history.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
@@ -4005,12 +4005,33 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Session History ---
   //
   // Read-only, loopback-only like the rest of `/api/*`, and never exposed as an MCP tool. A
-  // request names no path: rows come from the catalog the daemon's reconciler writes.
+  // request names no path: rows come from the catalog the daemon's reconciler writes. A session
+  // is addressed by agent and UUID, and its transcript path is the catalog's, never the request's.
+  //
+  // "Live" is the Registry's answer, read once per request: a running session whose agent
+  // session id matches a row.
+  const liveHistorySessions = (): HistoryLiveLookup => {
+    const live = new Map<string, string>();
+    for (const s of registry.liveSessions()) if (s.agentSessionId) live.set(`${s.agent}:${s.agentSessionId}`, s.id);
+    return (agent, agentSessionId) => live.get(`${agent}:${agentSessionId}`) ?? null;
+  };
   app.get("/api/history/sessions", (c) => {
     if (!history) return c.json({ error: "session history unavailable" }, 503);
     const parsed = HistorySessionsQuerySchema.safeParse(c.req.query());
     if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid history query" }, 400);
-    return c.json(history.list(parsed.data));
+    return c.json(history.list(parsed.data, liveHistorySessions()));
+  });
+  app.get("/api/history/sessions/:agent/:id", (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const detail = history.detail(c.req.param("agent"), c.req.param("id"), liveHistorySessions());
+    return detail ? c.json(detail) : c.json({ error: "no such history session" }, 404);
+  });
+  app.get("/api/history/sessions/:agent/:id/messages", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const parsed = HistoryMessagesQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid history query" }, 400);
+    const read = await history.messages(c.req.param("agent"), c.req.param("id"), parsed.data);
+    return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
   });
 
   // --- The archive library ---
