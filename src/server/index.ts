@@ -309,6 +309,10 @@ const history = new HistoryService({
   onChanged: () => registry.emitHistoryChanged(),
   watch: true,
 });
+// Resume's launch records follow the Registry from here, before any Resume can be made: a
+// resumed agent binds when discovery registers it, and the startup twin waits for the first
+// sweep to judge launches a previous run left open.
+history.trackResumes(registry);
 registry.subscribe((event) => {
   if (event.type === "session_remove") archives.sessionRemoved(event.id);
 });

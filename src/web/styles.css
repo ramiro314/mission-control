@@ -37084,3 +37084,33 @@ a.history-row-title:focus-visible { outline: 2px solid var(--find); outline-offs
 .history-tabpanel { padding: 12px 0 0; }
 .history-conversation { display: flex; flex-direction: column; gap: 10px; }
 .history-gone { margin: 0; padding: 14px 0; font-size: 13px; color: var(--muted); }
+/* History › Resume dialog. The shell supplies the inline inset; the body only spaces its rows. */
+.history-resume-modal { width: min(520px, 100%); }
+.history-resume-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0 18px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.history-resume-lead { margin: 0; color: var(--muted); }
+.history-resume-place { display: grid; gap: 6px; margin: 0; }
+.history-resume-place dt {
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-resume-place dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.history-resume-note { margin: 0; color: var(--muted); }
+.history-resume-started { margin: 0; }
+.history-resume-error { margin: 0; color: var(--danger); overflow-wrap: anywhere; }
+.history-resume-targets {
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.history-resume-body > .btn { align-self: flex-start; }

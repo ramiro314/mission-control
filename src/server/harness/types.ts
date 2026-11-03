@@ -1266,6 +1266,12 @@ export interface HistorySpec {
    * session uses, handed the path the catalog stored, never one a request named.
    */
   messages: TranscriptMessages;
+  /**
+   * The permission mode a cataloged transcript last recorded, so a Resume reopens the session
+   * where the operator left it; null when it recorded none. Read on demand from the catalog's
+   * path. Rejects when the file cannot be read.
+   */
+  permissionMode(path: string): Promise<import("@shared/types.ts").PermissionMode | null>;
 }
 
 /**

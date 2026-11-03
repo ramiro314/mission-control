@@ -81,6 +81,44 @@ History has not indexed says so.
 - **Live.** A session the Registry is running carries a **Live** badge in the list and in its
   detail, and the detail offers **Open in Fleet**, which selects its card. The detail reads the
   transcript when it opens; it does not stream. Live status is read when the row is served.
+- **Resume.** A conversation (interactive, SDK or unclassified) whose transcript is on disk and
+  which the Registry is not running offers **Resume** instead of Open in Fleet. One-shot and
+  reviewer runs, and sessions whose transcript is gone, offer neither. See [Resume](#resume).
+
+## Resume
+
+**Resume** opens a dialog that reads the session's original directory and any launch of it
+already open, then lists the terminals that can host an agent. Choosing one opens a new
+**unmanaged** terminal session running the agent's own resume command (`claude --resume <id>`,
+with the permission mode the transcript last recorded) in that directory. It is prepared from
+the catalog row alone: no task context and no Mission Control tools. Discovery then registers
+the agent like any other terminal session, which turns the row **Live**.
+
+- **Directory.** Only the original directory is a target in this build, and only when it still
+  exists and lies outside every worktree pool. It is resolved once through symlinks, and that
+  value is the launch's directory, the terminal's working directory and the binding key. A
+  directory inside a pool is refused for now: an idle slot never keeps a branch, so resuming
+  into one is a separate step.
+- **One open launch per session.** Every Resume first writes one row to
+  `history_resume_launches`, before it prepares or opens anything. A partial unique index on
+  the session over the `pending` and `expired` states makes that insert the claim: of two
+  concurrent Resumes, one gets a launch and the other is refused, having started nothing. A
+  later step that fails releases the row; a terminal whose outcome is unknown keeps it, since
+  its agent may still appear.
+- **Binding.** A launch binds to the Registry session whose agent session id is the launch's
+  expected id **and** whose working directory, resolved through symlinks, is the launch's
+  directory. A session with the right id anywhere else binds nothing. When the bound session
+  leaves the Registry the launch is `ended`.
+- **Closing an unbound launch.** A launch with no worktree slot that has not bound within its
+  grace window (the managed resume start deadline plus two discovery sweeps) is `released`.
+  While it is `pending`, the dialog offers **Cancel pending resume**, which releases it at once
+  and revokes its prepared environment if no terminal has claimed it. After a restart, once the
+  first discovery sweep finishes, a `bound` launch whose agent is no longer running is `ended`,
+  and a `pending` one is `released`; a slotless launch is never left `expired`.
+- **Refusals** are explicit, each with a code and a sentence: a background run, a gone
+  transcript, a live session, an open launch (naming its directory), no recorded directory, a
+  missing directory, a pool slot directory, a harness that cannot resume, a terminal that cannot
+  host an agent, or a launch that failed.
 
 ## Session kinds
 
@@ -161,6 +199,10 @@ path always comes from the catalog.
 | `GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent` | The list, described above. |
 | `GET /api/history/sessions/:agent/:id` | `{session}`: the catalog row. 404 for an agent with no reader, a non-UUID id, or an id the catalog does not know. |
 | `GET /api/history/sessions/:agent/:id/messages?cursor` | `{messages, nextCursor}`: a window of turns read forward from the byte offset `cursor` (the top when absent), through the same path-based window reads a live session uses. A window is at least 100 turns and 512 KB. 410 when the transcript file is gone (missing on disk, whether or not a walk has marked it yet); 500 naming the reason (`EACCES`, `ELOOP`, not a regular file) when it is there but cannot be read, so it is never shown as removed, empty or finished; 404 as above, or when the cataloged path does not resolve, through symlinks, under one of its harness's roots. A malformed cursor is refused with 400. |
+
+| `GET /api/history/sessions/:agent/:id/resume-options` | `{original: {cwd, resolved, state}, openLaunch, refusal}`: the original directory as recorded, resolved through symlinks, and its state (`usable`, `missing`, `pool_slot`, `unrecorded`); the session's open launch; and the refusal a Resume would meet now, or null. 404 as above. |
+| `POST /api/history/sessions/:agent/:id/resume` | Body `{backend, target: {kind: "original"}}` (`HistoryResumeBodySchema`). `{ok: true, launch, label}` once the terminal opened. A refusal is `{ok: false, code, error, launch?}`: 409 for most, 410 for a gone transcript, 504 when the terminal's outcome is unknown and the launch stays open, 400 for a body the schema refuses. |
+| `POST /api/history/sessions/:agent/:id/resume/cancel` | Body `{launchId}`. Cancel pending resume: `{ok: true, launch}` with the launch released. 404 for a launch of another session; 409 for a launch that is no longer pending or holds a worktree slot. |
 
 Every row carries `liveSessionId`: the Registry session running that conversation now, joined
 when the row is served and never stored.

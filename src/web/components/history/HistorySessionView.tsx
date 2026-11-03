@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   HISTORY_KIND_LABELS,
+  historyResumeOffered,
   historyTitle,
   type HistorySessionSummary,
 } from "@shared/history.ts";
@@ -14,6 +15,7 @@ import { agentAccentStyle } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { ConversationMessages } from "../TranscriptPanel.tsx";
 import { readConversationWindow } from "./history-window.ts";
+import { HistoryResumeDialog } from "./HistoryResumeDialog.tsx";
 
 /**
  * One History session: a header of what the catalog recorded, then its conversation, read-only.
@@ -109,6 +111,7 @@ function HistorySessionHeader({
 }): React.JSX.Element {
   const gone = session.transcriptState === "gone";
   const live = session.liveSessionId;
+  const [resuming, setResuming] = useState(false);
   return (
     <header className="history-detail-head">
       <div className="history-detail-title">
@@ -122,8 +125,15 @@ function HistorySessionHeader({
               Open in Fleet
             </button>
           </Tooltip>
+        ) : historyResumeOffered(session) ? (
+          <Tooltip label="Reopen this conversation in a new terminal, in its original directory">
+            <button type="button" className="btn history-detail-action" onClick={() => setResuming(true)}>
+              Resume
+            </button>
+          </Tooltip>
         ) : null}
       </div>
+      {resuming ? <HistoryResumeDialog session={session} onClose={() => setResuming(false)} /> : null}
       <dl className="history-meta">
         <MetaItem label="Repository">{session.repoRoot ? <span className="mono">{session.repoRoot}</span> : null}</MetaItem>
         <MetaItem label="Branch">{session.branch ? <span className="mono">{session.branch}</span> : null}</MetaItem>

@@ -13,10 +13,24 @@ import {
 } from "@shared/history.ts";
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 import { isInside } from "../archives/paths.ts";
-import { historyBatchPauseMs, historyBatchSize, historyReconcileMs } from "../config.ts";
+import { historyBatchPauseMs, historyBatchSize, historyReconcileMs, pollIntervalMs } from "../config.ts";
+import { RESUME_START_MS } from "../terminal/resume-lease.ts";
 import { HistoryReconciler, historyReaders, type HistoryReader, type HistoryReconcilerOptions } from "./reconciler.ts";
+import { HistoryResume } from "./resume.ts";
+import { HistoryResumeLaunches, trackHistoryResumeLaunches, type HistoryResumeRegistry } from "./resume-launches.ts";
 import { historySearchNeedle } from "./search.ts";
 import { HistoryStore } from "./store.ts";
+
+/** Discovery's cadence when the poller is switched off: expiry still has to run. */
+const RESUME_TICK_FALLBACK_MS = 1_500;
+
+/**
+ * How long a Resume waits for its agent before an unbound launch closes: the launch timeout
+ * (a managed resume's start deadline), plus two discovery sweeps to see the agent it started.
+ */
+export function historyResumeGraceMs(): number {
+  return RESUME_START_MS + 2 * (pollIntervalMs() ?? RESUME_TICK_FALLBACK_MS);
+}
 
 /** The Registry session running an agent's conversation now, or null. Supplied by the routes. */
 export type HistoryLiveLookup = (agent: AgentType, agentSessionId: string) => string | null;
@@ -48,10 +62,16 @@ function unreadable(error: unknown): { ok: false; status: 500; error: string } {
 export class HistoryService {
   readonly store: HistoryStore;
   readonly reconciler: HistoryReconciler;
+  /** History Resume's launch records. */
+  readonly launches: HistoryResumeLaunches;
+  /** Resume: options, launch and cancel, over the same catalog. */
+  readonly resume: HistoryResume;
   private readonly readers: readonly HistoryReader[];
+  private stopResumeTracking: (() => void) | null = null;
 
-  constructor(options: Partial<HistoryReconcilerOptions> = {}) {
+  constructor(options: Partial<HistoryReconcilerOptions> & { launches?: HistoryResumeLaunches } = {}) {
     this.store = options.store ?? new HistoryStore();
+    this.launches = options.launches ?? new HistoryResumeLaunches();
     this.readers = options.readers ?? historyReaders();
     this.reconciler = new HistoryReconciler({
       intervalMs: historyReconcileMs(),
@@ -60,6 +80,12 @@ export class HistoryService {
       ...options,
       store: this.store,
       readers: this.readers,
+    });
+    this.resume = new HistoryResume({
+      store: this.store,
+      launches: this.launches,
+      find: (agent, id) => this.find(agent, id),
+      ...(options.now ? { now: options.now } : {}),
     });
   }
 
@@ -70,6 +96,20 @@ export class HistoryService {
 
   stop(): void {
     this.reconciler.stop();
+    this.stopResumeTracking?.();
+    this.stopResumeTracking = null;
+  }
+
+  /**
+   * Keep Resume's launch records in step with the Registry: binding, ending, the startup twin
+   * after the first discovery sweep, and the grace-window expiry. Idempotent.
+   */
+  trackResumes(registry: HistoryResumeRegistry): void {
+    if (this.stopResumeTracking) return;
+    this.stopResumeTracking = trackHistoryResumeLaunches(this.launches, registry, {
+      graceMs: historyResumeGraceMs(),
+      tickMs: pollIntervalMs() ?? RESUME_TICK_FALLBACK_MS,
+    });
   }
 
   /**

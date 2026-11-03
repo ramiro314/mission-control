@@ -47,7 +47,10 @@ export function resumeConversation(session: Pick<Session, "agent" | "agentSessio
 }
 
 /** All fallible provisioning, including the final wrapper, precedes SDK stop. */
-export async function prepareTerminalResume(session: Session, context: ResumeContext): Promise<PreparedResume> {
+export async function prepareTerminalResume(
+  session: Pick<Session, "id" | "agent" | "agentSessionId" | "permissionMode" | "cwd" | "runtime">,
+  context: ResumeContext,
+): Promise<PreparedResume> {
   if (!session.cwd || !session.agentSessionId) throw new Error("this conversation has no checkout or native identity to resume");
   const argv = await resumeArgvFor(session.agent, session.agentSessionId, session.permissionMode);
   if (!argv) throw new Error(`${session.agent} cannot reopen a conversation`);

@@ -91,6 +91,8 @@ export const OVERLAY_IDS = {
   // Library › Commands: import a Command document (preview, then apply) and export one.
   commandDocumentImport: "command-document-import",
   commandDocumentExport: "command-document-export",
+  // History › a session's Resume dialog.
+  historyResume: "history-resume",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];
