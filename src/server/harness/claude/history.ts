@@ -379,9 +379,12 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
     },
 
     async summarize(file, previous: HistoryParsePoint | null): Promise<HistoryParse | null> {
+      // Claude only appends. A new inode is a different file at the same path, and a file
+      // smaller than it was (or than the bytes already folded) was truncated or rewritten:
+      // either way the accumulated state describes bytes that are gone, so start over.
       const resumable = previous
         && previous.ino === file.fingerprint.ino
-        && previous.parsedBytes <= file.fingerprint.size
+        && file.fingerprint.size >= Math.max(previous.size, previous.parsedBytes)
         ? restore(previous.state)
         : null;
       const acc = resumable ?? emptyAccumulator();

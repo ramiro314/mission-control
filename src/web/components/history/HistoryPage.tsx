@@ -101,15 +101,18 @@ export function HistoryPage({
   route,
   navigate,
   replace,
+  revision,
   onOpenSession,
 }: {
   route: Extract<MissionRoute, { page: "history" }>;
   navigate: (route: MissionRoute) => boolean;
   replace: (route: MissionRoute) => void;
+  /** `historyRevision` from the event stream: bumps per changing reconcile pass and per reconnect. */
+  revision: number;
   onOpenSession: (sessionId: string) => void;
 }): React.JSX.Element {
   const filters = route.filters;
-  const catalog = useHistoryCatalog(filters);
+  const catalog = useHistoryCatalog(filters, revision);
   const progressLine = historyProgressLine(catalog.progress);
   const facets = catalog.facets;
 

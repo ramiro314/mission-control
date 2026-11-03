@@ -17,15 +17,17 @@ import { appendHistoryRows, historyFilterQuery, readHistoryWindow } from "./hist
  * 1. **A failed read is not an empty history.** The page says "could not ask" differently
  *    from "nothing recorded".
  * 2. **A refresh keeps the depth on screen.** It refetches as many rows as the operator has
- *    paged to, a page at a time past the route's cap, so a "Load more" is never undone. A
- *    change of filters is a different list, so it starts again from one page.
+ *    paged to, a page at a time past the route's cap, and on down to the last row on screen
+ *    when new sessions land above it, so a "Load more" is never undone. A change of filters
+ *    is a different list, so it starts again from one page.
  *
  * While the catalog reports a backfill in progress, the window is refetched a second after each
- * answer lands, so sessions appear as they are indexed. That poll stops the moment indexing does. Live updates
- * after the first run belong to the `history_changed` event, which is a later change.
+ * answer lands, so sessions appear as they are indexed. That poll stops the moment indexing does.
+ * After that the browser never polls: `revision` (the event stream's `historyRevision`, bumped by
+ * each `history_changed` and each reconnect) refetches the window when a session starts or grows.
  */
 
-/** How often an indexing catalog is re-read. */
+/** How often an indexing catalog is re-read, and how long a failed re-read waits to try again. */
 const INDEXING_REFRESH_MS = 1000;
 
 export type HistoryListState = "first" | "ready" | "error";
@@ -45,8 +47,20 @@ export interface HistoryCatalog {
   refresh: () => void;
 }
 
-export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryCatalog {
+export function useHistoryCatalog(filters: HistoryFilters | undefined, revision: number): HistoryCatalog {
   const [sessions, setSessions] = useState<HistorySessionSummary[]>([]);
+  /** The rows on screen as of the last render, so a refresh can keep down to the last of them. */
+  const onScreen = useRef(sessions);
+  onScreen.current = sessions;
+  /** The newest `history_changed` revision, as of the last render. */
+  const latestRevision = useRef(revision);
+  latestRevision.current = revision;
+  /**
+   * The revision the last window that LANDED was read for. Set when an answer arrives, never
+   * when a read starts: a read that Load more cancels has shown nothing, so the change it was
+   * asked for is still unread.
+   */
+  const readRevision = useRef(revision);
   const [progress, setProgress] = useState<HistoryProgress | null>(null);
   const [facets, setFacets] = useState<HistoryFacets | null>(null);
   // Keyed by value, so a route object rebuilt with the same filters is not a new list.
@@ -65,6 +79,10 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryC
   const [listState, setListState] = useState<HistoryListState>("first");
   const [listError, setListError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  /** Whether a window read is in flight. A revision waits for it rather than cancel it. */
+  const [reading, setReading] = useState(false);
+  /** Set by a failed window read; the revision waits one interval before it tries again. */
+  const [coolingDown, setCoolingDown] = useState(false);
   const [moreError, setMoreError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   /** Bumped when a window lands. The indexing poll waits on this, never on a timer alone. */
@@ -78,32 +96,46 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryC
 
   useEffect(() => {
     const controller = new AbortController();
+    const askedRevision = latestRevision.current;
     listAbort.current?.abort();
     listAbort.current = controller;
     moreAbort.current?.abort();
     moreAbort.current = null;
     setLoadingMore(false);
+    setReading(true);
     setMoreError(null);
     if (depthKey.current !== filterKey) {
       depthKey.current = filterKey;
       depth.current = HISTORY_PAGE_LIMITS.defaultLimit;
       setCursor(null);
     }
-    void readHistoryWindow((page) => api.historySessions({ ...query, ...page }, controller.signal), depth.current).then((result) => {
+    // Rows read under other filters belong to another list, so there is no row to keep down to.
+    const through = windowKey.current === filterKey ? onScreen.current.at(-1) ?? null : null;
+    void readHistoryWindow(
+      (page) => api.historySessions({ ...query, ...page }, controller.signal),
+      depth.current,
+      through,
+    ).then((result) => {
       if (controller.signal.aborted) return;
+      setReading(false);
       if (!result.ok) {
+        // The revision stays unread, so the change it announced is tried again; the cool-down
+        // spaces those tries an interval apart instead of spinning against a refusing daemon.
+        setCoolingDown(true);
         if (!hasWindow.current || windowKey.current !== filterKey) {
           setListError(result.error);
           setListState("error");
           return;
         }
         // A background re-read failed (a daemon restart, a busy backfill). The rows on screen
-        // are still the last good answer, so they stay, and the poll tries again on schedule.
+        // are still the last good answer, so they stay. The indexing poll tries again on its
+        // schedule while a backfill runs, and an unread revision after its cool-down.
         setLanded((n) => n + 1);
         return;
       }
       hasWindow.current = true;
       windowKey.current = filterKey;
+      readRevision.current = askedRevision;
       setSessions(result.value.sessions);
       setCursor(result.value.nextCursor);
       setProgress(result.value.progress);
@@ -128,6 +160,28 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryC
     return () => clearTimeout(timer);
   }, [indexing, landed, loadingMore]);
 
+  // A changed catalog re-reads the window at its current depth. Held while a Load more or a
+  // window read is in flight, for the poll's reason above: a live session can announce a change
+  // every second or so, and a deep re-read on a busy daemon can take longer than that, so
+  // cancelling it for each one would mean it never lands. When the read in flight settles, the
+  // newest revision is still newer than the one that read was asked for, and this runs again.
+  // That holds from the other side too: a re-read already in flight when Load more is clicked
+  // is cancelled by it, never lands, and so leaves its revision unread for this effect to take
+  // when Load more lands.
+  //
+  // A read that failed leaves its revision unread and starts a cool-down, so the change is
+  // retried an interval later: after the first backfill nothing else would, and a session that
+  // went idle on that change would keep its old row until some other session wrote.
+  useEffect(() => {
+    if (revision === readRevision.current || loadingMore || reading || coolingDown) return;
+    setTick((n) => n + 1);
+  }, [revision, loadingMore, reading, coolingDown]);
+  useEffect(() => {
+    if (!coolingDown) return;
+    const timer = setTimeout(() => setCoolingDown(false), INDEXING_REFRESH_MS);
+    return () => clearTimeout(timer);
+  }, [coolingDown]);
+
   const loadMore = useCallback(() => {
     if (!cursor || loadingMore || windowKey.current !== filterKey) return;
     const controller = new AbortController();
@@ -138,6 +192,7 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryC
     // cursor, and if it was the read reporting the backfill done, no poll would follow to put
     // them back. Cancel it: the poll resumes a second after this page lands.
     listAbort.current?.abort();
+    setReading(false);
     setLoadingMore(true);
     setMoreError(null);
     void api.historySessions({ ...query, cursor, limit: HISTORY_PAGE_LIMITS.defaultLimit }, controller.signal).then((result) => {

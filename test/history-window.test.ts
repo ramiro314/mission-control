@@ -7,7 +7,7 @@ import {
   type HistoryMessagesRead,
   type HistoryPageRead,
 } from "../src/web/components/history/history-window.ts";
-import { HISTORY_PAGE_LIMITS, HISTORY_SEARCH_LIMITS, type HistorySessionSummary } from "../src/shared/history.ts";
+import { HISTORY_PAGE_LIMITS, HISTORY_SEARCH_LIMITS, encodeHistoryCursor, type HistorySessionSummary } from "../src/shared/history.ts";
 import type { TranscriptMessage } from "../src/shared/types.ts";
 
 /** A catalog of `total` rows, served the way the route serves it: capped pages and a cursor. */
@@ -60,6 +60,84 @@ test("a failed continuation fails the refresh rather than keeping a truncated wi
   const { read } = catalog(400);
   const result = await readHistoryWindow(async (query) => (query.cursor ? { ok: false, error: "busy" } : read(query)), 250);
   assert.deepEqual(result, { ok: false, error: "busy" });
+});
+
+/**
+ * A catalog that pages by the route's real cursor (the last row's key), so rows can be added
+ * above a window between reads, as a session that starts while the page is open is.
+ */
+function liveCatalog(total: number): {
+  rows: HistorySessionSummary[];
+  add: (count: number) => void;
+  read: (query: { cursor?: string; limit: number }) => Promise<HistoryPageRead>;
+  asked: { cursor?: string; limit: number }[];
+} {
+  const row = (at: number, id: string) => ({ agent: "claude", agentSessionId: id, lastActivityAt: at }) as HistorySessionSummary;
+  const rows = Array.from({ length: total }, (_, i) => row(1_000_000 - i, `s-${String(i).padStart(4, "0")}`));
+  let added = 0;
+  const asked: { cursor?: string; limit: number }[] = [];
+  return {
+    rows,
+    asked,
+    add: (count) => {
+      for (let i = 0; i < count; i++) {
+        added += 1;
+        rows.unshift(row(2_000_000 + added, `new-${added}`));
+      }
+    },
+    read: async (query) => {
+      asked.push(query);
+      assert.ok(query.limit <= HISTORY_PAGE_LIMITS.maxLimit, "no request exceeds the route's cap");
+      const start = query.cursor ? rows.findIndex((entry) => encodeHistoryCursor(entry) === query.cursor) + 1 : 0;
+      const end = Math.min(rows.length, start + query.limit);
+      const last = rows[end - 1];
+      return {
+        ok: true,
+        value: { sessions: rows.slice(start, end), nextCursor: end < rows.length && last ? encodeHistoryCursor(last) : null, progress: { indexing: false, indexed: total, total }, facets: { agents: [], repositories: [], retention: [] } },
+      };
+    },
+  };
+}
+
+test("sessions added above the window push the re-read down to the last row on screen, and no further", async () => {
+  const live = liveCatalog(300);
+  const shown = await readHistoryWindow(live.read, 120);
+  assert.ok(shown.ok);
+  const lastOnScreen = shown.value.sessions.at(-1)!;
+  live.add(3);
+  live.asked.length = 0;
+  const result = await readHistoryWindow(live.read, 120, lastOnScreen);
+  assert.ok(result.ok);
+  assert.equal(result.value.sessions.length, 123, "the three new rows are added; none of the loaded ones drop off");
+  assert.equal(result.value.sessions[0]?.agentSessionId, "new-3");
+  assert.equal(result.value.sessions.at(-1)?.agentSessionId, lastOnScreen.agentSessionId);
+  assert.equal(result.value.nextCursor, encodeHistoryCursor(lastOnScreen), "the cursor continues right below it");
+  // Load more from there returns exactly the rows that were below the window before.
+  const next = await live.read({ cursor: result.value.nextCursor!, limit: 2 });
+  assert.ok(next.ok);
+  assert.deepEqual(next.value.sessions.map((entry) => entry.agentSessionId), ["s-0120", "s-0121"]);
+});
+
+test("a fully loaded window stays fully loaded when a session is added above it", async () => {
+  const live = liveCatalog(57);
+  const shown = await readHistoryWindow(live.read, 57);
+  assert.ok(shown.ok);
+  assert.equal(shown.value.nextCursor, null);
+  live.add(1);
+  const result = await readHistoryWindow(live.read, 57, shown.value.sessions.at(-1)!);
+  assert.ok(result.ok);
+  assert.equal(result.value.sessions.length, 58);
+  assert.equal(result.value.nextCursor, null, "Load more does not come back");
+});
+
+test("a last row that left the list stops the search one capped page past the depth", async () => {
+  const live = liveCatalog(1000);
+  const gone = { agent: "claude", agentSessionId: "not-listed", lastActivityAt: 1 } as HistorySessionSummary;
+  const result = await readHistoryWindow(live.read, 50, gone);
+  assert.ok(result.ok);
+  assert.equal(result.value.sessions.length, 50, "the window falls back to the depth");
+  assert.deepEqual(live.asked, [{ limit: 50 }, { cursor: encodeHistoryCursor(live.rows[49]!), limit: HISTORY_PAGE_LIMITS.maxLimit }]);
+  assert.equal(result.value.nextCursor, encodeHistoryCursor(live.rows[49]!));
 });
 
 test("the route's filters become the list query: local days, with an exclusive end", async () => {

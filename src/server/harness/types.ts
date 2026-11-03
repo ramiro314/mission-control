@@ -1211,7 +1211,9 @@ export interface HistorySummary {
 export interface HistoryParsePoint {
   summary: HistorySummary;
   parsedBytes: number;
+  /** The inode and size the file had when it was last indexed: a new inode or a smaller size restarts the parse. */
   ino: number;
+  size: number;
   state: string | null;
 }
 

@@ -382,6 +382,9 @@ export function App(): React.JSX.Element {
     // how the Scouts page learns to refetch its current window without the browser polling
     // and without unbounded history entering the SSE snapshot.
     archivesRevision,
+    // Bumped per History reconcile pass that changed rows and per reconnect; the History page
+    // re-reads its window on it.
+    historyRevision,
     settingsRestoreNotice,
     schedules,
     connected,
@@ -4279,7 +4282,7 @@ export function App(): React.JSX.Element {
             // Mounted only on its own route, like Scouts, so the catalog fetch never runs
             // while somebody is on another page.
             route.page === "history" ? (
-              <HistoryPage route={route} navigate={navigate} replace={replace} onOpenSession={openSessionOnFleet} />
+              <HistoryPage route={route} navigate={navigate} replace={replace} revision={historyRevision} onOpenSession={openSessionOnFleet} />
             ) : null
           }
           shipped={
