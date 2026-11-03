@@ -79,8 +79,8 @@ History has not indexed says so.
 - **Tool calls.** Under each turn that called tools, every call opens to its whole input (up to
   256 KB, where the live view cuts at 1,800 characters) and its result, read only when the call
   is opened. A result Claude Code moved to a `tool-results/` sidecar file is read whole from
-  that file. Either is cut at 1 MB of UTF-8, on a character boundary. A call with no recorded result, or whose sidecar file is gone or not
-  reachable, says **Result unavailable** and why.
+  that file. Either is cut at 1 MB of UTF-8, on a character boundary. A call with no recorded
+  result, or whose sidecar file is gone or not reachable, says **Result unavailable** and why.
 - **Compaction.** Where Claude Code compacted the context, a divider reads "Context compacted"
   with its trigger and the token count before it. The summary Claude carried past it is
   folded under **Summary carried past the compaction**, not drawn as the operator speaking.
