@@ -288,6 +288,20 @@ from a request. None of these reads is exposed as an MCP tool.
 Query parameters and bodies are parsed with Zod schemas in the shared protocol, through
 `parseBody`.
 
+**Sidecar and subagent parameters.** `:toolUseId` and `:agentId` never become part of a path
+on their own. On this machine sidecar names vary (`toolu_<id>.txt`, `mcp-<server>-<tool>-<id>.txt`,
+short random names), and 137 of 156 sampled are referenced by name from their parent
+transcript.
+- `:toolUseId` must match `^[A-Za-z0-9_-]{1,128}$`. The server finds that tool use's result
+  record in the parent transcript. An inline result is returned as is. A result that refers to
+  a sidecar file takes the file name from that record, never from the request.
+- `:agentId` must match `^[0-9a-f]{8,64}$`. It names `agent-<agentId>.jsonl` only when that
+  file appears in the session's own `subagents/` listing.
+- **Containment.** Either path is resolved with `realpath` and must lie under that session's
+  own `<sessionId>/tool-results/` or `<sessionId>/subagents/` folder, not merely under the
+  harness root. Anything else is a 404. A sidecar no transcript record names is not reachable
+  through the route; its result shows as unavailable.
+
 **Mission Control join.** `agent_session_id` joins `task_work_episode_bindings` and
 `historical_task_work_episode_bindings` (task, PR, merged at), then `tasks` (title, kind,
 outcome, outcome URL, workflow, labels), `session_agent_bindings` (the Mission Control link),
@@ -404,6 +418,13 @@ flowchart TD
 - **Picker.** When the original directory is gone or reused, a dialog offers idle, clean slots
   of the session's repository (`observedIdleRefusal`) and a directory field validated to exist.
   A session with no resolvable repository offers only the directory.
+- **One canonical target path.** A typed directory must be absolute; a relative path is
+  refused. Every target (original directory, slot or typed directory) is resolved once with
+  `realpath`, and must be an existing directory. That single resolved value is the one used
+  everywhere after: the project folder encoding, the `O_EXCL` copy destination, the launch
+  row's `cwd`, the terminal's working directory and the binding check. Claude encodes the
+  directory it actually runs in, so a symlinked or unresolved spelling could otherwise put the
+  copy in a folder Claude never reads.
 - **Slot target.** A new worktree manager operation leases the slot and checks out the
   session's recorded branch when it exists locally or on the remote; otherwise it leaves the
   slot as it is and the dialog warns that the code may not match the conversation.
@@ -526,8 +547,10 @@ anything a tool printed (including secrets) is visible to anyone who can reach t
 API. Mitigations:
 
 - Routes take a harness name and a session UUID; the server resolves the path from the catalog
-  and checks it lies under a harness root. No route accepts a path, except the Resume directory
-  target, which is validated to exist and only receives a copied transcript.
+  and checks it lies under a harness root. Sidecar and subagent reads are confined further, to
+  the session's own folder, as described under Routes. No route accepts a path, except the
+  Resume directory target, which must be absolute, is resolved with `realpath`, and only
+  receives a copied transcript.
 - None of the History reads is exposed to agents through Mission Control's MCP tools.
 - The search index copies user prompts into `harness.db`; this is documented in
   `docs/security.md`.
@@ -580,6 +603,13 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
 - Directory copy: a destination whose encoded folder collides with the original's refuses and
   leaves the original byte-identical; an existing History copy of the session is reused with
   no write; any other existing file of that name refuses; the copy is created exclusively.
+- Target canonicalization: a typed relative path is refused; a symlinked directory is resolved
+  once, and the copy folder, the launch `cwd` and the terminal's working directory all use the
+  resolved path.
+- Sidecar and subagent routes: a `:toolUseId` or `:agentId` outside its format, or carrying
+  `..` or an encoded separator, is a 404; a sidecar is read only through the file name its
+  parent transcript records; a subagent is read only when it is in the session's own listing;
+  a resolved path outside the session's own folder, through a symlink for instance, is a 404.
 - One open launch: two concurrent `POST .../resume` requests for one session produce one launch
   row and one refusal, and the loser leases no slot and starts no terminal; a failed later
   step moves the row to `released`, so the next Resume succeeds.
@@ -738,7 +768,7 @@ The Plan Feasibility Judge asked for five clarifications. None changes a human d
 
 ### Review repairs (GitHub Inspector on #725)
 
-Seven findings over four reviews, none of which changes a human decision above:
+Nine findings over five reviews, none of which changes a human decision above:
 
 - An unbound launch past its grace window expires and keeps its lease instead of being
   released, and a late agent still binds (Resume).
@@ -753,6 +783,11 @@ Seven findings over four reviews, none of which changes a human decision above:
   any lease, copy or launch (Resume).
 - A slot whose `HEAD` holds commits that no ref holds counts as dirty for release, so work made
   on a detached `HEAD` is never reset away (Resume).
+- `:toolUseId` and `:agentId` are format-checked, resolved through the parent transcript's
+  records or the session's own listing, and confined to the session's own folder after
+  `realpath` (Routes).
+- Every Resume target is resolved once with `realpath`, and that value is used for the folder
+  encoding, the copy, the launch `cwd` and the terminal (Resume).
 
 ### Assumptions stated during the interview
 
