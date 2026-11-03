@@ -8,6 +8,7 @@ import type {
   HistorySpec,
   HistorySummary,
 } from "../types.ts";
+import { claudeCleanupPeriodDays } from "@shared/claude-settings.ts";
 import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "./project-dir.ts";
 import { claudeMessages, toMessage } from "./transcript.ts";
 
@@ -35,6 +36,9 @@ const REVIEWER_TOOLS = new Set(["Read", "Glob", "Grep", "StructuredOutput"]);
 const READ_TOOLS = ["Read", "Glob", "Grep"];
 /** `prompt_snapshot.cliPrefix` for Claude Code's own preset, as opposed to "You are a Claude agent". */
 const CLAUDE_CODE_PREFIX = "You are Claude Code";
+/** Claude Code's own default for `cleanupPeriodDays`, used while the setting is unset. */
+const DEFAULT_CLEANUP_DAYS = 30;
+const CLEANUP_SETTING_URL = "https://code.claude.com/docs/en/settings-reference#cleanupperioddays";
 
 /** The tool list and preset a session's `prompt_snapshot` recorded. */
 export interface ClaudePromptSnapshot {
@@ -139,8 +143,12 @@ function sumUsage(usage: unknown, keys: readonly string[]): number | null {
   return any ? total : null;
 }
 
-/** Fold one parsed record into the accumulator. Unknown shapes are skipped. */
-function foldClaudeRecord(acc: Accumulator, record: unknown): void {
+/**
+ * Fold one parsed record into the accumulator. Unknown shapes are skipped. A user prompt the
+ * record carries is also pushed onto `prompts`, when given, for the search index; prompts are
+ * not part of the accumulator, so the reader state stays small.
+ */
+function foldClaudeRecord(acc: Accumulator, record: unknown, prompts: string[] | null): void {
   if (!record || typeof record !== "object") return;
   const rec = record as Record<string, unknown>;
   // A subagent's records can be inlined into the parent; they are not this session's place.
@@ -206,13 +214,16 @@ function foldClaudeRecord(acc: Accumulator, record: unknown): void {
       return;
     }
   }
-  if (acc.firstPrompt === null && !sidechain) {
-    const message = toMessage(rec);
-    if (message?.role === "user" && message.text) {
-      acc.firstPrompt = message.text.length > FIRST_PROMPT_CAP
-        ? `${message.text.slice(0, FIRST_PROMPT_CAP - 1)}…`
-        : message.text;
-    }
+  // A compaction summary arrives as a `user` record but is Claude's own words, not the
+  // operator's, so it is neither a prompt to index nor a title.
+  if (sidechain || rec.isCompactSummary === true || (acc.firstPrompt !== null && prompts === null)) return;
+  const message = toMessage(rec);
+  if (message?.role !== "user" || !message.text) return;
+  prompts?.push(message.text);
+  if (acc.firstPrompt === null) {
+    acc.firstPrompt = message.text.length > FIRST_PROMPT_CAP
+      ? `${message.text.slice(0, FIRST_PROMPT_CAP - 1)}…`
+      : message.text;
   }
 }
 
@@ -256,9 +267,10 @@ function restore(state: string | null): Accumulator | null {
 
 /**
  * Fold every complete line from `offset` on. Returns the offset just past the last newline,
- * so a line still being written is read whole on the next call rather than half now.
+ * so a line still being written is read whole on the next call rather than half now. Prompts
+ * are collected from complete lines only, for the same reason.
  */
-async function foldFrom(path: string, offset: number, acc: Accumulator): Promise<number> {
+async function foldFrom(path: string, offset: number, acc: Accumulator, prompts: string[]): Promise<number> {
   const handle = await open(path, "r");
   try {
     let position = offset;
@@ -275,7 +287,7 @@ async function foldFrom(path: string, offset: number, acc: Accumulator): Promise
         const line = data.toString("utf8", start, i).trim();
         if (line) {
           try {
-            foldClaudeRecord(acc, JSON.parse(line));
+            foldClaudeRecord(acc, JSON.parse(line), prompts);
           } catch {
             // A malformed line is skipped, never fatal: one bad record must not hide a session.
           }
@@ -290,7 +302,7 @@ async function foldFrom(path: string, offset: number, acc: Accumulator): Promise
     const tail = carry.toString("utf8").trim();
     if (tail) {
       try {
-        foldClaudeRecord(acc, JSON.parse(tail));
+        foldClaudeRecord(acc, JSON.parse(tail), null);
       } catch {
         // Still being written.
       }
@@ -374,12 +386,15 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
         : null;
       const acc = resumable ?? emptyAccumulator();
       const from = resumable ? previous!.parsedBytes : 0;
-      const parsedBytes = await foldFrom(file.path, from, acc);
+      const prompts: string[] = [];
+      const parsedBytes = await foldFrom(file.path, from, acc, prompts);
       if (acc.firstAt === null && acc.cwd === null && acc.entrypoint === null) return null;
       return {
         summary: summaryOf(acc, await countSubagents(file.path, file.agentSessionId)),
         parsedBytes,
         state: JSON.stringify(acc),
+        prompts,
+        fromStart: !resumable,
       };
     },
 
@@ -396,6 +411,18 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
         return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
       });
       return sorted[0]!.path;
+    },
+
+    retention() {
+      // The user settings file only: the header speaks for the whole machine, and a project's
+      // own `.claude/settings.json` applies to that project's sessions alone.
+      const days = claudeCleanupPeriodDays();
+      return {
+        days: days ?? DEFAULT_CLEANUP_DAYS,
+        configured: days !== null,
+        setting: "cleanupPeriodDays",
+        settingUrl: CLEANUP_SETTING_URL,
+      };
     },
   };
 }

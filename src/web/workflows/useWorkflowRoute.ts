@@ -17,7 +17,7 @@ import {
   type ArchiveKind,
 } from "@shared/archives.ts";
 import { pipelineRepoKey, type PipelineProviderId } from "@shared/pipeline.ts";
-import { isHistorySessionId } from "@shared/history.ts";
+import { HISTORY_KIND_FILTERS, isHistorySessionId, type HistoryKindFilter } from "@shared/history.ts";
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
@@ -182,6 +182,50 @@ function scoutBound(raw: string | null): number | undefined {
   // but the route's own API would refuse is a link that lands on a 400 instead of a page.
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
+/**
+ * The History list's filters. In the hash, like Scouts', so a filtered list survives a reload
+ * and can be handed to someone; the page REPLACES the route as they change, so refining a
+ * search never leaves a trail for Back to walk.
+ */
+export interface HistoryFilters {
+  /** Literal search over titles, paths, branches and indexed prompts. */
+  q?: string;
+  /** A repository root, exactly as the page's repository filter lists it. */
+  repo?: string;
+  /** Local calendar days, `YYYY-MM-DD`, both inclusive, bounding last activity. */
+  from?: string;
+  to?: string;
+  /** Absent means conversations only. */
+  kind?: HistoryKindFilter;
+  agent?: AgentType;
+}
+
+/** A calendar day a date input produces, or undefined for anything else. */
+function historyDay(raw: string | null): string | undefined {
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return undefined;
+  const [year, month, day] = raw.split("-").map(Number) as [number, number, number];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  // `2026-02-31` is shaped right and names no day; it is dropped like any other bad value.
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? raw : undefined;
+}
+
+/** The filters a History hash names, each dropped when this build would refuse it. */
+function parseHistoryFilters(params: URLSearchParams): HistoryFilters | undefined {
+  const kind = params.get("kind");
+  const agent = params.get("agent");
+  const from = historyDay(params.get("from"));
+  const to = historyDay(params.get("to"));
+  const filters: HistoryFilters = {
+    ...(params.get("q") ? { q: params.get("q")! } : {}),
+    ...(params.get("repo") ? { repo: params.get("repo")! } : {}),
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
+    ...(kind && (HISTORY_KIND_FILTERS as readonly string[]).includes(kind) ? { kind: kind as HistoryKindFilter } : {}),
+    ...(agent && (AGENT_TYPES as readonly string[]).includes(agent) ? { agent: agent as AgentType } : {}),
+  };
+  return Object.keys(filters).length > 0 ? filters : undefined;
+}
+
 export type MissionRoute =
   | { page: "fleet" }
   | {
@@ -258,12 +302,16 @@ export type MissionRoute =
   | {
       /**
        * Session History: every agent session this machine holds on disk, whether or not
-       * Mission Control ever saw it, newest activity first. Filters join the hash when that
-       * surface ships.
+       * Mission Control ever saw it, newest activity first, and one session's detail.
        */
       page: "history";
       /** The session whose detail is open, addressed as the API addresses it. */
       session?: { agent: AgentType; id: string };
+      /**
+       * The list's filters. A detail carries the ones it was opened from, so Back returns to
+       * that list rather than the bare one.
+       */
+      filters?: HistoryFilters;
     }
   | { page: "settings"; category: SettingsCategoryId };
 
@@ -378,14 +426,16 @@ export function parseMissionRoute(hash: string): MissionRoute {
     };
   }
   if (path === "/history" || path.startsWith("/history/")) {
+    const historyFilters = parseHistoryFilters(params);
+    const withFilters = historyFilters ? { filters: historyFilters } : {};
     // An agent this build does not know, an id that is not a UUID, or a deeper path names no
     // session, so it lands on the list - the same rule a malformed archive key takes.
     const detail = /^\/history\/([^/]+)\/([^/]+)$/.exec(path);
     const agent = detail ? segment(detail[1]!) : null;
     const id = detail ? segment(detail[2]!) : null;
     return agent && id && (AGENT_TYPES as readonly string[]).includes(agent) && isHistorySessionId(id)
-      ? { page: "history", session: { agent: agent as AgentType, id } }
-      : { page: "history" };
+      ? { page: "history", session: { agent: agent as AgentType, id }, ...withFilters }
+      : { page: "history", ...withFilters };
   }
   if (path === "/library") return { page: "library" };
   const library = /^\/library\/([^/]+)(?:\/([^/]+))?$/.exec(path);
@@ -526,11 +576,22 @@ export function missionRouteHash(route: MissionRoute): string {
   // lands on the wrong page with no error anywhere.
   if (route.page === "shipped") return "#/shipped";
   if (route.page === "history") {
-    // Emitted only when well formed, mirroring the parser, so the codec round-trips.
+    const params = new URLSearchParams();
+    // Fixed order, for the reason Scouts gives below; each value passes the parser's own check.
+    const filters = route.filters;
+    if (filters?.q) params.set("q", filters.q);
+    if (filters?.repo) params.set("repo", filters.repo);
+    if (historyDay(filters?.from ?? null)) params.set("from", filters!.from!);
+    if (historyDay(filters?.to ?? null)) params.set("to", filters!.to!);
+    if (filters?.kind && (HISTORY_KIND_FILTERS as readonly string[]).includes(filters.kind)) params.set("kind", filters.kind);
+    if (filters?.agent && (AGENT_TYPES as readonly string[]).includes(filters.agent)) params.set("agent", filters.agent);
+    const query = params.toString();
+    // The session is emitted only when well formed, mirroring the parser, so the codec round-trips.
     const session = route.session;
-    return session && (AGENT_TYPES as readonly string[]).includes(session.agent) && isHistorySessionId(session.id)
+    const path = session && (AGENT_TYPES as readonly string[]).includes(session.agent) && isHistorySessionId(session.id)
       ? `#/history/${session.agent}/${encodeURIComponent(session.id)}`
       : "#/history";
+    return query ? `${path}?${query}` : path;
   }
   if (route.page === "scouts") {
     // The key is emitted only when it is well formed, mirroring the parser. A hand-built

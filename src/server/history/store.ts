@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
   encodeHistoryCursor,
+  type HistoryFacets,
   type HistoryListCursor,
   type HistoryProgress,
   type HistoryPage,
@@ -10,6 +11,7 @@ import {
 import type { AgentType } from "@shared/types.ts";
 import { openDb } from "../db.ts";
 import type { HistoryFingerprint, HistoryParsePoint, HistorySummary } from "../harness/types.ts";
+import { historyFieldsSegment } from "./search.ts";
 
 /**
  * The Session History catalog: `history_sessions` row mechanics only. When to write is the
@@ -36,6 +38,30 @@ export interface HistoryUpsert {
   summary: HistorySummary;
   /** Used for `last_activity_at` when no record carried a timestamp: the file's mtime. */
   fallbackActivityAt: number;
+  /** What `history_search_segments` holds for this row, already folded. */
+  search: HistorySearchWrite;
+}
+
+/**
+ * One row's search text. `fields` replaces ordinal 0. `prompts` are appended after the
+ * row's last prompt segment, or replace every one of them when `resetPrompts` is set.
+ */
+export interface HistorySearchWrite {
+  fields: string;
+  prompts: readonly string[];
+  resetPrompts: boolean;
+}
+
+/** The list's filters, already validated and resolved by the service. */
+export interface HistoryListFilter {
+  kinds: readonly string[];
+  /** A folded search needle, or null. */
+  needle: string | null;
+  repo: string | null;
+  /** Epoch ms bounds on `last_activity_at`: `from` inclusive, `to` exclusive. */
+  from: number | null;
+  to: number | null;
+  agent: AgentType | null;
 }
 
 interface Row {
@@ -234,8 +260,25 @@ export class HistoryStore {
         subagent_count = excluded.subagent_count,
         indexed_at = excluded.indexed_at
     `);
+    const fields = this.db.prepare(
+      `INSERT INTO history_search_segments (agent, agent_session_id, ordinal, text_fold) VALUES (?, ?, 0, ?)
+       ON CONFLICT (agent, agent_session_id, ordinal) DO UPDATE SET text_fold = excluded.text_fold`,
+    );
+    const clearPrompts = this.db.prepare(
+      "DELETE FROM history_search_segments WHERE agent = ? AND agent_session_id = ? AND ordinal > 0",
+    );
+    const lastOrdinal = this.db.prepare(
+      "SELECT COALESCE(MAX(ordinal), 0) AS n FROM history_search_segments WHERE agent = ? AND agent_session_id = ?",
+    );
+    const prompt = this.db.prepare(
+      "INSERT INTO history_search_segments (agent, agent_session_id, ordinal, text_fold) VALUES (?, ?, ?, ?)",
+    );
     this.inTransaction(() => {
       for (const row of rows) {
+        fields.run(row.agent, row.agentSessionId, row.search.fields);
+        if (row.search.resetPrompts) clearPrompts.run(row.agent, row.agentSessionId);
+        let ordinal = Number((lastOrdinal.get(row.agent, row.agentSessionId) as { n: number }).n);
+        for (const text of row.search.prompts) prompt.run(row.agent, row.agentSessionId, ++ordinal, text);
         const s = row.summary;
         statement.run(
           row.agent,
@@ -292,6 +335,45 @@ export class HistoryStore {
     return missing.length;
   }
 
+  /**
+   * Write the fields segment for every row that has none, from the row itself. A row indexed
+   * before `history_search_segments` existed gets one here; a present one is also re-read by
+   * the reconciler (see `migrateHistorySearchSegments`), but a gone one has no file left to
+   * read, and its title, place and branch must stay searchable. Returns how many were written.
+   */
+  seedFieldSegments(): number {
+    const missing = this.db.prepare(
+      `SELECT agent, agent_session_id, custom_title, ai_title, first_prompt, cwd, repo_root, branch
+         FROM history_sessions h
+        WHERE NOT EXISTS (SELECT 1 FROM history_search_segments s
+                           WHERE s.agent = h.agent AND s.agent_session_id = h.agent_session_id AND s.ordinal = 0)`,
+    ).all() as unknown as Pick<Row, "agent" | "agent_session_id" | "custom_title" | "ai_title" | "first_prompt" | "cwd" | "repo_root" | "branch">[];
+    if (missing.length === 0) return 0;
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO history_search_segments (agent, agent_session_id, ordinal, text_fold) VALUES (?, ?, 0, ?)",
+    );
+    this.inTransaction(() => {
+      for (const row of missing) {
+        insert.run(row.agent, row.agent_session_id, historyFieldsSegment({
+          customTitle: row.custom_title,
+          aiTitle: row.ai_title,
+          firstPrompt: row.first_prompt,
+          cwd: row.cwd,
+          repoRoot: row.repo_root,
+          branch: row.branch,
+        }));
+      }
+    });
+    return missing.length;
+  }
+
+  /** Every repository a row resolved to, for the repository filter. */
+  repositories(): string[] {
+    return (this.db
+      .prepare("SELECT DISTINCT repo_root FROM history_sessions WHERE repo_root IS NOT NULL ORDER BY repo_root")
+      .all() as unknown as { repo_root: string }[]).map((row) => row.repo_root);
+  }
+
   /** A worktree pool's root to its main checkout, for repository resolution. */
   worktreePools(): { poolPath: string; mainCheckoutRoot: string }[] {
     return (this.db.prepare("SELECT pool_path, main_checkout_root FROM worktree_pools").all() as unknown as {
@@ -308,26 +390,54 @@ export class HistoryStore {
     return row?.repo_root ?? null;
   }
 
-  /** One page of rows of the given kinds, newest activity first. */
+  /**
+   * One page of rows matching every filter, newest activity first.
+   *
+   * Search is a literal substring of the folded needle in any of the row's segments, with no
+   * ranking: the list keeps its activity order, so a search narrows it rather than reorders it.
+   */
   page(query: {
-    kinds: readonly string[];
+    filter: HistoryListFilter;
     cursor: HistoryListCursor | null;
     limit: number;
     progress: HistoryProgress;
+    facets: HistoryFacets;
   }): HistoryPage {
-    const kinds = query.kinds.map(() => "?").join(", ");
-    const params: (string | number)[] = [...query.kinds];
-    let after = "";
+    const { filter } = query;
+    const where = [`h.kind IN (${filter.kinds.map(() => "?").join(", ")})`];
+    const params: (string | number)[] = [...filter.kinds];
+    if (filter.needle) {
+      where.push(`EXISTS (SELECT 1 FROM history_search_segments s
+                           WHERE s.agent = h.agent AND s.agent_session_id = h.agent_session_id
+                             AND instr(s.text_fold, ?) > 0)`);
+      params.push(filter.needle);
+    }
+    if (filter.repo !== null) {
+      where.push("h.repo_root = ?");
+      params.push(filter.repo);
+    }
+    if (filter.from !== null) {
+      where.push("h.last_activity_at >= ?");
+      params.push(filter.from);
+    }
+    if (filter.to !== null) {
+      where.push("h.last_activity_at < ?");
+      params.push(filter.to);
+    }
+    if (filter.agent !== null) {
+      where.push("h.agent = ?");
+      params.push(filter.agent);
+    }
     if (query.cursor) {
       const { lastActivityAt, agent, agentSessionId } = query.cursor;
-      after = `AND (last_activity_at < ? OR (last_activity_at = ? AND (agent < ? OR (agent = ? AND agent_session_id < ?))))`;
+      where.push(`(h.last_activity_at < ? OR (h.last_activity_at = ? AND (h.agent < ? OR (h.agent = ? AND h.agent_session_id < ?))))`);
       params.push(lastActivityAt, lastActivityAt, agent, agent, agentSessionId);
     }
     params.push(query.limit + 1);
     const rows = this.db
       .prepare(
-        `SELECT * FROM history_sessions WHERE kind IN (${kinds}) ${after}
-          ORDER BY last_activity_at DESC, agent DESC, agent_session_id DESC LIMIT ?`,
+        `SELECT h.* FROM history_sessions h WHERE ${where.join(" AND ")}
+          ORDER BY h.last_activity_at DESC, h.agent DESC, h.agent_session_id DESC LIMIT ?`,
       )
       .all(...params) as unknown as Row[];
     const more = rows.length > query.limit;
@@ -339,6 +449,7 @@ export class HistoryStore {
         ? encodeHistoryCursor({ lastActivityAt: last.lastActivityAt, agent: last.agent, agentSessionId: last.agentSessionId })
         : null,
       progress: query.progress,
+      facets: query.facets,
     };
   }
 }

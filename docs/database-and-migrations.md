@@ -48,6 +48,17 @@ table is not disposable: when Claude Code's retention deletes a transcript, its 
 deleted. The table arrived with schema version 12, a fork entry, created in `migrate()` with
 `CREATE ... IF NOT EXISTS` and not gated by the number, so an upstream 12 can renumber it.
 
+`history_search_segments` is the text History's search scans, keyed by agent, session id and
+ordinal and written only by `HistoryStore` beside the session's row: ordinal 0 holds the title
+fields, cwd, repository and branch, later ordinals the user prompts in overlapping chunks. It
+stores only a JavaScript-folded copy and is matched as a literal substring, following
+`archive_search_segments`; FTS5 is deliberately not used. It arrived with schema version 13, a
+fork entry created in `migrate()`. A database that already holds `history_sessions` rows when
+the table is first created has their fingerprints cleared in the same step, so the reconciler
+re-reads each present transcript from the top and indexes its prompts; a row whose transcript is
+already gone gets its fields segment from the row itself. User prompts are therefore copied into
+`harness.db`; see [security](security.md#session-history-copies-user-prompts-into-harnessdb).
+
 ## Full-database recovery points
 
 Mission Control creates verified recovery points for normal operation and schema upgrades. See

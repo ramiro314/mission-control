@@ -22,11 +22,42 @@ export type HistoryKind = (typeof HISTORY_KINDS)[number];
  */
 export const HISTORY_CONVERSATION_KINDS: readonly HistoryKind[] = ["interactive", "sdk", "unclassified"];
 
+export function isHistoryConversationKind(kind: string): boolean {
+  return (HISTORY_CONVERSATION_KINDS as readonly string[]).includes(kind);
+}
+
 /** Whether the transcript file a row was built from is still on disk. */
 export const HISTORY_TRANSCRIPT_STATES = ["present", "gone"] as const;
 export type HistoryTranscriptState = (typeof HISTORY_TRANSCRIPT_STATES)[number];
 
 export const HISTORY_PAGE_LIMITS = { defaultLimit: 50, maxLimit: 200 } as const;
+
+/** The longest search query and repository filter the list route accepts. */
+export const HISTORY_SEARCH_LIMITS = { queryChars: 200, repoChars: 4096 } as const;
+
+/**
+ * What the Kind filter can ask for. Absent means conversations (`HISTORY_CONVERSATION_KINDS`);
+ * `all` adds the background runs to them; a kind narrows the list to that kind. These strings
+ * reach the address bar, so they are append-only like `HISTORY_KINDS`.
+ */
+export const HISTORY_KIND_FILTERS = ["all", ...HISTORY_KINDS] as const;
+export type HistoryKindFilter = (typeof HISTORY_KIND_FILTERS)[number];
+
+/** The kinds a Kind filter value lists. */
+export function historyFilterKinds(kind: HistoryKindFilter | undefined): readonly string[] {
+  if (kind === undefined) return HISTORY_CONVERSATION_KINDS;
+  return kind === "all" ? HISTORY_KINDS : [kind];
+}
+
+/**
+ * The one fold History's search uses, on both sides: the text written into
+ * `history_search_segments.text_fold` and the query matched against it. Lowercased in
+ * JavaScript rather than by SQLite's `lower()`, which folds ASCII only, and with whitespace
+ * collapsed so a prompt's line breaks never stop a phrase from matching.
+ */
+export function foldHistorySearch(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
 
 /** One catalog row as the list route serves it. */
 export interface HistorySessionSummary {
@@ -73,11 +104,36 @@ export interface HistoryProgress {
   total: number;
 }
 
+/**
+ * How long an agent keeps its transcripts before deleting them itself. Mission Control only
+ * reads the setting; it never edits it.
+ */
+export interface HistoryRetention {
+  agent: AgentType;
+  days: number;
+  /** False when the setting is unset and `days` is the agent's own default. */
+  configured: boolean;
+  /** The setting's name, as the agent's documentation spells it. */
+  setting: string;
+  /** Where the agent documents the setting. */
+  settingUrl: string;
+}
+
+/** What the page's filters and header offer, read beside every page. */
+export interface HistoryFacets {
+  /** Agents with a history reader. The agent filter shows only when there are two or more. */
+  agents: AgentType[];
+  /** Every repository a cataloged session resolved to, sorted. */
+  repositories: string[];
+  retention: HistoryRetention[];
+}
+
 export interface HistoryPage {
   sessions: HistorySessionSummary[];
   /** Opaque; pass back as `cursor` for the next, older page. Null on the last page. */
   nextCursor: string | null;
   progress: HistoryProgress;
+  facets: HistoryFacets;
 }
 
 /** The list's cursor: the last row's activity time and identity, in that sort order. */
@@ -112,6 +168,15 @@ export const HistorySessionsQuerySchema = z
       .refine((raw) => decodeHistoryCursor(raw) !== null, "invalid history cursor")
       .optional(),
     limit: z.coerce.number().int().min(1).max(HISTORY_PAGE_LIMITS.maxLimit).optional(),
+    /** Literal, case-folded search over titles, paths, branches and indexed prompts. */
+    q: z.string().max(HISTORY_SEARCH_LIMITS.queryChars).optional(),
+    /** A repository exactly as `facets.repositories` lists it. */
+    repo: z.string().min(1).max(HISTORY_SEARCH_LIMITS.repoChars).optional(),
+    /** Epoch ms bounds on last activity: `from` inclusive, `to` exclusive. */
+    from: z.coerce.number().int().nonnegative().optional(),
+    to: z.coerce.number().int().nonnegative().optional(),
+    kind: z.enum(HISTORY_KIND_FILTERS).optional(),
+    agent: z.enum(AGENT_TYPES).optional(),
   })
   .strict();
 export type HistorySessionsQuery = z.infer<typeof HistorySessionsQuerySchema>;

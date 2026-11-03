@@ -167,6 +167,17 @@ test("a session opens from its row and from a deep link, pages its conversation,
   await dashboard.waitForTimeout(500);
   expect(listReads, "Back reuses the list it left").toBe(readsBeforeBack);
 
+  // A filtered list: the detail carries its filters, and Back returns to that list, not the bare one.
+  await dashboard.goto(`${daemon.baseURL}/#/history?q=flaky`);
+  await expect(list.getByRole("listitem")).toHaveCount(1);
+  await list.getByRole("link", { name: "Fix the flaky login retry" }).click();
+  await expect(dashboard).toHaveURL(new RegExp(`#/history/claude/${long.id}\\?q=flaky$`));
+  await detail.getByRole("button", { name: "← History" }).click();
+  await expect(dashboard).toHaveURL(/#\/history\?q=flaky$/);
+  await expect(list.getByLabel("Search history")).toHaveValue("flaky");
+  await expect(list.getByRole("listitem")).toHaveCount(1);
+  await capture(dashboard, "back-with-filters");
+
   // A deep link opens the same detail.
   await dashboard.goto(`${daemon.baseURL}/#/history/claude/${long.id}`);
   await expect(detail.getByRole("heading", { name: "Fix the flaky login retry", level: 2 })).toBeVisible();

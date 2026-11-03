@@ -1,9 +1,9 @@
 import { realpath } from "node:fs/promises";
 import {
-  HISTORY_CONVERSATION_KINDS,
   HISTORY_MESSAGES_PAGE_TURNS,
   HISTORY_PAGE_LIMITS,
   decodeHistoryCursor,
+  historyFilterKinds,
   isHistorySessionId,
   type HistoryMessagesPage,
   type HistoryMessagesQuery,
@@ -15,6 +15,7 @@ import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 import { isInside } from "../archives/paths.ts";
 import { historyBatchPauseMs, historyBatchSize, historyReconcileMs } from "../config.ts";
 import { HistoryReconciler, historyReaders, type HistoryReader, type HistoryReconcilerOptions } from "./reconciler.ts";
+import { historySearchNeedle } from "./search.ts";
 import { HistoryStore } from "./store.ts";
 
 /** The Registry session running an agent's conversation now, or null. Supplied by the routes. */
@@ -57,13 +58,28 @@ export class HistoryService {
     this.reconciler.stop();
   }
 
-  /** One page of conversations, newest activity first, with backfill progress. */
+  /**
+   * One page of matching sessions, newest activity first, with backfill progress and what the
+   * filters and header offer. With no Kind filter, conversations only.
+   */
   list(query: HistorySessionsQuery, live: HistoryLiveLookup): HistoryPage {
     const page = this.store.page({
-      kinds: HISTORY_CONVERSATION_KINDS,
+      filter: {
+        kinds: historyFilterKinds(query.kind),
+        needle: historySearchNeedle(query.q),
+        repo: query.repo ?? null,
+        from: query.from ?? null,
+        to: query.to ?? null,
+        agent: query.agent ?? null,
+      },
       cursor: query.cursor ? decodeHistoryCursor(query.cursor) : null,
       limit: query.limit ?? HISTORY_PAGE_LIMITS.defaultLimit,
       progress: this.reconciler.progress(),
+      facets: {
+        agents: this.reconciler.agents(),
+        repositories: this.store.repositories(),
+        retention: this.reconciler.retention(),
+      },
     });
     return {
       ...page,

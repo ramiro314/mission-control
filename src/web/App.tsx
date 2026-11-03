@@ -4279,7 +4279,7 @@ export function App(): React.JSX.Element {
             // Mounted only on its own route, like Scouts, so the catalog fetch never runs
             // while somebody is on another page.
             route.page === "history" ? (
-              <HistoryPage route={route} navigate={navigate} onOpenSession={openSessionOnFleet} />
+              <HistoryPage route={route} navigate={navigate} replace={replace} onOpenSession={openSessionOnFleet} />
             ) : null
           }
           shipped={
