@@ -283,3 +283,38 @@ test("a slot the launch no longer holds is not touched, found by its lease or by
   // No lease recorded on the launch: its owner key finds it.
   assert.deepEqual(await s.m.returnResumed(s.slotId, null, OWNER), { outcome: "released" });
 });
+
+test("a clean check that cannot be read never hands the slot back, on either read", async () => {
+  const cases = [
+    { name: "first-unknown", failOn: 1, outcomeUnknown: true, expected: "outcomeUnknown" },
+    { name: "first-refused", failOn: 1, outcomeUnknown: false, expected: "refused" },
+    // The second read runs inside the return, where any failure refuses the reset.
+    { name: "second-unknown", failOn: 2, outcomeUnknown: true, expected: "refused" },
+  ];
+  for (const { name, failOn, outcomeUnknown, expected } of cases) {
+    const s = await idleSlot(`mission-resume-return-unreadable-${name}-`);
+    gitIn(s.clone, "checkout", "-q", "main");
+    const lease = leased(await s.m.leaseForResume(s.slotId, OWNER, "main"));
+    const work = commitHere(s.path, "detached-work");
+    const real = new NativeWorktreeGit();
+    let reads = 0;
+    // The read fails as a git timeout would: a failed read must never be taken as clean.
+    const failing = Object.assign(Object.create(real) as NativeWorktreeGit, {
+      unbranchedCommits: async (path: string) => {
+        reads += 1;
+        if (reads === failOn) return { ok: false as const, reason: "git rev-list timed out", outcomeUnknown };
+        // A healthy first read says clean, so only the second read stands between the reset and the work.
+        return reads === 1 ? { ok: true as const, value: false } : real.unbranchedCommits(path);
+      },
+    });
+    const m = manager({ git: failing });
+
+    const result = await m.returnResumed(s.slotId, lease.leaseId, OWNER);
+    assert.deepEqual(result, { outcome: expected, reason: "git rev-list timed out" }, name);
+    assert.equal(reads, failOn, `${name}: no read after the failing one`);
+    const slot = m.store.slot(s.slotId)!;
+    assert.deepEqual([slot.state, slot.activeLeaseId], ["leased", lease.leaseId], `${name}: the lease stands`);
+    assert.equal(gitIn(s.path, "rev-parse", "HEAD"), work, `${name}: the commit is still at HEAD`);
+    assert.equal(symbolicHead(s.path), null, `${name}: still detached, never reset`);
+  }
+});
