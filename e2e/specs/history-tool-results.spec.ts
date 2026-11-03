@@ -140,6 +140,7 @@ test("tool calls expand to their whole input and their result, compaction is mar
   await expect(status.getByRole("region", { name: "Input" })).toContainText('"command": "git status --short"');
   await expect(status.getByRole("region", { name: "Result" })).toContainText("M src/server/registry.ts");
   expect(resultReads).toEqual(["toolu_inline"]);
+  await capture(dashboard, "tool-result-inline");
 
   // A sidecar result: the whole output, read from the file the record names, not the preview.
   const tests = panel.getByRole("listitem").filter({ has: dashboard.getByRole("button", { name: "bash npm" }) });
@@ -147,7 +148,8 @@ test("tool calls expand to their whole input and their result, compaction is mar
   const testsResult = tests.getByRole("region", { name: "Result" });
   await expect(testsResult).toContainText("all 412 tests passed");
   await expect(testsResult).toContainText("Read from the file Claude Code saved the whole output to.");
-  await capture(dashboard, "tool-results");
+  await testsResult.scrollIntoViewIfNeeded();
+  await capture(dashboard, "tool-result-sidecar");
 
   // Input past the live view's 1,800-character cap is shown whole.
   const write = panel.getByRole("listitem").filter({ has: dashboard.getByRole("button", { name: "write notes.md" }) });
