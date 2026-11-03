@@ -1161,25 +1161,6 @@ export interface TuiSpec {
   dialog: DialogSpec | null;
 }
 
-/**
- * One agent, and everything the daemon needs from it.
- *
- * Extends `HarnessCapabilities` (`@shared/harness-capabilities.ts`) rather than
- * re-declaring its slots, so a server call site holding a harness sees EVERY capability
- * on one object - `harness.permissionModes` and `harness.transcript` read the same way -
- * while the dashboard can still answer the pure ones in the browser. The split is by
- * PURITY, not by capability: what is here is what only the DAEMON can answer - because it
- * needs a `node:` import (`transcript`, `hooks`), or because it is about processes and
- * binaries that exist only on the machine (`detect`, `bin`, which are pure data the
- * browser has no question to ask of). `HARNESSES` spreads the shared record in, so each
- * record forces exactly its own questions and neither is a copy of the other.
- *
- * More capabilities land here as the pluggable-integrations migration proceeds
- * (`models` - see
- * `docs/plans/pluggable-integrations/plan.md`). Each arrives as its own slot, so adding
- * one is a new field every harness must answer rather than an interface change every
- * migrated call site has to absorb.
- */
 /** A transcript file's identity on disk: unchanged files cost one `lstat` to recognize. */
 export interface HistoryFingerprint {
   size: number;
@@ -1267,6 +1248,25 @@ export interface HistorySpec {
   canonical(candidates: readonly { path: string; summary: HistorySummary }[]): string;
 }
 
+/**
+ * One agent, and everything the daemon needs from it.
+ *
+ * Extends `HarnessCapabilities` (`@shared/harness-capabilities.ts`) rather than
+ * re-declaring its slots, so a server call site holding a harness sees EVERY capability
+ * on one object - `harness.permissionModes` and `harness.transcript` read the same way -
+ * while the dashboard can still answer the pure ones in the browser. The split is by
+ * PURITY, not by capability: what is here is what only the DAEMON can answer - because it
+ * needs a `node:` import (`transcript`, `hooks`), or because it is about processes and
+ * binaries that exist only on the machine (`detect`, `bin`, which are pure data the
+ * browser has no question to ask of). `HARNESSES` spreads the shared record in, so each
+ * record forces exactly its own questions and neither is a copy of the other.
+ *
+ * More capabilities land here as the pluggable-integrations migration proceeds
+ * (`models` - see
+ * `docs/plans/pluggable-integrations/plan.md`). Each arrives as its own slot, so adding
+ * one is a new field every harness must answer rather than an interface change every
+ * migrated call site has to absorb.
+ */
 export type Harness = HarnessCapabilities & HarnessDaemonSlots;
 
 /**

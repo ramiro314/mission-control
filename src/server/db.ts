@@ -4483,13 +4483,6 @@ function rebuildDerivedPartialIndexIfStale(
 }
 
 /**
- * Preserve every native slot ordinal ever issued, including after its row is pruned.
- *
- * The backfill is intentionally idempotent rather than conditional on ADD COLUMN. A build
- * interrupted between an older branch adding the column and filling it can therefore recover,
- * while MAX never lowers a high-water mark after the highest live row has been deleted.
- */
-/**
  * Session History's catalog (`docs/history.md`): one row per `(agent, agent_session_id)` an
  * agent's transcript store holds, written only by `HistoryStore` from the daemon's reconciler.
  *
@@ -4547,6 +4540,13 @@ function migrateHistoryCatalog(d: DatabaseSync): void {
   `);
 }
 
+/**
+ * Preserve every native slot ordinal ever issued, including after its row is pruned.
+ *
+ * The backfill is intentionally idempotent rather than conditional on ADD COLUMN. A build
+ * interrupted between an older branch adding the column and filling it can therefore recover,
+ * while MAX never lowers a high-water mark after the highest live row has been deleted.
+ */
 function migrateWorktreeOrdinalHighWater(d: DatabaseSync): void {
   d.exec("BEGIN IMMEDIATE;");
   try {

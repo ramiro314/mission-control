@@ -29,6 +29,8 @@ export interface HistoryCatalog {
   listError: string | null;
   hasMore: boolean;
   loadingMore: boolean;
+  /** Why the last Load more failed, shown beside the button; cleared by the next attempt. */
+  moreError: string | null;
   loadMore: () => void;
   refresh: () => void;
 }
@@ -53,6 +55,7 @@ export function useHistoryCatalog(): HistoryCatalog {
   const [listState, setListState] = useState<HistoryListState>("first");
   const [listError, setListError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [moreError, setMoreError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   /** Bumped when a window lands. The indexing poll waits on this, never on a timer alone. */
   const [landed, setLanded] = useState(0);
@@ -89,13 +92,15 @@ export function useHistoryCatalog(): HistoryCatalog {
   // Re-read while the first backfill runs, so rows appear as they are indexed. The next read is
   // scheduled only after the previous one landed: keyed on the request instead, a read slower
   // than the interval would be aborted by the next one every time, and the list would freeze
-  // on its first answer while the poll ran on for ever.
+  // on its first answer while the poll ran on for ever. It also holds off while a Load more is
+  // in flight, because a re-read starts a new window and aborts the continuation: on a daemon
+  // slowed by the backfill, Load more would otherwise never land until indexing finished.
   const indexing = progress?.indexing === true;
   useEffect(() => {
-    if (!indexing) return;
+    if (!indexing || loadingMore) return;
     const timer = setTimeout(() => setTick((n) => n + 1), INDEXING_REFRESH_MS);
     return () => clearTimeout(timer);
-  }, [indexing, landed]);
+  }, [indexing, landed, loadingMore]);
 
   const loadMore = useCallback(() => {
     if (!cursor || loadingMore) return;
@@ -103,11 +108,12 @@ export function useHistoryCatalog(): HistoryCatalog {
     moreAbort.current?.abort();
     moreAbort.current = controller;
     setLoadingMore(true);
+    setMoreError(null);
     void api.historySessions({ cursor, limit: HISTORY_PAGE_LIMITS.defaultLimit }, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
       setLoadingMore(false);
       if (!result.ok) {
-        setListError(result.error);
+        setMoreError(result.error);
         return;
       }
       setSessions((prev) => {
@@ -129,6 +135,7 @@ export function useHistoryCatalog(): HistoryCatalog {
     listError,
     hasMore: cursor !== null,
     loadingMore,
+    moreError,
     loadMore,
     refresh,
   };

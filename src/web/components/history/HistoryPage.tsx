@@ -116,6 +116,11 @@ export function HistoryPage(): React.JSX.Element {
 
       {catalog.hasMore && catalog.listState === "ready" ? (
         <div className="history-foot">
+          {catalog.moreError ? (
+            <p className="history-more-error" role="alert">
+              Could not load older sessions: {catalog.moreError}
+            </p>
+          ) : null}
           <Tooltip label="Fetch the next page of older sessions">
             <button type="button" className="btn" onClick={catalog.loadMore} disabled={catalog.loadingMore}>
               {catalog.loadingMore ? "Loading…" : "Load more"}

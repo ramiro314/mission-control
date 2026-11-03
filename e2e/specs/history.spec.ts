@@ -220,3 +220,53 @@ test("a catalog read slower than the poll interval still lands, so the backfill 
   await expect(progress).toHaveText("", { timeout: 30_000 });
   await expect(page.getByRole("listitem")).toHaveCount(50);
 });
+
+/** Waits until the daemon's backfill over the seeded store has finished. */
+async function backfilled(daemon: DaemonHandle): Promise<void> {
+  await expect.poll(async () => {
+    const res = await fetch(`${daemon.baseURL}/api/history/sessions?limit=1`);
+    const body = await res.json() as { progress: { indexing: boolean; total: number } };
+    return !body.progress.indexing && body.progress.total > 0;
+  }, { timeout: 30_000 }).toBe(true);
+}
+
+test("Load more lands while slow indexing re-reads keep running", async ({ dashboard, daemon }) => {
+  await seedAndRestart(daemon);
+  await backfilled(daemon);
+  // Every read is slower than the poll, and the first page keeps reporting a backfill in
+  // progress, so the page re-reads for the whole test. A re-read that started while Load more
+  // was in flight would abort it, and the button would flip back with no rows added.
+  await dashboard.route("**/api/history/sessions**", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const response = await route.fetch();
+    if (route.request().url().includes("cursor=")) {
+      await route.fulfill({ response });
+      return;
+    }
+    const body = await response.json() as { progress: unknown };
+    body.progress = { indexing: true, indexed: 56, total: 59 };
+    await route.fulfill({ response, json: body });
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/history`);
+  const page = dashboard.getByRole("main", { name: "History" });
+  await expect(page.getByRole("status")).toHaveText("Indexing 56 of 59 sessions");
+  await expect(page.getByRole("listitem")).toHaveCount(50);
+  await page.getByRole("button", { name: "Load more" }).click();
+  await expect(page.getByRole("listitem")).toHaveCount(57, { timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
+});
+
+test("a Load more the daemon refuses says why, and keeps the rows and the button", async ({ dashboard, daemon }) => {
+  await seedAndRestart(daemon);
+  await backfilled(daemon);
+  await dashboard.route("**/api/history/sessions?*cursor=*", (route) =>
+    route.fulfill({ status: 500, json: { error: "the catalog is busy" } }));
+  await dashboard.goto(`${daemon.baseURL}/#/history`);
+  const page = dashboard.getByRole("main", { name: "History" });
+  await expect(page.getByRole("listitem")).toHaveCount(50);
+  await page.getByRole("button", { name: "Load more" }).click();
+  await expect(page.getByRole("alert")).toHaveText("Could not load older sessions: the catalog is busy");
+  await expect(page.getByRole("listitem")).toHaveCount(50);
+  await expect(page.getByRole("button", { name: "Load more" })).toBeEnabled();
+  await capture(dashboard, "load-more-refused");
+});
