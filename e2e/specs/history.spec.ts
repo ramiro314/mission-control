@@ -754,4 +754,32 @@ test.describe("an open History page with the recurring scan off", () => {
     // Once the writing stops, the page catches up with every session.
     await expect(rows).toHaveCount(5 + written, { timeout: 15_000 });
   });
+  test("a re-read that fails is tried again shortly, so the last change before a session goes idle is shown", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon, 0);
+    await backfilled(daemon);
+    // After the first window, the next window read fails once; later ones pass.
+    let armed = false;
+    let failed = 0;
+    await dashboard.route("**/api/history/sessions**", async (route) => {
+      if (armed && failed === 0 && !route.request().url().includes("cursor=")) {
+        failed += 1;
+        await route.fulfill({ status: 500, json: { error: "the catalog is busy" } });
+        return;
+      }
+      await route.fulfill({ response: await route.fetch() });
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(5);
+    await expect(page.getByRole("status")).toHaveText("");
+    armed = true;
+
+    // One session writes once and goes quiet: one `history_changed`, and its re-read fails.
+    writeSession(daemon, { cwd: "/projects/quiet", at: new Date().toISOString(), prompt: "Wrote once, then went idle" });
+    await expect.poll(() => failed, { timeout: 10_000 }).toBe(1);
+    await expect(page.getByText("History is unavailable")).toHaveCount(0);
+    await expect(rows.first()).toContainText("Wrote once, then went idle", { timeout: 5_000 });
+    await expect(rows).toHaveCount(6);
+  });
 });

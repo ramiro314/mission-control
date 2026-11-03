@@ -27,7 +27,7 @@ import { appendHistoryRows, historyFilterQuery, readHistoryWindow } from "./hist
  * each `history_changed` and each reconnect) refetches the window when a session starts or grows.
  */
 
-/** How often an indexing catalog is re-read. */
+/** How often an indexing catalog is re-read, and how long a failed re-read waits to try again. */
 const INDEXING_REFRESH_MS = 1000;
 
 export type HistoryListState = "first" | "ready" | "error";
@@ -81,6 +81,8 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined, revision:
   const [loadingMore, setLoadingMore] = useState(false);
   /** Whether a window read is in flight. A revision waits for it rather than cancel it. */
   const [reading, setReading] = useState(false);
+  /** Set by a failed window read; the revision waits one interval before it tries again. */
+  const [coolingDown, setCoolingDown] = useState(false);
   const [moreError, setMoreError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   /** Bumped when a window lands. The indexing poll waits on this, never on a timer alone. */
@@ -117,17 +119,17 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined, revision:
       if (controller.signal.aborted) return;
       setReading(false);
       if (!result.ok) {
-        // Taken, though nothing landed: left unread, the revision effect would retry at once and
-        // spin against a daemon that keeps refusing. A daemon restart reconnects the stream,
-        // which raises the revision and reads again.
-        readRevision.current = askedRevision;
+        // The revision stays unread, so the change it announced is tried again; the cool-down
+        // spaces those tries an interval apart instead of spinning against a refusing daemon.
+        setCoolingDown(true);
         if (!hasWindow.current || windowKey.current !== filterKey) {
           setListError(result.error);
           setListState("error");
           return;
         }
         // A background re-read failed (a daemon restart, a busy backfill). The rows on screen
-        // are still the last good answer, so they stay, and the poll tries again on schedule.
+        // are still the last good answer, so they stay. The indexing poll tries again on its
+        // schedule while a backfill runs, and an unread revision after its cool-down.
         setLanded((n) => n + 1);
         return;
       }
@@ -166,10 +168,19 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined, revision:
   // That holds from the other side too: a re-read already in flight when Load more is clicked
   // is cancelled by it, never lands, and so leaves its revision unread for this effect to take
   // when Load more lands.
+  //
+  // A read that failed leaves its revision unread and starts a cool-down, so the change is
+  // retried an interval later: after the first backfill nothing else would, and a session that
+  // went idle on that change would keep its old row until some other session wrote.
   useEffect(() => {
-    if (revision === readRevision.current || loadingMore || reading) return;
+    if (revision === readRevision.current || loadingMore || reading || coolingDown) return;
     setTick((n) => n + 1);
-  }, [revision, loadingMore, reading]);
+  }, [revision, loadingMore, reading, coolingDown]);
+  useEffect(() => {
+    if (!coolingDown) return;
+    const timer = setTimeout(() => setCoolingDown(false), INDEXING_REFRESH_MS);
+    return () => clearTimeout(timer);
+  }, [coolingDown]);
 
   const loadMore = useCallback(() => {
     if (!cursor || loadingMore || windowKey.current !== filterKey) return;
