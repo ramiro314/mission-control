@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -73,6 +73,28 @@ async function capture(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
 }
 
+interface CatalogRow {
+  repoRoot: string | null;
+  startedAt: number | null;
+  lastActivityAt: number;
+}
+
+async function catalogRow(daemon: DaemonHandle, id: string): Promise<CatalogRow> {
+  const res = await fetch(`${daemon.baseURL}/api/history/sessions/claude/${id}`);
+  return ((await res.json()) as { session: CatalogRow }).session;
+}
+
+/** One header field's value, found by its label. */
+function meta(detail: Locator, label: string): Locator {
+  return detail.locator(".history-meta-item").filter({ has: detail.page().getByRole("term").filter({ hasText: label }) })
+    .getByRole("definition");
+}
+
+/** A time as the header prints it, in the browser's own locale and zone. */
+function stamp(page: Page, at: number): Promise<string> {
+  return page.evaluate((value) => new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }), at);
+}
+
 /** Waits until the catalog holds `id`, in the state given. */
 async function indexed(daemon: DaemonHandle, id: string, state: "present" | "gone" = "present"): Promise<void> {
   await expect.poll(async () => {
@@ -86,12 +108,21 @@ test("a session opens from its row and from a deep link, pages its conversation,
   dashboard,
   daemon,
 }) => {
-  const long = writeConversation(daemon, { cwd: "/projects/alpha-service", at: "2026-10-30T15:00:00.000Z", title: "Fix the flaky login retry", pairs: PAIRS, pad: 4_000 });
+  // In the fixture repository, so the header has a Repository to show.
+  const long = writeConversation(daemon, { cwd: daemon.repo, at: "2026-10-30T15:00:00.000Z", title: "Fix the flaky login retry", pairs: PAIRS, pad: 4_000 });
   writeConversation(daemon, { cwd: "/projects/beta", at: "2026-10-29T12:00:00.000Z", title: "Summarize the beta notes", pairs: 1 });
   const gone = writeConversation(daemon, { cwd: "/projects/epsilon", at: "2026-10-28T10:00:00.000Z", title: "A transcript Claude Code will delete", pairs: 1 });
   await indexed(daemon, long.id);
   await indexed(daemon, gone.id);
 
+  const row = await catalogRow(daemon, long.id);
+  expect(row.repoRoot, "the fixture repository resolves").toBeTruthy();
+
+  // Every read of the list itself, so Back can be shown to land on the list already loaded.
+  let listReads = 0;
+  dashboard.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/history/sessions") listReads += 1;
+  });
   await dashboard.goto(`${daemon.baseURL}/#/history`);
   const list = dashboard.getByRole("main", { name: "History" });
   await expect(list.getByRole("listitem")).toHaveCount(3);
@@ -101,11 +132,15 @@ test("a session opens from its row and from a deep link, pages its conversation,
   await expect(dashboard).toHaveURL(new RegExp(`#/history/claude/${long.id}$`));
   const detail = dashboard.getByRole("main", { name: "History session" });
   await expect(detail.getByRole("heading", { name: "Fix the flaky login retry", level: 2 })).toBeVisible();
-  await expect(detail.getByText("/projects/alpha-service", { exact: true })).toBeVisible();
-  await expect(detail.getByText("fix-login-retry", { exact: true })).toBeVisible();
-  await expect(detail.getByText("claude-opus-5-5", { exact: true })).toBeVisible();
-  await expect(detail.getByText("$1.25")).toBeVisible();
-  await expect(detail.getByText("Interactive").first()).toBeVisible();
+  await expect(meta(detail, "Repository")).toHaveText(row.repoRoot!);
+  await expect(meta(detail, "Working directory")).toHaveText(daemon.repo);
+  await expect(meta(detail, "Branch")).toHaveText("fix-login-retry");
+  await expect(meta(detail, "Kind")).toHaveText("Interactive");
+  await expect(meta(detail, "Model")).toHaveText("claude-opus-5-5");
+  await expect(meta(detail, "Started")).toHaveText(await stamp(dashboard, row.startedAt!));
+  await expect(meta(detail, "Last activity")).toHaveText(await stamp(dashboard, row.lastActivityAt));
+  await expect(meta(detail, "Duration")).toHaveText("1m 05s");
+  await expect(meta(detail, "Cost")).toHaveText("$1.25");
 
   // The conversation, read-only, one window at a time.
   await expect(detail.getByRole("tab", { name: "Conversation", selected: true })).toBeVisible();
@@ -120,10 +155,13 @@ test("a session opens from its row and from a deep link, pages its conversation,
   await expect(panel.getByRole("button", { name: "Load more messages" })).toHaveCount(0);
   await expect(panel.getByRole("article")).toHaveCount(PAIRS * 2);
 
-  // Back lands on the list that was open.
+  // Back lands on the list that was open: its rows are still there, not read again.
+  const readsBeforeBack = listReads;
   await detail.getByRole("button", { name: "← History" }).click();
   await expect(dashboard).toHaveURL(/#\/history$/);
   await expect(list.getByRole("listitem")).toHaveCount(3);
+  await dashboard.waitForTimeout(500);
+  expect(listReads, "Back reuses the list it left").toBe(readsBeforeBack);
 
   // A deep link opens the same detail.
   await dashboard.goto(`${daemon.baseURL}/#/history/claude/${long.id}`);
@@ -183,4 +221,66 @@ test("a session the fake agent keeps running shows Live and opens in the Fleet",
   await capture(dashboard, "live");
   await open.click();
   await expect(dashboard).toHaveURL(/#\/fleet/);
+});
+
+test("a failed read says so and recovers on Try again, and a refused Load more keeps the rows", async ({ dashboard, daemon }) => {
+  const long = writeConversation(daemon, { cwd: "/projects/alpha-service", at: "2026-10-30T15:00:00.000Z", title: "Fix the flaky login retry", pairs: PAIRS, pad: 4_000 });
+  await indexed(daemon, long.id);
+  const detailUrl = `**/api/history/sessions/claude/${long.id}`;
+  const firstWindow = `**/api/history/sessions/claude/${long.id}/messages`;
+  const laterWindow = `**/api/history/sessions/claude/${long.id}/messages?cursor=*`;
+  const detail = dashboard.getByRole("main", { name: "History session" });
+  const panel = detail.getByRole("tabpanel");
+
+  // The session itself cannot be read: not "unknown", but unavailable, with a way back.
+  await dashboard.route(detailUrl, (route) => route.fulfill({ status: 500, json: { error: "the catalog is busy" } }));
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${long.id}`);
+  await expect(detail.getByText("History is unavailable")).toBeVisible();
+  await expect(detail.getByText("the catalog is busy")).toBeVisible();
+  await expect(detail.getByText("This session is not in History")).toHaveCount(0);
+  await dashboard.unroute(detailUrl);
+
+  // Its conversation cannot be read.
+  await dashboard.route(firstWindow, (route) => route.fulfill({ status: 500, json: { error: "the disk is busy" } }));
+  await detail.getByRole("button", { name: "Try again" }).click();
+  await expect(detail.getByRole("heading", { name: "Fix the flaky login retry", level: 2 })).toBeVisible();
+  await expect(panel.getByText("Could not read this conversation")).toBeVisible();
+  await expect(panel.getByText("the disk is busy")).toBeVisible();
+  await dashboard.unroute(firstWindow);
+  await panel.getByRole("button", { name: "Try again" }).click();
+  await expect(panel.getByText("Question 000", { exact: true })).toBeVisible();
+
+  // A later window is refused: the turns already read stay, and the button stays usable.
+  await dashboard.route(laterWindow, (route) => route.fulfill({ status: 500, json: { error: "the disk is busy" } }));
+  await panel.getByRole("button", { name: "Load more messages" }).click();
+  await expect(panel.getByRole("alert")).toHaveText("Could not load more messages: the disk is busy");
+  await expect(panel.getByText("Question 000", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Load more messages" })).toBeEnabled();
+  await capture(dashboard, "load-more-refused");
+  await dashboard.unroute(laterWindow);
+  await panel.getByRole("button", { name: "Load more messages" }).click();
+  await expect(panel.getByText(`Question ${PAIRS - 1}`, { exact: true })).toBeVisible();
+  await expect(panel.getByRole("alert")).toHaveCount(0);
+});
+
+test.describe("a transcript deleted after its row was indexed", () => {
+  // No recurring scan: the one pass at startup indexes the row, and nothing marks it gone after.
+  test.use({ daemonEnv: { MISSION_HISTORY_RECONCILE_MS: "0" } });
+
+  test("shows the retention message while its row still says present", async ({ dashboard, daemon }) => {
+    const session = writeConversation(daemon, { cwd: "/projects/zeta", at: "2026-10-27T10:00:00.000Z", title: "Deleted between scans", pairs: 1 });
+    // The fixture daemon's startup pass saw an empty store; a restart is a startup onto this one.
+    await daemon.crash();
+    await daemon.restart();
+    await indexed(daemon, session.id);
+    rmSync(session.path);
+
+    await dashboard.goto(`${daemon.baseURL}/#/history/claude/${session.id}`);
+    const detail = dashboard.getByRole("main", { name: "History session" });
+    await expect(detail.getByRole("heading", { name: "Deleted between scans", level: 2 })).toBeVisible();
+    await expect(detail.getByRole("note")).toHaveText(/removed by Claude Code's retention/);
+    // The read found it gone; the catalog has not walked since, so the row is not yet badged.
+    await expect(detail.getByText("Transcript gone")).toHaveCount(0);
+    expect((await catalogRow(daemon, session.id) as CatalogRow & { transcriptState: string }).transcriptState).toBe("present");
+  });
 });

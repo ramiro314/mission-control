@@ -2,18 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   HISTORY_KIND_LABELS,
   historyTitle,
-  type HistoryMessagesPage,
   type HistorySessionSummary,
 } from "@shared/history.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { fmtUsd } from "@shared/cost.ts";
 import type { AgentType, TranscriptMessage } from "@shared/types.ts";
-import { api, type ArchiveRead } from "../../lib/api.ts";
+import { api } from "../../lib/api.ts";
 import { duration, promptPath } from "../../lib/format.ts";
 import { transcriptRows } from "../../lib/tools.ts";
 import { agentAccentStyle } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { ConversationMessages } from "../TranscriptPanel.tsx";
+import { readConversationWindow } from "./history-window.ts";
 
 /**
  * One History session: a header of what the catalog recorded, then its conversation, read-only.
@@ -22,13 +22,6 @@ import { ConversationMessages } from "../TranscriptPanel.tsx";
  * session the Registry is running still reads this way - it never streams here; Open in Fleet
  * is where it is live.
  */
-
-/**
- * How many empty windows a single Load more steps over before handing control back. A window
- * can hold no turn at all (one tool result fatter than the read budget), and that is not the
- * end of the conversation.
- */
-const EMPTY_WINDOW_HOPS = 20;
 
 const RETENTION_MESSAGE =
   "This conversation was removed by Claude Code's retention: it deletes transcripts older than its cleanupPeriodDays setting. History keeps the record above.";
@@ -45,21 +38,6 @@ type DetailState =
 
 type ConversationState = "loading" | "ready" | "gone" | "error";
 
-/** Read forward from `cursor`, stepping over windows that held no turn. */
-async function readWindow(
-  read: (cursor: string | null) => Promise<ArchiveRead<HistoryMessagesPage>>,
-  cursor: string | null,
-): Promise<ArchiveRead<HistoryMessagesPage>> {
-  let next = cursor;
-  for (let hop = 0; ; hop++) {
-    const result = await read(next);
-    if (!result.ok || result.value.messages.length > 0 || !result.value.nextCursor || hop >= EMPTY_WINDOW_HOPS) {
-      return result;
-    }
-    next = result.value.nextCursor;
-  }
-}
-
 function useHistoryConversation(agent: AgentType, id: string, enabled: boolean) {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -74,7 +52,7 @@ function useHistoryConversation(agent: AgentType, id: string, enabled: boolean) 
     abort.current = controller;
     if (append) setLoadingMore(true);
     setError(null);
-    void readWindow((next) => api.historyMessages(agent, id, next, controller.signal), from).then((result) => {
+    void readConversationWindow((next) => api.historyMessages(agent, id, next, controller.signal), from).then((result) => {
       if (controller.signal.aborted) return;
       setLoadingMore(false);
       if (!result.ok) {
@@ -181,7 +159,7 @@ function HistoryConversation({ session }: { session: HistorySessionSummary }): R
   return (
     <div className="history-conversation" style={agentAccentStyle(session.agent)}>
       {conversation.state === "loading" ? <p className="history-loading">Reading the transcript…</p> : null}
-      {conversation.state === "ready" && rows.length === 0 ? (
+      {conversation.state === "ready" && rows.length === 0 && !conversation.hasMore ? (
         <p className="transcript-empty">This transcript holds no messages.</p>
       ) : null}
       <ConversationMessages
