@@ -233,3 +233,94 @@ export const HistoryMessagesQuerySchema = z
   })
   .strict();
 export type HistoryMessagesQuery = z.infer<typeof HistoryMessagesQuerySchema>;
+
+/**
+ * One instruction file as a session loaded it: CLAUDE.md, AGENTS.md or a memory index. The
+ * text is the snapshot the transcript recorded, never the file as it reads today.
+ */
+export interface HistoryInstructionFile {
+  path: string;
+  /** As the agent names it (Claude: `User`, `Project`, `AutoMem`); a scope a later version adds shows raw. */
+  scope: string | null;
+  /** Why it loaded (Claude: `session_start`, `compaction`), or null when the record says nothing. */
+  reason: string | null;
+  content: string;
+}
+
+/** What the appended system prompt carried: Mission Control's standing instructions, and the rest. */
+export interface HistorySystemPrompt {
+  /** The standing-instructions block, or null when none was appended. */
+  standingInstructions: string | null;
+  /** Every other appended block, in order. */
+  appended: string[];
+}
+
+export interface HistoryMcpServer {
+  name: string;
+  /**
+   * How the server stood when the transcript last mentioned it: `connected`, `pending`,
+   * `needs_auth` or `failed`. A status a later version adds shows raw.
+   */
+  status: string;
+  /** The instruction block the server sent, when it sent one. */
+  instructions: string | null;
+}
+
+export interface HistoryMcp {
+  servers: HistoryMcpServer[];
+  /** MCP tools the session was offered, by their full tool name. */
+  tools: string[];
+}
+
+export interface HistorySkills {
+  /** The skills the session was offered, or null when no listing was recorded. */
+  available: string[] | null;
+  /** The skills it actually used, read from the conversation itself. */
+  used: string[];
+}
+
+/** Where and how the session ran. Every field is null when its record is absent. */
+export interface HistoryEnvironment {
+  cwd: string | null;
+  branch: string | null;
+  /** `git status` as the agent recorded it at launch. */
+  gitStatus: string | null;
+  isWorktree: boolean | null;
+  isGitRepo: boolean | null;
+  additionalDirectories: string[] | null;
+  platform: string | null;
+  shell: string | null;
+  osVersion: string | null;
+  model: string | null;
+  effort: string | null;
+  permissionMode: string | null;
+}
+
+/** One hook command, with every run the transcript recorded for it. */
+export interface HistoryHookRun {
+  /** The hook event (`Stop`, `PostToolUse`, …). */
+  event: string;
+  command: string;
+  runs: number;
+  totalMs: number;
+  maxMs: number;
+  /** Runs that recorded an error or were cancelled. Shown as "failed". */
+  failures: number;
+}
+
+/**
+ * `GET /api/history/sessions/:agent/:id/launch-context`: what the session was launched with,
+ * parsed from its transcript on demand and never copied into the catalog.
+ *
+ * A section is null when the transcript holds no record of it. That is "not recorded", never
+ * "none": an absent record is ambiguous (nothing loaded, or the agent was told not to load
+ * it), so the page must never read it as an empty list.
+ */
+export interface HistoryLaunchContext {
+  instructionFiles: HistoryInstructionFile[] | null;
+  systemPrompt: HistorySystemPrompt | null;
+  skills: HistorySkills;
+  mcp: HistoryMcp | null;
+  environment: HistoryEnvironment;
+  hooks: HistoryHookRun[] | null;
+}
