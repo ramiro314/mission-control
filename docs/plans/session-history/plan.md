@@ -472,10 +472,15 @@ flowchart TD
   `claude --resume <id>` keeps the source id, so the id alone cannot tell two launches of one
   session apart.
 - **One open launch per session.** While a `pending` or `expired` launch exists for a source
-  session, Resume of that session is refused. The refusal names the launch's directory, and
-  says the slot is held for an agent that may still appear. The operator either waits, or
-  Returns that slot, which closes the launch (`released`) so a new Resume can start. A fork
-  launch counts too: its source is still the original session.
+  session, Resume of that session is refused. The refusal names the launch's directory and
+  says an agent may still appear there. A fork launch counts too: its source is still the
+  original session. Every open launch has a way to close (`released`) so a new Resume can
+  start:
+  - A launch **with a slot** closes when the operator Returns that slot from its card.
+  - A launch **without a slot** (an original directory that is not a pool slot, or a typed
+    directory) has no lease to protect, so it never waits in `expired`: past its grace window
+    it goes straight to `released`. While it is still `pending`, the refusal and the session
+    detail offer **Cancel pending resume**, which closes it at once.
   - **Enforced by the schema, not a check.** `migrate()` creates a partial unique index:
     `CREATE UNIQUE INDEX ... ON history_resume_launches(source_session_id) WHERE state IN
     ('pending','expired')`.
@@ -492,13 +497,15 @@ flowchart TD
   whose cwd, resolved through symlinks, is that launch's `cwd`**, the launch records the
   session's `mc_session_id` and becomes `bound`. A session matching the id in any other
   directory binds nothing, so it can never release a slot it does not run in.
-- **An agent that has not appeared yet.** A launch still unbound after a grace window (two
-  discovery sweeps past the launch timeout) becomes `expired`. It is not treated as ended: a
-  slow terminal, a cold start or an auth prompt can still produce the agent. An expired launch
-  **keeps its lease**, so the pool can never hand out or reset the slot under a late agent. Its
-  slot card says "Held for a resumed session that has not appeared" and offers Return, which
-  the operator uses when the terminal really failed. If the agent turns up after expiry, it
-  binds as above and is then released like any bound launch.
+- **An agent that has not appeared yet.** A launch with a slot that is still unbound after a
+  grace window (two discovery sweeps past the launch timeout) becomes `expired`. It is not
+  treated as ended: a slow terminal, a cold start or an auth prompt can still produce the
+  agent. An expired launch **keeps its lease**, so the pool can never hand out or reset the
+  slot under a late agent. Its slot card says "Held for a resumed session that has not
+  appeared" and offers Return, which the operator uses when the terminal really failed. If the
+  agent turns up after expiry, it binds as above and is then released like any bound launch.
+  A slotless launch past the same window is `released` instead. If its agent appears later, it
+  is an ordinary unmanaged session, and the Live check then stops a second Resume of it.
 - **Slot release.** When `session_remove` arrives for a bound launch's `mc_session_id`, the
   launch is `ended`. A clean slot is handed back to the pool and the launch becomes `released`.
   A dirty slot stays leased until the operator Returns it, with its card saying why. Only a
@@ -513,8 +520,8 @@ flowchart TD
 - **Startup twin.** It runs once the first discovery sweep after startup has finished. A
   `bound` launch with no live Registry session carrying its `expected_agent_session_id` ended
   while the daemon was down, and goes through the same release step. A `pending` launch with no
-  live session becomes `expired` and keeps its lease, exactly as above. All of these matches use
-  the same id-and-cwd key.
+  live session becomes `expired` and keeps its lease when it has a slot, and becomes `released`
+  when it has none, exactly as above. All of these matches use the same id-and-cwd key.
 - **Refusals** are explicit: the transcript is gone, the session is live, a `pending` or
   `expired` launch of it already holds a directory, the directory does not exist, the
   destination project folder already holds a file with that session id that is not a History
@@ -613,6 +620,10 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
 - One open launch: two concurrent `POST .../resume` requests for one session produce one launch
   row and one refusal, and the loser leases no slot and starts no terminal; a failed later
   step moves the row to `released`, so the next Resume succeeds.
+- Slotless launches: a directory-target launch whose agent never binds is `released` after its
+  grace window, and a later Resume of the same session succeeds; Cancel pending resume closes
+  a `pending` slotless launch at once; the startup twin turns a `pending` slotless launch into
+  `released`, never `expired`; and no slotless launch is ever left in `expired`.
 - Branch already checked out elsewhere: an idle pool slot holding the branch is offered first
   and leased as it stands; a branch held by another owner or outside the pool is checked out
   detached in the chosen slot, with the warning.
@@ -691,7 +702,8 @@ Definition of done as in `AGENTS.md`: typecheck, lint, build and smoke, and the 
    when dirty (uncommitted changes, or commits that no branch, tag or remote ref holds), including when the session ended while the daemon was down. The link is the
    launch record's `expected_agent_session_id` together with its `cwd`. A launch whose agent
    never appeared keeps its lease until it binds or the operator Returns it, and blocks another
-   Resume of the same session until then.
+   Resume of the same session until then. A launch with no slot is released after its grace
+   window, or by Cancel pending resume, so it never blocks Resume for longer than that window.
 10. A Recent outcomes task title links to its session in History when one is bound.
 11. The list updates within seconds of a new session, and the first backfill shows sessions
     progressively.
@@ -768,7 +780,7 @@ The Plan Feasibility Judge asked for five clarifications. None changes a human d
 
 ### Review repairs (GitHub Inspector on #725)
 
-Nine findings over five reviews, none of which changes a human decision above:
+Ten findings over six reviews, none of which changes a human decision above:
 
 - An unbound launch past its grace window expires and keeps its lease instead of being
   released, and a late agent still binds (Resume).
@@ -788,6 +800,8 @@ Nine findings over five reviews, none of which changes a human decision above:
   `realpath` (Routes).
 - Every Resume target is resolved once with `realpath`, and that value is used for the folder
   encoding, the copy, the launch `cwd` and the terminal (Resume).
+- A launch without a slot is released after its grace window, or by Cancel pending resume, so it
+  can never hold a session's one open launch forever (Resume).
 
 ### Assumptions stated during the interview
 
