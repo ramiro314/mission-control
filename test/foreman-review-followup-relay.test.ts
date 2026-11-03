@@ -574,6 +574,20 @@ test("the recheck counts the read's findings, so findings resolved before it are
   ]);
 });
 
+test("a recheck whose read is for another round logs the fresh snapshot's count with its round", async () => {
+  const raced = fakeDaemon({
+    sessions: (afterRead) => [
+      parked("held-recheck-round", { inspector: afterRead ? summary({ open: 1, round: 4 }) : summary({ open: 2, round: 3 }) }),
+    ],
+    findings: async () => response([draft(), draft({ id: "c2", fingerprint: "fp-2" })], 3),
+  });
+  assert.deepEqual(await heldLines("held-recheck-round", raced), [
+    "[foreman] held-recheck-round: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - " +
+      "the findings read and the snapshot are from different GitHub Inspector rounds",
+  ]);
+  assert.deepEqual(raced.injected, []);
+});
+
 test("a held PR without findings logs nothing", async () => {
   const fake = heldDaemon(() => parked("held-clean", { inspector: summary({ open: 0 }) }));
   assert.deepEqual(await heldLines("held-clean", fake), []);

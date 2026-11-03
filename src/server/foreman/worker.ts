@@ -1195,7 +1195,7 @@ export async function runReviewFollowup(
       // An escalation that appeared between the two reads is the next pass's to send, and so
       // are findings that appeared in it: this pass read none, so it has no text to type.
       if (freshDecision.kind === "skip") {
-        logHeldFindings(fresh, freshPr, freshDecision.why, heldFindingsCount(freshPr, read?.findings));
+        logHeldFindings(fresh, freshPr, freshDecision.why, heldFindingsCount(freshPr, read?.findings, read?.pr.round));
       }
       if (freshDecision.kind !== "nudge" || !holdsLease()) break;
 

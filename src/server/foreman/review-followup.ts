@@ -521,9 +521,15 @@ function unresolvedFindings(findings: readonly InspectorComment[]): InspectorCom
   return findings.filter((finding) => finding.status !== "resolved");
 }
 
-/** The findings a held PR still carries: the read's unresolved set once there is one, since the snapshot's count can be stale. */
-export function heldFindingsCount(pr: FollowupPr, findings?: readonly InspectorComment[]): number {
-  return findings ? dedupeInspectorFindings(unresolvedFindings(findings)).length : (pr.inspector?.open ?? 0);
+/**
+ * The findings a held PR still carries. A read for the snapshot's round answers, since the
+ * snapshot's count can be stale; a read for another round would pair its count with the wrong
+ * round in the log, so the snapshot answers then.
+ */
+export function heldFindingsCount(pr: FollowupPr, findings?: readonly InspectorComment[], findingsRound?: number): number {
+  const round = pr.inspector?.round ?? 0;
+  if (findings && findingsRound === round) return dedupeInspectorFindings(unresolvedFindings(findings)).length;
+  return pr.inspector?.open ?? 0;
 }
 
 /**
