@@ -150,6 +150,10 @@ test("a session opens from its row and from a deep link, pages its conversation,
   await expect(panel.getByText(`Question ${PAIRS - 1}`, { exact: true })).toHaveCount(0);
   await expect(detail.getByRole("textbox")).toHaveCount(0);
   await capture(dashboard, "conversation");
+  // The page scrolls inside the app, so the frame above stops at the header; this one shows
+  // where the first window ends.
+  await panel.getByRole("button", { name: "Load more messages" }).scrollIntoViewIfNeeded();
+  await capture(dashboard, "conversation-load-more");
   await panel.getByRole("button", { name: "Load more messages" }).click();
   await expect(panel.getByText(`Question ${PAIRS - 1}`, { exact: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Load more messages" })).toHaveCount(0);
