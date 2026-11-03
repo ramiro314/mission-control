@@ -93,14 +93,19 @@ function bindTask(agentSessionId: string, shape: {
   return taskId;
 }
 
-function ledger(noteKey: string, cost: number, known = 1): void {
+function ledger(
+  noteKey: string,
+  cost: number,
+  known = 1,
+  shape: { spendKind?: string; costBasis?: string } = {},
+): void {
   openDb().prepare(
-    `INSERT INTO usage_ledger (note_key, agent, model_id, window_end_ns, ts, cost_usd, cost_known)
-     VALUES (?, 'claude', 'claude-opus-5-5', ?, 1, ?, ?)`,
-  ).run(noteKey, String(Math.random()), cost, known);
+    `INSERT INTO usage_ledger (note_key, agent, model_id, window_end_ns, ts, cost_usd, cost_known, spend_kind, cost_basis)
+     VALUES (?, 'claude', 'claude-opus-5-5', ?, 1, ?, ?, ?, ?)`,
+  ).run(noteKey, String(Math.random()), cost, known, shape.spendKind ?? "session", shape.costBasis ?? "reported");
 }
 
-function fixture() {
+function fixture(registry = new Registry()) {
   openDb().exec(`
     DELETE FROM history_sessions; DELETE FROM history_search_segments; DELETE FROM tasks;
     DELETE FROM task_work_episode_bindings; DELETE FROM historical_task_work_episode_bindings;
@@ -108,7 +113,7 @@ function fixture() {
   `);
   const projects = mkdtempSync(join(tmpdir(), "mission-history-mission-projects-"));
   const history = new HistoryService({ readers: [{ agent: "claude", spec: createClaudeHistory(projects) }], resolveRepository: () => null });
-  const app = buildApp({ registry: new Registry(), reviews: {} as ReviewManager, tasks: {} as TaskManager, queues: {} as QueueManager, history });
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks: {} as TaskManager, queues: {} as QueueManager, history });
   const get = (path: string) => app.request(path, { headers: LOOPBACK });
   const list = async (query = "") => {
     const res = await get(`/api/history/sessions${query}`);
@@ -192,6 +197,28 @@ test("cost falls back to usage_ledger when the transcript has none, and an unpri
   const unknown = rows.find((entry) => entry.agentSessionId === unpriced);
   assert.equal(unknown?.costUsd, null, "a subtotal of priced rows is never shown as the total");
   assert.equal(unknown?.costSource, null);
+  f.done();
+});
+
+test("the ledger fallback counts session spend only, and rows on different cost bases give no cost", async () => {
+  const f = fixture();
+  const withAutomation = sessionId();
+  const mixed = sessionId();
+  writeSession(f.projects, withAutomation, { kind: "interactive", prompt: "a", at: "2026-10-20T10:00:00.000Z" });
+  writeSession(f.projects, mixed, { kind: "interactive", prompt: "b", at: "2026-10-20T10:01:00.000Z" });
+  ledger(withAutomation, 2);
+  ledger(withAutomation, 40, 1, { spendKind: "automation" });
+  ledger(mixed, 1, 1, { costBasis: "reported" });
+  ledger(mixed, 2, 1, { costBasis: "api-equivalent" });
+  await f.history.reconciler.trigger();
+
+  const rows = await f.list();
+  const session = rows.find((entry) => entry.agentSessionId === withAutomation);
+  assert.equal(session?.costUsd, 2, "automation spend under the same key is not this session's");
+  assert.equal(session?.costSource, "ledger");
+  const disagreeing = rows.find((entry) => entry.agentSessionId === mixed);
+  assert.equal(disagreeing?.costUsd, null, "a sum across cost bases is not one figure");
+  assert.equal(disagreeing?.costSource, null);
   f.done();
 });
 
@@ -318,6 +345,21 @@ test("a bound id with no catalog row returns the Mission Control-only record, wh
     .map((row) => row.agent_session_id);
   assert.deepEqual(catalogIds, [indexed]);
   assert.ok(!(await f.list("?kind=all")).some((row) => row.agentSessionId === removed), "the list holds catalog rows only");
+  f.done();
+});
+
+test("a running session the catalog has not indexed yet returns the Mission Control-only record with its live id", async () => {
+  const registry = new Registry();
+  const f = fixture(registry);
+  const id = sessionId();
+  bindTask(id, { title: "Running, not indexed yet", status: "running" });
+  await f.history.reconciler.trigger();
+  registry.registerSdkSession({ id: "sdk:history-unindexed", agent: "claude", name: "running", cwd: "/work", agentSessionId: id });
+
+  const detail = await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail;
+  assert.equal(detail.catalog, null);
+  assert.equal(detail.mission?.task?.title, "Running, not indexed yet");
+  assert.equal(detail.liveSessionId, "sdk:history-unindexed");
   f.done();
 });
 

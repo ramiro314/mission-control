@@ -286,6 +286,15 @@ test("a bound session's header shows its task, outcome and PR; one with no catal
   await expect(detail.getByRole("button", { name: "Resume" })).toHaveCount(0);
   await capture(dashboard, "mission-only-record");
 
+  // A task seeded after the daemon started is one the dashboard does not hold: its title is
+  // named without a control that would do nothing.
+  const unheld = sessionId();
+  seedTasks(daemon, [{ id: "e2e-history-unheld", title: "Task the dashboard never loaded", status: "done", agentSessionId: unheld }]);
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${unheld}`);
+  await expect(detail.getByRole("heading", { name: "Task the dashboard never loaded", level: 2 })).toBeVisible();
+  await expect(detail.getByRole("definition").filter({ hasText: "Task the dashboard never loaded" })).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Task the dashboard never loaded" })).toHaveCount(0);
+
   // An id neither the catalog nor Mission Control knows.
   await dashboard.goto(`${daemon.baseURL}/#/history/claude/${sessionId()}`);
   await expect(detail.getByText("This session is not in History")).toBeVisible();

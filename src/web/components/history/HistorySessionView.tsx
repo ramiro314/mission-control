@@ -190,6 +190,29 @@ function HistorySessionHeader({
   );
 }
 
+/**
+ * A bound session the catalog has no row for: Mission Control's header and why there is no
+ * conversation, with no tabs and no Resume. Exported for its render test.
+ */
+export function HistoryMissionOnlyRecord({
+  detail,
+  onOpenSession,
+  onOpenTask,
+  canOpenTask,
+}: {
+  detail: HistorySessionDetail;
+  onOpenSession: (sessionId: string) => void;
+  onOpenTask: (taskId: string) => void;
+  canOpenTask: (taskId: string) => boolean;
+}): React.JSX.Element {
+  return (
+    <>
+      <HistorySessionHeader detail={detail} onOpenSession={onOpenSession} onOpenTask={onOpenTask} canOpenTask={canOpenTask} />
+      <p className="history-gone" role="note">{detail.liveSessionId ? NOT_YET_INDEXED_MESSAGE : UNINDEXED_MESSAGE}</p>
+    </>
+  );
+}
+
 function HistoryConversation({ session }: { session: HistorySessionSummary }): React.JSX.Element {
   const conversation = useHistoryConversation(session.agent, session.agentSessionId, session.transcriptState === "present");
   const rows = useMemo(() => transcriptRows(conversation.messages), [conversation.messages]);
@@ -291,17 +314,12 @@ export function HistorySessionView({
           </Tooltip>
         </div>
       ) : detail.detail.catalog === null ? (
-        <>
-          <HistorySessionHeader
-            detail={detail.detail}
-            onOpenSession={onOpenSession}
-            onOpenTask={onOpenTask}
-            canOpenTask={canOpenTask}
-          />
-          <p className="history-gone" role="note">
-            {detail.detail.liveSessionId ? NOT_YET_INDEXED_MESSAGE : UNINDEXED_MESSAGE}
-          </p>
-        </>
+        <HistoryMissionOnlyRecord
+          detail={detail.detail}
+          onOpenSession={onOpenSession}
+          onOpenTask={onOpenTask}
+          canOpenTask={canOpenTask}
+        />
       ) : (
         <>
           <HistorySessionHeader
