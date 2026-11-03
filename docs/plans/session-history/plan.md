@@ -189,8 +189,9 @@ unknown record and attachment types, because only one Claude version was availab
 
 ### Catalog
 
-Two tables in `harness.db`, created through the normal `migrate()` upgrade path and owned by a
-`HistoryStore`. The daemon is the only writer.
+Three tables in `harness.db`, created through the normal `migrate()` upgrade path and owned by a
+`HistoryStore`: `history_sessions` and `history_search_segments` below, and
+`history_resume_launches`, described under Resume. The daemon is the only writer.
 
 `history_sessions`, one row per `(agent, agent_session_id)`:
 
@@ -209,10 +210,17 @@ text, following `archive_search_segments`: title fields, cwd, repo, branch, and 
 prompts. Conversations index every user prompt. Background runs (one-shot and reviewer) index
 only the first prompt, capped, because their prompts are large generated diffs.
 
-**Classification.** `interactive` when `entrypoint` is `cli`. `sdk` when `cliPrefix` is the
-Claude Code preset and the tools are not a read-only set. `reviewer` when every tool is in
-`{Read, Glob, Grep, StructuredOutput}`. `one_shot` when there are no tools or only
-`StructuredOutput`. `unclassified` otherwise. A session is a **conversation** when its kind is
+**Classification.** The rules are evaluated in this order, and the first match wins:
+
+1. `interactive` when `entrypoint` is `cli`.
+2. `one_shot` when the session has no tools, or only `StructuredOutput`.
+3. `reviewer` when it has at least one of `Read`, `Glob` or `Grep`, and every tool is in
+   `{Read, Glob, Grep, StructuredOutput}`.
+4. `sdk` when `cliPrefix` is the Claude Code preset and the tool set is not read-only.
+5. `unclassified` otherwise, including a session with no `prompt_snapshot`.
+
+Because `one_shot` is tested before `reviewer`, an empty or `StructuredOutput`-only tool set is
+never a reviewer. A session is a **conversation** when its kind is
 `interactive`, `sdk` or `unclassified`, or when it is bound to a Mission Control task; the
 default list shows conversations only. The rules live in the Claude reader, not in shared code.
 
@@ -257,7 +265,7 @@ from a request. None of these reads is exposed as an MCP tool.
 | Route | Returns |
 |---|---|
 | `GET /sessions?q&repo&from&to&kind&link&outcome&agent&cursor` | a page of rows (newest activity first), backfill progress, and the retention period |
-| `GET /sessions/:agent/:id` | the row, joined Mission Control data, subagent list, live status |
+| `GET /sessions/:agent/:id` | the row, joined Mission Control data, subagent list, live status; or, with no catalog row, a record built from Mission Control data only (see below) |
 | `GET /sessions/:agent/:id/messages?cursor` | a transcript window |
 | `GET /sessions/:agent/:id/tool-results/:toolUseId` | one tool result, including `tool-results/` sidecar files |
 | `GET /sessions/:agent/:id/subagents/:agentId/messages?cursor` | a subagent's transcript window |
@@ -273,6 +281,14 @@ Query parameters and bodies are parsed with Zod schemas in the shared protocol, 
 outcome, outcome URL, workflow, labels), `session_agent_bindings` (the Mission Control link),
 and `usage_ledger` by `note_key` (cost fallback). Live status comes from the Registry by
 `agentSessionId`. Cost prefers the transcript's `cost-state` and falls back to `usage_ledger`.
+
+**A bound session with no catalog row.** Claude Code may delete a transcript before the catalog
+first indexes it, which is likely for this machine's oldest tasks. When `history_sessions` has
+no row for an id, but a task binding or `session_agent_bindings` names it,
+`GET /sessions/:agent/:id` returns a record with `catalog: null`, built from Mission Control
+data only: task title, kind, outcome, PR, branch, repository and cost. The reconciler does not
+invent rows for these sessions. The route returns 404 only when neither the catalog nor
+Mission Control knows the id.
 
 ## User experience
 
@@ -327,7 +343,9 @@ task (linking back to it), outcome and PR. Then two tabs:
   - Hooks that ran, with durations.
 
 A session whose transcript is gone shows the header and says the conversation was removed by
-Claude Code's retention.
+Claude Code's retention. A bound session with no catalog row shows the header from Mission
+Control data, with no tabs and no Resume. It says the transcript was removed before Mission
+Control indexed it.
 
 ### Live sessions
 
@@ -340,8 +358,9 @@ detail reads the transcript when opened; it does not stream.
 row was replaced, the newest historical binding. In Recent outcomes (`ReportPanel.tsx`) the
 task title becomes a link to `#/history/<agent>/<agentSessionId>` when the task has a bound
 session and its harness has a history reader; otherwise it stays plain text. The link still
-works when the transcript is gone, because the record survives. The outcome link, Reschedule
-and chips are unchanged.
+works when the transcript is gone, because the record survives. It also works when the
+transcript was deleted before it was ever indexed: the detail page then shows the record built
+from Mission Control data only. The outcome link, Reschedule and chips are unchanged.
 
 ## Resume
 
@@ -353,7 +372,7 @@ flowchart TD
   O -- yes --> L1["Lease it if it is an idle pool slot"] --> RUN
   O -- "no, or reused" --> P["Picker: idle clean slot of\nthe same repo, or a directory"]
   P -- slot --> S["Lease slot, check out\nrecorded branch if it exists"] --> RUN
-  P -- directory --> C["Copy transcript into that\ndirectory's project folder"] --> F["claude --resume id --fork-session"]
+  P -- directory --> C["Copy transcript into that\ndirectory's project folder"] --> F["claude --resume id --fork-session\n--session-id new"]
   RUN["claude --resume id\nin a new terminal"] --> D["Discovery registers the\nunmanaged session"]
   F --> D
   D --> END["Session ends: slot returned\nif clean, kept leased if dirty"]
@@ -378,22 +397,60 @@ flowchart TD
   slot as it is and the dialog warns that the code may not match the conversation.
   Claude's documented lookup covers a project's git worktrees, so the session resumes with no
   copying.
+- **Branch already checked out elsewhere.** Git refuses to check out a branch that is attached
+  to another worktree, so the operation reads `git worktree list --porcelain` before it
+  touches the slot:
+  - When the branch is attached to an **idle slot of the same pool**, the picker offers that
+    slot first, marked as holding the branch, and leases it as it stands, with no checkout.
+  - When the branch is attached to any **other worktree** (a slot another owner holds, a task
+    worktree, or a checkout outside the pool), the chosen slot checks out the branch tip
+    detached (`git checkout --detach <branch>`). The dialog warns that the branch is checked
+    out in that path, and that commits made here will not move the branch.
 - **Directory target.** For a directory outside the session's repository, the transcript is
   copied into that directory's Claude project folder and the session starts with
   `claude --resume <id> --fork-session`. The original is untouched; the fork gets its own id,
   and History records it as resumed from the original. This copy is History's only write into
   Claude's store, and it is an unofficial workaround that may break with a Claude format change.
-- **Slot release.** When the resumed session's `session_remove` arrives, a clean slot returns to
-  the pool. A dirty slot stays leased, with its card saying why, until the operator Returns it.
-  The release subscriber has a startup twin, so a slot whose session ended while the daemon was
-  down is reconciled at startup.
+- **Fork id known before launch.** Mission Control mints the fork's id itself and passes it
+  with `--session-id <uuid>`, so the launch is `claude --resume <id> --fork-session --session-id
+  <new>`. The id therefore never has to be recovered from a transcript, which carries no
+  `forkedFrom` marker. If the CLI refuses `--session-id` together with `--fork-session`, the
+  fallback is the Agent SDK's `forkSession(id, { dir })`. It writes the fork into the target's
+  project folder and returns the new id, and the session then starts with
+  `claude --resume <new>`. In both cases `resumed_from` is written when the launch is recorded,
+  not inferred later.
+- **Launch record.** Each Resume writes one row to a new `history_resume_launches` table
+  before the terminal starts: `launch_id`, `source_session_id`, `expected_agent_session_id`
+  (the source id, or the minted fork id), `cwd`, `slot_id` and the worktree lease key (when a
+  slot is used), `launched_at`, `mc_session_id` (empty until bound) and `state` (`pending`,
+  `bound`, `ended` or `released`). The slot's lease owner is
+  `{kind: "manual", key: historyResumeOwnerKey(launch_id)}`, so the card names its owner.
+  `expected_agent_session_id` is the correlation key.
+- **Binding the discovered session.** When the Registry first holds a session whose
+  `agentSessionId` equals a pending launch's `expected_agent_session_id`, the launch records
+  that session's `mc_session_id` and becomes `bound`. A launch still unbound after a grace
+  window (two discovery sweeps past the launch timeout) is treated as ended, because its
+  terminal never produced the agent.
+- **Slot release.** When `session_remove` arrives for a bound launch's `mc_session_id`, the
+  launch is `ended`. A clean slot is handed back to the pool and the launch becomes `released`.
+  A dirty slot stays leased, with its card saying "Kept: uncommitted changes from a resumed
+  session", until the operator Returns it. The **startup twin** reads every `pending` and
+  `bound` launch once the first discovery sweep after startup has finished. A launch with no
+  live Registry session carrying its `expected_agent_session_id` has ended while the daemon was
+  down, and goes through the same release step.
 - **Refusals** are explicit: the transcript is gone, the session is live, the directory does not
   exist, the slot is no longer idle, or the agent host is unavailable.
 
-**To verify first.** The documented worktree lookup has not been tested with `--resume <id>`
-on Claude Code 2.1.296. The first implementation ticket checks it by opening
-`claude --resume <id>` from a sibling worktree of a scratch repository, without sending a prompt.
-If it fails, a slot target uses the same copy and `--fork-session` path as a directory.
+**To verify first.** The first implementation ticket runs a token-free probe on Claude Code
+2.1.296. It opens each session interactively without sending a prompt, in a scratch
+repository, and checks:
+
+1. `claude --resume <id>` from a sibling worktree finds the session. If it does not, a slot
+   target uses the same copy and fork path as a directory.
+2. `claude --resume <id> --fork-session --session-id <new>` starts the fork under `<new>`. If
+   the flags are refused together, the SDK `forkSession` fallback is used.
+3. `forkSession(id, { dir })` writes the fork into the project folder of `dir` and returns its
+   id.
 
 ## Extending to other agents
 
@@ -424,8 +481,9 @@ API. Mitigations:
 | `src/server/harness/types.ts`, `harness/index.ts` | `history` slot; Claude implementation, Codex and Pi `null` |
 | `src/server/harness/claude/history.ts` (new) | Claude summarize, classify, readers, resume rule |
 | `src/server/history/` (new) | `HistoryStore`, `HistoryReconciler`, repository resolution, routes, resume |
-| `src/server/db.ts` | `history_sessions`, `history_search_segments` via `migrate()` |
-| `src/server/worktrees/manager.ts` | lease-for-resume with branch checkout; release on `session_remove` with startup twin |
+| `src/server/db.ts` | `history_sessions`, `history_search_segments`, `history_resume_launches` via `migrate()` |
+| `src/server/worktrees/manager.ts` | lease-for-resume with branch checkout, the branch-elsewhere rule and a `historyResumeOwnerKey` owner |
+| `src/server/history/resume-launches.ts` (new) | launch record, binding to the discovered session, release on `session_remove` and its startup twin |
 | `src/shared/types.ts`, protocol | catalog row, query and resume schemas; `history_changed`; `Task.agentSessionId` |
 | `src/web/useEventStream.ts` | handle `history_changed` |
 | `src/web/components/history/` (new) | History page, list, filters, detail, launch context, resume dialog |
@@ -441,29 +499,52 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
 - Claude summarize against fixture transcripts for each kind, including unknown record types,
   incremental parsing after an append, a shrunk file, a cwd change mid-session, and missing
   `instructions` reading "not recorded".
-- Classification rules, including a task-bound session counting as a conversation.
+- Classification rules in their stated order, including the boundaries: no tools and
+  `StructuredOutput` only are `one_shot`, not `reviewer`; `Read` plus `StructuredOutput` is
+  `reviewer`; and a task-bound session counts as a conversation.
 - Repository resolution for pool paths with a deleted slot, `worktrees/<taskId>`, plain
   checkouts and unknown paths.
 - Reconciler: newest-first batched backfill with progress, gone marking only after a complete
   walk, duplicate ids treated as copies, one coalesced `history_changed` per pass.
 - Routes: id validation and containment, filters and paging, Mission Control join present and
-  absent, transcript-gone detail, launch-context sections.
+  absent, transcript-gone detail, launch-context sections. A bound id with no catalog row
+  returns the Mission Control-only record; an id known to neither returns 404.
 - Resume: eligibility, refusals, original-directory and reused-slot detection, branch checkout,
   copy and fork for a directory, release of a clean slot and retention of a dirty one, the
   startup twin.
+- Branch already checked out elsewhere: an idle pool slot holding the branch is offered first
+  and leased as it stands; a branch held by another owner or outside the pool is checked out
+  detached in the chosen slot, with the warning.
+- Launch correlation: a launch binds to the Registry session with its
+  `expected_agent_session_id`; the fork path passes the minted id with `--session-id`, or uses
+  the `forkSession` fallback's returned id, and writes `resumed_from` at launch; an unbound
+  launch ends after its grace window; and the startup twin releases a launch whose session
+  ended while the daemon was down.
 - `Task.agentSessionId` from current and historical bindings.
 
 Playwright specs in `e2e/` against a fake `~/.claude/projects` in the redirected test home
 (no model tokens; no `data-testid`):
 
 - History page: default list hides background runs, Kind filter shows them, search by a prompt,
-  repository filter, deep link to a session, Load more.
+  repository, date range, Mission Control link and task outcome and PR filters, deep link to a
+  session, Load more.
+- Header and first run: the "Claude Code keeps transcripts for N days" header shows the fixture
+  settings' value (and 30 when unset) and links to the setting. The fixture home is seeded
+  with enough transcripts, and a test-only batch size small enough, that the first pass spans
+  several batches: the progress line appears while indexing, then disappears.
+- Live badge: a session the fake agent keeps running shows Live and Open in Fleet, not Resume.
 - Detail: conversation renders, a tool result expands, a subagent opens, Launch context shows
-  instruction files and "not recorded", a gone transcript shows the retention message.
+  instruction files and "not recorded", a gone transcript shows the retention message, and a
+  bound session with no catalog row shows its Mission Control-only header and the
+  "removed before Mission Control indexed it" message.
 - Resume: original directory, picker with a slot and with a directory, and Open in Fleet for a
   live session. Any new dialog calls `expectContentClearsBorder`.
+- Dirty slot: a resumed session whose fake agent leaves uncommitted changes and exits leaves its
+  slot card showing "Kept: uncommitted changes from a resumed session"; a clean one returns the
+  slot to the pool.
 - Sitrep: a Recent outcomes title opens the session in History; a task with no session shows
-  plain text.
+  plain text; a task bound to a session with no catalog row still links, and opens the Mission
+  Control-only record.
 - Update `e2e/specs/library.spec.ts`'s segment count and rerun `topbar-one-row.spec.ts`.
 
 Definition of done as in `AGENTS.md`: typecheck, lint, build and smoke, and the e2e specs above.
@@ -493,14 +574,17 @@ Definition of done as in `AGENTS.md`: typecheck, lint, build and smoke, and the 
 5. A session's detail shows its conversation with on-demand tool results and subagent runs, and
    its launch context, with every absent section labelled "not recorded".
 6. A transcript deleted from disk leaves a record marked gone, still searchable and still linked
-   from the Sitrep.
+   from the Sitrep. A task bound to a session that was never indexed still links to a record
+   built from Mission Control data.
 7. A session bound to a task shows the task's title, outcome and PR; an unbound session has a
    complete record without them.
 8. Resume opens an unmanaged terminal session in the original directory when it is usable, in an
    idle same-repository slot on the recorded branch, or in a chosen directory by copy and fork;
-   it refuses with a reason otherwise.
+   it refuses with a reason otherwise. A branch already checked out in another worktree follows
+   the stated rule, and a fork's id is known before launch.
 9. A slot taken for Resume returns to the pool when the session ends clean and stays leased
-   when dirty.
+   when dirty, including when the session ended while the daemon was down. The link is the
+   launch record's `expected_agent_session_id`.
 10. A Recent outcomes task title links to its session in History when one is bound.
 11. The list updates within seconds of a new session, and the first backfill shows sessions
     progressively.
@@ -560,6 +644,20 @@ Recorded from the interview with the operator on 2026-11-02.
 | Claude Code retention | Show the retention period on the History page, and link to the setting |
 | Dirty slot at session end | Stays leased, with the slot card showing why, until Returned |
 | First backfill | Show sessions as they are indexed, newest first, with a progress line |
+
+### Review repairs (workflow round 1)
+
+The Plan Feasibility Judge asked for five clarifications. None changes a human decision above:
+
+- The branch-elsewhere rule for a slot target (Resume).
+- The launch record, its correlation key, the startup twin's test, and a fork id minted before
+  launch with `--session-id`, falling back to the SDK `forkSession` (Resume). The chosen
+  `--fork-session` behavior stands.
+- A Mission Control-only record for a bound session with no catalog row, so the Sitrep title
+  stays a link as decided (Routes, Session detail, Sitrep).
+- e2e cases for the retention header, backfill progress, Live badge, dirty-slot card, date
+  range and outcome filters.
+- The order of the classification rules.
 
 ### Assumptions stated during the interview
 
