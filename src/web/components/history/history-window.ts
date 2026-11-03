@@ -32,6 +32,9 @@ export function historyFilterQuery(filters: HistoryFilters | undefined): History
     ...(filters?.to ? { to: localDay(filters.to, 1) } : {}),
     ...(filters?.kind ? { kind: filters.kind } : {}),
     ...(filters?.agent ? { agent: filters.agent } : {}),
+    ...(filters?.link ? { link: filters.link } : {}),
+    ...(filters?.outcome ? { outcome: filters.outcome } : {}),
+    ...(filters?.pr ? { pr: filters.pr } : {}),
   };
 }
 

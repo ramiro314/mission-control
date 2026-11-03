@@ -37084,3 +37084,25 @@ a.history-row-title:focus-visible { outline: 2px solid var(--find); outline-offs
 .history-tabpanel { padding: 12px 0 0; }
 .history-conversation { display: flex; flex-direction: column; gap: 10px; }
 .history-gone { margin: 0; padding: 14px 0; font-size: 13px; color: var(--muted); }
+/* What Mission Control adds: the bound task's status and outcome, and the session's PR. The
+   outcome is free text a task wrote, so it ellipsises rather than push the row wider. */
+.history-outcome {
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+a.history-outcome, a.history-pr { color: var(--idle); text-decoration: none; }
+a.history-outcome:hover, a.history-pr:hover { text-decoration: underline; }
+.history-meta-mission { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.history-task-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}

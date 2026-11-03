@@ -80,11 +80,16 @@ export class HistoryService {
     const page = this.store.page({
       filter: {
         kinds: historyFilterKinds(query.kind),
+        // The default list is conversations, and a session a task ran is one whatever its kind.
+        taskBoundIsConversation: query.kind === undefined,
         needle: historySearchNeedle(query.q),
         repo: query.repo ?? null,
         from: query.from ?? null,
         to: query.to ?? null,
         agent: query.agent ?? null,
+        link: query.link ?? null,
+        outcome: query.outcome ?? null,
+        pr: query.pr ?? null,
       },
       cursor: query.cursor ? decodeHistoryCursor(query.cursor) : null,
       limit: query.limit ?? HISTORY_PAGE_LIMITS.defaultLimit,
@@ -101,12 +106,26 @@ export class HistoryService {
     };
   }
 
-  /** One session's row and live status, or null when History does not know it. */
+  /**
+   * One session's row, live status and what Mission Control knows about it. With no catalog
+   * row, a record built from Mission Control's data alone when a task binding or a Mission
+   * Control session names the id: its transcript was deleted before it was ever indexed. Null
+   * only when neither knows it. Nothing is written for such a record.
+   */
   detail(agent: string, id: string, live: HistoryLiveLookup): HistorySessionDetail | null {
-    const found = this.find(agent, id);
-    if (!found) return null;
-    const { summary } = found.entry;
-    return { session: { ...summary, liveSessionId: live(summary.agent, summary.agentSessionId) } };
+    const reader = this.readerFor(agent, id);
+    if (!reader) return null;
+    const agentSessionId = id.toLowerCase();
+    const entry = this.store.entry(reader.agent, agentSessionId);
+    const liveSessionId = live(reader.agent, agentSessionId);
+    if (entry) {
+      const [catalog] = this.store.withMissions([{ ...entry.summary, liveSessionId }]);
+      return { agent: reader.agent, agentSessionId, catalog: catalog!, mission: catalog!.mission, liveSessionId };
+    }
+    const mission = this.store.missions(reader.agent, [agentSessionId]).get(agentSessionId) ?? null;
+    // A ledger row alone does not name a session: its note key is not always an agent session id.
+    if (!mission || (mission.task === null && mission.missionSessionId === null)) return null;
+    return { agent: reader.agent, agentSessionId, catalog: null, mission, liveSessionId };
   }
 
   /**
@@ -150,10 +169,15 @@ export class HistoryService {
     return { ok: true, page: { messages: page.messages, nextCursor: page.atEnd ? null : String(page.end) } };
   }
 
+  /** The reader for a request's agent and id, or null for anything History cannot address. */
+  private readerFor(agent: string, id: string): HistoryReader | null {
+    if (!(AGENT_TYPES as readonly string[]).includes(agent) || !isHistorySessionId(id)) return null;
+    return this.readers.find((candidate) => candidate.agent === agent) ?? null;
+  }
+
   /** The reader and the row for a request's agent and id, or null for anything History cannot address. */
   private find(agent: string, id: string) {
-    if (!(AGENT_TYPES as readonly string[]).includes(agent) || !isHistorySessionId(id)) return null;
-    const reader = this.readers.find((candidate) => candidate.agent === agent);
+    const reader = this.readerFor(agent, id);
     if (!reader) return null;
     const entry = this.store.entry(reader.agent, id.toLowerCase());
     return entry ? { reader, entry } : null;

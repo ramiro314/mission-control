@@ -2,6 +2,10 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   encodeHistoryCursor,
   type HistoryFacets,
+  type HistoryLinkFilter,
+  type HistoryMission,
+  type HistoryOutcomeFilter,
+  type HistoryPrFilter,
   type HistoryListCursor,
   type HistoryProgress,
   type HistoryPage,
@@ -55,6 +59,8 @@ export interface HistorySearchWrite {
 /** The list's filters, already validated and resolved by the service. */
 export interface HistoryListFilter {
   kinds: readonly string[];
+  /** Whether a task-bound session passes the kind filter whatever its kind: the default list's rule. */
+  taskBoundIsConversation: boolean;
   /** A folded search needle, or null. */
   needle: string | null;
   repo: string | null;
@@ -62,6 +68,49 @@ export interface HistoryListFilter {
   from: number | null;
   to: number | null;
   agent: AgentType | null;
+  link: HistoryLinkFilter | null;
+  outcome: HistoryOutcomeFilter | null;
+  pr: HistoryPrFilter | null;
+}
+
+/**
+ * Each agent session's task work episode binding, joined to its task: the current binding when
+ * one names the session, else the newest historical one. One row per `(agent, agent_session_id)`,
+ * with the agent taken from the task, so a binding is only ever joined to its own agent's row.
+ * A binding whose task is gone binds nothing.
+ */
+const MISSION_TASK_CTE = `
+  mission_task AS (
+    SELECT * FROM (
+      SELECT b.agent_session_id, t.agent, b.task_id, b.pr_url, b.merged_at, b.branch,
+             t.title, t.kind AS task_kind, t.status, t.outcome, t.outcome_url, t.workflow_id,
+             t.labels, t.repo_root AS task_repo_root, t.branch AS task_branch,
+             ROW_NUMBER() OVER (PARTITION BY t.agent, b.agent_session_id
+                                ORDER BY b.current DESC, b.updated_at DESC, b.task_id) AS rank
+        FROM (SELECT agent_session_id, task_id, pr_url, merged_at, branch, updated_at, 1 AS current
+                FROM task_work_episode_bindings
+              UNION ALL
+              SELECT agent_session_id, task_id, pr_url, merged_at, branch, updated_at, 0 AS current
+                FROM historical_task_work_episode_bindings) b
+        JOIN tasks t ON t.id = b.task_id
+    ) WHERE rank = 1
+  )`;
+
+interface MissionRow {
+  agent_session_id: string;
+  task_id: string | null;
+  pr_url: string | null;
+  merged_at: number | null;
+  branch: string | null;
+  title: string | null;
+  task_kind: string | null;
+  status: string | null;
+  outcome: string | null;
+  outcome_url: string | null;
+  workflow_id: string | null;
+  labels: string | null;
+  task_repo_root: string | null;
+  task_branch: string | null;
 }
 
 interface Row {
@@ -107,10 +156,10 @@ function parseFingerprint(raw: string): HistoryFingerprint | null {
   }
 }
 
-function parseUrls(raw: string): string[] {
+function parseStrings(raw: string): string[] {
   try {
     const value = JSON.parse(raw) as unknown;
-    return Array.isArray(value) ? value.filter((url): url is string => typeof url === "string") : [];
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
   } catch {
     return [];
   }
@@ -140,11 +189,32 @@ function toSummary(row: Row): HistorySessionSummary {
     outputTokens: row.output_tokens,
     linesAdded: row.lines_added,
     linesRemoved: row.lines_removed,
-    prUrls: parseUrls(row.pr_urls),
+    prUrls: parseStrings(row.pr_urls),
     continuedIn: row.continued_in,
     subagentCount: row.subagent_count,
+    mission: null,
+    costSource: row.cost_usd !== null ? "transcript" : null,
     liveSessionId: null,
   };
+}
+
+/**
+ * Cost from `usage_ledger`, by note key (a Claude session's note key is its agent session id),
+ * on `sessionCostFor`'s rule: session spend only, and null rather than a subtotal when any row
+ * is unpriced or the rows disagree on their basis.
+ */
+function ledgerCosts(db: DatabaseSync, ids: readonly string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  if (ids.length === 0) return out;
+  const rows = db
+    .prepare(
+      `SELECT note_key, SUM(cost_usd) AS cost, MIN(cost_known) AS known, COUNT(DISTINCT cost_basis) AS bases
+         FROM usage_ledger WHERE spend_kind = 'session' AND note_key IN (${ids.map(() => "?").join(", ")})
+        GROUP BY note_key`,
+    )
+    .all(...ids) as unknown as { note_key: string; cost: number; known: number; bases: number }[];
+  for (const row of rows) if (row.known === 1 && row.bases === 1) out.set(row.note_key, row.cost);
+  return out;
 }
 
 export class HistoryStore {
@@ -191,6 +261,80 @@ export class HistoryStore {
     return row ? { summary: toSummary(row), transcriptPath: row.transcript_path } : null;
   }
 
+  /**
+   * What Mission Control knows about each of `ids`, keyed by id. An id with no task binding, no
+   * Mission Control session and no ledger cost is absent.
+   */
+  missions(agent: AgentType, ids: readonly string[]): Map<string, HistoryMission> {
+    const out = new Map<string, HistoryMission>();
+    if (ids.length === 0) return out;
+    const marks = ids.map(() => "?").join(", ");
+    const tasks = this.db
+      .prepare(`WITH ${MISSION_TASK_CTE} SELECT * FROM mission_task WHERE agent = ? AND agent_session_id IN (${marks})`)
+      .all(agent, ...ids) as unknown as MissionRow[];
+    const byTask = new Map(tasks.map((row) => [row.agent_session_id, row]));
+    // `session_agent_bindings` records no agent, but its key is the agent's own UUID.
+    const sessions = this.db
+      .prepare(
+        `SELECT agent_session_id, session_id FROM session_agent_bindings
+          WHERE agent_session_id IN (${marks}) ORDER BY updated_at DESC`,
+      )
+      .all(...ids) as unknown as { agent_session_id: string; session_id: string }[];
+    const bySession = new Map<string, string>();
+    for (const row of sessions) if (!bySession.has(row.agent_session_id)) bySession.set(row.agent_session_id, row.session_id);
+    const costs = ledgerCosts(this.db, ids);
+    for (const id of ids) {
+      const task = byTask.get(id);
+      const missionSessionId = bySession.get(id) ?? null;
+      const ledgerCostUsd = costs.get(id) ?? null;
+      if (!task && missionSessionId === null && ledgerCostUsd === null) continue;
+      out.set(id, {
+        task: task?.task_id
+          ? {
+              id: task.task_id,
+              title: task.title ?? "",
+              kind: task.task_kind ?? "",
+              status: task.status ?? "",
+              outcome: task.outcome,
+              outcomeUrl: task.outcome_url,
+              workflowId: task.workflow_id,
+              labels: task.labels ? parseStrings(task.labels) : [],
+            }
+          : null,
+        prUrl: task?.pr_url ?? null,
+        mergedAt: task?.merged_at ?? null,
+        branch: task?.branch ?? task?.task_branch ?? null,
+        repoRoot: task?.task_repo_root ?? null,
+        missionSessionId,
+        ledgerCostUsd,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Rows with what Mission Control knows joined in, and the ledger's cost where the transcript
+   * recorded none.
+   */
+  withMissions(rows: readonly HistorySessionSummary[]): HistorySessionSummary[] {
+    const byAgent = new Map<AgentType, string[]>();
+    for (const row of rows) byAgent.set(row.agent, [...(byAgent.get(row.agent) ?? []), row.agentSessionId]);
+    const missions = new Map<string, HistoryMission>();
+    for (const [agent, ids] of byAgent) {
+      for (const [id, mission] of this.missions(agent, ids)) missions.set(`${agent}:${id}`, mission);
+    }
+    return rows.map((row) => {
+      const mission = missions.get(`${row.agent}:${row.agentSessionId}`) ?? null;
+      if (!mission) return row;
+      const fallback = row.costUsd === null && mission.ledgerCostUsd !== null;
+      return {
+        ...row,
+        mission,
+        ...(fallback ? { costUsd: mission.ledgerCostUsd, costSource: "ledger" as const } : {}),
+      };
+    });
+  }
+
   /** Where the last parse of a row's file stopped, for an incremental re-summarize. */
   parsePoint(agent: AgentType, agentSessionId: string): HistoryParsePoint | null {
     const row = this.db
@@ -206,6 +350,8 @@ export class HistoryStore {
       goneAt: _goneAt,
       repoRoot: _repo,
       liveSessionId: _live,
+      mission: _mission,
+      costSource: _costSource,
       ...summary
     } = toSummary(row);
     return {
@@ -405,14 +551,27 @@ export class HistoryStore {
     facets: HistoryFacets;
   }): HistoryPage {
     const { filter } = query;
-    const where = [`h.kind IN (${filter.kinds.map(() => "?").join(", ")})`];
+    const kinds = `h.kind IN (${filter.kinds.map(() => "?").join(", ")})`;
+    const where = [filter.taskBoundIsConversation ? `(${kinds} OR m.task_id IS NOT NULL)` : kinds];
     const params: (string | number)[] = [...filter.kinds];
     if (filter.needle) {
-      where.push(`EXISTS (SELECT 1 FROM history_search_segments s
-                           WHERE s.agent = h.agent AND s.agent_session_id = h.agent_session_id
-                             AND instr(s.text_fold, ?) > 0)`);
-      params.push(filter.needle);
+      // A bound row's title is its task's, so the task title is searched too. SQLite's lower()
+      // folds ASCII only, which the needle's own fold matches for every ASCII title.
+      where.push(`(EXISTS (SELECT 1 FROM history_search_segments s
+                            WHERE s.agent = h.agent AND s.agent_session_id = h.agent_session_id
+                              AND instr(s.text_fold, ?) > 0)
+                   OR instr(lower(m.title), ?) > 0)`);
+      params.push(filter.needle, filter.needle);
     }
+    if (filter.link === "task") where.push("m.task_id IS NOT NULL");
+    if (filter.link === "external") where.push("m.task_id IS NULL");
+    if (filter.outcome !== null) {
+      where.push("m.status = ?");
+      params.push(filter.outcome);
+    }
+    if (filter.pr === "merged") where.push("m.merged_at IS NOT NULL");
+    if (filter.pr === "any") where.push("(m.pr_url IS NOT NULL OR h.pr_urls <> '[]')");
+    if (filter.pr === "none") where.push("(m.pr_url IS NULL AND h.pr_urls = '[]')");
     if (filter.repo !== null) {
       where.push("h.repo_root = ?");
       params.push(filter.repo);
@@ -437,12 +596,15 @@ export class HistoryStore {
     params.push(query.limit + 1);
     const rows = this.db
       .prepare(
-        `SELECT h.* FROM history_sessions h WHERE ${where.join(" AND ")}
+        `WITH ${MISSION_TASK_CTE}
+         SELECT h.* FROM history_sessions h
+           LEFT JOIN mission_task m ON m.agent = h.agent AND m.agent_session_id = h.agent_session_id
+          WHERE ${where.join(" AND ")}
           ORDER BY h.last_activity_at DESC, h.agent DESC, h.agent_session_id DESC LIMIT ?`,
       )
       .all(...params) as unknown as Row[];
     const more = rows.length > query.limit;
-    const sessions = rows.slice(0, query.limit).map(toSummary);
+    const sessions = this.withMissions(rows.slice(0, query.limit).map(toSummary));
     const last = sessions[sessions.length - 1];
     return {
       sessions,

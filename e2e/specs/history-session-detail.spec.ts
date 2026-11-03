@@ -81,7 +81,7 @@ interface CatalogRow {
 
 async function catalogRow(daemon: DaemonHandle, id: string): Promise<CatalogRow> {
   const res = await fetch(`${daemon.baseURL}/api/history/sessions/claude/${id}`);
-  return ((await res.json()) as { session: CatalogRow }).session;
+  return ((await res.json()) as { catalog: CatalogRow }).catalog;
 }
 
 /** One header field's value, found by its label. */
@@ -100,7 +100,7 @@ async function indexed(daemon: DaemonHandle, id: string, state: "present" | "gon
   await expect.poll(async () => {
     const res = await fetch(`${daemon.baseURL}/api/history/sessions/claude/${id}`);
     if (!res.ok) return null;
-    return ((await res.json()) as { session: { transcriptState: string } }).session.transcriptState;
+    return ((await res.json()) as { catalog: { transcriptState: string } | null }).catalog?.transcriptState ?? null;
   }, { timeout: 30_000 }).toBe(state);
 }
 

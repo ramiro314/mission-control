@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AGENT_TYPES, type AgentType, type TranscriptMessage } from "./types.ts";
+import { AGENT_TYPES, TASK_STATUSES, type AgentType, type TaskStatus, type TranscriptMessage } from "./types.ts";
 
 /**
  * Session History: the catalog of every agent session this machine holds on disk, whether or
@@ -50,6 +50,27 @@ export function historyFilterKinds(kind: HistoryKindFilter | undefined): readonl
 }
 
 /**
+ * The Mission Control link filter: sessions a task manages, or every other one. Reaches the
+ * address bar, so append-only.
+ */
+export const HISTORY_LINK_FILTERS = ["task", "external"] as const;
+export type HistoryLinkFilter = (typeof HISTORY_LINK_FILTERS)[number];
+
+/**
+ * The PR filter: a session with a pull request (Mission Control's, else one its transcript
+ * recorded), one whose Mission Control pull request merged, or one with none. Append-only.
+ */
+export const HISTORY_PR_FILTERS = ["any", "merged", "none"] as const;
+export type HistoryPrFilter = (typeof HISTORY_PR_FILTERS)[number];
+
+/**
+ * The task outcome filter takes a task status: `done`, `failed`, `cancelled`, or a task still
+ * running. It names only task-bound sessions.
+ */
+export const HISTORY_OUTCOME_FILTERS = TASK_STATUSES;
+export type HistoryOutcomeFilter = TaskStatus;
+
+/**
  * The one fold History's search uses, on both sides: the text written into
  * `history_search_segments.text_fold` and the query matched against it. Lowercased in
  * JavaScript rather than by SQLite's `lower()`, which folds ASCII only, and with whitespace
@@ -90,10 +111,57 @@ export interface HistorySessionSummary {
   continuedIn: string | null;
   subagentCount: number;
   /**
+   * What Mission Control knows about this session, joined when the row is served, or null when
+   * nothing does. Never stored: it augments the record without being part of it.
+   */
+  mission: HistoryMission | null;
+  /**
+   * Where `costUsd` came from: the transcript's own `cost-state`, Mission Control's
+   * `usage_ledger` when the transcript recorded none, or null when neither did.
+   */
+  costSource: HistoryCostSource | null;
+  /**
    * The Registry session running this conversation right now, or null. Joined when the row is
    * served, never stored: the catalog records what is on disk, the Registry what is running.
    */
   liveSessionId: string | null;
+}
+
+export type HistoryCostSource = "transcript" | "ledger";
+
+/** The task a session worked for, from `tasks`. */
+export interface HistoryMissionTask {
+  id: string;
+  title: string;
+  /** A `TaskKind`, read as a string so a later build's kind stays readable. */
+  kind: string;
+  /** A `TaskStatus`, read as a string for the same reason. */
+  status: string;
+  /** Free text set on completion, such as "opened PR #123". */
+  outcome: string | null;
+  outcomeUrl: string | null;
+  workflowId: string | null;
+  labels: string[];
+}
+
+/**
+ * What Mission Control knows about one agent session, joined at read time: its task work
+ * episode binding (current, else the newest historical one) and that binding's task, the
+ * Mission Control session that ran it, and its `usage_ledger` cost.
+ */
+export interface HistoryMission {
+  /** Null for a session Mission Control ran but no task bound. */
+  task: HistoryMissionTask | null;
+  prUrl: string | null;
+  mergedAt: number | null;
+  /** The binding's branch, else the task's. */
+  branch: string | null;
+  /** The task's repository. */
+  repoRoot: string | null;
+  /** Mission Control's own id for the session that ran this conversation, from `session_agent_bindings`. */
+  missionSessionId: string | null;
+  /** The session's spend in `usage_ledger`, or null when the ledger has none or any of it is unpriced. */
+  ledgerCostUsd: number | null;
 }
 
 /** First-run progress: how much of what the last walk found is already in the catalog. */
@@ -177,6 +245,9 @@ export const HistorySessionsQuerySchema = z
     to: z.coerce.number().int().nonnegative().optional(),
     kind: z.enum(HISTORY_KIND_FILTERS).optional(),
     agent: z.enum(AGENT_TYPES).optional(),
+    link: z.enum(HISTORY_LINK_FILTERS).optional(),
+    outcome: z.enum(HISTORY_OUTCOME_FILTERS).optional(),
+    pr: z.enum(HISTORY_PR_FILTERS).optional(),
   })
   .strict();
 export type HistorySessionsQuery = z.infer<typeof HistorySessionsQuerySchema>;
@@ -190,9 +261,37 @@ export const HISTORY_KIND_LABELS: Readonly<Record<string, string>> = {
   unclassified: "Unclassified",
 };
 
-/** The title a row shows: custom title, AI title, then the first prompt. */
-export function historyTitle(row: Pick<HistorySessionSummary, "customTitle" | "aiTitle" | "firstPrompt">): string {
-  return row.customTitle?.trim() || row.aiTitle?.trim() || row.firstPrompt?.trim() || "Untitled session";
+/** How the page names the Mission Control link and PR filter values. */
+export const HISTORY_LINK_LABELS: Readonly<Record<HistoryLinkFilter, string>> = {
+  task: "Managed by a task",
+  external: "External",
+};
+export const HISTORY_PR_LABELS: Readonly<Record<HistoryPrFilter, string>> = {
+  any: "With a PR",
+  merged: "PR merged",
+  none: "No PR",
+};
+
+/**
+ * The title a row shows: its task's title when a task is bound, else the custom title, the AI
+ * title, then the first prompt.
+ */
+export function historyTitle(
+  row: Pick<HistorySessionSummary, "customTitle" | "aiTitle" | "firstPrompt"> & { mission?: HistoryMission | null },
+): string {
+  return row.mission?.task?.title.trim() || row.customTitle?.trim() || row.aiTitle?.trim() || row.firstPrompt?.trim()
+    || "Untitled session";
+}
+
+/** "PR #123" for a GitHub pull request URL, else "Pull request". */
+export function historyPrLabel(url: string): string {
+  const number = /\/pull\/(\d+)/.exec(url)?.[1];
+  return number ? `PR #${number}` : "Pull request";
+}
+
+/** The pull request a row shows: Mission Control's, else the last one its transcript recorded. */
+export function historyPrUrl(row: Pick<HistorySessionSummary, "prUrls" | "mission">): string | null {
+  return row.mission?.prUrl ?? row.prUrls.at(-1) ?? null;
 }
 
 /**
@@ -205,9 +304,21 @@ export function isHistorySessionId(raw: string): boolean {
   return HISTORY_SESSION_ID.test(raw);
 }
 
-/** `GET /api/history/sessions/:agent/:id`: one row and whether it is running now. */
+/**
+ * `GET /api/history/sessions/:agent/:id`: one session, whether it is running now, and what
+ * Mission Control knows about it.
+ *
+ * `catalog` is null when the catalog has no row but Mission Control names the id: a transcript
+ * deleted before it was ever indexed. The record is then `mission` alone, and there is no
+ * conversation to read.
+ */
 export interface HistorySessionDetail {
-  session: HistorySessionSummary;
+  agent: AgentType;
+  agentSessionId: string;
+  catalog: HistorySessionSummary | null;
+  /** Also on `catalog.mission`; the record's only source when `catalog` is null. */
+  mission: HistoryMission | null;
+  liveSessionId: string | null;
 }
 
 /** `GET /api/history/sessions/:agent/:id/messages`: one window of turns, read forward. */

@@ -1838,6 +1838,8 @@ export function App(): React.JSX.Element {
     },
     [tasks, sessions, landTask, selectedId, modalOpen, route.page],
   );
+  /** Whether `openTask` has a task to land on; History names a task it does not hold without a link. */
+  const canOpenTask = useCallback((taskId: string): boolean => tasks.some((task) => task.id === taskId), [tasks]);
   // The click on a task that had nowhere to land yet, completed once it does. Dropped instead
   // when the person has moved on or it waited too long, and when the task leaves flight for
   // the backlog (requeued) or disappears.
@@ -4282,7 +4284,15 @@ export function App(): React.JSX.Element {
             // Mounted only on its own route, like Scouts, so the catalog fetch never runs
             // while somebody is on another page.
             route.page === "history" ? (
-              <HistoryPage route={route} navigate={navigate} replace={replace} revision={historyRevision} onOpenSession={openSessionOnFleet} />
+              <HistoryPage
+                route={route}
+                navigate={navigate}
+                replace={replace}
+                revision={historyRevision}
+                onOpenSession={openSessionOnFleet}
+                onOpenTask={openTask}
+                canOpenTask={canOpenTask}
+              />
             ) : null
           }
           shipped={

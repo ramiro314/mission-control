@@ -17,7 +17,17 @@ import {
   type ArchiveKind,
 } from "@shared/archives.ts";
 import { pipelineRepoKey, type PipelineProviderId } from "@shared/pipeline.ts";
-import { HISTORY_KIND_FILTERS, isHistorySessionId, type HistoryKindFilter } from "@shared/history.ts";
+import {
+  HISTORY_KIND_FILTERS,
+  HISTORY_LINK_FILTERS,
+  HISTORY_OUTCOME_FILTERS,
+  HISTORY_PR_FILTERS,
+  isHistorySessionId,
+  type HistoryKindFilter,
+  type HistoryLinkFilter,
+  type HistoryOutcomeFilter,
+  type HistoryPrFilter,
+} from "@shared/history.ts";
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
@@ -198,6 +208,16 @@ export interface HistoryFilters {
   /** Absent means conversations only. */
   kind?: HistoryKindFilter;
   agent?: AgentType;
+  /** Sessions a task manages, or the rest. */
+  link?: HistoryLinkFilter;
+  /** A bound task's status. */
+  outcome?: HistoryOutcomeFilter;
+  pr?: HistoryPrFilter;
+}
+
+/** `raw` when it is one of `values`, else undefined: a value this build would refuse is dropped. */
+function oneOf<T extends string>(values: readonly T[], raw: string | null | undefined): T | undefined {
+  return raw && (values as readonly string[]).includes(raw) ? (raw as T) : undefined;
 }
 
 /** A calendar day a date input produces, or undefined for anything else. */
@@ -211,8 +231,11 @@ function historyDay(raw: string | null): string | undefined {
 
 /** The filters a History hash names, each dropped when this build would refuse it. */
 function parseHistoryFilters(params: URLSearchParams): HistoryFilters | undefined {
-  const kind = params.get("kind");
-  const agent = params.get("agent");
+  const kind = oneOf(HISTORY_KIND_FILTERS, params.get("kind"));
+  const agent = oneOf(AGENT_TYPES, params.get("agent"));
+  const link = oneOf(HISTORY_LINK_FILTERS, params.get("link"));
+  const outcome = oneOf(HISTORY_OUTCOME_FILTERS, params.get("outcome"));
+  const pr = oneOf(HISTORY_PR_FILTERS, params.get("pr"));
   const from = historyDay(params.get("from"));
   const to = historyDay(params.get("to"));
   const filters: HistoryFilters = {
@@ -220,8 +243,11 @@ function parseHistoryFilters(params: URLSearchParams): HistoryFilters | undefine
     ...(params.get("repo") ? { repo: params.get("repo")! } : {}),
     ...(from ? { from } : {}),
     ...(to ? { to } : {}),
-    ...(kind && (HISTORY_KIND_FILTERS as readonly string[]).includes(kind) ? { kind: kind as HistoryKindFilter } : {}),
-    ...(agent && (AGENT_TYPES as readonly string[]).includes(agent) ? { agent: agent as AgentType } : {}),
+    ...(kind ? { kind } : {}),
+    ...(agent ? { agent } : {}),
+    ...(link ? { link } : {}),
+    ...(outcome ? { outcome } : {}),
+    ...(pr ? { pr } : {}),
   };
   return Object.keys(filters).length > 0 ? filters : undefined;
 }
@@ -583,8 +609,16 @@ export function missionRouteHash(route: MissionRoute): string {
     if (filters?.repo) params.set("repo", filters.repo);
     if (historyDay(filters?.from ?? null)) params.set("from", filters!.from!);
     if (historyDay(filters?.to ?? null)) params.set("to", filters!.to!);
-    if (filters?.kind && (HISTORY_KIND_FILTERS as readonly string[]).includes(filters.kind)) params.set("kind", filters.kind);
-    if (filters?.agent && (AGENT_TYPES as readonly string[]).includes(filters.agent)) params.set("agent", filters.agent);
+    const kind = oneOf(HISTORY_KIND_FILTERS, filters?.kind);
+    const agent = oneOf(AGENT_TYPES, filters?.agent);
+    const link = oneOf(HISTORY_LINK_FILTERS, filters?.link);
+    const outcome = oneOf(HISTORY_OUTCOME_FILTERS, filters?.outcome);
+    const pr = oneOf(HISTORY_PR_FILTERS, filters?.pr);
+    if (kind) params.set("kind", kind);
+    if (agent) params.set("agent", agent);
+    if (link) params.set("link", link);
+    if (outcome) params.set("outcome", outcome);
+    if (pr) params.set("pr", pr);
     const query = params.toString();
     // The session is emitted only when well formed, mirroring the parser, so the codec round-trips.
     const session = route.session;

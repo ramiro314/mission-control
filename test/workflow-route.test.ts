@@ -151,15 +151,21 @@ test("History round-trips, and a path it does not know yet lands on the list", (
 });
 
 test("History filters survive the hash, and a value the API would refuse is dropped", () => {
-  const filters = { q: "login retry", repo: "/code/app", from: "2026-10-01", to: "2026-10-31", kind: "all", agent: "claude" } as const;
+  const filters = {
+    q: "login retry", repo: "/code/app", from: "2026-10-01", to: "2026-10-31", kind: "all", agent: "claude",
+    link: "task", outcome: "done", pr: "merged",
+  } as const;
   const hash = missionRouteHash({ page: "history", filters });
-  assert.equal(hash, "#/history?q=login+retry&repo=%2Fcode%2Fapp&from=2026-10-01&to=2026-10-31&kind=all&agent=claude");
+  assert.equal(
+    hash,
+    "#/history?q=login+retry&repo=%2Fcode%2Fapp&from=2026-10-01&to=2026-10-31&kind=all&agent=claude&link=task&outcome=done&pr=merged",
+  );
   assert.deepEqual(parseMissionRoute(hash), { page: "history", filters });
   assert.deepEqual(parseMissionRoute("#/history?kind=one_shot"), { page: "history", filters: { kind: "one_shot" } });
   assert.deepEqual(
-    parseMissionRoute("#/history?kind=everything&agent=gpt&from=2026-02-31&to=yesterday&cursor=abc"),
+    parseMissionRoute("#/history?kind=everything&agent=gpt&from=2026-02-31&to=yesterday&cursor=abc&link=managed&outcome=shipped&pr=open"),
     { page: "history" },
-    "an unknown kind or agent, an impossible day, and a parameter the page has no field for",
+    "an unknown kind, agent, link, outcome or PR value, an impossible day, and a parameter the page has no field for",
   );
   assert.equal(missionRouteHash({ page: "history", filters: { from: "not-a-day" } }), "#/history");
 });
