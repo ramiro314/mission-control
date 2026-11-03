@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -801,6 +801,76 @@ test("a typed directory inside a worktree pool is refused", async () => {
     assert.equal(res.status, 409);
     assert.equal(((await res.json()) as { code: string }).code, "pool_slot");
     assert.equal(launchCount(), 0);
+  } finally {
+    f.done();
+  }
+});
+
+/** Append a user turn, so the reconciler rewrites the row from a changed file. */
+function bump(path: string, id: string, cwd: string): void {
+  appendFileSync(path, JSON.stringify({
+    sessionId: id, cwd, entrypoint: "cli", version: "2.1.296", gitBranch: "main", isSidechain: false,
+    timestamp: "2026-10-21T10:00:00.000Z", uuid: `u2-${id}-${Date.now()}`, type: "user", message: { role: "user", content: "again" },
+  }) + "\n");
+}
+
+function resumedFrom(id: string): string | null {
+  return (openDb().prepare("SELECT resumed_from FROM history_sessions WHERE agent_session_id = ?").get(id) as { resumed_from: string | null }).resumed_from;
+}
+
+test("resumed_from: a Resume in the original directory never stamps its own row, and a fork's value is kept once set", async () => {
+  const { launcher } = fakeLauncher();
+  const f = await fixture(launcher);
+  try {
+    // A plain Resume's launch expects the source's own id; it is not a fork of anything.
+    const cwd = directory("plain");
+    const id = sessionId();
+    const path = writeConversation(f.projects, id, cwd);
+    await f.history.reconciler.trigger();
+    assert.equal((await f.resume(id)).status, 200);
+    bump(path, id, cwd);
+    const pass = await f.history.reconciler.trigger();
+    assert.equal(pass.indexed, 1, "the row was rewritten after the launch was recorded");
+    assert.equal(resumedFrom(id), null);
+
+    // A fork's row keeps its source even once no launch row names it any more.
+    const { id: source } = await orphaned(f);
+    const typed = directory("kept");
+    const { launch } = (await (await resumeInto(f, source, typed)).json()) as Started;
+    const fork = launch.expectedAgentSessionId;
+    const forkPath = writeConversation(f.projects, fork, typed);
+    await f.history.reconciler.trigger();
+    assert.equal(resumedFrom(fork), source);
+    openDb().prepare("DELETE FROM history_resume_launches WHERE launch_id = ?").run(launch.launchId);
+    bump(forkPath, fork, typed);
+    assert.equal((await f.history.reconciler.trigger()).indexed, 1);
+    assert.equal(resumedFrom(fork), source, "kept once set");
+  } finally {
+    f.done();
+  }
+});
+
+test("a copy that fails after its exclusive create is removed, answers launch_failed, and frees the claim", async () => {
+  const { launcher, prepared } = fakeLauncher();
+  const f = await fixture(launcher);
+  try {
+    const { id, transcript } = await orphaned(f);
+    const typed = directory("half-copied");
+    const copyPath = join(claudeProjectDir(typed, f.projects), `${id}.jsonl`);
+    // The row still reads present, so the Resume gets as far as the copy: the destination is
+    // created, then reading the source fails.
+    rmSync(transcript);
+
+    const res = await resumeInto(f, id, typed);
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string; error: string; launch: { state: string; copyPath: string | null } };
+    assert.equal(body.code, "launch_failed");
+    assert.ok(body.error.includes(copyPath), "the refusal names the copy it could not make");
+    assert.equal(existsSync(copyPath), false, "the partial copy is removed, so it never blocks the next Resume");
+    assert.equal(body.launch.state, "released");
+    assert.equal(body.launch.copyPath, null, "a failed copy is never recorded as one");
+    assert.equal(f.history.launches.open("claude", id), null);
+    assert.equal(prepared.length, 0);
   } finally {
     f.done();
   }
