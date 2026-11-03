@@ -197,7 +197,7 @@ Three tables in `harness.db`, created through the normal `migrate()` upgrade pat
 
 | Group | Columns |
 |---|---|
-| Identity | `agent`, `agent_session_id`, `transcript_path`, `fingerprint`, `parsed_bytes`, `transcript_state` (`present` / `gone`), `gone_at` |
+| Identity | `agent`, `agent_session_id`, `transcript_path`, `continuation_paths`, `fingerprint`, `parsed_bytes`, `transcript_state` (`present` / `gone`), `gone_at` |
 | Place | `cwd` (first), `repo_root` (resolved at index time), `branch`, `entrypoint`, `version` |
 | Kind | `kind` (`interactive` / `sdk` / `one_shot` / `reviewer` / `unclassified`) |
 | Title | `custom_title`, `ai_title`, `first_prompt` (capped) |
@@ -232,24 +232,31 @@ are `<repo>-<digest>`); a cwd under `worktrees/<taskId>` maps through the task's
 an existing path resolves through `mainRepoRoot`; anything else has no repository and is shown
 by its raw cwd. The resolved value is stored, so it survives the directory's deletion.
 
-**Retention.** When a transcript file disappears after a complete scan, its row is kept with
-`transcript_state = gone` and `gone_at`. Title, place, time, usage, links and search segments
+**Retention.** When a session's transcript files (the canonical file and any continuations)
+have all disappeared after a complete scan, its row is kept with `transcript_state = gone` and
+`gone_at`. Title, place, time, usage, links and search segments
 survive. The conversation, launch context and Resume do not. Rows are never deleted by this
 plan.
 
-**Duplicates.** A History Resume into an unrelated directory copies a transcript, so two files
-can share a `sessionId`. The canonical file is chosen by a stable rule, never by scan order, so
-a fresh or rebuilt catalog picks the same one:
+**Duplicates.** Two files can share a `sessionId` for two reasons. A History Resume into an
+unrelated directory copies a transcript. And a resume from another directory, through History
+or by hand, may write its new turns into that directory's project folder instead of the
+original file. Every file with one id belongs to one row, in exactly one role, decided by a
+stable rule, never by scan order, so a fresh or rebuilt catalog decides the same way:
 
-1. A file recorded as a History copy (`history_resume_launches.copy_path`) is never canonical.
-2. Of the rest, the canonical file is the one whose project folder is the encoding of the
-   session's first recorded `cwd`.
-3. If no file qualifies, the one with the earliest first-record timestamp wins, ties broken by
-   path.
+1. **Copy.** A file recorded as a History copy (`history_resume_launches.copy_path`) is a copy:
+   never canonical, never read, and it creates no row.
+2. **Canonical.** Of the rest, the canonical file is the one whose project folder is the
+   encoding of the session's first recorded `cwd`. If no file qualifies, the one with the
+   earliest first-record timestamp wins, ties broken by path.
+3. **Continuation.** Every other file is a continuation, listed in `continuation_paths`. Its
+   records are part of the session: they feed `last_activity_at`, usage, search segments and the
+   conversation. The readers merge canonical and continuation records by timestamp and drop any
+   record whose `uuid` was already seen, in case the continuation repeats the earlier history.
 
-Every other file with that id is recorded as a copy and does not create a second row. When the
-canonical file disappears and a copy remains, the row is marked gone rather than repointed at
-the copy.
+A session is gone only when its canonical file and every continuation are gone. While a
+continuation remains, the conversation reads from what is left, and a gone canonical file is
+noted in the detail header.
 
 ### Reconciler
 
@@ -533,8 +540,12 @@ flowchart TD
 2.1.296. It opens each session interactively without sending a prompt, in a scratch
 repository, and checks:
 
-1. `claude --resume <id>` from a sibling worktree finds the session. If it does not, a slot
-   target uses the same copy and fork path as a directory.
+1. `claude --resume <id>` from a sibling worktree finds the session. The probe then runs a
+   local slash command (one that writes a `local_command` record and calls no model) and
+   records which file received the new record: the original transcript, or a new
+   `<sessionId>.jsonl` in the slot's own project folder. Either outcome is handled by the
+   Duplicates rule above, and the probe's answer picks the fixture the tests use. If the
+   session is not found, a slot target uses the same copy and fork path as a directory.
 2. `claude --resume <id> --fork-session --session-id <new>` starts the fork under `<new>`. If
    the flags are refused together, the SDK `forkSession` fallback is used.
 3. `forkSession(id, { dir })` writes the fork into the project folder of `dir` and returns its
@@ -599,6 +610,10 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
   walk, one coalesced `history_changed` per pass, and duplicate ids: a rebuilt catalog that
   scans the History copy first still picks the original as canonical, and a gone canonical file
   is not repointed at its copy.
+- Continuations: a same-id file in another project folder that is not a recorded copy becomes a
+  continuation; its turns appear in the conversation, search and `last_activity_at`; records
+  repeated from the canonical file appear once; and the row is gone only after the canonical
+  file and every continuation are gone.
 - Routes: id validation and containment, filters and paging, Mission Control join present and
   absent, transcript-gone detail, launch-context sections. A bound id with no catalog row
   returns the Mission Control-only record; an id known to neither returns 404.
@@ -786,7 +801,7 @@ The Plan Feasibility Judge asked for five clarifications. None changes a human d
 
 ### Review repairs (GitHub Inspector on #725)
 
-Eleven findings over seven reviews, none of which changes a human decision above:
+Twelve findings over eight reviews, none of which changes a human decision above:
 
 - An unbound launch past its grace window expires and keeps its lease instead of being
   released, and a late agent still binds (Resume).
@@ -811,6 +826,8 @@ Eleven findings over seven reviews, none of which changes a human decision above
 - Idle pool slots are always detached, so an original directory that is a pool slot goes
   through the slot-target operation on that slot, and the "idle slot holding the branch" case is
   removed (Resume).
+- A same-id file that is not a History copy is a continuation, merged into the session, and the
+  probe records which file a sibling-worktree resume writes to (Catalog, To verify first).
 
 ### Assumptions stated during the interview
 
