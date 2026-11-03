@@ -1,4 +1,5 @@
 import { codeRabbitSummary } from "./db.ts";
+import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
   adoptedTransferHome, transferSummary, updateSessionTransfer, transferScopeMatches, unresolvedSessionTransfers, type SessionTransfer } from "./session-transfers/store.ts";
@@ -9233,27 +9234,7 @@ export class Registry extends EventEmitter {
     if (!row) return null;
     const episodeKey = session ? resolvedSessionIntent(this.getGoal(session.id))?.episodeKey : undefined;
     const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
-    return {
-      codeRabbit: codeRabbitSummary(row.key, owner),
-      // Fork (ci-strictness): the compact projection only, never the check list. `enabled` is
-      // read here, not on the row, because turning the Inspector off changes no row (D5).
-      ci: {
-        headSha: row.ci?.headSha ?? null,
-        required: row.ci?.required ?? null,
-        inspectorEnabled: getInspectorConfig().enabled,
-      },
-      prKey: row.key,
-      url: row.url,
-      mode: getInspectorConfig().mode,
-      open: row.openFindings,
-      postedOpen: row.postedOpenFindings,
-      round: row.round,
-      lastReviewedAt: row.lastReviewedAt,
-      failed: row.lastError !== null,
-      reviewedHeadSha: row.headSha,
-      observedHeadSha: row.observedHeadSha,
-      cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
-    };
+    return inspectorSummaryOf(row, getInspectorConfig(), codeRabbitSummary(row.key, owner));
   }
 
   /**

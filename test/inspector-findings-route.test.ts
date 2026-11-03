@@ -35,7 +35,7 @@ const app = buildApp({
 const LOOPBACK = { host: "127.0.0.1:7317" };
 const KEY = "owner/repo#7";
 
-function adopt(number: number): void {
+function adopt(number: number, state: "open" | "closed" = "open"): void {
   adoptInspectorPr({
     key: `owner/repo#${number}`,
     url: `https://github.com/owner/repo/pull/${number}`,
@@ -46,7 +46,7 @@ function adopt(number: number): void {
     cwd: "/repo",
     sessionId: "sess-1",
     source: "hook",
-    state: "open",
+    state,
     headSha: "head-1",
     reviewPosture: "live",
     round: 2,
@@ -278,5 +278,33 @@ test("both clients refuse a successful response that does not match the shared s
     }
   } finally {
     globalThis.fetch = real;
+  }
+});
+
+// `?state=open` is how Foreman's follow-through finds an open pull request the Inspector adopted
+// under a session whose card no longer carries it.
+test("/api/inspector/prs?state=open returns only open rows, with tallies and CodeRabbit standing", async () => {
+  adopt(7);
+  adopt(8, "closed");
+  seed("f-draft", "drafted", "minor");
+  const res = await app.request("/api/inspector/prs?state=open", { headers: LOOPBACK });
+  assert.equal(res.status, 200);
+  const rows = (await res.json()) as Array<{ key: string; openFindings: number; codeRabbit?: unknown }>;
+  assert.deepEqual(rows.map((row) => row.key), [KEY]);
+  assert.equal(rows[0]?.openFindings, 1);
+  assert.ok(rows[0]?.codeRabbit, "codeRabbit is added as the unfiltered reading adds it");
+
+  await withAppFetch(async (paths) => {
+    const read = await new ForemanClient().openInspections();
+    assert.deepEqual(read.map((row) => row.key), [KEY]);
+    assert.equal(paths.at(-1), "/api/inspector/prs?state=open");
+  });
+});
+
+test("/api/inspector/prs refuses a state it does not serve, and state with adoptedSince", async () => {
+  adopt(7);
+  for (const query of ["?state=closed", "?state=", "?state=OPEN", "?state=open&adoptedSince=1"]) {
+    const res = await app.request(`/api/inspector/prs${query}`, { headers: LOOPBACK });
+    assert.equal(res.status, 400, `"${query}" must be refused`);
   }
 });

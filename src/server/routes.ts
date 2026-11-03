@@ -13,7 +13,7 @@ import { validatePlanInputs } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
-import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
+import { InspectorPrsStateSchema, RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
 import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
@@ -253,6 +253,7 @@ import type { Registry } from "./registry.ts";
 import { ComposerActivityTracker } from "./composer-activity.ts";
 import type { QueueManager } from "./queue.ts";
 import type {
+  InspectorInspection,
   InspectorStatus,
   LlmStatus,
   ReviewActor,
@@ -533,6 +534,7 @@ import {
   loadConversationResolvedReviews,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
+  loadOpenInspectorInspections,
   loadInspectorInspection,
   loadInspectorComments,
   getInspectorPr,
@@ -7732,9 +7734,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // against the Line's Shipped count, which is uncapped by construction (`prsOpenedSince`).
   // One route rather than two over the same table, for the reason `useShipping` records:
   // a second endpoint over one ledger is a second thing to keep honest.
+  //
+  // With `state=open`: every open row, uncapped, for Foreman's follow-through to find a pull
+  // request the Inspector adopted under a session whose card no longer carries it. It does not
+  // combine with `adoptedSince`, since the two orderings answer different questions.
   app.get("/api/inspector/prs", (c) => {
     const raw = c.req.query("adoptedSince");
-    if (raw === undefined) return c.json(loadInspectorInspections(50).map((row) => ({ ...row, codeRabbit: codeRabbitStanding(registry, row.key) })));
+    const state = c.req.query("state");
+    const withStanding = (rows: InspectorInspection[]) =>
+      rows.map((row) => ({ ...row, codeRabbit: codeRabbitStanding(registry, row.key) }));
+    if (state !== undefined) {
+      const parsed = InspectorPrsStateSchema.safeParse(state);
+      if (!parsed.success) return c.json({ error: "state must be open" }, 400);
+      if (raw !== undefined) return c.json({ error: "state and adoptedSince do not combine" }, 400);
+      return c.json(withStanding(loadOpenInspectorInspections()));
+    }
+    if (raw === undefined) return c.json(withStanding(loadInspectorInspections(50)));
     // Two guards, each doing work the other cannot.
     //
     // The SHAPE is matched as text before anything is coerced, because `Number()` is far too

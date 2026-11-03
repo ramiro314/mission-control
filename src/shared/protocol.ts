@@ -2687,6 +2687,9 @@ export const InspectorInspectionSchema = z.object({
   resolvedFindings: z.number().int(),
 });
 
+/** `GET /api/inspector/prs?state=`: only `open` is a reading the route serves. */
+export const InspectorPrsStateSchema = z.enum(["open"]);
+
 /**
  * `GET /api/inspector/findings?pr=<prKey>`: one pull request's ledger row and every finding
  * the Inspector recorded on it, in every status, unresolved first and then in the order

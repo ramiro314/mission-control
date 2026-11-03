@@ -100,10 +100,12 @@ import {
   advanceFollowupMark,
   decideReviewFollowup,
   followupPrs,
+  reviewFollowupPrs,
   workflowHoldsReviewFollowup,
   workflowReleasedFollowupOnly,
 } from "./review-followup.ts";
-import type { FollowupMark, FollowupPr, ReviewFollowupDecision } from "./review-followup.ts";
+import type { AdoptedInspection, FollowupMark, FollowupPr, ReviewFollowupDecision } from "./review-followup.ts";
+import { inspectorSummaryOf } from "@shared/inspector.ts";
 import type { CiStrictness } from "@shared/ci-checks.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
@@ -955,14 +957,41 @@ function observeFollowupMarks(
   sessionId: string,
   prs: FollowupPr[],
   ciStrictness: CiStrictness,
+  keepUnseen = false,
 ): Map<string, FollowupMark> {
   const prior = reviewNudged.get(sessionId);
-  const next = new Map<string, FollowupMark>();
+  // An unseen PR is not a closed one when the adoption read failed, and dropping its mark
+  // would relay the same round again once the read recovers.
+  const next = new Map<string, FollowupMark>(keepUnseen ? prior : undefined);
   for (const pr of prs) {
     next.set(pr.prKey, advanceFollowupMark(prior?.get(pr.prKey) ?? null, pr, ciStrictness));
   }
   reviewNudged.set(sessionId, next);
   return next;
+}
+
+let adoptedReadFailing = false;
+
+/**
+ * The open pull requests the Inspector adopted, projected for `reviewFollowupPrs`, or null when
+ * either read failed. A failure is logged once per streak, and the pass follows through on
+ * session cards alone.
+ */
+async function readAdoptedInspections(client: ForemanClient): Promise<AdoptedInspection[] | null> {
+  try {
+    const [rows, inspectorCfg] = await Promise.all([client.openInspections(), client.inspectorConfig()]);
+    adoptedReadFailing = false;
+    return rows.map((row) => ({ row, inspector: inspectorSummaryOf(row, inspectorCfg) }));
+  } catch (err) {
+    if (!adoptedReadFailing) {
+      log(
+        `could not read the GitHub Inspector's open pull requests - following through on ` +
+          `session cards only until it recovers (${String(err)})`,
+      );
+    }
+    adoptedReadFailing = true;
+    return null;
+  }
 }
 
 /**
@@ -1012,22 +1041,23 @@ export async function runReviewFollowup(
   const liveIds = new Set(sessions.map((s) => s.id));
   for (const id of reviewNudged.keys()) if (!liveIds.has(id)) reviewNudged.delete(id);
 
+  const adopted = await readAdoptedInspections(client);
   const shipping = await client.shippingConfig().catch(() => null);
   const now = Date.now();
   for (const session of sessions) {
     // No open PR anywhere: forget this session's marks - a merged/closed PR is done, and a
     // later new PR starts fresh. Everything below is scoped to pull requests a mark can be
     // keyed to.
-    const prs = followupPrs(session);
+    const prs = reviewFollowupPrs(session, adopted ?? []);
     if (prs.length === 0) {
-      reviewNudged.delete(session.id);
+      if (adopted) reviewNudged.delete(session.id);
       continue;
     }
 
     // Fold this pass's observation (a CI recovery, or a new PR) into every mark and PERSIST
     // them, for EVERY open pull request - not only the one about to be nudged - because that
     // recovery is what re-arms CI once the session parks. See `advanceFollowupMark`.
-    const marks = observeFollowupMarks(session.id, prs, cfg.ciStrictness);
+    const marks = observeFollowupMarks(session.id, prs, cfg.ciStrictness, adopted === null);
 
     // A workflow is another writer to this pane and checkout. Failure to read ownership
     // is a reason to hold, never permission to type across an owner we could not observe.
@@ -1078,10 +1108,13 @@ export async function runReviewFollowup(
         if (!read) break;
       }
 
-      const [freshCfg, freshSessions, freshShipping] = await Promise.all([
+      // The adopted rows are re-read with the fleet, so an adopted-only PR that closed in the
+      // window is noticed exactly as a card PR would be.
+      const [freshCfg, freshSessions, freshShipping, freshAdopted] = await Promise.all([
         client.getConfig().catch(() => null),
         client.sessions().catch(() => null),
         client.shippingConfig().catch(() => null),
+        readAdoptedInspections(client),
       ]);
       if (!freshCfg || !freshSessions || !holdsLease()) break;
 
@@ -1102,10 +1135,10 @@ export async function runReviewFollowup(
         if (carried && !reviewNudged.has(fresh.id)) reviewNudged.set(fresh.id, carried);
         reviewNudged.delete(session.id);
       }
-      const freshPrs = followupPrs(fresh);
+      const freshPrs = reviewFollowupPrs(fresh, freshAdopted ?? []);
       const freshPr = freshPrs.find((candidate) => candidate.prKey === pr.prKey);
       if (!freshPr) break;
-      const freshMarks = observeFollowupMarks(fresh.id, freshPrs, freshCfg.ciStrictness);
+      const freshMarks = observeFollowupMarks(fresh.id, freshPrs, freshCfg.ciStrictness, freshAdopted === null);
       const freshMark = freshMarks.get(freshPr.prKey) ?? null;
 
       const freshDecision = decideReviewFollowup({

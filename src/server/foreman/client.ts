@@ -22,9 +22,12 @@ import {
   isLlmRunnerId,
 } from "@shared/llm.ts";
 import type { ClaudeTransport, CodexTransport, LlmRunnerId } from "@shared/llm.ts";
+import { z } from "zod";
 import {
   ForemanConfigSchema,
+  InspectorConfigSchema,
   InspectorFindingsResponseSchema,
+  InspectorInspectionSchema,
   TRANSCRIPT_DEFAULT_TAIL_TURNS,
 } from "@shared/protocol.ts";
 import type { ForemanHealthSnapshot } from "@shared/foreman-health.ts";
@@ -34,6 +37,7 @@ import type {
   ForemanInstructionsView,
   ForemanLeaseResult,
   ForemanPlannerControl,
+  InspectorConfig,
   InspectorFindingsResponse,
   PromptedCompletionDisposition,
   PromptedRecoveryClaim,
@@ -49,6 +53,7 @@ import type {
   AssignRefusalScope,
   BacklogPlan,
   ForemanPlannerHealth,
+  InspectorInspection,
   ReviewItem,
   Session,
   SessionDiff,
@@ -1219,6 +1224,15 @@ export class ForemanClient implements ForemanActions {
     return InspectorFindingsResponseSchema.parse(
       await get<unknown>(`/api/inspector/findings?pr=${enc(prKey)}`),
     );
+  }
+
+  /** Every open pull request the Inspector adopted, with tallies. Parsed, as findings are. */
+  async openInspections(): Promise<InspectorInspection[]> {
+    return z.array(InspectorInspectionSchema).parse(await get<unknown>("/api/inspector/prs?state=open"));
+  }
+
+  async inspectorConfig(): Promise<InspectorConfig> {
+    return InspectorConfigSchema.parse(await get<unknown>("/api/inspector/config"));
   }
 
   /** Registered workflow evidence for a live conversation; 404 means it disappeared. */
