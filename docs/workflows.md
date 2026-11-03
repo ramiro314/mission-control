@@ -2738,6 +2738,15 @@ all - so all three surfaces read one derivation, which answers "which pull reque
 rather than assuming there is one. A run holding no gate is told plainly that cancelling
 clears the run and keeps its history, and nothing more.
 
+A blocked run also keeps its session, with one exception. Foreman's
+[PR follow-through](work-queues.md#keeping-a-pr-on-track) stops waiting on a run that spent its
+repair budget or stopped on `unchanged_evidence_exhausted` or `session_disappeared`, because
+only the operator or the session can restart it and it delivers nothing until then. Unresolved
+GitHub Inspector findings, failing CI and conflicts reach the session again, while the run keeps
+its Shipping veto and CodeRabbit follow-up keeps waiting for it. The list is
+`WORKFLOW_FOLLOWUP_RELEASE_PHASES` in `src/shared/workflow.ts`, and it is an allowlist: every
+other blocked phase, including one added later, keeps holding the follow-through.
+
 ### One run, one lifecycle state
 
 A run says where it is in three stored columns - its status, its phase, and a free-form detail

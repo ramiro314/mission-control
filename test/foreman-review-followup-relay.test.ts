@@ -111,22 +111,23 @@ function response(findings: InspectorComment[], round = 3): InspectorFindingsRes
 function fakeDaemon(opts: {
   sessions: (afterRead: boolean) => Session[];
   findings: () => Promise<InspectorFindingsResponse>;
-  workflowRuns?: (afterRead: boolean) => Array<{ status: string }>;
+  workflowRuns?: (afterRead: boolean) => Array<{ status: string; phase?: string; round?: number; maxRepairRounds?: number }>;
   inject?: () => Promise<void>;
   /** The config the freshness recheck reads, when it must differ from the pass's. */
   config?: ForemanConfig;
+  codeRabbitAutoResolve?: boolean;
 }) {
   let afterRead = false;
   const calls: string[] = [];
-  const injected: Array<{ id: string; text: string }> = [];
+  const injected: Array<{ id: string; text: string; codeRabbit?: unknown }> = [];
   const client = {
     sessions: async () => {
       calls.push("sessions");
       return opts.sessions(afterRead);
     },
     getConfig: async () => opts.config ?? CFG,
-    // Upstream's CodeRabbit follow-up reads the Shipping config each pass; off here.
-    shippingConfig: async () => ({ codeRabbitAutoResolve: false }),
+    // Upstream's CodeRabbit follow-up reads the Shipping config each pass; off unless a case turns it on.
+    shippingConfig: async () => ({ codeRabbitAutoResolve: opts.codeRabbitAutoResolve ?? false }),
     workflowRuns: async () => {
       calls.push("workflowRuns");
       return opts.workflowRuns?.(afterRead) ?? [];
@@ -139,9 +140,9 @@ function fakeDaemon(opts: {
         afterRead = true;
       }
     },
-    inject: async (id: string, text: string) => {
+    inject: async (id: string, text: string, codeRabbit?: unknown) => {
       calls.push("inject");
-      injected.push({ id, text });
+      injected.push({ id, text, ...(codeRabbit ? { codeRabbit } : {}) });
       await (opts.inject ?? (async () => {}))();
     },
   } as unknown as Client;
@@ -209,6 +210,56 @@ test("a session that comes to need a human, or gains a workflow, during the read
   });
   assert.equal((await runReviewFollowup(owned.client, CFG, LEADER)).size, 0);
   assert.deepEqual(owned.injected, []);
+});
+
+test("a session held only by a spent blocked run gets its findings, with no CodeRabbit claim", async () => {
+  const codeRabbit = {
+    status: "complete" as const,
+    observationId: "obs-1",
+    headSha: "head",
+    observedAt: Date.now(),
+    freshUntil: Date.now() + 600_000,
+    unresolved: 1,
+    error: null,
+    threads: [],
+    pending: 1,
+    delivery: "Waiting for an eligible session",
+  };
+  const withCodeRabbit = (id: string) => parked(id, { inspector: summary({ codeRabbit }) });
+  const spent = [{ status: "blocked", phase: "round_limit", round: 4, maxRepairRounds: 3 }];
+
+  const released = fakeDaemon({
+    sessions: () => [withCodeRabbit("spent")],
+    workflowRuns: () => spent,
+    findings: async () => response([draft()]),
+    codeRabbitAutoResolve: true,
+  });
+  assert.equal((await runReviewFollowup(released.client, CFG, LEADER)).size, 1);
+  assert.equal(released.injected.length, 1);
+  assert.match(released.injected[0]!.text, /The handler dereferences `user` before checking it\./);
+  assert.equal(released.injected[0]!.codeRabbit, undefined, "the route would refuse a claim while the run is open");
+
+  // The same session with no run carries the claim, so the case above is CodeRabbit turned off.
+  const unbound = fakeDaemon({
+    sessions: () => [withCodeRabbit("unbound")],
+    findings: async () => response([draft()]),
+    codeRabbitAutoResolve: true,
+  });
+  assert.equal((await runReviewFollowup(unbound.client, CFG, LEADER)).size, 1);
+  assert.deepEqual(unbound.injected[0]!.codeRabbit, { prKey: KEY, observationId: "obs-1" });
+});
+
+test("a released run that resumes during the read is not typed across", async () => {
+  const fake = fakeDaemon({
+    sessions: () => [parked("resumed")],
+    workflowRuns: (afterRead) => [afterRead
+      ? { status: "waiting_for_new_head", phase: "inspector_findings", round: 4, maxRepairRounds: 6 }
+      : { status: "blocked", phase: "round_limit", round: 4, maxRepairRounds: 3 }],
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(fake.injected, []);
+  assert.deepEqual(fake.calls, ["sessions", "workflowRuns", `findings:${KEY}`, "sessions", "workflowRuns"]);
 });
 
 test("an Inspector round that finishes during the read is held, then relayed exactly once", async () => {

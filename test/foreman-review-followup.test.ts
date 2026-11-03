@@ -9,6 +9,8 @@ import {
   ciFollowup,
   decideReviewFollowup,
   followupPrs,
+  workflowHoldsReviewFollowup,
+  workflowReleasedFollowupOnly,
 } from "../src/server/foreman/review-followup.ts";
 import type {
   FollowupMark,
@@ -25,7 +27,7 @@ import type {
   TaskSummary,
 } from "../src/shared/types.ts";
 import type { TerminalHandle } from "../src/shared/terminal.ts";
-import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES } from "../src/shared/workflow.ts";
+import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "../src/shared/workflow.ts";
 
 // What is at stake: Foreman must re-engage a session whose PR is carrying feedback nobody
 // is acting on - unresolved Inspector comments or a red CI - WITHOUT interrupting live
@@ -447,6 +449,42 @@ test("every non-terminal workflow state retains ownership until the run ends", (
     assert.equal(activeWorkflowOwnsSession([{ status }]), !terminal.has(status), status);
   }
   assert.equal(activeWorkflowOwnsSession([]), false);
+});
+
+test("only a blocked run that the operator or the session must restart releases the follow-through", () => {
+  const run = (status: WorkflowRunStatus, phase: string, round = 2) => ({ status, phase, round, maxRepairRounds: 3 });
+  const cases: Array<[string, ReturnType<typeof run>, boolean]> = [
+    ["running", run("running", "persona_review"), true],
+    ["waiting for PR", run("waiting_for_pr", "pr_handoff"), true],
+    ["waiting for Inspector", run("waiting_for_inspector", "inspector_review"), true],
+    ["waiting for new head", run("waiting_for_new_head", "inspector_findings"), true],
+    ["waiting for session", run("waiting_for_session", "persona_feedback"), true],
+    ["spent round_limit", run("blocked", "round_limit", 4), false],
+    ["round_limit granted more rounds", run("blocked", "round_limit", 3), true],
+    ["unchanged_evidence_exhausted", run("blocked", "unchanged_evidence_exhausted"), false],
+    ["session_disappeared", run("blocked", "session_disappeared"), false],
+    ["check_cleanup_unresolved", run("blocked", "check_cleanup_unresolved"), true],
+    ["an unclassified blocked phase", run("blocked", "a_phase_added_later"), true],
+    ["completed", run("completed", "completed"), false],
+    ["cancelled", run("cancelled", "cancelled"), false],
+    ["failed", run("failed", "failed"), false],
+  ];
+  for (const [label, r, holds] of cases) {
+    assert.equal(workflowHoldsReviewFollowup([r]), holds, label);
+    assert.equal(workflowReleasedFollowupOnly([r]), r.status === "blocked" && !holds, label);
+  }
+  const noPhase = { status: "blocked" } as unknown as ReturnType<typeof run>;
+  assert.equal(workflowHoldsReviewFollowup([noPhase]), true, "a run with no phase");
+  assert.equal(workflowHoldsReviewFollowup([]), false);
+  assert.equal(workflowHoldsReviewFollowup([run("blocked", "session_disappeared"), run("running", "persona_review")]), true);
+  assert.equal(workflowReleasedFollowupOnly([]), false);
+});
+
+test("a session held only by a spent blocked run is asked to read its findings", () => {
+  const runs = [{ status: "blocked" as const, phase: "round_limit", round: 4, maxRepairRounds: 3 }];
+  const session = mkSession({ inspector: inspector({ open: 2, postedOpen: 0, mode: "dry-run" }) });
+  const d = decide({ session, findings: undefined, workflowOwnsSession: workflowHoldsReviewFollowup(runs) });
+  assert.deepEqual(d, { kind: "read-findings", prKey: "owner/repo#7", reason: "2 unresolved finding(s)" });
 });
 
 test("a still-working session is not interrupted", () => {

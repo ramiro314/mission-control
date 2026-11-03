@@ -100,6 +100,8 @@ import {
   advanceFollowupMark,
   decideReviewFollowup,
   followupPrs,
+  workflowHoldsReviewFollowup,
+  workflowReleasedFollowupOnly,
 } from "./review-followup.ts";
 import type { FollowupMark, FollowupPr, ReviewFollowupDecision } from "./review-followup.ts";
 import type { CiStrictness } from "@shared/ci-checks.ts";
@@ -1047,11 +1049,11 @@ export async function runReviewFollowup(
         // this session is driving from one that needs a human.
         bucket: reportBucket(session, sessions),
         mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
-        workflowOwnsSession: activeWorkflowOwnsSession(workflowRuns),
+        workflowOwnsSession: workflowHoldsReviewFollowup(workflowRuns),
         mark: marks.get(pr.prKey) ?? null,
         cfg: {
           trackReviewComments: cfg.trackReviewFeedback,
-          codeRabbitAutoResolve: shipping?.codeRabbitAutoResolve === true,
+          codeRabbitAutoResolve: shipping?.codeRabbitAutoResolve === true && !workflowReleasedFollowupOnly(workflowRuns),
           trackCiFailures: cfg.trackCiFailures,
           ciStrictness: cfg.ciStrictness,
           trackMergeConflicts: cfg.trackMergeConflicts,
@@ -1111,11 +1113,11 @@ export async function runReviewFollowup(
         pr: freshPr,
         bucket: reportBucket(fresh, freshSessions),
         mayActLive: foremanMayActLive(freshCfg, fresh.cwd, fresh.repoRoot),
-        workflowOwnsSession: activeWorkflowOwnsSession(freshWorkflowRuns),
+        workflowOwnsSession: workflowHoldsReviewFollowup(freshWorkflowRuns),
         mark: freshMark,
         cfg: {
           trackReviewComments: freshCfg.trackReviewFeedback,
-          codeRabbitAutoResolve: freshShipping?.codeRabbitAutoResolve === true,
+          codeRabbitAutoResolve: freshShipping?.codeRabbitAutoResolve === true && !workflowReleasedFollowupOnly(freshWorkflowRuns),
           trackCiFailures: freshCfg.trackCiFailures,
           ciStrictness: freshCfg.ciStrictness,
           trackMergeConflicts: freshCfg.trackMergeConflicts,
