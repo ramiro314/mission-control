@@ -25,7 +25,7 @@ const { HistoryService } = await import("../src/server/history/service.ts");
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-import type { HistoryMessagesPage, HistorySessionDetail, HistoryToolResult } from "../src/shared/history.ts";
+import { HISTORY_TOOL_INPUT_CAP, HISTORY_TOOL_RESULT_CAP, type HistoryMessagesPage, type HistorySessionDetail, type HistoryToolResult } from "../src/shared/history.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
@@ -136,6 +136,44 @@ test("a tool call's result is read inline, or from the sidecar file its own reco
   f.done();
 });
 
+test("a result past the 1 MB cap is cut at the cap and says so, inline and from a sidecar; one at the cap is whole", async () => {
+  const f = await fixture();
+  const id = sessionId();
+  const over = "a".repeat(HISTORY_TOOL_RESULT_CAP + 1);
+  const exact = "b".repeat(HISTORY_TOOL_RESULT_CAP);
+  writeSession(f.projects, id, [
+    toolUse(id, 1, "toolu_inline_over", { command: "cat big" }),
+    toolResult(id, 2, "toolu_inline_over", over),
+    toolUse(id, 3, "toolu_inline_exact", { command: "cat cap" }),
+    toolResult(id, 4, "toolu_inline_exact", exact),
+    toolUse(id, 5, "toolu_saved_over", { command: "cat big" }),
+    toolResult(id, 6, "toolu_saved_over", persisted(f.projects, id, "toolu_saved_over.txt")),
+    toolUse(id, 7, "toolu_saved_exact", { command: "cat cap" }),
+    toolResult(id, 8, "toolu_saved_exact", persisted(f.projects, id, "toolu_saved_exact.txt")),
+  ]);
+  const sidecars = join(sessionDir(f.projects, id), "tool-results");
+  mkdirSync(sidecars, { recursive: true });
+  writeFileSync(join(sidecars, "toolu_saved_over.txt"), over);
+  writeFileSync(join(sidecars, "toolu_saved_exact.txt"), exact);
+  await f.history.reconciler.trigger();
+
+  const read = async (toolUseId: string) =>
+    await (await f.get(`/api/history/sessions/claude/${id}/tool-results/${toolUseId}`)).json() as HistoryToolResult;
+  for (const [toolUseId, source] of [["toolu_inline_over", "inline"], ["toolu_saved_over", "sidecar"]] as const) {
+    const result = await read(toolUseId);
+    assert.equal(result.source, source, toolUseId);
+    assert.equal(result.truncated, true, toolUseId);
+    assert.equal(result.text.length, HISTORY_TOOL_RESULT_CAP, `${toolUseId} is cut at exactly the cap`);
+  }
+  for (const [toolUseId, source] of [["toolu_inline_exact", "inline"], ["toolu_saved_exact", "sidecar"]] as const) {
+    const result = await read(toolUseId);
+    assert.equal(result.source, source, toolUseId);
+    assert.equal(result.truncated, false, toolUseId);
+    assert.equal(result.text, exact, `${toolUseId} is whole`);
+  }
+  f.done();
+});
+
 test("a sidecar no transcript record names is not reachable, and a named one that is missing is unavailable", async () => {
   const f = await fixture();
   const id = sessionId();
@@ -165,13 +203,33 @@ test("a sidecar no transcript record names is not reachable, and a named one tha
 test("an id outside its format, or carrying .. or an encoded separator, is a 404", async () => {
   const f = await fixture();
   const id = sessionId();
-  writeSession(f.projects, id, [toolUse(id, 1, "toolu_ok", { command: "ls" }), toolResult(id, 2, "toolu_ok", "ok")]);
+  const longest = "t".repeat(128);
+  const tooLong = "t".repeat(129);
+  writeSession(f.projects, id, [
+    toolUse(id, 1, "toolu_ok", { command: "ls" }),
+    toolResult(id, 2, "toolu_ok", "ok"),
+    // Recorded with a result, so only the format check can refuse these ids.
+    toolUse(id, 3, "toolu.ok", { command: "ls" }),
+    toolResult(id, 4, "toolu.ok", "recorded but out of format"),
+    toolUse(id, 5, tooLong, { command: "ls" }),
+    toolResult(id, 6, tooLong, "recorded but out of format"),
+    toolUse(id, 7, longest, { command: "ls" }),
+    toolResult(id, 8, longest, "the longest accepted id"),
+  ]);
   const subagents = join(sessionDir(f.projects, id), "subagents");
   mkdirSync(subagents, { recursive: true });
   writeLines(join(subagents, "agent-0123abcd.jsonl"), [{ ...base(id), isSidechain: true, timestamp: at(1), uuid: "s-1", type: "user", message: { role: "user", content: "look" } }]);
   await f.history.reconciler.trigger();
   assert.equal((await f.get(`/api/history/sessions/claude/${id}/tool-results/toolu_ok`)).status, 200);
   assert.equal((await f.get(`/api/history/sessions/claude/${id}/subagents/0123abcd/messages`)).status, 200);
+  const accepted = await f.get(`/api/history/sessions/claude/${id}/tool-results/${longest}`);
+  assert.equal(accepted.status, 200, "128 characters is inside the format");
+  assert.equal(((await accepted.json()) as HistoryToolResult).text, "the longest accepted id");
+  for (const recorded of ["toolu.ok", tooLong]) {
+    const res = await f.get(`/api/history/sessions/claude/${id}/tool-results/${recorded}`);
+    assert.equal(res.status, 404, `${recorded.slice(0, 12)}: recorded, but refused by its format`);
+    assert.doesNotMatch(await res.text(), /recorded but out of format/);
+  }
 
   // A bare `..` (or `%2e%2e`) segment in a URL is resolved away before any route sees it, so it
   // is asked of the service directly; every other form reaches the route as the parameter.
@@ -318,6 +376,7 @@ test("History reads tool input past the live cap, with each call's id, and marks
     toolUse(id, 1, "toolu_long", { command: long }),
     { ...base(id), timestamp: at(2), uuid: `c-${id}`, type: "system", subtype: "compact_boundary", compactMetadata: { trigger: "auto", preTokens: 167_000 } },
     { ...base(id), timestamp: at(3), uuid: `s-${id}`, type: "user", isCompactSummary: true, message: { role: "user", content: "Summary of the earlier work." } },
+    toolUse(id, 4, "toolu_huge", { command: "y".repeat(HISTORY_TOOL_INPUT_CAP + 1_000) }),
   ];
   writeSession(f.projects, id, records);
   await f.history.reconciler.trigger();
@@ -326,6 +385,10 @@ test("History reads tool input past the live cap, with each call's id, and marks
   const call = page.messages.find((m) => m.tools.length > 0)!.tools[0]!;
   assert.equal(call.id, "toolu_long");
   assert.equal(JSON.parse(call.input!).command, long, "the whole input");
+  const huge = page.messages.find((m) => m.tools[0]?.id === "toolu_huge")!.tools[0]!;
+  assert.equal(huge.input!.length, HISTORY_TOOL_INPUT_CAP + 1, "input past 256 KB is cut at the cap");
+  assert.ok(huge.input!.endsWith("…"));
+  assert.ok(huge.input!.startsWith('{"command":"yyy'));
   const boundary = page.messages.find((m) => m.presentation?.kind === "compaction");
   assert.deepEqual(boundary?.presentation, { kind: "compaction", trigger: "auto", preTokens: 167_000 });
   const summary = page.messages.find((m) => m.presentation?.kind === "compaction_summary");
