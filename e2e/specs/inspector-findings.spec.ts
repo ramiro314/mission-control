@@ -50,6 +50,8 @@ interface SeedPr {
   number: number;
   posture: "live" | "dry-run" | null;
   state?: "open" | "closed";
+  /** GitHub's state as of the last poll. A PR merged by hand is `MERGED` with no `merged_at`. */
+  observedState?: "OPEN" | "CLOSED" | "MERGED" | null;
   round?: number;
   findings: SeedFinding[];
 }
@@ -64,9 +66,9 @@ function seedLedger(daemon: DaemonHandle, prs: SeedPr[]): void {
         `INSERT INTO inspector_prs
            (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
             head_sha, review_posture, round, last_reviewed_at, fail_count, merge_block,
-            adopted_at, updated_at)
+            observed_state, adopted_at, updated_at)
          VALUES (?, ?, 'owner', 'repo', ?, '/repo', '/repo', NULL, 'hook', ?,
-                 'head-1', ?, ?, ?, 0, ?, ?, ?)`,
+                 'head-1', ?, ?, ?, 0, ?, ?, ?, ?)`,
       ).run(
         key,
         `https://github.example/owner/repo/pull/${pr.number}`,
@@ -76,6 +78,7 @@ function seedLedger(daemon: DaemonHandle, prs: SeedPr[]): void {
         pr.round ?? 3,
         now,
         open ? "findings" : null,
+        pr.observedState ?? null,
         now,
         now,
       );
@@ -254,6 +257,71 @@ test("the Findings control is on every row with a finding, and a dry run says so
   const closed = findingsDialog(dashboard, 604);
   await expect(closed.locator(".inspector-findings-pr")).toContainText("closed");
   await expect(closed.locator("tr.wf-run-finding-row")).toHaveCount(1);
+});
+
+const RECORD_LINE = "kept as a record and will not be reviewed again";
+
+test("a closed pull request's leftover findings read as a record of how it ended", async ({
+  dashboard,
+  daemon,
+}) => {
+  const draft = SIX[2]!;
+  seedLedger(daemon, [
+    // Merged by hand: GitHub says MERGED, and YOLO mode never wrote `merged_at`.
+    {
+      number: 611,
+      posture: "dry-run",
+      state: "closed",
+      observedState: "MERGED",
+      findings: [{ ...draft, id: "merged-a" }, { ...draft, id: "merged-b", title: "A second draft" }],
+    },
+    {
+      number: 612,
+      posture: "dry-run",
+      state: "closed",
+      observedState: "CLOSED",
+      findings: [{ ...draft, id: "closed-a" }],
+    },
+    { number: 613, posture: "dry-run", observedState: "OPEN", findings: [{ ...draft, id: "open-a" }] },
+  ]);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/inspector`);
+
+  const ledgerRow = (number: number): Locator =>
+    dashboard.locator(".sc-row").filter({ hasText: `repo#${number}` });
+  await expect(ledgerRow(611)).toContainText("2 unresolved at merge");
+  await expect(ledgerRow(612)).toContainText("1 unresolved at close");
+  await expect(ledgerRow(613)).toContainText("1 finding");
+  await expect(ledgerRow(613)).not.toContainText("unresolved at");
+  await shoot(dashboard, "closed-pr-rows", dashboard.locator(".sc-table-inspector"));
+
+  await findingsButton(dashboard, 611).click();
+  const merged = findingsDialog(dashboard, 611);
+  await expect(merged.locator(".inspector-findings-pr")).toContainText("merged");
+  await expect(merged.getByText(
+    `This pull request merged with 2 findings unresolved. They are ${RECORD_LINE}.`,
+  )).toBeVisible();
+  // Rows keep their own posted label, and the dry-run line still applies beside the record.
+  await expect(merged.locator("tr.wf-run-finding-row")).toHaveCount(2);
+  await expect(merged.getByText("Dry run: nothing on this pull request was posted")).toBeVisible();
+  await expectContentClearsBorder(merged);
+  await shoot(dashboard, "findings-modal-merged-record", merged);
+  await dashboard.keyboard.press("Escape");
+  await expect(merged).toHaveCount(0);
+
+  await findingsButton(dashboard, 612).click();
+  const closed = findingsDialog(dashboard, 612);
+  await expect(closed.locator(".inspector-findings-pr")).toContainText("closed");
+  await expect(closed.getByText(
+    `This pull request closed with 1 finding unresolved. It is ${RECORD_LINE}.`,
+  )).toBeVisible();
+  await dashboard.keyboard.press("Escape");
+  await expect(closed).toHaveCount(0);
+
+  await findingsButton(dashboard, 613).click();
+  const open = findingsDialog(dashboard, 613);
+  await expect(open.locator(".inspector-findings-pr")).toContainText("open");
+  await expect(open.locator("tr.wf-run-finding-row")).toHaveCount(1);
+  await expect(open.getByText(RECORD_LINE, { exact: false })).toHaveCount(0);
 });
 
 // A draft GitHub refused after a switch to live. Below the cap it still reads Not posted, and

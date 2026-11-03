@@ -3,6 +3,7 @@ import type { InspectorInspection } from "@shared/types.ts";
 import type { InspectorState } from "../useInspector.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { InspectorFindingsModal } from "./InspectorFindingsModal.tsx";
+import { inspectorPrClosedAs } from "../lib/pr-standing.ts";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import {
@@ -58,8 +59,8 @@ export function ago(then: number | null, now: number): string {
  *
  * Deliberately NOT the same question as `inspectionSummary`, which is what the row SAYS
  * about itself. A closed pull request that was reviewed with three findings still reports
- * "3 findings" (that is the record of what the Inspector said about something that has
- * since landed) while belonging in `retired`, because it is out of the sweep for good and
+ * "3 unresolved at merge" (that is the record of what the Inspector said about something
+ * that has since landed) while belonging in `retired`, because it is out of the sweep for good and
  * counting it as work in hand is the bug this feature already shipped once. One row, two
  * honest answers; conflating them is how the list became a backlog nobody could act on.
  */
@@ -90,14 +91,17 @@ export function inspectionBucket(row: InspectorInspection): InspectionBucket {
  * PRs said "queued / not yet reviewed" on this panel, which is not a slow queue being
  * reported honestly, it is a finished one being reported wrongly.
  *
- * A retired row that WAS reviewed keeps its findings instead: that is the record of what
- * the Inspector said about a PR that has since landed, and it is the more useful fact.
+ * A retired row that WAS reviewed keeps its findings instead, worded as left at merge or
+ * close: that is the record of what the Inspector said about a PR that has since landed,
+ * and a bare "3 findings" there reads as work nobody finished.
  */
 export function inspectionSummary(row: InspectorInspection): string {
   if (row.lastError) return "failed";
-  if (row.state === "closed" && row.round === 0) return row.mergedAt ? "merged" : "closed";
+  const closedAs = inspectorPrClosedAs(row);
+  if (closedAs && row.round === 0) return closedAs;
   if (row.round === 0) return "queued";
   if (row.openFindings === 0) return "clean";
+  if (closedAs) return `${row.openFindings} unresolved at ${closedAs === "merged" ? "merge" : "close"}`;
   return `${row.openFindings} finding${row.openFindings === 1 ? "" : "s"}`;
 }
 

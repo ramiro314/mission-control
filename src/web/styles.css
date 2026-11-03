@@ -23840,6 +23840,9 @@ button.sc-row:focus-visible {
 .inspector-findings-mode {
   color: var(--attention);
 }
+.inspector-findings-record {
+  color: var(--muted);
+}
 .inspector-findings-body {
   padding: 0 var(--modal-inset, 18px) 14px;
   max-height: 64vh;
