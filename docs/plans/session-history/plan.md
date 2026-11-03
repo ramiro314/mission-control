@@ -213,11 +213,13 @@ only the first prompt, capped, because their prompts are large generated diffs.
 **Classification.** The rules are evaluated in this order, and the first match wins:
 
 1. `interactive` when `entrypoint` is `cli`.
-2. `one_shot` when the session has no tools, or only `StructuredOutput`.
-3. `reviewer` when it has at least one of `Read`, `Glob` or `Grep`, and every tool is in
+2. `unclassified` when the session has no `prompt_snapshot`. Rules 3 to 5 read the snapshot's
+   tool list, and a missing snapshot is never read as an empty tool set.
+3. `one_shot` when the snapshot lists no tools, or only `StructuredOutput`.
+4. `reviewer` when it lists at least one of `Read`, `Glob` or `Grep`, and every tool is in
    `{Read, Glob, Grep, StructuredOutput}`.
-4. `sdk` when `cliPrefix` is the Claude Code preset and the tool set is not read-only.
-5. `unclassified` otherwise, including a session with no `prompt_snapshot`.
+5. `sdk` when `cliPrefix` is the Claude Code preset and the tool set is not read-only.
+6. `unclassified` otherwise.
 
 Because `one_shot` is tested before `reviewer`, an empty or `StructuredOutput`-only tool set is
 never a reviewer. A session is a **conversation** when its kind is
@@ -236,8 +238,18 @@ survive. The conversation, launch context and Resume do not. Rows are never dele
 plan.
 
 **Duplicates.** A History Resume into an unrelated directory copies a transcript, so two files
-can share a `sessionId`. The first path indexed stays canonical; a later file with the same id
-in another project directory is recorded as a copy and does not create a second row.
+can share a `sessionId`. The canonical file is chosen by a stable rule, never by scan order, so
+a fresh or rebuilt catalog picks the same one:
+
+1. A file recorded as a History copy (`history_resume_launches.copy_path`) is never canonical.
+2. Of the rest, the canonical file is the one whose project folder is the encoding of the
+   session's first recorded `cwd`.
+3. If no file qualifies, the one with the earliest first-record timestamp wins, ties broken by
+   path.
+
+Every other file with that id is recorded as a copy and does not create a second row. When the
+canonical file disappears and a copy remains, the row is marked gone rather than repointed at
+the copy.
 
 ### Reconciler
 
@@ -422,22 +434,30 @@ flowchart TD
 - **Launch record.** Each Resume writes one row to a new `history_resume_launches` table
   before the terminal starts: `launch_id`, `source_session_id`, `expected_agent_session_id`
   (the source id, or the minted fork id), `cwd`, `slot_id` and the worktree lease key (when a
-  slot is used), `launched_at`, `mc_session_id` (empty until bound) and `state` (`pending`,
+  slot is used), `copy_path` (the transcript copy a directory target wrote, if any),
+  `launched_at`, `mc_session_id` (empty until bound) and `state` (`pending`, `expired`,
   `bound`, `ended` or `released`). The slot's lease owner is
   `{kind: "manual", key: historyResumeOwnerKey(launch_id)}`, so the card names its owner.
   `expected_agent_session_id` is the correlation key.
 - **Binding the discovered session.** When the Registry first holds a session whose
-  `agentSessionId` equals a pending launch's `expected_agent_session_id`, the launch records
-  that session's `mc_session_id` and becomes `bound`. A launch still unbound after a grace
-  window (two discovery sweeps past the launch timeout) is treated as ended, because its
-  terminal never produced the agent.
+  `agentSessionId` equals the `expected_agent_session_id` of a `pending` or `expired` launch,
+  the launch records that session's `mc_session_id` and becomes `bound`.
+- **An agent that has not appeared yet.** A launch still unbound after a grace window (two
+  discovery sweeps past the launch timeout) becomes `expired`. It is not treated as ended: a
+  slow terminal, a cold start or an auth prompt can still produce the agent. An expired launch
+  **keeps its lease**, so the pool can never hand out or reset the slot under a late agent. Its
+  slot card says "Held for a resumed session that has not appeared" and offers Return, which
+  the operator uses when the terminal really failed. If the agent turns up after expiry, it
+  binds as above and is then released like any bound launch.
 - **Slot release.** When `session_remove` arrives for a bound launch's `mc_session_id`, the
   launch is `ended`. A clean slot is handed back to the pool and the launch becomes `released`.
   A dirty slot stays leased, with its card saying "Kept: uncommitted changes from a resumed
-  session", until the operator Returns it. The **startup twin** reads every `pending` and
-  `bound` launch once the first discovery sweep after startup has finished. A launch with no
-  live Registry session carrying its `expected_agent_session_id` has ended while the daemon was
-  down, and goes through the same release step.
+  session", until the operator Returns it. Only a `bound` launch is ever released
+  automatically. The **startup twin** runs once the first discovery sweep after startup has
+  finished. A `bound` launch with no live Registry session carrying its
+  `expected_agent_session_id` ended while the daemon was down, and goes through the same
+  release step. A `pending` launch with no live session becomes `expired` and keeps its lease,
+  exactly as above.
 - **Refusals** are explicit: the transcript is gone, the session is live, the directory does not
   exist, the slot is no longer idle, or the agent host is unavailable.
 
@@ -501,11 +521,14 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
   `instructions` reading "not recorded".
 - Classification rules in their stated order, including the boundaries: no tools and
   `StructuredOutput` only are `one_shot`, not `reviewer`; `Read` plus `StructuredOutput` is
-  `reviewer`; and a task-bound session counts as a conversation.
+  `reviewer`; a non-`cli` session with no `prompt_snapshot` is `unclassified` and appears in
+  the default list; and a task-bound session counts as a conversation.
 - Repository resolution for pool paths with a deleted slot, `worktrees/<taskId>`, plain
   checkouts and unknown paths.
 - Reconciler: newest-first batched backfill with progress, gone marking only after a complete
-  walk, duplicate ids treated as copies, one coalesced `history_changed` per pass.
+  walk, one coalesced `history_changed` per pass, and duplicate ids: a rebuilt catalog that
+  scans the History copy first still picks the original as canonical, and a gone canonical file
+  is not repointed at its copy.
 - Routes: id validation and containment, filters and paging, Mission Control join present and
   absent, transcript-gone detail, launch-context sections. A bound id with no catalog row
   returns the Mission Control-only record; an id known to neither returns 404.
@@ -518,8 +541,9 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
 - Launch correlation: a launch binds to the Registry session with its
   `expected_agent_session_id`; the fork path passes the minted id with `--session-id`, or uses
   the `forkSession` fallback's returned id, and writes `resumed_from` at launch; an unbound
-  launch ends after its grace window; and the startup twin releases a launch whose session
-  ended while the daemon was down.
+  launch expires after its grace window and keeps its lease; an agent that appears after expiry
+  still binds and is released when it ends; and the startup twin releases a bound launch whose
+  session ended while the daemon was down, while a pending one only expires.
 - `Task.agentSessionId` from current and historical bindings.
 
 Playwright specs in `e2e/` against a fake `~/.claude/projects` in the redirected test home
@@ -584,7 +608,8 @@ Definition of done as in `AGENTS.md`: typecheck, lint, build and smoke, and the 
    the stated rule, and a fork's id is known before launch.
 9. A slot taken for Resume returns to the pool when the session ends clean and stays leased
    when dirty, including when the session ended while the daemon was down. The link is the
-   launch record's `expected_agent_session_id`.
+   launch record's `expected_agent_session_id`. A launch whose agent never appeared keeps its
+   lease until it binds or the operator Returns it.
 10. A Recent outcomes task title links to its session in History when one is bound.
 11. The list updates within seconds of a new session, and the first backfill shows sessions
     progressively.
@@ -658,6 +683,16 @@ The Plan Feasibility Judge asked for five clarifications. None changes a human d
 - e2e cases for the retention header, backfill progress, Live badge, dirty-slot card, date
   range and outcome filters.
 - The order of the classification rules.
+
+### Review repairs (GitHub Inspector on #725)
+
+Three findings, none of which changes a human decision above:
+
+- An unbound launch past its grace window expires and keeps its lease instead of being
+  released, and a late agent still binds (Resume).
+- Classification reads tool lists only from a present `prompt_snapshot` (Catalog).
+- The canonical file for a duplicated session id is chosen by a stable rule, not scan order
+  (Catalog).
 
 ### Assumptions stated during the interview
 
