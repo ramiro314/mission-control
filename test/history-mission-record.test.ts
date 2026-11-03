@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { HistorySessionDetail } from "../src/shared/history.ts";
+import type { HistoryMissionRecord, HistorySessionDetail } from "../src/shared/history.ts";
 import { HistoryMissionOnlyRecord } from "../src/web/components/history/HistorySessionView.tsx";
 
 /**
@@ -11,12 +11,13 @@ import { HistoryMissionOnlyRecord } from "../src/web/components/history/HistoryS
  * dashboard holds that task.
  */
 
-function detail(over: Partial<HistorySessionDetail> = {}): HistorySessionDetail {
+function detail(over: Partial<HistoryMissionRecord> = {}): Extract<HistorySessionDetail, { catalog: null }> {
   return {
-    agent: "claude",
-    agentSessionId: "00000000-0000-4000-8000-000000000001",
     catalog: null,
     mission: {
+      agent: "claude",
+      agentSessionId: "00000000-0000-4000-8000-000000000001",
+      liveSessionId: null,
       task: {
         id: "task-1",
         title: "Deleted before indexing",
@@ -33,13 +34,12 @@ function detail(over: Partial<HistorySessionDetail> = {}): HistorySessionDetail 
       repoRoot: "/repos/app",
       missionSessionId: null,
       ledgerCostUsd: 3.1,
+      ...over,
     },
-    liveSessionId: null,
-    ...over,
   };
 }
 
-function render(value: HistorySessionDetail, canOpenTask: boolean): string {
+function render(value: Extract<HistorySessionDetail, { catalog: null }>, canOpenTask: boolean): string {
   return renderToStaticMarkup(createElement(HistoryMissionOnlyRecord, {
     detail: value,
     onOpenSession: () => {},
@@ -50,6 +50,8 @@ function render(value: HistorySessionDetail, canOpenTask: boolean): string {
 
 test("a record with no transcript says it was removed before Mission Control indexed it", () => {
   const html = render(detail(), true);
+  assert.match(html, /<h2>Deleted before indexing<\/h2>/, "titled by its task, through historyTitle");
+  assert.match(html, /\$3\.10/, "its cost is the ledger's, through historyCost");
   assert.match(html, /removed before Mission Control indexed it/);
   assert.doesNotMatch(html, /has not indexed its transcript yet/);
   assert.doesNotMatch(html, /Open in Fleet/);

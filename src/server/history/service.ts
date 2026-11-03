@@ -118,14 +118,11 @@ export class HistoryService {
     const agentSessionId = id.toLowerCase();
     const entry = this.store.entry(reader.agent, agentSessionId);
     const liveSessionId = live(reader.agent, agentSessionId);
-    if (entry) {
-      const [catalog] = this.store.withMissions([{ ...entry.summary, liveSessionId }]);
-      return { agent: reader.agent, agentSessionId, catalog: catalog!, mission: catalog!.mission, liveSessionId };
-    }
+    if (entry) return { catalog: this.store.withMissions([{ ...entry.summary, liveSessionId }])[0]! };
     const mission = this.store.missions(reader.agent, [agentSessionId]).get(agentSessionId) ?? null;
     // A ledger row alone does not name a session: its note key is not always an agent session id.
     if (!mission || (mission.task === null && mission.missionSessionId === null)) return null;
-    return { agent: reader.agent, agentSessionId, catalog: null, mission, liveSessionId };
+    return { catalog: null, mission: { ...mission, agent: reader.agent, agentSessionId, liveSessionId } };
   }
 
   /**

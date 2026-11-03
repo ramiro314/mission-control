@@ -289,6 +289,19 @@ export function historyPrLabel(url: string): string {
   return number ? `PR #${number}` : "Pull request";
 }
 
+/**
+ * A session's cost: the transcript's own, else Mission Control's ledger. The one place the
+ * fallback is decided, for a catalog row and for a record the catalog never indexed.
+ */
+export function historyCost(
+  transcriptCostUsd: number | null,
+  mission: Pick<HistoryMission, "ledgerCostUsd"> | null,
+): { costUsd: number | null; costSource: HistoryCostSource | null } {
+  if (transcriptCostUsd !== null) return { costUsd: transcriptCostUsd, costSource: "transcript" };
+  const ledger = mission?.ledgerCostUsd ?? null;
+  return ledger !== null ? { costUsd: ledger, costSource: "ledger" } : { costUsd: null, costSource: null };
+}
+
 /** The pull request a row shows: Mission Control's, else the last one its transcript recorded. */
 export function historyPrUrl(row: Pick<HistorySessionSummary, "prUrls" | "mission">): string | null {
   return row.mission?.prUrl ?? row.prUrls.at(-1) ?? null;
@@ -305,19 +318,19 @@ export function isHistorySessionId(raw: string): boolean {
 }
 
 /**
- * `GET /api/history/sessions/:agent/:id`: one session, whether it is running now, and what
- * Mission Control knows about it.
- *
- * `catalog` is null when the catalog has no row but Mission Control names the id: a transcript
- * deleted before it was ever indexed. The record is then `mission` alone, and there is no
- * conversation to read.
+ * `GET /api/history/sessions/:agent/:id`: one session. The catalog row, which carries its live
+ * status and what Mission Control knows about it, exactly as the list serves it. Or, when the
+ * catalog has no row but Mission Control names the id (a transcript deleted before it was ever
+ * indexed), Mission Control's record alone, with no conversation to read.
  */
-export interface HistorySessionDetail {
+export type HistorySessionDetail =
+  | { catalog: HistorySessionSummary }
+  | { catalog: null; mission: HistoryMissionRecord };
+
+/** A session the catalog never indexed, as Mission Control alone knows it. */
+export interface HistoryMissionRecord extends HistoryMission {
   agent: AgentType;
   agentSessionId: string;
-  catalog: HistorySessionSummary | null;
-  /** Also on `catalog.mission`; the record's only source when `catalog` is null. */
-  mission: HistoryMission | null;
   liveSessionId: string | null;
 }
 

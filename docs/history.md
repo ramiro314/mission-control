@@ -171,7 +171,9 @@ a complete record without it. The session's agent session id joins, in `HistoryS
   status, outcome, outcome URL, workflow, labels, repository). A binding joins only a session
   of its task's own agent.
 - `session_agent_bindings`, for the Mission Control session that ran it.
-- `usage_ledger` by note key, session spend only, for the cost fallback.
+- `usage_ledger` by note key, priced by `sessionCostsFor`, the same rule a card's cost uses, for
+  the cost fallback (`historyCost` in `src/shared/history.ts` decides it, for a row and for a
+  record the catalog never indexed).
 
 ## API
 
@@ -192,7 +194,7 @@ path always comes from the catalog.
 | Route | Returns |
 |---|---|
 | `GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent&link&outcome&pr` | The list, described above. |
-| `GET /api/history/sessions/:agent/:id` | `{agent, agentSessionId, catalog, mission, liveSessionId}`: the catalog row and what Mission Control knows about it. With no catalog row, `catalog` is null and the record is `mission` alone, when a task binding or a Mission Control session names the id. 404 for an agent with no reader, a non-UUID id, or an id neither the catalog nor Mission Control knows; a ledger row alone names nothing. |
+| `GET /api/history/sessions/:agent/:id` | `{catalog}`: the catalog row exactly as the list serves it, with its live status and Mission Control's join. With no catalog row, `{catalog: null, mission}`, when a task binding or a Mission Control session names the id: Mission Control's record alone, with the session's `agent`, `agentSessionId` and `liveSessionId`. 404 for an agent with no reader, a non-UUID id, or an id neither the catalog nor Mission Control knows; a ledger row alone names nothing. |
 | `GET /api/history/sessions/:agent/:id/messages?cursor` | `{messages, nextCursor}`: a window of turns read forward from the byte offset `cursor` (the top when absent), through the same path-based window reads a live session uses. A window is at least 100 turns and 512 KB. 410 when the transcript file is gone (missing on disk, whether or not a walk has marked it yet); 500 naming the reason (`EACCES`, `ELOOP`, not a regular file) when it is there but cannot be read, so it is never shown as removed, empty or finished; 404 as above, or when the cataloged path does not resolve, through symlinks, under one of its harness's roots. A malformed cursor is refused with 400. |
 
 Every row carries `liveSessionId`, the Registry session running that conversation now, and

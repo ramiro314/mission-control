@@ -22,7 +22,7 @@ const { HistoryService } = await import("../src/server/history/service.ts");
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-import type { HistoryPage, HistorySessionDetail } from "../src/shared/history.ts";
+import type { HistoryMissionRecord, HistoryPage, HistorySessionDetail, HistorySessionSummary } from "../src/shared/history.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
@@ -62,6 +62,19 @@ function writeSession(
   const dir = join(projects, "-work");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${id}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+}
+
+/** The detail's catalog row, failing when the route answered with a Mission Control-only record. */
+function catalogOf(detail: HistorySessionDetail): HistorySessionSummary {
+  assert.ok(detail.catalog, "the detail carries a catalog row");
+  return detail.catalog;
+}
+
+/** The detail's Mission Control-only record, failing when the route answered with a catalog row. */
+function missionOnly(detail: HistorySessionDetail): HistoryMissionRecord {
+  assert.equal(detail.catalog, null, "the catalog has no row for this id");
+  assert.ok(detail.catalog === null);
+  return detail.mission;
 }
 
 let taskOrdinal = 0;
@@ -168,13 +181,12 @@ test("a bound session carries its task, outcome and PR; an unbound one is comple
   assert.equal(plain?.costUsd, 1);
   assert.equal(plain?.firstPrompt, "just chatting", "a record with no Mission Control data is still complete");
 
-  const detail = await (await f.get(`/api/history/sessions/claude/${bound}`)).json() as HistorySessionDetail;
-  assert.equal(detail.catalog?.agentSessionId, bound);
-  assert.equal(detail.mission?.task?.title, "Fix the login retry");
-  assert.deepEqual(detail.catalog?.mission, detail.mission);
-  const plainDetail = await (await f.get(`/api/history/sessions/claude/${unbound}`)).json() as HistorySessionDetail;
+  const detail = catalogOf(await (await f.get(`/api/history/sessions/claude/${bound}`)).json() as HistorySessionDetail);
+  assert.deepEqual(detail, row, "the detail serves the row exactly as the list does");
+  assert.deepEqual(Object.keys(await (await f.get(`/api/history/sessions/claude/${bound}`)).json() as object), ["catalog"]);
+  const plainDetail = catalogOf(await (await f.get(`/api/history/sessions/claude/${unbound}`)).json() as HistorySessionDetail);
   assert.equal(plainDetail.mission, null);
-  assert.equal(plainDetail.catalog?.firstPrompt, "just chatting");
+  assert.equal(plainDetail.firstPrompt, "just chatting");
   f.done();
 });
 
@@ -317,24 +329,23 @@ test("a bound id with no catalog row returns the Mission Control-only record, wh
 
   const res = await f.get(`/api/history/sessions/claude/${removed}`);
   assert.equal(res.status, 200);
-  const detail = await res.json() as HistorySessionDetail;
-  assert.equal(detail.catalog, null);
+  const detail = missionOnly(await res.json() as HistorySessionDetail);
   assert.equal(detail.agent, "claude");
   assert.equal(detail.agentSessionId, removed);
-  assert.equal(detail.mission?.task?.id, taskId);
-  assert.equal(detail.mission?.task?.title, "Deleted before indexing");
-  assert.equal(detail.mission?.task?.kind, "ship");
-  assert.equal(detail.mission?.task?.outcome, "merged");
-  assert.equal(detail.mission?.prUrl, "https://github.com/o/r/pull/4");
-  assert.equal(detail.mission?.branch, "bound-branch");
-  assert.equal(detail.mission?.repoRoot, "/repos/app");
-  assert.equal(detail.mission?.ledgerCostUsd, 4.5);
+  assert.equal(detail.liveSessionId, null);
+  assert.equal(detail.task?.id, taskId);
+  assert.equal(detail.task?.title, "Deleted before indexing");
+  assert.equal(detail.task?.kind, "ship");
+  assert.equal(detail.task?.outcome, "merged");
+  assert.equal(detail.prUrl, "https://github.com/o/r/pull/4");
+  assert.equal(detail.branch, "bound-branch");
+  assert.equal(detail.repoRoot, "/repos/app");
+  assert.equal(detail.ledgerCostUsd, 4.5);
   assert.equal((await f.get(`/api/history/sessions/claude/${removed.toUpperCase()}`)).status, 200, "a UUID's case does not matter");
 
-  const sessionOnly = await (await f.get(`/api/history/sessions/claude/${ranOnly}`)).json() as HistorySessionDetail;
-  assert.equal(sessionOnly.catalog, null);
-  assert.equal(sessionOnly.mission?.task, null);
-  assert.equal(sessionOnly.mission?.missionSessionId, "mc-only");
+  const sessionOnly = missionOnly(await (await f.get(`/api/history/sessions/claude/${ranOnly}`)).json() as HistorySessionDetail);
+  assert.equal(sessionOnly.task, null);
+  assert.equal(sessionOnly.missionSessionId, "mc-only");
 
   // Nothing to read: the conversation of a record with no catalog row is unknown to History.
   assert.equal((await f.get(`/api/history/sessions/claude/${removed}/messages`)).status, 404);
@@ -356,9 +367,8 @@ test("a running session the catalog has not indexed yet returns the Mission Cont
   await f.history.reconciler.trigger();
   registry.registerSdkSession({ id: "sdk:history-unindexed", agent: "claude", name: "running", cwd: "/work", agentSessionId: id });
 
-  const detail = await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail;
-  assert.equal(detail.catalog, null);
-  assert.equal(detail.mission?.task?.title, "Running, not indexed yet");
+  const detail = missionOnly(await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail);
+  assert.equal(detail.task?.title, "Running, not indexed yet");
   assert.equal(detail.liveSessionId, "sdk:history-unindexed");
   f.done();
 });

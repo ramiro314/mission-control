@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
   encodeHistoryCursor,
+  historyCost,
   type HistoryFacets,
   type HistoryLinkFilter,
   type HistoryMission,
@@ -13,7 +14,7 @@ import {
   type HistoryTranscriptState,
 } from "@shared/history.ts";
 import type { AgentType } from "@shared/types.ts";
-import { openDb } from "../db.ts";
+import { openDb, sessionCostsFor } from "../db.ts";
 import type { HistoryFingerprint, HistoryParsePoint, HistorySummary } from "../harness/types.ts";
 import { historyFieldsSegment } from "./search.ts";
 
@@ -184,7 +185,6 @@ function toSummary(row: Row): HistorySessionSummary {
     lastActivityAt: row.last_activity_at,
     durationMs: row.duration_ms,
     model: row.model,
-    costUsd: row.cost_usd,
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     linesAdded: row.lines_added,
@@ -193,28 +193,9 @@ function toSummary(row: Row): HistorySessionSummary {
     continuedIn: row.continued_in,
     subagentCount: row.subagent_count,
     mission: null,
-    costSource: row.cost_usd !== null ? "transcript" : null,
+    ...historyCost(row.cost_usd, null),
     liveSessionId: null,
   };
-}
-
-/**
- * Cost from `usage_ledger`, by note key (a Claude session's note key is its agent session id),
- * on `sessionCostFor`'s rule: session spend only, and null rather than a subtotal when any row
- * is unpriced or the rows disagree on their basis.
- */
-function ledgerCosts(db: DatabaseSync, ids: readonly string[]): Map<string, number> {
-  const out = new Map<string, number>();
-  if (ids.length === 0) return out;
-  const rows = db
-    .prepare(
-      `SELECT note_key, SUM(cost_usd) AS cost, MIN(cost_known) AS known, COUNT(DISTINCT cost_basis) AS bases
-         FROM usage_ledger WHERE spend_kind = 'session' AND note_key IN (${ids.map(() => "?").join(", ")})
-        GROUP BY note_key`,
-    )
-    .all(...ids) as unknown as { note_key: string; cost: number; known: number; bases: number }[];
-  for (const row of rows) if (row.known === 1 && row.bases === 1) out.set(row.note_key, row.cost);
-  return out;
 }
 
 export class HistoryStore {
@@ -282,11 +263,12 @@ export class HistoryStore {
       .all(...ids) as unknown as { agent_session_id: string; session_id: string }[];
     const bySession = new Map<string, string>();
     for (const row of sessions) if (!bySession.has(row.agent_session_id)) bySession.set(row.agent_session_id, row.session_id);
-    const costs = ledgerCosts(this.db, ids);
+    // A Claude session's note key is its agent session id.
+    const costs = sessionCostsFor(ids, this.db);
     for (const id of ids) {
       const task = byTask.get(id);
       const missionSessionId = bySession.get(id) ?? null;
-      const ledgerCostUsd = costs.get(id) ?? null;
+      const ledgerCostUsd = costs.get(id)?.costUsd ?? null;
       if (!task && missionSessionId === null && ledgerCostUsd === null) continue;
       out.set(id, {
         task: task?.task_id
@@ -325,13 +307,8 @@ export class HistoryStore {
     }
     return rows.map((row) => {
       const mission = missions.get(`${row.agent}:${row.agentSessionId}`) ?? null;
-      if (!mission) return row;
-      const fallback = row.costUsd === null && mission.ledgerCostUsd !== null;
-      return {
-        ...row,
-        mission,
-        ...(fallback ? { costUsd: mission.ledgerCostUsd, costSource: "ledger" as const } : {}),
-      };
+      // A row from `toSummary` holds the transcript's cost only, so this is the one fallback.
+      return mission ? { ...row, mission, ...historyCost(row.costUsd, mission) } : row;
     });
   }
 

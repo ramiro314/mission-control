@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   HISTORY_KIND_LABELS,
+  historyCost,
   historyTitle,
   type HistoryMissionTask,
   type HistorySessionDetail,
@@ -140,14 +141,17 @@ function HistorySessionHeader({
   onOpenTask: (taskId: string) => void;
   canOpenTask: (taskId: string) => boolean;
 }): React.JSX.Element {
-  const { catalog, mission } = detail;
+  // A catalog row already carries Mission Control's join and the cost fallback; a record the
+  // catalog never indexed is Mission Control's alone, read through the same shared rules.
+  const catalog = detail.catalog;
+  const mission = catalog ? catalog.mission : detail.mission;
+  const live = catalog ? catalog.liveSessionId : detail.mission.liveSessionId;
   const gone = catalog?.transcriptState === "gone";
-  const live = detail.liveSessionId;
-  const title = catalog ? historyTitle(catalog) : mission?.task?.title.trim() || "Untitled session";
+  const title = historyTitle(catalog ?? { customTitle: null, aiTitle: null, firstPrompt: null, mission });
   const kind = catalog ? HISTORY_KIND_LABELS[catalog.kind] ?? catalog.kind : null;
-  const repoRoot = catalog?.repoRoot ?? mission?.repoRoot ?? null;
-  const branch = catalog?.branch ?? mission?.branch ?? null;
-  const cost = catalog ? catalog.costUsd : mission?.ledgerCostUsd ?? null;
+  const repoRoot = catalog ? catalog.repoRoot : detail.mission.repoRoot;
+  const branch = catalog ? catalog.branch : detail.mission.branch;
+  const cost = catalog ? catalog.costUsd : historyCost(null, detail.mission).costUsd;
   return (
     <header className="history-detail-head">
       <div className="history-detail-title">
@@ -200,7 +204,7 @@ export function HistoryMissionOnlyRecord({
   onOpenTask,
   canOpenTask,
 }: {
-  detail: HistorySessionDetail;
+  detail: Extract<HistorySessionDetail, { catalog: null }>;
   onOpenSession: (sessionId: string) => void;
   onOpenTask: (taskId: string) => void;
   canOpenTask: (taskId: string) => boolean;
@@ -208,7 +212,9 @@ export function HistoryMissionOnlyRecord({
   return (
     <>
       <HistorySessionHeader detail={detail} onOpenSession={onOpenSession} onOpenTask={onOpenTask} canOpenTask={canOpenTask} />
-      <p className="history-gone" role="note">{detail.liveSessionId ? NOT_YET_INDEXED_MESSAGE : UNINDEXED_MESSAGE}</p>
+      <p className="history-gone" role="note">
+        {detail.mission.liveSessionId ? NOT_YET_INDEXED_MESSAGE : UNINDEXED_MESSAGE}
+      </p>
     </>
   );
 }

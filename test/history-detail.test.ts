@@ -77,7 +77,7 @@ test("detail returns the catalog row; a non-UUID id, an unknown id or an unknown
   assert.equal(detail.catalog!.cwd, "/work");
   assert.equal(detail.catalog!.branch, "main");
   assert.equal(detail.catalog!.transcriptState, "present");
-  assert.equal(detail.liveSessionId, null);
+  assert.equal(detail.catalog!.liveSessionId, null);
   assert.equal((await f.get(`/api/history/sessions/claude/${id.toUpperCase()}`)).status, 200, "a UUID's case does not matter");
 
   for (const path of [
@@ -207,7 +207,7 @@ test("a session the Registry is running is reported live in the list and the det
   registry.registerSdkSession({ id: "sdk:history-live", agent: "claude", name: "running", cwd: "/work", agentSessionId: id });
 
   const detail = await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail;
-  assert.equal(detail.liveSessionId, "sdk:history-live");
+  assert.equal(detail.catalog!.liveSessionId, "sdk:history-live");
   const page = await (await f.get("/api/history/sessions")).json() as HistoryPage;
   assert.equal(page.sessions.find((row) => row.agentSessionId === id)?.liveSessionId, "sdk:history-live");
   f.done();
