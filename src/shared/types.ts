@@ -3746,7 +3746,17 @@ export type ServerEvent =
    * single revision bump, because forty is not more informative than one to something whose
    * only response is to re-read its current page.
    */
-  | { type: "archive_changed" };
+  | { type: "archive_changed" }
+  /**
+   * A Session History reconcile pass wrote or marked at least one catalog row. An
+   * invalidation signal: an open History page re-reads its current window from
+   * `GET /api/history/sessions`.
+   *
+   * CONTENT-FREE for `archive_changed`'s reason: the catalog holds every session on disk and
+   * rides neither this frame nor the reconnect snapshot. ONE frame per changing pass, never
+   * one per file, and none for a pass that changed nothing.
+   */
+  | { type: "history_changed" };
 
 // ---- session transcript (session detail) ----
 

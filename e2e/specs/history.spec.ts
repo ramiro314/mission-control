@@ -577,3 +577,209 @@ test.describe("search and filters", () => {
     await expect(rows).toHaveCount(2);
   });
 });
+
+test.describe("an open History page with the recurring scan off", () => {
+  // `0` turns the recurring scan off, so only the daemon's watcher can notice a new or grown
+  // transcript, and only `history_changed` can tell the open page to re-read.
+  test.use({ daemonEnv: { MISSION_HISTORY_RECONCILE_MS: "0", MISSION_HISTORY_BATCH_SIZE: "100" } });
+
+  test("shows a session that starts, then follows it as it grows, without a reload", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon, 0);
+    await backfilled(daemon);
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(5);
+    await expect(page.getByRole("status")).toHaveText("");
+    // Marks this document, so a reload anywhere below would be caught by its absence.
+    await dashboard.evaluate(() => { (window as unknown as { historyMarker: boolean }).historyMarker = true; });
+
+    // A Claude session starts: its transcript lands in the fake projects directory.
+    const now = Date.now();
+    const started = writeSession(daemon, {
+      cwd: "/projects/live-service",
+      at: new Date(now).toISOString(),
+      prompt: "Started while the page was open",
+    });
+    const newest = rows.first();
+    await expect(newest).toContainText("Started while the page was open", { timeout: 10_000 });
+    await expect(rows).toHaveCount(6);
+    await expect(newest).toContainText("/projects/live-service");
+    await capture(dashboard, "live-session-started");
+
+    // It grows: Claude names it and records what it has cost so far.
+    const later = new Date(now + 90_000).toISOString();
+    const grown = [
+      { type: "ai-title", aiTitle: "Live title from the transcript", timestamp: later },
+      { type: "cost-state", totalCostUSD: 1.25, totalDuration: 90_000, startTime: now, timestamp: later },
+    ];
+    writeFileSync(started.path, grown.map((record) => `${JSON.stringify({ sessionId: started.id, ...record })}\n`).join(""), { flag: "a" });
+    await expect(newest).toContainText("Live title from the transcript", { timeout: 10_000 });
+    await expect(newest).toContainText("$1.25");
+    await expect(newest).toContainText("1m 30s");
+    await expect(page.getByText("Started while the page was open")).toHaveCount(0);
+    await expect(rows).toHaveCount(6);
+    expect(await dashboard.evaluate(() => (window as unknown as { historyMarker?: boolean }).historyMarker)).toBe(true);
+    await capture(dashboard, "live-session-grown");
+  });
+
+  test("a change announced while Load more is in flight is applied after it lands, and keeps its rows", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon);
+    await backfilled(daemon);
+    // Hold the Load more answer until the test lets it go. Window reads pass straight through.
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let windowReads = 0;
+    await dashboard.route("**/api/history/sessions**", async (route) => {
+      if (route.request().url().includes("cursor=")) {
+        await released;
+        await route.fulfill({ response: await route.fetch() });
+        return;
+      }
+      windowReads += 1;
+      await route.fulfill({ response: await route.fetch() });
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(50);
+    await expect(page.getByRole("status")).toHaveText("");
+    const readsBefore = windowReads;
+    await page.getByRole("button", { name: "Load more" }).click();
+
+    // A session starts while the continuation is held. The daemon indexes it and announces it.
+    const started = writeSession(daemon, {
+      cwd: "/projects/live-service",
+      at: new Date().toISOString(),
+      prompt: "Started during Load more",
+    });
+    await expect.poll(async () => {
+      const res = await fetch(`${daemon.baseURL}/api/history/sessions?limit=1`);
+      const body = await res.json() as { sessions: { agentSessionId: string }[] };
+      return body.sessions[0]?.agentSessionId;
+    }, { timeout: 10_000 }).toBe(started.id);
+    // Time for `history_changed` to reach the page. Held, it must not start a re-read that
+    // would cancel the continuation.
+    await dashboard.waitForTimeout(1_500);
+    expect(windowReads).toBe(readsBefore);
+    await expect(page.getByText("Started during Load more")).toHaveCount(0);
+
+    // The continuation lands, then the held change is taken: every paged row stays, and the
+    // new session heads the list.
+    release();
+    const conversations = 5 + FILLER;
+    await expect(rows.first()).toContainText("Started during Load more", { timeout: 10_000 });
+    await expect(rows).toHaveCount(conversations + 1);
+    await expect(page.getByText(`Filler conversation ${String(FILLER - 1).padStart(2, "0")}`)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
+  });
+
+  test("a re-read that Load more cancels leaves its change unread, so it is taken once Load more lands", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon);
+    await backfilled(daemon);
+    // After the first window, hold every window re-read until the test lets them through, so
+    // the one `history_changed` starts is still in flight when Load more is clicked.
+    let holdWindows = false;
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let heldReads = 0;
+    await dashboard.route("**/api/history/sessions**", async (route) => {
+      if (!route.request().url().includes("cursor=") && holdWindows) {
+        heldReads += 1;
+        await released;
+        try {
+          await route.fulfill({ response: await route.fetch() });
+        } catch {
+          // Cancelled by Load more, which is the case under test.
+        }
+        return;
+      }
+      await route.fulfill({ response: await route.fetch() });
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(50);
+    await expect(page.getByRole("status")).toHaveText("");
+    holdWindows = true;
+
+    writeSession(daemon, { cwd: "/projects/live-service", at: new Date().toISOString(), prompt: "Started before Load more" });
+    await expect.poll(() => heldReads, { timeout: 10_000 }).toBe(1);
+    await page.getByRole("button", { name: "Load more" }).click();
+    const conversations = 5 + FILLER;
+    await expect(rows).toHaveCount(conversations);
+    await expect(page.getByText("Started before Load more")).toHaveCount(0);
+
+    // Let later reads through. The cancelled one showed nothing, so its change is read again.
+    holdWindows = false;
+    release();
+    await expect(rows.first()).toContainText("Started before Load more", { timeout: 10_000 });
+    await expect(rows).toHaveCount(conversations + 1);
+    await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
+  });
+  test("a re-read slower than the gap between changes still lands while a session keeps writing", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon, 0);
+    await backfilled(daemon);
+    // After the first window, every window re-read takes 2.5 s, longer than the gap between two
+    // `history_changed` events from a session that keeps writing.
+    let slow = false;
+    await dashboard.route("**/api/history/sessions**", async (route) => {
+      if (slow) await new Promise((resolve) => setTimeout(resolve, 2_500));
+      try {
+        await route.fulfill({ response: await route.fetch() });
+      } catch {
+        // The page cancelled this read.
+      }
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(5);
+    await expect(page.getByRole("status")).toHaveText("");
+    slow = true;
+
+    // A new session every 600 ms for the rest of the test, so a change is announced about once a
+    // second. A page that restarted its re-read for each one would never land any of them.
+    let written = 0;
+    const writer = setInterval(() => {
+      written += 1;
+      writeSession(daemon, { cwd: "/projects/busy", at: new Date().toISOString(), prompt: `Busy session ${written}` });
+    }, 600);
+    try {
+      await expect.poll(() => rows.count(), { timeout: 8_000 }).toBeGreaterThan(5);
+      expect(written, "the writer was still going when the rows arrived").toBeLessThan(15);
+    } finally {
+      clearInterval(writer);
+    }
+    // Once the writing stops, the page catches up with every session.
+    await expect(rows).toHaveCount(5 + written, { timeout: 15_000 });
+  });
+  test("a re-read that fails is tried again shortly, so the last change before a session goes idle is shown", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon, 0);
+    await backfilled(daemon);
+    // After the first window, the next window read fails once; later ones pass.
+    let armed = false;
+    let failed = 0;
+    await dashboard.route("**/api/history/sessions**", async (route) => {
+      if (armed && failed === 0 && !route.request().url().includes("cursor=")) {
+        failed += 1;
+        await route.fulfill({ status: 500, json: { error: "the catalog is busy" } });
+        return;
+      }
+      await route.fulfill({ response: await route.fetch() });
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(5);
+    await expect(page.getByRole("status")).toHaveText("");
+    armed = true;
+
+    // One session writes once and goes quiet: one `history_changed`, and its re-read fails.
+    writeSession(daemon, { cwd: "/projects/quiet", at: new Date().toISOString(), prompt: "Wrote once, then went idle" });
+    await expect.poll(() => failed, { timeout: 10_000 }).toBe(1);
+    await expect(page.getByText("History is unavailable")).toHaveCount(0);
+    await expect(rows.first()).toContainText("Wrote once, then went idle", { timeout: 5_000 });
+    await expect(rows).toHaveCount(6);
+  });
+});

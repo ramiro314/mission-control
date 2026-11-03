@@ -195,6 +195,7 @@ export class HistoryStore {
     return {
       parsedBytes: row.parsed_bytes,
       ino: fingerprint.ino,
+      size: fingerprint.size,
       state: row.reader_state,
       summary: { ...summary, kind: summary.kind as HistorySummary["kind"] },
     };

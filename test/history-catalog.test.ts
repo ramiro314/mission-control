@@ -195,6 +195,7 @@ test("summarize folds in only appended bytes, and restarts on a shrunk file", as
     summary: first.summary,
     parsedBytes: first.parsedBytes,
     ino: file.fingerprint.ino,
+    size: first.parsedBytes,
     state: first.state,
   });
   assert.ok(second);
@@ -206,7 +207,7 @@ test("summarize folds in only appended bytes, and restarts on a shrunk file", as
   truncateSync(path, 0);
   writeFileSync(path, JSON.stringify({ ...envelope(id, "/elsewhere", "sdk-ts", "2026-10-21T00:00:00.000Z"), type: "user", message: { role: "user", content: "fresh" } }) + "\n");
   const shrunk = await enumerateOne(projects, id);
-  const third = await reader.summarize(shrunk, { summary: second.summary, parsedBytes: second.parsedBytes, ino: shrunk.fingerprint.ino, state: second.state });
+  const third = await reader.summarize(shrunk, { summary: second.summary, parsedBytes: second.parsedBytes, ino: shrunk.fingerprint.ino, size: file.fingerprint.size, state: second.state });
   assert.equal(third?.summary.cwd, "/elsewhere");
   assert.equal(third?.summary.aiTitle, null);
   rmSync(projects, { recursive: true, force: true });

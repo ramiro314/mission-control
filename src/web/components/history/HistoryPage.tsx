@@ -92,12 +92,15 @@ function HistoryRow({ row }: { row: HistorySessionSummary }): React.JSX.Element 
 export function HistoryPage({
   route,
   replace,
+  revision,
 }: {
   route: Extract<MissionRoute, { page: "history" }>;
   replace: (route: MissionRoute) => void;
+  /** `historyRevision` from the event stream: bumps per changing reconcile pass and per reconnect. */
+  revision: number;
 }): React.JSX.Element {
   const filters = route.filters;
-  const catalog = useHistoryCatalog(filters);
+  const catalog = useHistoryCatalog(filters, revision);
   const progressLine = historyProgressLine(catalog.progress);
   const facets = catalog.facets;
 
