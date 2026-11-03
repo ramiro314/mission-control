@@ -127,6 +127,52 @@ function copyExistsRefusal(copyPath: string): HistoryResumeRefusal {
   );
 }
 
+function copyChangedRefusal(copyPath: string): HistoryResumeRefusal {
+  return refusal(
+    "copy_exists",
+    `${copyPath} was copied by History, but something has written to it since (a resume run in that directory), so it is no longer a copy of this conversation. Nothing was written. Choose another directory.`,
+  );
+}
+
+/** What already lies at a fork's copy destination. */
+type ExistingCopy = "absent" | "copy" | "changed" | "foreign";
+
+/**
+ * Whether every byte of `copyPath` is the start of `sourcePath`. The source only ever grows
+ * by appending, so a recorded copy that is still a prefix of it is one nothing has written to
+ * since it was made (a fork leaves its source untouched); one that is not was resumed in place.
+ */
+async function isPrefixOf(copyPath: string, sourcePath: string): Promise<boolean> {
+  const copy = await open(copyPath, "r");
+  try {
+    const source = await open(sourcePath, "r");
+    try {
+      const size = (await copy.stat()).size;
+      if (size > (await source.stat()).size) return false;
+      const left = Buffer.alloc(64 * 1024);
+      const right = Buffer.alloc(64 * 1024);
+      for (let at = 0; at < size;) {
+        const length = Math.min(left.length, size - at);
+        const [a, b] = await Promise.all([copy.read(left, 0, length, at), source.read(right, 0, length, at)]);
+        if (a.bytesRead !== length || b.bytesRead !== length) return false;
+        if (!left.subarray(0, length).equals(right.subarray(0, length))) return false;
+        at += length;
+      }
+      return true;
+    } finally {
+      await source.close();
+    }
+  } finally {
+    await copy.close();
+  }
+}
+
+function existingRefusal(existing: ExistingCopy, copyPath: string): HistoryResumeRefusal | null {
+  if (existing === "foreign") return copyExistsRefusal(copyPath);
+  if (existing === "changed") return copyChangedRefusal(copyPath);
+  return null;
+}
+
 function openLaunchRefusal(launch: HistoryResumeLaunch): HistoryResumeRefusal {
   return refusal(
     "open_launch",
@@ -182,7 +228,7 @@ export class HistoryResume {
     if (refused) return this.refuse(refused, summary);
     // The target, resolved once: the copy, the launch row, the binding and the terminal all
     // use this value, never the spelling the transcript recorded or the operator typed.
-    const resolved = await this.target(body.target, summary, reader);
+    const resolved = await this.target(body.target, summary, reader, entry.transcriptPath);
     if (!resolved.ok) return this.refuse(resolved.refusal, summary);
     const { cwd, fork } = resolved.target;
     const hostRefusal = launcher.hostUnavailable(body.backend);
@@ -335,7 +381,12 @@ export class HistoryResume {
   }
 
   /** The target a request names, resolved once, or why it cannot be used. Touches nothing. */
-  private async target(target: HistoryResumeTarget, summary: HistorySessionSummary, reader: HistoryReader): Promise<TargetRead> {
+  private async target(
+    target: HistoryResumeTarget,
+    summary: HistorySessionSummary,
+    reader: HistoryReader,
+    transcriptPath: string,
+  ): Promise<TargetRead> {
     if (target.kind === "original") {
       const original = await this.original(summary.cwd);
       const refused = directoryRefusal(summary.cwd, original.state);
@@ -359,27 +410,41 @@ export class HistoryResume {
     }
     const copyPath = reader.spec.copyDestination(typed.resolved, summary.agentSessionId);
     // Advisory, so a refusal costs no launch row; the exclusive create after the claim decides.
-    if (await this.foreignFile(summary.agent, summary.agentSessionId, copyPath)) return { ok: false, refusal: copyExistsRefusal(copyPath) };
+    // A check that cannot read its files leaves the decision, and the error, to the copy.
+    const existing = await this.existing(summary.agent, summary.agentSessionId, transcriptPath, copyPath).catch((): ExistingCopy => "absent");
+    const refused = existingRefusal(existing, copyPath);
+    if (refused) return { ok: false, refusal: refused };
     return { ok: true, target: { cwd: typed.resolved, fork: { copyPath, forkSessionId: randomUUID() } } };
   }
 
-  /** Whether `copyPath` holds a file that is not a History copy of this session, the canonical transcript included. */
-  private async foreignFile(agent: HistorySessionSummary["agent"], sourceSessionId: string, copyPath: string): Promise<boolean> {
+  /**
+   * What lies at `copyPath`: nothing; a History copy of this session nothing has written to
+   * since (`copy`); a recorded copy something resumed in place (`changed`); or any other file,
+   * the canonical transcript included (`foreign`). A path alone never makes a file reusable.
+   */
+  private async existing(
+    agent: HistorySessionSummary["agent"],
+    sourceSessionId: string,
+    sourcePath: string,
+    copyPath: string,
+  ): Promise<ExistingCopy> {
     try {
       await lstat(copyPath);
     } catch (error) {
-      if (isErrno(error, "ENOENT")) return false;
+      if (isErrno(error, "ENOENT")) return "absent";
       throw error;
     }
-    return !this.deps.launches.isCopyOf(agent, sourceSessionId, copyPath);
+    if (!this.deps.launches.isCopyOf(agent, sourceSessionId, copyPath)) return "foreign";
+    return (await isPrefixOf(copyPath, sourcePath)) ? "copy" : "changed";
   }
 
   /**
    * Put the transcript at `copyPath` for a fork, and record it on the launch. An existing
-   * History copy of this session is reused as it stands, with no write: a fork never changes
-   * its source, so it is still faithful. Anything else at that path, the canonical transcript
-   * included, refuses with nothing written: the copy is an exclusive create (`O_EXCL`), so it
-   * never writes over a file, whoever made it.
+   * History copy of this session that is still a prefix of the source is reused as it stands,
+   * with no write: a fork never changes its source. A recorded copy something has written to
+   * since, and anything else at that path, the canonical transcript included, refuse with
+   * nothing written: the copy is an exclusive create (`O_EXCL`), so it never writes over a
+   * file, whoever made it.
    */
   private async copy(
     launch: HistoryResumeLaunch,
@@ -387,8 +452,12 @@ export class HistoryResume {
     copyPath: string,
   ): Promise<{ ok: true } | { ok: false; refusal: HistoryResumeRefusal }> {
     try {
-      if (await this.foreignFile(launch.agent, launch.sourceSessionId, copyPath)) {
-        return { ok: false, refusal: copyExistsRefusal(copyPath) };
+      const existing = await this.existing(launch.agent, launch.sourceSessionId, source, copyPath);
+      const refused = existingRefusal(existing, copyPath);
+      if (refused) return { ok: false, refusal: refused };
+      if (existing === "copy") {
+        this.deps.launches.recordCopy(launch.launchId, copyPath, this.now());
+        return { ok: true };
       }
       await mkdir(dirname(copyPath), { recursive: true });
       let created = false;
@@ -398,12 +467,14 @@ export class HistoryResume {
         await pipeline(createReadStream(source), handle.createWriteStream());
       } catch (error) {
         if (!created && isErrno(error, "EEXIST")) {
-          // Lost to a file that appeared since the check: reuse it only if it is our own copy.
-          if (this.deps.launches.isCopyOf(launch.agent, launch.sourceSessionId, copyPath)) {
+          // Lost to a file that appeared since the check: reuse it only if it is our own
+          // untouched copy.
+          const raced = await this.existing(launch.agent, launch.sourceSessionId, source, copyPath);
+          if (raced === "copy") {
             this.deps.launches.recordCopy(launch.launchId, copyPath, this.now());
             return { ok: true };
           }
-          return { ok: false, refusal: copyExistsRefusal(copyPath) };
+          return { ok: false, refusal: existingRefusal(raced, copyPath) ?? copyExistsRefusal(copyPath) };
         }
         // A partial copy this request created is removed, so it never blocks the next Resume.
         if (created) await unlink(copyPath).catch(() => {});

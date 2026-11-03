@@ -154,8 +154,11 @@ the agent like any other terminal session, which turns the row **Live**.
 - **The copy never overwrites.** Project folder names are a lossy encoding, so two directories
   can share one folder, including the original's. The copy is an exclusive create (`O_EXCL`).
   A file already there that an earlier Resume recorded as its copy of this session is reused as
-  it stands, with no write (a fork never changes its source). Any other file of that name, the
-  original transcript included, refuses the Resume with nothing written.
+  it stands, with no write, while it is still a byte prefix of the original transcript: a fork
+  never changes its source, and the original only grows by appending. A recorded copy that
+  something has written to since (Claude's own resume run in that directory) is no longer this
+  conversation and refuses, as does any other file of that name, the original transcript
+  included. Nothing is written in either case.
 - **One open launch per session.** Every Resume first writes one row to
   `history_resume_launches`, before it prepares or opens anything. A partial unique index on
   the session over the `pending` and `expired` states makes that insert the claim: of two
@@ -234,7 +237,9 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   never canonical; of the rest, the file in the project folder that encodes the session's first
   recorded cwd wins, then the earliest first record, ties broken by path, so a rebuilt catalog
   picks the same file whatever order it scans in. A copy never creates a second row. When the
-  canonical file disappears the row is marked gone, never repointed at a copy.
+  canonical file disappears the row is marked gone, never repointed at a recorded copy. A file
+  nothing recorded as a copy competes like any other, so a transcript moved with its project
+  folder is followed, as a rebuilt catalog would choose it.
 - **Change event.** A pass that wrote or marked any row publishes one `history_changed` server
   event, however many rows and batches it covered; a pass that changed nothing publishes none.
   The event carries no data. See [the event stream](event-stream.md).

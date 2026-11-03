@@ -875,3 +875,40 @@ test("a copy that fails after its exclusive create is removed, answers launch_fa
     f.done();
   }
 });
+
+test("a recorded copy is reused only while nothing has written to it: one resumed in place refuses, one the source outgrew is reused", async () => {
+  const { launcher } = fakeLauncher();
+  const f = await fixture(launcher);
+  try {
+    const { id, transcript } = await orphaned(f);
+    const typed = directory("written-to");
+    const first = (await (await resumeInto(f, id, typed)).json()) as Started;
+    const copyPath = first.launch.copyPath!;
+    assert.equal((await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: first.launch.launchId })).status, 200);
+
+    // The source grew after the copy (the original was continued elsewhere): the copy is still
+    // a prefix of it, so it is a faithful earlier state, and it is reused with no write.
+    appendFileSync(transcript, JSON.stringify({ type: "permission-mode", permissionMode: "default", sessionId: id }) + "\n");
+    const untouched = statSync(copyPath);
+    const grown = await resumeInto(f, id, typed);
+    assert.equal(grown.status, 200);
+    const second = (await grown.json()) as Started;
+    assert.equal(statSync(copyPath).mtimeMs, untouched.mtimeMs);
+    assert.equal((await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: second.launch.launchId })).status, 200);
+
+    // Claude's own resume in that directory appended to the copy: it is no longer this
+    // conversation, so it is refused, and left as it is.
+    appendFileSync(copyPath, JSON.stringify({ type: "user", sessionId: id, message: { role: "user", content: "typed in place" } }) + "\n");
+    const written = readFileSync(copyPath);
+    const launchesBefore = launchCount();
+    const refused = await resumeInto(f, id, typed);
+    assert.equal(refused.status, 409);
+    const body = (await refused.json()) as { code: string; error: string };
+    assert.equal(body.code, "copy_exists");
+    assert.match(body.error, /something has written to it since/);
+    assert.deepEqual(readFileSync(copyPath), written, "nothing was written");
+    assert.equal(launchCount(), launchesBefore, "refused before any claim");
+  } finally {
+    f.done();
+  }
+});

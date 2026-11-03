@@ -28,7 +28,9 @@ import type { HistoryIndexEntry, HistorySearchWrite, HistoryStore, HistoryUpsert
  * - **One row per session id, from its canonical file.** Several files can carry one id once
  *   a History Resume copies a transcript for a fork. A recorded copy is never canonical; of
  *   the rest the harness's stable rule chooses (`HistorySpec.canonical`), never scan order.
- *   A row whose canonical file disappears is marked gone, never repointed at a copy.
+ *   A row whose canonical file disappears is marked gone, never repointed at a recorded copy;
+ *   an unrecorded file with its id (a transcript moved with its project folder) competes like
+ *   any other, so an incremental and a rebuilt catalog choose the same file.
  * - **The watcher is a hint; the scan is the authority.** `fs.watch` on each root (recursive
  *   where the platform has it) asks for a pass shortly after a transcript moves, so an open
  *   page sees a session within seconds. Watchers drop events, overflow, and cannot watch a
@@ -352,11 +354,6 @@ export class HistoryReconciler {
       const byId = new Map<string, HistoryFile[]>();
       for (const file of files) {
         if (copies.has(file.path)) continue;
-        // A row whose own file is gone is marked gone, never repointed at another file with
-        // the same id: that file is a copy, and the row's place, time and links are the
-        // original's.
-        const entry = index.get(file.agentSessionId);
-        if (entry && entry.transcriptPath !== file.path && !walkedPaths.has(entry.transcriptPath)) continue;
         const group = byId.get(file.agentSessionId);
         if (group) group.push(file);
         else byId.set(file.agentSessionId, [file]);
