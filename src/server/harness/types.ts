@@ -1266,6 +1266,11 @@ export interface HistorySpec {
    * session uses, handed the path the catalog stored, never one a request named.
    */
   messages: TranscriptMessages;
+  /**
+   * What a cataloged session was launched with, parsed from the transcript at the catalog's
+   * path on demand and never stored. Rejects only when that file cannot be read.
+   */
+  launchContext(path: string): Promise<import("@shared/history.ts").HistoryLaunchContext>;
 }
 
 /**

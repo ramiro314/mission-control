@@ -9,8 +9,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
  * One History session: its header, its read-only conversation paged from the transcript on
- * disk, the retention message once that transcript is gone, and Live with Open in Fleet for a
- * session the fake agent keeps running.
+ * disk, its launch context as the transcript recorded it, the retention message once that
+ * transcript is gone, and Live with Open in Fleet for a session the fake agent keeps running.
  *
  * Transcripts are written into the daemon's redirected `~/.claude/projects` by this file, and
  * the live session is a fake Claude launched through the real dispatch route. No model token
@@ -34,12 +34,13 @@ function sessionId(): string {
 /** Writes one interactive conversation the way Claude Code lays it out. */
 function writeConversation(
   daemon: DaemonHandle,
-  shape: { cwd: string; at: string; title: string; pairs: number; pad?: number },
+  shape: { cwd: string; at: string; title: string; pairs: number; pad?: number; launch?: Record<string, unknown>[] },
 ): { id: string; path: string } {
   const id = sessionId();
   const base = { sessionId: id, cwd: shape.cwd, entrypoint: "cli", version: "2.1.296", gitBranch: "fix-login-retry", isSidechain: false };
   const start = Date.parse(shape.at);
   const lines: Record<string, unknown>[] = [{ ...base, timestamp: shape.at, type: "custom-title", customTitle: shape.title }];
+  for (const attachment of shape.launch ?? []) lines.push({ ...base, timestamp: shape.at, type: "attachment", attachment });
   for (let i = 0; i < shape.pairs; i++) {
     const timestamp = new Date(start + i * 1_000).toISOString();
     const n = String(i).padStart(3, "0");
@@ -197,6 +198,90 @@ test("a session opens from its row and from a deep link, pages its conversation,
   await expect(detail.getByRole("note")).toHaveText(/removed by Claude Code's retention/);
   await expect(detail.getByText("Question 000", { exact: true })).toHaveCount(0);
   await capture(dashboard, "transcript-gone");
+});
+
+test("Launch context shows the instruction files the session loaded and says what was not recorded", async ({ dashboard, daemon }) => {
+  // The session loaded one CLAUDE.md, and the file on disk has been rewritten since.
+  const claudeMd = join(daemon.repo, "CLAUDE.md");
+  writeFileSync(claudeMd, "# Demo repo\nRewritten after the session ran.\n");
+  const session = writeConversation(daemon, {
+    cwd: daemon.repo,
+    at: "2026-10-30T15:00:00.000Z",
+    title: "Session with a launch context",
+    pairs: 1,
+    launch: [
+      {
+        type: "instructions",
+        reason: "session_start",
+        files: [
+          { path: claudeMd, type: "Project", content: "# Demo repo\nRun only the focused test." },
+          { path: "/home/op/.claude/CLAUDE.md", type: "User", content: "# Global\nPrefer small diffs." },
+        ],
+      },
+      { type: "prompt_snapshot", systemPrompt: ["## Standing instructions for this repository\n\nNever push without asking."] },
+      { type: "skill_listing", names: ["tdd", "brief"], skillCount: 2, isInitial: true },
+      { type: "environment", snapshot: { workingDirectory: daemon.repo, isWorktree: false, isGitRepo: true, additionalWorkingDirectories: [] } },
+      { type: "session_context", context: { gitStatus: "Current branch: fix-login-retry\n(clean)" } },
+      { type: "a_future_attachment", anything: true },
+    ],
+  });
+  const bare = writeConversation(daemon, { cwd: "/projects/beta", at: "2026-10-29T12:00:00.000Z", title: "Session with nothing recorded", pairs: 1 });
+  const gone = writeConversation(daemon, { cwd: "/projects/epsilon", at: "2026-10-28T10:00:00.000Z", title: "Launch context Claude Code will delete", pairs: 1 });
+  await indexed(daemon, session.id);
+  await indexed(daemon, bare.id);
+  await indexed(daemon, gone.id);
+
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${session.id}`);
+  const detail = dashboard.getByRole("main", { name: "History session" });
+  await expect(detail.getByRole("tab", { name: "Conversation", selected: true })).toBeVisible();
+  await detail.getByRole("tab", { name: "Launch context" }).click();
+  await expect(detail.getByRole("tab", { name: "Launch context", selected: true })).toBeVisible();
+  const panel = detail.getByRole("tabpanel");
+  await expect(panel).toHaveCount(1);
+  const section = (name: string) => panel.getByRole("region", { name });
+
+  // Instruction files: path, scope and reason, and the text as the session loaded it.
+  const files = section("Instruction files");
+  await expect(files.getByText(claudeMd, { exact: true })).toBeVisible();
+  await expect(files.getByText("/home/op/.claude/CLAUDE.md", { exact: true })).toBeVisible();
+  await expect(files.getByText("Project", { exact: true })).toBeVisible();
+  await expect(files.getByText("User", { exact: true })).toBeVisible();
+  await expect(files.getByText("Loaded at session start")).toHaveCount(2);
+  await files.getByText(claudeMd, { exact: true }).click();
+  await expect(files.getByText(/Run only the focused test\./)).toBeVisible();
+  await expect(files.getByText(/Rewritten after the session ran/)).toHaveCount(0);
+
+  await expect(section("Standing instructions")).toContainText("Never push without asking.");
+  await expect(section("Appended system prompt")).toContainText("None appended");
+  await expect(section("Skills").getByRole("list", { name: "Skills available" })).toHaveText(/tdd\s*brief/);
+  await expect(section("Skills")).toContainText("None used");
+  await expect(section("Environment")).toContainText("Current branch: fix-login-retry");
+  // What the transcript never recorded says so, rather than reading as none.
+  await expect(section("MCP servers and tools").getByText("Not recorded", { exact: true })).toBeVisible();
+  await expect(section("Hooks").getByText("Not recorded", { exact: true })).toBeVisible();
+  await capture(dashboard, "launch-context");
+
+  // Back on the Conversation tab, its transcript is still the one already read.
+  await detail.getByRole("tab", { name: "Conversation" }).click();
+  await expect(detail.getByRole("tabpanel").getByText("Question 000", { exact: true })).toBeVisible();
+
+  // A session that recorded no launch context at all: every section says Not recorded.
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${bare.id}`);
+  await detail.getByRole("tab", { name: "Launch context" }).click();
+  for (const name of ["Instruction files", "Standing instructions", "Appended system prompt", "MCP servers and tools", "Hooks"]) {
+    await expect(section(name).getByText("Not recorded", { exact: true }), name).toBeVisible();
+  }
+  await expect(section("Skills").getByText("Not recorded", { exact: true })).toBeVisible();
+  await capture(dashboard, "launch-context-not-recorded");
+
+  // A gone transcript shows the retention message and nothing else.
+  rmSync(gone.path);
+  await indexed(daemon, gone.id, "gone");
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${gone.id}`);
+  await detail.getByRole("tab", { name: "Launch context" }).click();
+  await expect(panel.getByRole("note")).toHaveText(/removed by Claude Code's retention/);
+  await expect(panel.getByRole("region")).toHaveCount(0);
+  await capture(dashboard, "launch-context-gone");
 });
 
 interface LiveSession {
