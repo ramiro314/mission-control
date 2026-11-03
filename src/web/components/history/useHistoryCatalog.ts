@@ -79,6 +79,8 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined, revision:
   const [listState, setListState] = useState<HistoryListState>("first");
   const [listError, setListError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  /** Whether a window read is in flight. A revision waits for it rather than cancel it. */
+  const [reading, setReading] = useState(false);
   const [moreError, setMoreError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   /** Bumped when a window lands. The indexing poll waits on this, never on a timer alone. */
@@ -98,6 +100,7 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined, revision:
     moreAbort.current?.abort();
     moreAbort.current = null;
     setLoadingMore(false);
+    setReading(true);
     setMoreError(null);
     if (depthKey.current !== filterKey) {
       depthKey.current = filterKey;
@@ -112,7 +115,12 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined, revision:
       through,
     ).then((result) => {
       if (controller.signal.aborted) return;
+      setReading(false);
       if (!result.ok) {
+        // Taken, though nothing landed: left unread, the revision effect would retry at once and
+        // spin against a daemon that keeps refusing. A daemon restart reconnects the stream,
+        // which raises the revision and reads again.
+        readRevision.current = askedRevision;
         if (!hasWindow.current || windowKey.current !== filterKey) {
           setListError(result.error);
           setListState("error");
@@ -150,15 +158,18 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined, revision:
     return () => clearTimeout(timer);
   }, [indexing, landed, loadingMore]);
 
-  // A changed catalog re-reads the window at its current depth. Held while a Load more is in
-  // flight, for the poll's reason above, and taken as soon as it lands: the revision it waited
-  // on is still newer than the one last read. That holds from the other side too: a re-read
-  // already in flight when Load more is clicked is cancelled by it, never lands, and so leaves
-  // its revision unread for this effect to take when Load more lands.
+  // A changed catalog re-reads the window at its current depth. Held while a Load more or a
+  // window read is in flight, for the poll's reason above: a live session can announce a change
+  // every second or so, and a deep re-read on a busy daemon can take longer than that, so
+  // cancelling it for each one would mean it never lands. When the read in flight settles, the
+  // newest revision is still newer than the one that read was asked for, and this runs again.
+  // That holds from the other side too: a re-read already in flight when Load more is clicked
+  // is cancelled by it, never lands, and so leaves its revision unread for this effect to take
+  // when Load more lands.
   useEffect(() => {
-    if (revision === readRevision.current || loadingMore) return;
+    if (revision === readRevision.current || loadingMore || reading) return;
     setTick((n) => n + 1);
-  }, [revision, loadingMore]);
+  }, [revision, loadingMore, reading]);
 
   const loadMore = useCallback(() => {
     if (!cursor || loadingMore || windowKey.current !== filterKey) return;
@@ -170,6 +181,7 @@ export function useHistoryCatalog(filters: HistoryFilters | undefined, revision:
     // cursor, and if it was the read reporting the backfill done, no poll would follow to put
     // them back. Cancel it: the poll resumes a second after this page lands.
     listAbort.current?.abort();
+    setReading(false);
     setLoadingMore(true);
     setMoreError(null);
     void api.historySessions({ ...query, cursor, limit: HISTORY_PAGE_LIMITS.defaultLimit }, controller.signal).then((result) => {

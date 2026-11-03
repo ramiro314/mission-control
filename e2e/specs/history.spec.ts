@@ -717,4 +717,41 @@ test.describe("an open History page with the recurring scan off", () => {
     await expect(rows).toHaveCount(conversations + 1);
     await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
   });
+  test("a re-read slower than the gap between changes still lands while a session keeps writing", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon, 0);
+    await backfilled(daemon);
+    // After the first window, every window re-read takes 2.5 s, longer than the gap between two
+    // `history_changed` events from a session that keeps writing.
+    let slow = false;
+    await dashboard.route("**/api/history/sessions**", async (route) => {
+      if (slow) await new Promise((resolve) => setTimeout(resolve, 2_500));
+      try {
+        await route.fulfill({ response: await route.fetch() });
+      } catch {
+        // The page cancelled this read.
+      }
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(5);
+    await expect(page.getByRole("status")).toHaveText("");
+    slow = true;
+
+    // A new session every 600 ms for the rest of the test, so a change is announced about once a
+    // second. A page that restarted its re-read for each one would never land any of them.
+    let written = 0;
+    const writer = setInterval(() => {
+      written += 1;
+      writeSession(daemon, { cwd: "/projects/busy", at: new Date().toISOString(), prompt: `Busy session ${written}` });
+    }, 600);
+    try {
+      await expect.poll(() => rows.count(), { timeout: 8_000 }).toBeGreaterThan(5);
+      expect(written, "the writer was still going when the rows arrived").toBeLessThan(15);
+    } finally {
+      clearInterval(writer);
+    }
+    // Once the writing stops, the page catches up with every session.
+    await expect(rows).toHaveCount(5 + written, { timeout: 15_000 });
+  });
 });
