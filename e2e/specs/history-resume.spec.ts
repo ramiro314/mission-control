@@ -179,3 +179,39 @@ test("Resume is offered only on conversations whose transcript is present, and r
   await capture(dashboard, "05-missing");
   expect(workspaces(daemon)).toHaveLength(0);
 });
+
+test("a Cancel pending resume the daemon refuses after the launch started says why and stops offering it", async ({
+  dashboard,
+  daemon,
+}) => {
+  const original = join(daemon.home, "projects", "resume-bound");
+  mkdirSync(original, { recursive: true });
+  const id = writeSession(daemon, { cwd: original, title: "Rename the importer flags", at: "2026-10-30T15:00:00.000Z" });
+  await indexed(daemon, id);
+
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${id}`);
+  await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
+  await dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "cmux" }).click();
+  await expect(dialog.getByRole("status")).toContainText("Started in cmux");
+
+  // The agent bound between the launch and the click: the daemon refuses the cancel. No fake
+  // agent runs inside the fake cmux, so the bind is the daemon's own refusal, answered here.
+  await dashboard.route(`**/api/history/sessions/claude/${id}/resume/cancel`, async (route) => {
+    const { launchId } = route.request().postDataJSON() as { launchId: string };
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        error: "This launch is no longer pending.",
+        launch: { launchId, agent: "claude", sourceSessionId: id, expectedAgentSessionId: id, cwd: original, slotId: null, launchedAt: 1, mcSessionId: "term:resumed", state: "bound" },
+      }),
+    });
+  });
+  await dialog.getByRole("button", { name: "Cancel pending resume" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("This launch is no longer pending.");
+  await expect(dialog.getByText(/^Started in cmux/)).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Cancel pending resume" })).toHaveCount(0);
+  await capture(dashboard, "06-cancel-refused");
+});

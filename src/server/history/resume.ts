@@ -168,6 +168,17 @@ export class HistoryResume {
     } catch (error) {
       return failed(error instanceof Error ? error.message : String(error));
     }
+    // Cancel pending resume can land while this request is still preparing. Its revocation
+    // finds no lease to revoke then, because the lease is not pending until the launch begins,
+    // so the cancel is honoured here: nothing opens, and the environment is revoked.
+    if (this.cancelled(launch)) {
+      try {
+        prepared.dispose();
+      } catch (error) {
+        console.error(`[history] could not revoke cancelled resume ${launch.launchId}'s environment: ${String(error)}`);
+      }
+      return this.cancelledOutcome(launch, "Cancel pending resume closed this launch before its terminal opened.");
+    }
 
     let result: TerminalLaunchOutcome;
     try {
@@ -175,6 +186,14 @@ export class HistoryResume {
     } catch (error) {
       if (error instanceof TerminalLaunchError && !error.outcomeUnknown) return failed(error.message);
       return this.unknown(launch, error instanceof Error ? error.message : String(error));
+    }
+    // A cancel during the launch itself revoked the lease the terminal's wrapper was about to
+    // claim, so report the launch as the cancel left it rather than as started.
+    if (result.ok && this.cancelled(launch)) {
+      return this.cancelledOutcome(
+        launch,
+        `Cancel pending resume closed this launch while ${result.label} was opening. If its agent had already started, it runs as an ordinary session.`,
+      );
     }
     if (result.ok) return { ok: true, status: 200, launch, label: result.label };
     if (result.status === 504) return this.unknown(launch, result.error ?? `${result.label} did not report back`);
@@ -206,6 +225,15 @@ export class HistoryResume {
       return { ok: false, status: 409, error: "This launch holds a worktree slot: Return the slot to close it.", launch: result.launch };
     }
     return { ok: false, status: 409, error: "This launch is no longer pending.", ...(result.launch ? { launch: result.launch } : {}) };
+  }
+
+  /** Whether this request's launch was released from under it: Cancel pending resume, or its grace window. */
+  private cancelled(launch: HistoryResumeLaunch): boolean {
+    return this.deps.launches.get(launch.launchId)?.state === "released";
+  }
+
+  private cancelledOutcome(launch: HistoryResumeLaunch, error: string): HistoryResumeOutcome {
+    return { ok: false, status: 409, refusal: refusal("cancelled", error), launch: this.deps.launches.get(launch.launchId) ?? launch };
   }
 
   private unknown(launch: HistoryResumeLaunch, detail: string): HistoryResumeOutcome {

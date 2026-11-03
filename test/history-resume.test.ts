@@ -89,6 +89,7 @@ function fakeLauncher(script: {
   launch?: () => Promise<TerminalLaunchOutcome> | TerminalLaunchOutcome;
 } = {}) {
   const prepared: HistoryResumeSession[] = [];
+  const disposed: string[] = [];
   const launched: { backend: string; cwd: string }[] = [];
   const abandoned: string[] = [];
   const launcher: HistoryResumeLauncher = {
@@ -96,7 +97,7 @@ function fakeLauncher(script: {
     async prepare(session) {
       await script.prepare?.(session);
       prepared.push(session);
-      return { cwd: session.cwd } as PreparedResume;
+      return { cwd: session.cwd, dispose: () => { disposed.push(session.id); return true; } } as unknown as PreparedResume;
     },
     async launch(backend, input) {
       launched.push({ backend, cwd: input.prepared.cwd });
@@ -104,7 +105,7 @@ function fakeLauncher(script: {
     },
     abandon: (owner) => { abandoned.push(owner); },
   };
-  return { launcher, prepared, launched, abandoned };
+  return { launcher, prepared, launched, abandoned, disposed };
 }
 
 async function fixture(launcher: HistoryResumeLauncher = fakeLauncher().launcher, registry = new Registry()) {
@@ -523,6 +524,65 @@ test("Cancel pending resume through the route closes the launch and its environm
     assert.equal(abandoned[0], prepared[0]!.id, "revoked under the same owner it was prepared under");
     assert.equal((await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: launch.launchId })).status, 409);
     assert.equal((await f.resume(id)).status, 200);
+  } finally {
+    f.done();
+  }
+});
+
+test("Cancel pending resume that lands while the Resume is still preparing opens no terminal", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { launcher, launched, disposed } = fakeLauncher({ prepare: () => gate });
+  const f = await fixture(launcher);
+  try {
+    const id = sessionId();
+    writeConversation(f.projects, id, directory("work"));
+    await f.history.reconciler.trigger();
+
+    const resuming = Promise.resolve(f.resume(id));
+    // A second tab reads the open launch and cancels it while the first is still preparing.
+    let open = f.history.launches.open("claude", id);
+    for (let i = 0; !open && i < 50; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      open = f.history.launches.open("claude", id);
+    }
+    assert.ok(open, "the Resume claimed its launch before preparing");
+    assert.equal((await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: open.launchId })).status, 200);
+    release();
+
+    const res = await resuming;
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string; launch: { state: string } };
+    assert.equal(body.code, "cancelled");
+    assert.equal(body.launch.state, "released");
+    assert.deepEqual(launched, [], "no terminal opens for a cancelled launch");
+    assert.deepEqual(disposed, [`history-resume:${open.launchId}`], "its prepared environment is revoked");
+  } finally {
+    f.done();
+  }
+});
+
+test("Cancel pending resume that lands while the terminal opens is reported as cancelled, not started", async () => {
+  let f!: Awaited<ReturnType<typeof fixture>>;
+  let id = "";
+  const { launcher } = fakeLauncher({
+    launch: async () => {
+      const open = f.history.launches.open("claude", id)!;
+      assert.equal((await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: open.launchId })).status, 200);
+      return { ok: true, label: "cmux", status: 200 };
+    },
+  });
+  f = await fixture(launcher);
+  try {
+    id = sessionId();
+    writeConversation(f.projects, id, directory("work"));
+    await f.history.reconciler.trigger();
+    const res = await f.resume(id);
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string; error: string; launch: { state: string } };
+    assert.equal(body.code, "cancelled");
+    assert.equal(body.launch.state, "released");
+    assert.match(body.error, /while cmux was opening/);
   } finally {
     f.done();
   }

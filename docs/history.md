@@ -138,13 +138,16 @@ the agent like any other terminal session, which turns the row **Live**.
 - **Closing an unbound launch.** A launch with no worktree slot that has not bound within its
   grace window (the managed resume start deadline plus two discovery sweeps) is `released`.
   While it is `pending`, the dialog offers **Cancel pending resume**, which releases it at once
-  and revokes its prepared environment if no terminal has claimed it. After a restart, once the
-  first discovery sweep finishes, a `bound` launch whose agent is no longer running is `ended`,
-  and a `pending` one is `released`; a slotless launch is never left `expired`.
+  and revokes its prepared environment if no terminal has claimed it. A Resume still
+  preparing or opening its terminal when that happens stops, and answers `cancelled`. After a
+  restart, once the first discovery sweep finishes, a `bound` launch whose agent is no longer
+  running is `ended`, and a `pending` one is `released`; a slotless launch is never left
+  `expired`.
 - **Refusals** are explicit, each with a code and a sentence: a background run, a gone
   transcript, a live session, an open launch (naming its directory), no recorded directory, a
   missing directory, a pool slot directory, a harness that cannot resume, a terminal that cannot
-  host an agent, or a launch that failed.
+  host an agent, a launch that failed, or a launch Cancel pending resume closed while it was
+  still starting.
 
 ## Session kinds
 

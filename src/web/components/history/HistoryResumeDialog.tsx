@@ -83,7 +83,11 @@ export function HistoryResumeDialog({
     const result = await api.historyResumeCancel(agent, agentSessionId, launch.launchId);
     setBusy(false);
     if (!result.ok) {
+      // Refused because the launch moved on (its agent bound, or it already closed): what was
+      // started is no longer pending, so show the refusal and read where things stand now.
+      setStarted(null);
       setRefused(result);
+      read();
       return;
     }
     setStarted(null);

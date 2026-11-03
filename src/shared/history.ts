@@ -371,6 +371,7 @@ export const HISTORY_RESUME_REFUSALS = [
   "host_unavailable",
   "launch_failed",
   "launch_unknown",
+  "cancelled",
 ] as const;
 export type HistoryResumeRefusalCode = (typeof HISTORY_RESUME_REFUSALS)[number];
 
