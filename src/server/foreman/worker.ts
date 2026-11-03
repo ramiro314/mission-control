@@ -96,10 +96,13 @@ import {
 } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
 import {
+  ROUTINE_FOLLOWUP_SKIPS,
   activeWorkflowOwnsSession,
   advanceFollowupMark,
   decideReviewFollowup,
   followupPrs,
+  heldFindingsCount,
+  heldSkipReason,
   reviewFollowupPrs,
   workflowHoldsReviewFollowup,
   workflowReleasedFollowupOnly,
@@ -945,6 +948,57 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
 const reviewNudged = new Map<string, Map<string, FollowupMark>>();
 
 /**
+ * The reasons already logged for each session's pull request in its current Inspector round, so
+ * a held PR is logged once per round and reason rather than every pass. Keyed by `noteKeyOf`, so
+ * a re-minted session id does not log the same hold again.
+ */
+const heldLogged = new Map<string, Map<string, { round: number; reasons: Set<string> }>>();
+
+/**
+ * Forget departed sessions, and, once the adoption read succeeded, the held PRs no card follows
+ * through on any more. Pruned against every card sharing a note key, because an exited card and
+ * its re-minted successor can follow different PRs, and pruning each alone would erase the
+ * other's history every pass.
+ */
+function pruneHeldLogged(sessions: readonly Session[], adopted: AdoptedInspection[] | null): void {
+  const followed = new Map<string, Set<string>>();
+  for (const session of sessions) {
+    const key = noteKeyOf(session);
+    const prKeys = followed.get(key) ?? new Set<string>();
+    if (adopted) for (const pr of reviewFollowupPrs(session, adopted)) prKeys.add(pr.prKey);
+    followed.set(key, prKeys);
+  }
+  for (const [key, logged] of heldLogged) {
+    const prKeys = followed.get(key);
+    if (!prKeys) {
+      heldLogged.delete(key);
+      continue;
+    }
+    if (!adopted) continue;
+    for (const prKey of logged.keys()) if (!prKeys.has(prKey)) logged.delete(prKey);
+    if (logged.size === 0) heldLogged.delete(key);
+  }
+}
+
+function logHeldFindings(session: Session, pr: FollowupPr, why: string, open: number): void {
+  if (open === 0 || ROUTINE_FOLLOWUP_SKIPS.has(why)) return;
+  const round = pr.inspector?.round ?? 0;
+  const key = noteKeyOf(session);
+  const logged = heldLogged.get(key) ?? new Map<string, { round: number; reasons: Set<string> }>();
+  heldLogged.set(key, logged);
+  let held = logged.get(pr.prKey);
+  // Rounds only advance; a card whose summary lags would otherwise reset the newer history every pass.
+  if (held && round < held.round) return;
+  if (!held || held.round !== round) {
+    held = { round, reasons: new Set() };
+    logged.set(pr.prKey, held);
+  }
+  if (held.reasons.has(why)) return;
+  held.reasons.add(why);
+  log(`${session.name}: holding ${open} GitHub Inspector finding(s) on ${pr.prKey} (round ${round}) - ${why}`);
+}
+
+/**
  * Fold this pass's observation into every one of a session's open pull requests, and forget
  * the ones that are no longer open. Returns the session's marks, which is also what the map
  * now holds for it.
@@ -1040,8 +1094,8 @@ export async function runReviewFollowup(
   // Drop markers for sessions that have gone away, so the map tracks the live fleet.
   const liveIds = new Set(sessions.map((s) => s.id));
   for (const id of reviewNudged.keys()) if (!liveIds.has(id)) reviewNudged.delete(id);
-
   const adopted = await readAdoptedInspections(client);
+  pruneHeldLogged(sessions, adopted);
   const shipping = await client.shippingConfig().catch(() => null);
   const now = Date.now();
   for (const session of sessions) {
@@ -1091,7 +1145,10 @@ export async function runReviewFollowup(
         },
         now,
       });
-      if (decision.kind === "skip") continue;
+      if (decision.kind === "skip") {
+        logHeldFindings(session, pr, decision.why, heldFindingsCount(pr));
+        continue;
+      }
       // Handing a conflict to the operator types nothing, so it claims no pane and needs no
       // freshness recheck: a PR that turned mergeable in between has no open episode, and
       // the daemon ignores the escalation. The next pull request is still considered.
@@ -1161,6 +1218,14 @@ export async function runReviewFollowup(
       });
       // An escalation that appeared between the two reads is the next pass's to send, and so
       // are findings that appeared in it: this pass read none, so it has no text to type.
+      if (freshDecision.kind === "skip") {
+        logHeldFindings(
+          fresh,
+          freshPr,
+          heldSkipReason(freshPr, freshDecision.why, read?.pr.round, freshCfg.trackReviewFeedback),
+          heldFindingsCount(freshPr, read?.findings, read?.pr.round),
+        );
+      }
       if (freshDecision.kind !== "nudge" || !holdsLease()) break;
 
       const outcome = await deliverReviewFollowup(client, fresh, freshMarks, freshDecision);

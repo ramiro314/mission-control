@@ -462,6 +462,263 @@ test("an adopted PR that closes during the findings read is not typed", async ()
   assert.deepEqual(fake.injected, []);
 });
 
+// ---- the held-findings log line ----
+
+const ACTIVE_RUN = WORKFLOW_RUN_STATUSES.find((s) => !["completed", "cancelled", "failed"].includes(s))!;
+
+/** The Foreman lines one pass wrote about `name`. */
+async function heldLines(name: string, fake: ReturnType<typeof fakeDaemon>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+  try {
+    await runReviewFollowup(fake.client, CFG, LEADER);
+  } finally {
+    console.log = original;
+  }
+  return lines.filter((line) => line.startsWith(`[foreman] ${name}`) && line.includes(": holding "));
+}
+
+function heldDaemon(session: () => Session, runs: () => Array<{ status: string }> = () => [{ status: ACTIVE_RUN }]) {
+  return fakeDaemon({
+    sessions: () => [session()],
+    workflowRuns: runs,
+    findings: async () => assert.fail("a held session reads nothing"),
+  });
+}
+
+test("a held PR with findings is logged once per round and reason", async () => {
+  let round = 3;
+  let runs: Array<{ status: string }> = [{ status: ACTIVE_RUN }];
+  let state: Session["state"] = "idle";
+  const pass = () =>
+    heldLines("held-log", heldDaemon(() => parked("held-log", { state, inspector: summary({ open: 2, round }) }), () => runs));
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-log: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await pass(), [], "the same round and reason is not logged again");
+
+  round = 4;
+  assert.deepEqual(await pass(), [
+    "[foreman] held-log: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 4) - an active workflow owns this session",
+  ]);
+
+  runs = [];
+  state = "awaiting_input";
+  assert.deepEqual(await pass(), [
+    "[foreman] held-log: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 4) - the session needs a human",
+  ]);
+  assert.deepEqual(await pass(), []);
+
+  runs = [{ status: ACTIVE_RUN }];
+  state = "idle";
+  assert.deepEqual(await pass(), [], "a reason already logged this round stays quiet when it returns");
+});
+
+test("two held PRs on one session are each logged once", async () => {
+  const pass = () =>
+    heldLines(
+      "held-pair",
+      fakeDaemon({
+        sessions: () => [parked("held-pair", { gitBranch: BRANCH })],
+        openInspections: async () => [
+          adoptedBy("held-pair", { key: "owner/repo#8", url: "https://github.com/owner/repo/pull/8", number: 8 }),
+        ],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-pair: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+    "[foreman] held-pair: holding 1 GitHub Inspector finding(s) on owner/repo#8 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await pass(), []);
+});
+
+test("a hold the freshness recheck finds is logged in the same pass, and a routine one is not", async () => {
+  const owned = fakeDaemon({
+    sessions: () => [parked("held-recheck")],
+    workflowRuns: (afterRead) => (afterRead ? [{ status: ACTIVE_RUN }] : []),
+    findings: async () => response([draft()]),
+  });
+  assert.deepEqual(await heldLines("held-recheck", owned), [
+    "[foreman] held-recheck: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(owned.injected, []);
+
+  const busy = fakeDaemon({
+    sessions: (afterRead) => [parked("held-recheck-busy", afterRead ? { state: "working", lastActivity: Date.now() } : {})],
+    findings: async () => response([draft()]),
+  });
+  assert.deepEqual(await heldLines("held-recheck-busy", busy), []);
+  assert.deepEqual(busy.injected, []);
+});
+
+test("the recheck counts the read's findings, so findings resolved before it are not logged as held", async () => {
+  const resolved = fakeDaemon({
+    sessions: () => [parked("held-recheck-resolved")],
+    findings: async () => response([draft({ status: "resolved" })]),
+  });
+  assert.deepEqual(await heldLines("held-recheck-resolved", resolved), []);
+
+  const twoLeft = fakeDaemon({
+    sessions: () => [parked("held-recheck-count", { inspector: summary({ open: 3 }) })],
+    workflowRuns: (afterRead) => (afterRead ? [{ status: ACTIVE_RUN }] : []),
+    findings: async () =>
+      response([draft(), draft({ id: "c2", fingerprint: "fp-2" }), draft({ id: "c3", fingerprint: "fp-3", status: "resolved" })]),
+  });
+  assert.deepEqual(await heldLines("held-recheck-count", twoLeft), [
+    "[foreman] held-recheck-count: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+  ]);
+});
+
+test("a recheck whose read is for another round logs the fresh snapshot's count with its round", async () => {
+  const raced = fakeDaemon({
+    sessions: (afterRead) => [
+      parked("held-recheck-round", { inspector: afterRead ? summary({ open: 1, round: 4 }) : summary({ open: 2, round: 3 }) }),
+    ],
+    findings: async () => response([draft(), draft({ id: "c2", fingerprint: "fp-2" })], 3),
+  });
+  assert.deepEqual(await heldLines("held-recheck-round", raced), [
+    "[foreman] held-recheck-round: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - " +
+      "the findings read and the snapshot are from different GitHub Inspector rounds",
+  ]);
+  assert.deepEqual(raced.injected, []);
+});
+
+test("a stale read that found nothing logs the round mismatch, not 'nothing to act on'", async () => {
+  const raced = fakeDaemon({
+    sessions: (afterRead) => [
+      parked("held-stale-empty", { inspector: afterRead ? summary({ open: 1, round: 4 }) : summary({ open: 1, round: 3 }) }),
+    ],
+    findings: async () => response([draft({ status: "resolved" })], 3),
+  });
+  assert.deepEqual(await heldLines("held-stale-empty", raced), [
+    "[foreman] held-stale-empty: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - " +
+      "the findings read and the snapshot are from different GitHub Inspector rounds",
+  ]);
+  assert.deepEqual(raced.injected, []);
+});
+
+test("a stale read with review tracking turned off during it logs the real reason", async () => {
+  const fake = fakeDaemon({
+    sessions: (afterRead) => [
+      parked("held-stale-off", { inspector: afterRead ? summary({ open: 1, round: 4 }) : summary({ open: 1, round: 3 }) }),
+    ],
+    findings: async () => response([draft({ status: "resolved" })], 3),
+    config: { ...CFG, trackReviewFeedback: false } as ForemanConfig,
+  });
+  assert.deepEqual(await heldLines("held-stale-off", fake), [
+    "[foreman] held-stale-off: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - " +
+      "no enabled review comments, failing CI or merge conflict",
+  ]);
+});
+
+test("an exited card and its re-minted successor keep each other's holds", async () => {
+  const pass = () =>
+    heldLines(
+      "held-twin",
+      fakeDaemon({
+        sessions: () => [
+          parked("held-twin-old", { agentSessionId: "agent-held-twin", state: "exited" }),
+          parked("held-twin-new", {
+            agentSessionId: "agent-held-twin",
+            prUrl: null,
+            prNumber: null,
+            prState: null,
+            inspector: null,
+            gitBranch: BRANCH,
+          }),
+        ],
+        openInspections: async () => [
+          adoptedBy("held-twin-new", { key: "owner/repo#8", url: "https://github.com/owner/repo/pull/8", number: 8 }),
+        ],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-twin-old: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 3) - the session exited",
+    "[foreman] held-twin-new: holding 1 GitHub Inspector finding(s) on owner/repo#8 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await pass(), [], "neither card's prune erases the other's history");
+});
+
+test("a card whose summary lags a round does not reset the newer round's history", async () => {
+  const pass = () =>
+    heldLines(
+      "held-lag",
+      heldDaemon(() => parked("held-lag-new", { agentSessionId: "agent-held-lag", inspector: summary({ round: 4 }) })),
+    );
+  const lagging = () =>
+    heldLines(
+      "held-lag",
+      fakeDaemon({
+        sessions: () => [
+          parked("held-lag-old", { agentSessionId: "agent-held-lag", state: "exited", inspector: summary({ round: 3 }) }),
+          parked("held-lag-new", { agentSessionId: "agent-held-lag", inspector: summary({ round: 4 }) }),
+        ],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-lag-new: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await lagging(), [], "the round-3 card is older than what was logged");
+  assert.deepEqual(await lagging(), []);
+});
+
+test("a session whose id is re-minted keeps its logged holds", async () => {
+  const held = (id: string) => heldDaemon(() => parked(id, { agentSessionId: "agent-held-remint" }));
+  assert.equal((await heldLines("held-remint-a", held("held-remint-a"))).length, 1);
+  assert.deepEqual(await heldLines("held-remint-b", held("held-remint-b")), []);
+});
+
+test("a held PR the session stops following is forgotten, so its return logs again", async () => {
+  let adoptedOpen = true;
+  const pass = () =>
+    heldLines(
+      "held-prune",
+      fakeDaemon({
+        sessions: () => [parked("held-prune", { gitBranch: BRANCH })],
+        openInspections: async () =>
+          adoptedOpen
+            ? [adoptedBy("held-prune", { key: "owner/repo#8", url: "https://github.com/owner/repo/pull/8", number: 8 })]
+            : [],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+  const line8 =
+    "[foreman] held-prune: holding 1 GitHub Inspector finding(s) on owner/repo#8 (round 3) - an active workflow owns this session";
+
+  assert.equal((await pass()).length, 2);
+  adoptedOpen = false;
+  assert.deepEqual(await pass(), []);
+  adoptedOpen = true;
+  assert.deepEqual(await pass(), [line8], "#7 stayed remembered; #8 was pruned while it was gone");
+});
+
+test("a held PR without findings logs nothing", async () => {
+  const fake = heldDaemon(() => parked("held-clean", { inspector: summary({ open: 0 }) }));
+  assert.deepEqual(await heldLines("held-clean", fake), []);
+});
+
+test("the routine waiting skips log nothing", async () => {
+  const working = heldDaemon(() => parked("held-working", { state: "working", lastActivity: Date.now() }), () => []);
+  assert.deepEqual(await heldLines("held-working", working), []);
+
+  const relayed = fakeDaemon({ sessions: () => [parked("held-relayed")], findings: async () => response([draft()]) });
+  assert.equal((await runReviewFollowup(relayed.client, CFG, LEADER)).size, 1);
+  const again = heldDaemon(() => parked("held-relayed"), () => []);
+  assert.deepEqual(await heldLines("held-relayed", again), [], "already nudged this round");
+});
+
 // ---- which failures count (fork: ci-strictness) ----
 //
 // The worker builds the follow-up config twice, once for the pass and once for the recheck

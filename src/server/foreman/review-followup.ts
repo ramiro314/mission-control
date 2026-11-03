@@ -522,6 +522,17 @@ function unresolvedFindings(findings: readonly InspectorComment[]): InspectorCom
 }
 
 /**
+ * The findings a held PR still carries. A read for the snapshot's round answers, since the
+ * snapshot's count can be stale; a read for another round would pair its count with the wrong
+ * round in the log, so the snapshot answers then.
+ */
+export function heldFindingsCount(pr: FollowupPr, findings?: readonly InspectorComment[], findingsRound?: number): number {
+  const round = pr.inspector?.round ?? 0;
+  if (findings && findingsRound === round) return dedupeInspectorFindings(unresolvedFindings(findings)).length;
+  return pr.inspector?.open ?? 0;
+}
+
+/**
  * `open` already counts drafted, posting and open rows (`INSPECTION_TALLY_FROM`), so a
  * dry-run draft triggers this exactly as a posted finding does. Once the worker has read the
  * findings, their unresolved rows answer instead: a snapshot that still counts findings
@@ -597,6 +608,30 @@ function decideConflictEscalation(
   }
   return null;
 }
+
+export const SKIP_STILL_WORKING = "still working";
+export const SKIP_ALREADY_NUDGED = "already nudged this round of feedback";
+export const SKIP_NOTHING_OPEN = "no enabled review comments, failing CI or merge conflict";
+export const SKIP_ROUND_MISMATCH = "the findings read and the snapshot are from different GitHub Inspector rounds";
+
+/**
+ * The reason the held-findings log gives. A read for another round that found nothing open
+ * says nothing about the snapshot's round, so that "nothing to act on" is the round mismatch -
+ * unless review feedback is not tracked, which is then the real reason. Log wording only: the
+ * decision is unchanged.
+ */
+export function heldSkipReason(
+  pr: FollowupPr,
+  why: string,
+  findingsRound: number | undefined,
+  trackReviewComments: boolean,
+): string {
+  const stale = findingsRound !== undefined && findingsRound !== (pr.inspector?.round ?? 0);
+  return stale && trackReviewComments && why === SKIP_NOTHING_OPEN ? SKIP_ROUND_MISMATCH : why;
+}
+
+/** The normal waiting states. The worker never logs them as a hold, or the line would repeat every pass. */
+export const ROUTINE_FOLLOWUP_SKIPS: ReadonlySet<string> = new Set([SKIP_STILL_WORKING, SKIP_ALREADY_NUDGED]);
 
 /**
  * Is this session a candidate for a review follow-through nudge? Every branch is an early
@@ -676,13 +711,13 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   const conflictOpen = fb.conflicting && !cur.conflictEscalated && !pr.conflictEscalated;
   const open: Feedback = { ...fb, conflicting: conflictOpen };
   if (!open.findings && !open.ciFailing && !open.conflicting && !open.codeRabbit) {
-    return skip("no enabled review comments, failing CI or merge conflict");
+    return skip(SKIP_NOTHING_OPEN);
   }
 
   // 8. Only a settled-idle session with a delivery channel. The idle gate is what keeps
   //    this from interrupting an agent already working the fixes: once it acts on a nudge
   //    it is no longer idle, so it is not re-selected until it parks again.
-  if (!settledIdle(s, now, cfg.settleMs)) return skip("still working");
+  if (!settledIdle(s, now, cfg.settleMs)) return skip(SKIP_STILL_WORKING);
   if (!hasPane(s)) return skip("no pane to type into");
 
   // 9. Typing is a live act, so it needs the same clearance a queue send does - live mode
@@ -700,13 +735,13 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   const ciNew = open.ciFailing && !cur.ciNudged;
   const conflictNew =
     open.conflicting && pr.headSha !== cur.conflictHead && cur.conflictNudges < CONFLICT_NUDGE_CAP;
-  if (!findingsNew && !ciNew && !conflictNew && !open.codeRabbit) return skip("already nudged this round of feedback");
+  if (!findingsNew && !ciNew && !conflictNew && !open.codeRabbit) return skip(SKIP_ALREADY_NUDGED);
 
   // The findings read and this snapshot must describe the same Inspector round, or the payload
   // would carry one round's set under another round's stamp. Nothing is stamped, so the next
   // pass, whose snapshot has caught up, relays the round exactly once.
   if (open.findings && read && input.findingsRound !== round) {
-    return skip("the findings read and the snapshot are from different GitHub Inspector rounds");
+    return skip(SKIP_ROUND_MISMATCH);
   }
 
   // Stamp every currently-open dimension as relayed. The payload covers everything open, so
