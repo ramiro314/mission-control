@@ -4021,9 +4021,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid history query" }, 400);
     return c.json(history.list(parsed.data, liveHistorySessions()));
   });
-  app.get("/api/history/sessions/:agent/:id", (c) => {
+  app.get("/api/history/sessions/:agent/:id", async (c) => {
     if (!history) return c.json({ error: "session history unavailable" }, 503);
-    const detail = history.detail(c.req.param("agent"), c.req.param("id"), liveHistorySessions());
+    const detail = await history.detail(c.req.param("agent"), c.req.param("id"), liveHistorySessions());
     return detail ? c.json(detail) : c.json({ error: "no such history session" }, 404);
   });
   app.get("/api/history/sessions/:agent/:id/messages", async (c) => {
@@ -4031,6 +4031,21 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = HistoryMessagesQuerySchema.safeParse(c.req.query());
     if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid history query" }, 400);
     const read = await history.messages(c.req.param("agent"), c.req.param("id"), parsed.data);
+    return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
+  });
+  // Neither `:toolUseId` nor `:agentId` is ever joined into a path: the service format-checks
+  // each, finds the result through the parent transcript's own record or the subagent through
+  // the session's own listing, and confines what it resolves to the session's own folder.
+  app.get("/api/history/sessions/:agent/:id/tool-results/:toolUseId", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const read = await history.toolResult(c.req.param("agent"), c.req.param("id"), c.req.param("toolUseId"));
+    return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
+  });
+  app.get("/api/history/sessions/:agent/:id/subagents/:agentId/messages", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const parsed = HistoryMessagesQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid history query" }, 400);
+    const read = await history.subagentMessages(c.req.param("agent"), c.req.param("id"), c.req.param("agentId"), parsed.data);
     return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
   });
 

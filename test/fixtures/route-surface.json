@@ -44,6 +44,8 @@
   "GET /api/history/sessions": "503 {\"error\":\"session history unavailable\"}",
   "GET /api/history/sessions/:agent/:id": "503 {\"error\":\"session history unavailable\"}",
   "GET /api/history/sessions/:agent/:id/messages": "503 {\"error\":\"session history unavailable\"}",
+  "GET /api/history/sessions/:agent/:id/subagents/:agentId/messages": "503 {\"error\":\"session history unavailable\"}",
+  "GET /api/history/sessions/:agent/:id/tool-results/:toolUseId": "503 {\"error\":\"session history unavailable\"}",
   "GET /api/inspector/config": "200 {\"enabled\":false,\"maxCommentsPerRound\":8,\"mode\":\"dry-run\",\"repoAllowlist\":[]}",
   "GET /api/inspector/findings": "400 {\"error\":\"pr must be a pull request key like owner/repo#123\"}",
   "GET /api/inspector/prs": "200 []",

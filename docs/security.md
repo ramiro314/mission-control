@@ -62,7 +62,10 @@ The same holds for reads. [Session History](history.md#api) serves every Claude 
 under `~/.claude/projects` as recorded, including anything a tool printed, to any loopback
 caller. Its routes take an agent name and a session UUID, never a path; the transcript path
 comes from the catalog and is read only when it resolves, through symlinks, under that harness's
-root. None of them is exposed as an MCP tool.
+root. A tool result's sidecar file and a subagent transcript are confined further: a sidecar is
+read only through the file name its parent transcript's own record gives, a subagent only when
+the session's own listing holds it, and either only when it resolves inside that session's own
+`tool-results/` or `subagents/` folder. None of them is exposed as an MCP tool.
 
 Requiring the daemon token, or an equivalent, for writes to executable settings (pool policy,
 Commands, testing settings and bulk apply) is a recorded follow-up:

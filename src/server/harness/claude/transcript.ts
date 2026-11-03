@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { HISTORY_TOOL_INPUT_CAP } from "@shared/history.ts";
 import type { Session, ToolCall, TranscriptMessage } from "@shared/types.ts";
 import type { TranscriptSpec } from "../types.ts";
 import { jsonlMessages } from "../../transcript.ts";
@@ -67,8 +68,9 @@ export const TOOL_INPUT_CAP = 1800;
  * meaningful (absent, empty object) carry no `input` at all rather than a literal "{}",
  * so the reviewer's window and the card's chips stay clean.
  */
-function toolCall(block: Record<string, unknown>): ToolCall {
+function toolCall(block: Record<string, unknown>, read: ClaudeRecordRead = LIVE_READ): ToolCall {
   const name = String(block.name ?? "tool");
+  const id = read.toolIds && typeof block.id === "string" && block.id ? { id: block.id } : {};
   let json: string | undefined;
   try {
     // A tool input is plain JSON off disk, but stringify still throws on a cycle and
@@ -76,11 +78,28 @@ function toolCall(block: Record<string, unknown>): ToolCall {
     // whole window down with it.
     json = JSON.stringify(block.input);
   } catch {
-    return { name };
+    return { name, ...id };
   }
-  if (!json || json === "{}" || json === "null") return { name };
-  return { name, input: json.length > TOOL_INPUT_CAP ? `${json.slice(0, TOOL_INPUT_CAP)}…` : json };
+  if (!json || json === "{}" || json === "null") return { name, ...id };
+  return { name, input: json.length > read.inputCap ? `${json.slice(0, read.inputCap)}…` : json, ...id };
 }
+
+/**
+ * What one reading of a record keeps. The live view's reading is `LIVE_READ`, and nothing it
+ * draws depends on the other fields; Session History reads the same records more fully.
+ */
+interface ClaudeRecordRead {
+  /** Where a tool call's serialized input is cut. */
+  inputCap: number;
+  /** Keep each tool call's `tool_use.id`, so its result can be looked up later. */
+  toolIds: boolean;
+  /** Keep subagent (sidechain) records: true only for a subagent's own transcript. */
+  sidechains: boolean;
+  /** Emit compaction boundaries and the summary carried past them as marked turns. */
+  compaction: boolean;
+}
+
+const LIVE_READ: ClaudeRecordRead = { inputCap: TOOL_INPUT_CAP, toolIds: false, sidechains: false, compaction: false };
 
 /**
  * Turn one parsed JSONL record into a renderable message, or null to drop it.
@@ -88,9 +107,26 @@ function toolCall(block: Record<string, unknown>): ToolCall {
  * drops sidechain (subagent) noise and the tool-result user records.
  */
 export function toMessage(o: unknown): TranscriptMessage | null {
+  return readRecord(o, LIVE_READ);
+}
+
+/**
+ * A Session History reading of one record: `toMessage`, plus each tool call's id, tool input
+ * up to `HISTORY_TOOL_INPUT_CAP`, and compaction boundaries. `sidechains` is true for a
+ * subagent's own transcript, every record of which is a sidechain.
+ */
+export function toHistoryMessage(o: unknown, sidechains = false): TranscriptMessage | null {
+  return readRecord(o, { inputCap: HISTORY_TOOL_INPUT_CAP, toolIds: true, sidechains, compaction: true });
+}
+
+function readRecord(o: unknown, read: ClaudeRecordRead): TranscriptMessage | null {
   if (!o || typeof o !== "object") return null;
   const rec = o as Record<string, unknown>;
-  if (rec.isSidechain) return null;
+  if (rec.isSidechain && !read.sidechains) return null;
+  if (read.compaction) {
+    const boundary = compactionBoundary(rec);
+    if (boundary) return boundary;
+  }
   // Records the CLI injects on its own behalf, marked as such by the CLI. Read here for
   // the same reason `computeSessionActivity` reads it (see `meta.ts`): they are not
   // conversation. They carry no `origin` - the daemon never delivered them, so
@@ -118,7 +154,7 @@ export function toMessage(o: unknown): TranscriptMessage | null {
       else if (b && typeof b === "object") {
         const block = b as Record<string, unknown>;
         if (block.type === "text") text += String(block.text ?? "");
-        else if (block.type === "tool_use") tools.push(toolCall(block));
+        else if (block.type === "tool_use") tools.push(toolCall(block, read));
         else if (block.type === "tool_result") hasToolResult = true;
       }
     }
@@ -132,8 +168,29 @@ export function toMessage(o: unknown): TranscriptMessage | null {
   // A user turn that's purely a tool result is machine noise, not conversation.
   if (role === "user" && !text && hasToolResult) return null;
   if (!text && tools.length === 0) return null;
+  // Claude's own summary of what came before, recorded as a user turn the operator never typed.
+  if (read.compaction && role === "user" && rec.isCompactSummary === true) {
+    return { ...withIdentity(rec, role, text, tools), presentation: { kind: "compaction_summary" } };
+  }
 
   return withIdentity(rec, role, text, tools);
+}
+
+/** A `compact_boundary` system record as an empty turn marking where context was compacted. */
+function compactionBoundary(rec: Record<string, unknown>): TranscriptMessage | null {
+  if (rec.type !== "system" || rec.subtype !== "compact_boundary") return null;
+  const meta = rec.compactMetadata && typeof rec.compactMetadata === "object"
+    ? rec.compactMetadata as Record<string, unknown>
+    : {};
+  const preTokens = typeof meta.preTokens === "number" && Number.isFinite(meta.preTokens) ? meta.preTokens : null;
+  return {
+    ...withIdentity(rec, "assistant", "", []),
+    presentation: {
+      kind: "compaction",
+      trigger: typeof meta.trigger === "string" && meta.trigger ? meta.trigger : null,
+      preTokens,
+    },
+  };
 }
 
 function withIdentity(
@@ -263,6 +320,12 @@ export function readCurrentTodo(path: string): string | null {
  * located file here, or a cataloged one in Session History (`history.ts`).
  */
 export const claudeMessages = jsonlMessages({ parse: toMessage, narration: readCurrentTodo });
+
+/** A cataloged session read in Session History, through `toHistoryMessage`. */
+export const claudeHistoryMessages = jsonlMessages({ parse: (o) => toHistoryMessage(o), narration: readCurrentTodo });
+
+/** A subagent run's own transcript, every record of which is a sidechain. */
+export const claudeSubagentMessages = jsonlMessages({ parse: (o) => toHistoryMessage(o, true), narration: () => null });
 
 /** Claude Code's transcript capability: a located JSONL file, read as messages and as meta. */
 export const claudeTranscript: TranscriptSpec = {
