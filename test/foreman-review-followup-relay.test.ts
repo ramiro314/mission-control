@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ForemanConfig, InspectorFindingsResponse } from "../src/shared/protocol.ts";
-import type { InspectorComment, InspectorSummary, Session } from "../src/shared/types.ts";
+import type { ForemanConfig, InspectorConfig, InspectorFindingsResponse } from "../src/shared/protocol.ts";
+import type { InspectorComment, InspectorInspection, InspectorSummary, Session } from "../src/shared/types.ts";
 import { WORKFLOW_RUN_STATUSES } from "../src/shared/workflow.ts";
+import { mkInspection } from "./helpers/inspection-fixture.ts";
 
 // What is at stake: the worker half of the findings relay, driven through the real pass. The
 // decision core says a nudge includes findings; `runReviewFollowup` reads their text through
@@ -33,6 +34,7 @@ const REPO = "/work/alpha";
 const PR_URL = "https://github.com/owner/repo/pull/7";
 const KEY = "owner/repo#7";
 const LEADER = () => true;
+const ADOPTED_READ = ["openInspections", "inspectorConfig"];
 
 const CFG = {
   enabled: true,
@@ -116,6 +118,8 @@ function fakeDaemon(opts: {
   /** The config the freshness recheck reads, when it must differ from the pass's. */
   config?: ForemanConfig;
   codeRabbitAutoResolve?: boolean;
+  /** The Inspector's open adopted rows. None unless a case adopts one. */
+  openInspections?: (afterRead: boolean) => Promise<InspectorInspection[]>;
 }) {
   let afterRead = false;
   const calls: string[] = [];
@@ -131,6 +135,14 @@ function fakeDaemon(opts: {
     workflowRuns: async () => {
       calls.push("workflowRuns");
       return opts.workflowRuns?.(afterRead) ?? [];
+    },
+    openInspections: async () => {
+      calls.push("openInspections");
+      return (await opts.openInspections?.(afterRead)) ?? [];
+    },
+    inspectorConfig: async () => {
+      calls.push("inspectorConfig");
+      return { mode: "dry-run", enabled: true } as InspectorConfig;
     },
     inspectorFindings: async (prKey: string) => {
       calls.push(`findings:${prKey}`);
@@ -157,9 +169,11 @@ test("a dry-run draft is read through the daemon, then the fleet is re-read, the
   // The read comes before the freshness recheck, so nothing but the inject follows the recheck.
   assert.deepEqual(fake.calls, [
     "sessions",
+    ...ADOPTED_READ,
     "workflowRuns",
     `findings:${KEY}`,
     "sessions",
+    ...ADOPTED_READ,
     "workflowRuns",
     "inject",
   ]);
@@ -259,7 +273,9 @@ test("a released run that resumes during the read is not typed across", async ()
   });
   assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 0);
   assert.deepEqual(fake.injected, []);
-  assert.deepEqual(fake.calls, ["sessions", "workflowRuns", `findings:${KEY}`, "sessions", "workflowRuns"]);
+  assert.deepEqual(fake.calls, [
+    "sessions", ...ADOPTED_READ, "workflowRuns", `findings:${KEY}`, "sessions", ...ADOPTED_READ, "workflowRuns",
+  ]);
 });
 
 test("an Inspector round that finishes during the read is held, then relayed exactly once", async () => {
@@ -289,7 +305,7 @@ test("a failed read is held: nothing typed, no stamp, and the next pass relays",
   });
   assert.equal((await runReviewFollowup(failed.client, CFG, LEADER)).size, 0);
   assert.deepEqual(failed.injected, []);
-  assert.deepEqual(failed.calls, ["sessions", "workflowRuns", `findings:${KEY}`], "no recheck, no inject");
+  assert.deepEqual(failed.calls, ["sessions", ...ADOPTED_READ, "workflowRuns", `findings:${KEY}`], "no recheck, no inject");
 
   // A shape the client's schema refused throws the same way.
   const unparsed = fakeDaemon({
@@ -352,6 +368,100 @@ test("a worker that lost the lease types nothing", async () => {
   assert.deepEqual(fake.injected, []);
 });
 
+// ---- a PR the Inspector adopted that the session card no longer carries ----
+
+const BRANCH = "feat/adopted";
+
+/** The live example: the card shows no PR while the checkout sits on the adopted PR's branch. */
+function detached(id: string): Session {
+  return parked(id, { prUrl: null, prNumber: null, prState: null, inspector: null, gitBranch: BRANCH });
+}
+
+function adoptedBy(id: string, over: Partial<InspectorInspection> = {}): InspectorInspection {
+  return mkInspection({ key: KEY, url: PR_URL, sessionId: id, repoRoot: REPO, headRefName: BRANCH, ...over });
+}
+
+const unreadable = async () => Promise.reject(new Error("GET /api/inspector/prs?state=open -> 503"));
+
+test("an adopted PR the card does not carry is relayed with its findings' text", async () => {
+  const fake = fakeDaemon({
+    sessions: () => [detached("adopted")],
+    openInspections: async () => [adoptedBy("adopted")],
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 1);
+  assert.deepEqual(fake.calls, [
+    "sessions", ...ADOPTED_READ, "workflowRuns", `findings:${KEY}`,
+    "sessions", ...ADOPTED_READ, "workflowRuns", "inject",
+  ]);
+  const { id, text } = fake.injected[0]!;
+  assert.equal(id, "adopted");
+  assert.match(text, /^PR #7 needs follow-through: GitHub Inspector has 1 unresolved finding on it/);
+  assert.match(text, /The handler dereferences `user` before checking it\./);
+});
+
+test("a failed adoption read still relays the card's PR", async () => {
+  const fake = fakeDaemon({
+    sessions: () => [parked("card-only")],
+    openInspections: unreadable,
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 1);
+  assert.equal(fake.injected.length, 1);
+});
+
+test("a failed adoption read keeps the adopted PR's mark, so its round is not relayed twice", async () => {
+  const OTHER = "owner/repo#9";
+  for (const [id, session] of [
+    ["flaky-detached", detached("flaky-detached")],
+    ["flaky-alongside", parked("flaky-alongside", { gitBranch: BRANCH })],
+  ] as const) {
+    const sessions = () => [session];
+    const readable = async () => [
+      adoptedBy(id, { key: OTHER, url: "https://github.com/owner/repo/pull/9", number: 9 }),
+    ];
+    const findings = async () => response([draft()]);
+    let relayedTo: string[] = [];
+    for (let pass = 0; pass < 2; pass++) {
+      const relayed = fakeDaemon({ sessions, openInspections: readable, findings });
+      await runReviewFollowup(relayed.client, CFG, LEADER);
+      relayedTo = [...relayedTo, ...relayed.calls.filter((c) => c.startsWith("findings:"))];
+    }
+    assert.ok(relayedTo.includes(`findings:${OTHER}`), `${id}: the adopted PR was relayed`);
+
+    const failed = fakeDaemon({ sessions, openInspections: unreadable, findings });
+    await runReviewFollowup(failed.client, CFG, LEADER);
+    assert.deepEqual(failed.injected, [], `${id}: nothing new on the card's PR`);
+
+    const recovered = fakeDaemon({ sessions, openInspections: readable, findings });
+    assert.equal((await runReviewFollowup(recovered.client, CFG, LEADER)).size, 0);
+    assert.deepEqual(recovered.injected, [], `${id}: round 3 was already relayed`);
+  }
+});
+
+test("an adopted PR on a session an open run holds is not relayed", async () => {
+  const active = WORKFLOW_RUN_STATUSES.find((s) => !["completed", "cancelled", "failed"].includes(s));
+  assert.ok(active);
+  const fake = fakeDaemon({
+    sessions: () => [detached("held")],
+    openInspections: async () => [adoptedBy("held")],
+    workflowRuns: () => [{ status: active }],
+    findings: async () => assert.fail("a held session reads nothing"),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(fake.injected, []);
+});
+
+test("an adopted PR that closes during the findings read is not typed", async () => {
+  const fake = fakeDaemon({
+    sessions: () => [detached("closing")],
+    openInspections: async (afterRead) => (afterRead ? [] : [adoptedBy("closing")]),
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(fake.injected, []);
+});
+
 // ---- which failures count (fork: ci-strictness) ----
 //
 // The worker builds the follow-up config twice, once for the pass and once for the recheck
@@ -399,7 +509,7 @@ test("the pass's decision reads ciStrictness from the pass's config", async () =
     config: ALL_CFG,
   });
   assert.equal((await runReviewFollowup(fake.client, REQUIRED_CFG, LEADER)).size, 0);
-  assert.deepEqual(fake.calls, ["sessions", "workflowRuns"], "the pass decided Required and stopped");
+  assert.deepEqual(fake.calls, ["sessions", ...ADOPTED_READ, "workflowRuns"], "the pass decided Required and stopped");
   assert.deepEqual(fake.injected, []);
 });
 
@@ -411,6 +521,10 @@ test("the recheck's decision reads ciStrictness from the fresh config", async ()
     config: REQUIRED_CFG,
   });
   assert.equal((await runReviewFollowup(fake.client, ALL_CFG, LEADER)).size, 0);
-  assert.deepEqual(fake.calls, ["sessions", "workflowRuns", "sessions", "workflowRuns"], "the recheck ran");
+  assert.deepEqual(
+    fake.calls,
+    ["sessions", ...ADOPTED_READ, "workflowRuns", "sessions", ...ADOPTED_READ, "workflowRuns"],
+    "the recheck ran",
+  );
   assert.deepEqual(fake.injected, []);
 });

@@ -14558,6 +14558,25 @@ export function loadInspectorInspections(limit?: number): InspectorInspection[] 
 }
 
 /**
+ * Every OPEN ledger row with its tallies, ordered like `loadInspectorInspections`.
+ *
+ * Foreman's PR follow-through reads this to find an open pull request the Inspector adopted
+ * under a session whose card no longer carries it. Uncapped, because a cap would silently drop
+ * an open PR off the bottom; closed rows are excluded, which is what keeps it small.
+ */
+export function loadOpenInspectorInspections(): InspectorInspection[] {
+  const rows = openDb()
+    .prepare(
+      `${INSPECTION_TALLY_FROM}
+        WHERE p.state = 'open'
+        GROUP BY p.key
+        ORDER BY COALESCE(p.last_reviewed_at, p.adopted_at) DESC`,
+    )
+    .all() as unknown as InspectionTallyRow[];
+  return rows.map(rowToInspection);
+}
+
+/**
  * The same rows windowed and ordered by ADOPTION instead - "every pull request we opened
  * since T, newest first".
  *

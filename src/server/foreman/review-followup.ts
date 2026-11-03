@@ -1,5 +1,6 @@
 import type {
   InspectorComment,
+  InspectorInspection,
   InspectorSummary,
   PrChecks,
   PrMergeableObservation,
@@ -102,8 +103,9 @@ export interface ReviewFollowupConfig {
  * `inspector` scalars, which answer for the session's own checkout alone - so a secondary
  * repository's red CI and unresolved findings are as visible here as the primary's.
  *
- * `followupPrs` is the only thing that builds one. A single-repo session yields exactly one,
- * carrying exactly the scalars this file used to read.
+ * `followupPrs` builds them from the session card, and a single-repo session yields exactly
+ * one, carrying exactly the scalars this file used to read. `reviewFollowupPrs` appends the
+ * Inspector-adopted ones the card does not carry.
  */
 export interface FollowupPr {
   /** `owner/repo#123` where the Inspector adopted it, else `#123`. Marks are keyed on it. */
@@ -136,7 +138,7 @@ export interface FollowupPr {
 export interface ReviewFollowupInput {
   session: Session;
   /**
-   * The pull request being considered, from `followupPrs`, or null when the session has no
+   * The pull request being considered, from `reviewFollowupPrs`, or null when the session has no
    * open one at all.
    */
   pr: FollowupPr | null;
@@ -306,6 +308,51 @@ export function followupPrs(s: Session): FollowupPr[] {
       baseRef: entry.feedback.prBaseRef ?? null,
       headSha: entry.feedback.prHeadSha ?? null,
       conflictEscalated: entry.feedback.prConflictEscalated ?? false,
+    });
+  }
+  return out;
+}
+
+/** An open ledger row the Inspector adopted, with the chip facts projected from it. */
+export interface AdoptedInspection {
+  row: InspectorInspection;
+  inspector: InspectorSummary;
+}
+
+/**
+ * The follow-through's PR list: `followupPrs(session)`, then each open pull request the
+ * Inspector adopted under this session, on this repository and on the session's current branch
+ * (D2), that the card does not already carry.
+ *
+ * The session card holds only a PR its current work episode accepts, so a session that went
+ * back to an older PR's branch shows none. The Inspector's adoption rests on observed
+ * authorship instead. An adopted-only entry carries no CI, mergeability or head, so only its
+ * findings can fire; the episode rule and every other `followupPrs` caller are untouched.
+ */
+export function reviewFollowupPrs(
+  session: Session,
+  adopted: readonly AdoptedInspection[],
+): FollowupPr[] {
+  const out = followupPrs(session);
+  const keys = new Set(out.map((pr) => pr.prKey));
+  for (const { row, inspector } of adopted) {
+    // `state` is checked here too: an older daemon ignores `?state=open` and answers every row.
+    if (row.state !== "open") continue;
+    if (row.sessionId !== session.id || row.repoRoot !== session.repoRoot) continue;
+    if (row.headRefName === null || row.headRefName !== session.gitBranch) continue;
+    if (keys.has(row.key)) continue;
+    keys.add(row.key);
+    out.push({
+      prKey: row.key,
+      url: row.url,
+      number: row.number,
+      repoRoot: null,
+      inspector,
+      checks: null,
+      mergeable: null,
+      baseRef: null,
+      headSha: null,
+      conflictEscalated: false,
     });
   }
   return out;
@@ -583,7 +630,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
 
   // 3. There has to be an OPEN pull request to speak about. A merged one is done; a
   //    closed-unmerged one is dropped like no PR at all (see `Session.prUrl`). WHICH one is
-  //    the caller's choice now - `followupPrs` enumerates them and a multi-repo session has
+  //    the caller's choice now - `reviewFollowupPrs` enumerates them and a multi-repo session has
   //    several - but the gate is the same one, and it still reads as a property of the
   //    session in the log: nothing here to follow through on.
   if (!pr) return skip("no open pull request");

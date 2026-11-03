@@ -324,6 +324,13 @@ Both apply to parked sessions on harnesses Foreman can reliably drive - currentl
 and Codex sessions launched with Mission Control's scoped hooks - whether the PR came from
 **Straight to PR**, a review workflow, or one you shipped by hand.
 
+The session card shows only the PR its current work episode accepted, so a session that returned
+to an older PR's branch can show none. Foreman also follows the GitHub Inspector's adoption: an
+open PR the Inspector adopted under that session, in its repository, whose head branch is the
+session's current branch, has its unresolved findings relayed even when the card shows no PR.
+Such a PR carries only its findings. CI, conflict and CodeRabbit follow-through stay with the
+card's PR.
+
 Each nudge is typed into the session's pane, so it carries the usual gates and one more:
 
 - it only **types** in **live** mode on an **allowlisted** repo, exactly like direct

@@ -9,10 +9,12 @@ import {
   ciFollowup,
   decideReviewFollowup,
   followupPrs,
+  reviewFollowupPrs,
   workflowHoldsReviewFollowup,
   workflowReleasedFollowupOnly,
 } from "../src/server/foreman/review-followup.ts";
 import type {
+  AdoptedInspection,
   FollowupMark,
   FollowupPr,
   ReviewFollowupInput,
@@ -20,6 +22,7 @@ import type {
 import type {
   InspectorCiSummary,
   InspectorComment,
+  InspectorInspection,
   InspectorSummary,
   Session,
   SessionQueueSummary,
@@ -27,6 +30,8 @@ import type {
   TaskSummary,
 } from "../src/shared/types.ts";
 import type { TerminalHandle } from "../src/shared/terminal.ts";
+import { inspectorSummaryOf } from "../src/shared/inspector.ts";
+import { mkInspection } from "./helpers/inspection-fixture.ts";
 import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "../src/shared/workflow.ts";
 
 // What is at stake: Foreman must re-engage a session whose PR is carrying feedback nobody
@@ -391,6 +396,78 @@ test("no open PR is nothing to follow through on", () => {
   assert.equal(decide({ session: mkSession({ prState: null, prUrl: null }) }).kind, "skip");
   // A merged PR is done, not open.
   assert.equal(decide({ session: mkSession({ prState: "merged", prChecks: "failing" }) }).kind, "skip");
+});
+
+// ---- a PR the Inspector adopted that the session card does not carry (Fix 2) ----
+
+const ADOPTED_KEY = "owner/repo#9";
+const ADOPTED_URL = "https://github.com/owner/repo/pull/9";
+
+function adoptedRow(over: Partial<InspectorInspection> = {}): AdoptedInspection {
+  const row = mkInspection({ key: ADOPTED_KEY, url: ADOPTED_URL, number: 9, ...over });
+  return { row, inspector: inspectorSummaryOf(row, { mode: "dry-run", enabled: true }) };
+}
+
+/** The live example: the card shows no PR while the checkout sits on an adopted PR's branch. */
+const detached = () => mkSession({ prUrl: null, prNumber: null, prState: null, inspector: null });
+
+test("reviewFollowupPrs keeps the card's PR first and appends an adopted PR on the session's branch", () => {
+  const session = mkSession({ inspector: inspector({ open: 1 }) });
+  const prs = reviewFollowupPrs(session, [adoptedRow()]);
+  assert.deepEqual(prs.map((pr) => pr.prKey), ["owner/repo#7", ADOPTED_KEY]);
+  assert.deepEqual(prs[0], followupPrs(session)[0]);
+  assert.deepEqual(prs[1], {
+    prKey: ADOPTED_KEY,
+    url: ADOPTED_URL,
+    number: 9,
+    repoRoot: null,
+    inspector: adoptedRow().inspector,
+    checks: null,
+    mergeable: null,
+    baseRef: null,
+    headSha: null,
+    conflictEscalated: false,
+  });
+});
+
+test("reviewFollowupPrs ignores an adopted row that is not this session's open PR on this branch", () => {
+  const session = detached();
+  const ignored: Array<[string, Partial<InspectorInspection>]> = [
+    ["another session", { sessionId: "s2" }],
+    ["another repository", { repoRoot: "/work/beta" }],
+    ["another branch", { headRefName: "feat/y" }],
+    ["an unknown branch", { headRefName: null }],
+    ["a closed row", { state: "closed" }],
+  ];
+  for (const [label, over] of ignored) {
+    assert.deepEqual(reviewFollowupPrs(session, [adoptedRow(over)]), [], label);
+  }
+  // A row whose key the card already carries is not offered twice.
+  const carried = mkSession({ inspector: inspector({ open: 1 }) });
+  const duplicate = adoptedRow({ key: "owner/repo#7", url: "https://github.com/owner/repo/pull/7", number: 7 });
+  assert.deepEqual(reviewFollowupPrs(carried, [duplicate]), followupPrs(carried));
+  assert.equal(reviewFollowupPrs(detached(), [adoptedRow(), adoptedRow()]).length, 1, "one entry per key");
+});
+
+test("an adopted-only PR with unresolved findings asks for them, and with none it is left alone", () => {
+  const session = detached();
+  const [pr] = reviewFollowupPrs(session, [adoptedRow()]);
+  assert.ok(pr);
+  const first = decide({ session, pr, findings: undefined });
+  assert.equal(first.kind, "read-findings");
+  assert.equal(first.kind === "read-findings" && first.prKey, ADOPTED_KEY);
+
+  const relayed = decide({ session, pr });
+  assert.equal(relayed.kind, "nudge");
+
+  // Red CI on the row alone is not a dimension an adopted-only entry carries.
+  const [quiet] = reviewFollowupPrs(session, [
+    adoptedRow({ openFindings: 0, ci: { headSha: "head-7", required: "failing" } }),
+  ]);
+  assert.deepEqual(decide({ session, pr: quiet ?? null }), {
+    kind: "skip",
+    why: "no enabled review comments, failing CI or merge conflict",
+  });
 });
 
 test("a clean open PR - no findings, CI not red - is left alone", () => {
