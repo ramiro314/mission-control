@@ -588,6 +588,51 @@ test("a recheck whose read is for another round logs the fresh snapshot's count 
   assert.deepEqual(raced.injected, []);
 });
 
+test("a stale read that found nothing logs the round mismatch, not 'nothing to act on'", async () => {
+  const raced = fakeDaemon({
+    sessions: (afterRead) => [
+      parked("held-stale-empty", { inspector: afterRead ? summary({ open: 1, round: 4 }) : summary({ open: 1, round: 3 }) }),
+    ],
+    findings: async () => response([draft({ status: "resolved" })], 3),
+  });
+  assert.deepEqual(await heldLines("held-stale-empty", raced), [
+    "[foreman] held-stale-empty: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - " +
+      "the findings read and the snapshot are from different GitHub Inspector rounds",
+  ]);
+  assert.deepEqual(raced.injected, []);
+});
+
+test("a session whose id is re-minted keeps its logged holds", async () => {
+  const held = (id: string) => heldDaemon(() => parked(id, { agentSessionId: "agent-held-remint" }));
+  assert.equal((await heldLines("held-remint-a", held("held-remint-a"))).length, 1);
+  assert.deepEqual(await heldLines("held-remint-b", held("held-remint-b")), []);
+});
+
+test("a held PR the session stops following is forgotten, so its return logs again", async () => {
+  let adoptedOpen = true;
+  const pass = () =>
+    heldLines(
+      "held-prune",
+      fakeDaemon({
+        sessions: () => [parked("held-prune", { gitBranch: BRANCH })],
+        openInspections: async () =>
+          adoptedOpen
+            ? [adoptedBy("held-prune", { key: "owner/repo#8", url: "https://github.com/owner/repo/pull/8", number: 8 })]
+            : [],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+  const line8 =
+    "[foreman] held-prune: holding 1 GitHub Inspector finding(s) on owner/repo#8 (round 3) - an active workflow owns this session";
+
+  assert.equal((await pass()).length, 2);
+  adoptedOpen = false;
+  assert.deepEqual(await pass(), []);
+  adoptedOpen = true;
+  assert.deepEqual(await pass(), [line8], "#7 stayed remembered; #8 was pruned while it was gone");
+});
+
 test("a held PR without findings logs nothing", async () => {
   const fake = heldDaemon(() => parked("held-clean", { inspector: summary({ open: 0 }) }));
   assert.deepEqual(await heldLines("held-clean", fake), []);

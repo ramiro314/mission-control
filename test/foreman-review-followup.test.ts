@@ -5,7 +5,10 @@ import {
   CONFLICT_GIVE_UP_MS,
   ROUTINE_FOLLOWUP_SKIPS,
   SKIP_ALREADY_NUDGED,
+  SKIP_NOTHING_OPEN,
+  SKIP_ROUND_MISMATCH,
   SKIP_STILL_WORKING,
+  heldSkipReason,
   activeWorkflowOwnsSession,
   advanceFollowupMark,
   buildPayload,
@@ -699,6 +702,17 @@ test("the routine waiting skips are the exported constants the gates return, and
   assert.deepEqual([...ROUTINE_FOLLOWUP_SKIPS].sort(), [SKIP_ALREADY_NUDGED, SKIP_STILL_WORKING].sort());
   const held = decide({ session, workflowOwnsSession: true });
   assert.ok(held.kind === "skip" && !ROUTINE_FOLLOWUP_SKIPS.has(held.why));
+});
+
+test("the held log reports a stale read's 'nothing to act on' as the round mismatch, and nothing else", () => {
+  const pr = onlyPr(mkSession({ inspector: inspector({ open: 1, round: 4 }) }));
+  const nothing = decide({ session: mkSession({ inspector: inspector({ open: 0 }) }) });
+  assert.deepEqual(nothing, { kind: "skip", why: SKIP_NOTHING_OPEN });
+
+  assert.equal(heldSkipReason(pr, SKIP_NOTHING_OPEN, 3), SKIP_ROUND_MISMATCH);
+  assert.equal(heldSkipReason(pr, SKIP_NOTHING_OPEN, 4), SKIP_NOTHING_OPEN);
+  assert.equal(heldSkipReason(pr, SKIP_NOTHING_OPEN), SKIP_NOTHING_OPEN);
+  assert.equal(heldSkipReason(pr, "an active workflow owns this session", 3), "an active workflow owns this session");
 });
 
 test("a later PR resets the mark - no collision with the prior PR at the same round", () => {

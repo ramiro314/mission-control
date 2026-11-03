@@ -102,6 +102,7 @@ import {
   decideReviewFollowup,
   followupPrs,
   heldFindingsCount,
+  heldSkipReason,
   reviewFollowupPrs,
   workflowHoldsReviewFollowup,
   workflowReleasedFollowupOnly,
@@ -948,15 +949,26 @@ const reviewNudged = new Map<string, Map<string, FollowupMark>>();
 
 /**
  * The reasons already logged for each session's pull request in its current Inspector round, so
- * a held PR is logged once per round and reason rather than every pass. Pruned with `reviewNudged`.
+ * a held PR is logged once per round and reason rather than every pass. Keyed by `noteKeyOf`, so
+ * a re-minted session id does not log the same hold again.
  */
 const heldLogged = new Map<string, Map<string, { round: number; reasons: Set<string> }>>();
+
+/** Forget the held PRs a session no longer follows through on, as `observeFollowupMarks` does. */
+function pruneHeldLogged(session: Session, prs: readonly FollowupPr[]): void {
+  const logged = heldLogged.get(noteKeyOf(session));
+  if (!logged) return;
+  const open = new Set(prs.map((pr) => pr.prKey));
+  for (const prKey of logged.keys()) if (!open.has(prKey)) logged.delete(prKey);
+  if (logged.size === 0) heldLogged.delete(noteKeyOf(session));
+}
 
 function logHeldFindings(session: Session, pr: FollowupPr, why: string, open: number): void {
   if (open === 0 || ROUTINE_FOLLOWUP_SKIPS.has(why)) return;
   const round = pr.inspector?.round ?? 0;
-  const logged = heldLogged.get(session.id) ?? new Map<string, { round: number; reasons: Set<string> }>();
-  heldLogged.set(session.id, logged);
+  const key = noteKeyOf(session);
+  const logged = heldLogged.get(key) ?? new Map<string, { round: number; reasons: Set<string> }>();
+  heldLogged.set(key, logged);
   let held = logged.get(pr.prKey);
   if (!held || held.round !== round) {
     held = { round, reasons: new Set() };
@@ -1063,7 +1075,8 @@ export async function runReviewFollowup(
   // Drop markers for sessions that have gone away, so the map tracks the live fleet.
   const liveIds = new Set(sessions.map((s) => s.id));
   for (const id of reviewNudged.keys()) if (!liveIds.has(id)) reviewNudged.delete(id);
-  for (const id of heldLogged.keys()) if (!liveIds.has(id)) heldLogged.delete(id);
+  const liveNoteKeys = new Set(sessions.map(noteKeyOf));
+  for (const key of heldLogged.keys()) if (!liveNoteKeys.has(key)) heldLogged.delete(key);
 
   const adopted = await readAdoptedInspections(client);
   const shipping = await client.shippingConfig().catch(() => null);
@@ -1073,11 +1086,9 @@ export async function runReviewFollowup(
     // later new PR starts fresh. Everything below is scoped to pull requests a mark can be
     // keyed to.
     const prs = reviewFollowupPrs(session, adopted ?? []);
+    if (adopted) pruneHeldLogged(session, prs);
     if (prs.length === 0) {
-      if (adopted) {
-        reviewNudged.delete(session.id);
-        heldLogged.delete(session.id);
-      }
+      if (adopted) reviewNudged.delete(session.id);
       continue;
     }
 
@@ -1164,9 +1175,6 @@ export async function runReviewFollowup(
         const carried = reviewNudged.get(session.id);
         if (carried && !reviewNudged.has(fresh.id)) reviewNudged.set(fresh.id, carried);
         reviewNudged.delete(session.id);
-        const held = heldLogged.get(session.id);
-        if (held && !heldLogged.has(fresh.id)) heldLogged.set(fresh.id, held);
-        heldLogged.delete(session.id);
       }
       const freshPrs = reviewFollowupPrs(fresh, freshAdopted ?? []);
       const freshPr = freshPrs.find((candidate) => candidate.prKey === pr.prKey);
@@ -1195,7 +1203,12 @@ export async function runReviewFollowup(
       // An escalation that appeared between the two reads is the next pass's to send, and so
       // are findings that appeared in it: this pass read none, so it has no text to type.
       if (freshDecision.kind === "skip") {
-        logHeldFindings(fresh, freshPr, freshDecision.why, heldFindingsCount(freshPr, read?.findings, read?.pr.round));
+        logHeldFindings(
+          fresh,
+          freshPr,
+          heldSkipReason(freshPr, freshDecision.why, read?.pr.round),
+          heldFindingsCount(freshPr, read?.findings, read?.pr.round),
+        );
       }
       if (freshDecision.kind !== "nudge" || !holdsLease()) break;
 

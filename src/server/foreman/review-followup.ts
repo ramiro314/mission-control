@@ -611,6 +611,18 @@ function decideConflictEscalation(
 
 export const SKIP_STILL_WORKING = "still working";
 export const SKIP_ALREADY_NUDGED = "already nudged this round of feedback";
+export const SKIP_NOTHING_OPEN = "no enabled review comments, failing CI or merge conflict";
+export const SKIP_ROUND_MISMATCH = "the findings read and the snapshot are from different GitHub Inspector rounds";
+
+/**
+ * The reason the held-findings log gives. A read for another round that found nothing open
+ * says nothing about the snapshot's round, so that "nothing to act on" is the round mismatch.
+ * Log wording only: the decision is unchanged.
+ */
+export function heldSkipReason(pr: FollowupPr, why: string, findingsRound?: number): string {
+  const stale = findingsRound !== undefined && findingsRound !== (pr.inspector?.round ?? 0);
+  return stale && why === SKIP_NOTHING_OPEN ? SKIP_ROUND_MISMATCH : why;
+}
 
 /** The normal waiting states. The worker never logs them as a hold, or the line would repeat every pass. */
 export const ROUTINE_FOLLOWUP_SKIPS: ReadonlySet<string> = new Set([SKIP_STILL_WORKING, SKIP_ALREADY_NUDGED]);
@@ -693,7 +705,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   const conflictOpen = fb.conflicting && !cur.conflictEscalated && !pr.conflictEscalated;
   const open: Feedback = { ...fb, conflicting: conflictOpen };
   if (!open.findings && !open.ciFailing && !open.conflicting && !open.codeRabbit) {
-    return skip("no enabled review comments, failing CI or merge conflict");
+    return skip(SKIP_NOTHING_OPEN);
   }
 
   // 8. Only a settled-idle session with a delivery channel. The idle gate is what keeps
@@ -723,7 +735,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   // would carry one round's set under another round's stamp. Nothing is stamped, so the next
   // pass, whose snapshot has caught up, relays the round exactly once.
   if (open.findings && read && input.findingsRound !== round) {
-    return skip("the findings read and the snapshot are from different GitHub Inspector rounds");
+    return skip(SKIP_ROUND_MISMATCH);
   }
 
   // Stamp every currently-open dimension as relayed. The payload covers everything open, so
