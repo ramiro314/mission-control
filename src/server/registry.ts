@@ -4121,6 +4121,7 @@ export class Registry extends EventEmitter {
         }
       }
     }
+    const pruned = new Set<string>();
     for (const binding of historicalTaskWorkEpisodeBindings()) {
       // A historical binding survives for two independent reasons, and the completion one
       // is the newer: a rolled-past episode's pull request is what `mergedPrFor` reads to
@@ -4135,6 +4136,7 @@ export class Registry extends EventEmitter {
       const dependencyEvidence = legacyTaskIds.has(binding.taskId) && binding.prUrl !== null;
       if (!mergeEvidence && !dependencyEvidence) {
         deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
+        pruned.add(binding.taskId);
         continue;
       }
       episodeKeys.add(`${binding.sessionId}\0${binding.episodeId}`);
@@ -4145,6 +4147,9 @@ export class Registry extends EventEmitter {
       if (episodeKeys.has(`${identity.sessionId}\0${identity.episodeId}`)) continue;
       deleteWorkEpisodePrompts(identity.sessionId, identity.episodeId);
     }
+    // A pruned row may be the one a held task's `agentSessionId` was read from, and every
+    // caller runs this after it has published, so the task is re-read here rather than there.
+    for (const taskId of pruned) this.refreshTaskAgentSession(taskId);
   }
 
   private hydrateTaskDependencyProvenance(): void {

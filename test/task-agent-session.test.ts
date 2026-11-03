@@ -137,6 +137,43 @@ test("a reset that invalidates a finished task's binding re-sends it with what r
   assert.deepEqual(seen, [AGENT_A]);
 });
 
+test("a later cleanup that prunes a finished task's unmerged archived binding re-sends it", () => {
+  // Only historical: the session moved on to another task, archiving this one's binding. The
+  // task is still running, so that unmerged row is completion evidence and survives.
+  upsertTask(mkTask({ id: "pruned-later", status: "running" }));
+  bindTaskWorkEpisode(binding({ taskId: "pruned-later", episodeId: "pl1", sessionId: "s-pruned-later", agentSessionId: AGENT_A, boundAt: 100 }));
+  upsertTask(mkTask({ id: "pruned-later-next", status: "running" }));
+  bindTaskWorkEpisode(binding({ taskId: "pruned-later-next", episodeId: "pl2", sessionId: "s-pruned-later", agentSessionId: AGENT_B, boundAt: 200 }));
+  const registry = new Registry();
+  registry.upsertTask({ ...getTask("pruned-later")!, status: "done" });
+  assert.equal(registry.getTask("pruned-later")?.agentSessionId, AGENT_A);
+  const seen = upserts(registry, "pruned-later");
+  // Any later provenance cleanup, here one an unrelated bind runs, now deletes that row: it is
+  // no completion evidence for a done task.
+  upsertTask(mkTask({ id: "pruned-later-other", status: "running", sessionId: "s-pruned-later-other" }));
+  registry.bindTaskToWorkEpisode("pruned-later-other", "s-pruned-later-other", episode("s-pruned-later-other", AGENT_C));
+  assert.equal(getTask("pruned-later")?.agentSessionId, null);
+  assert.equal(registry.getTask("pruned-later")?.agentSessionId, null);
+  assert.deepEqual(seen, [null]);
+});
+
+test("a reset whose cleanup prunes the binding it fell back to re-sends the task without it", () => {
+  // Running, so the unmerged archived binding is still completion evidence when the reset starts.
+  upsertTask(mkTask({ id: "pruned-reset", status: "running", sessionId: "s-pruned-reset" }));
+  bindTaskWorkEpisode(binding({ taskId: "pruned-reset", episodeId: "pr1", sessionId: "s-pruned-reset", agentSessionId: AGENT_A, boundAt: 100 }));
+  bindTaskWorkEpisode(binding({ taskId: "pruned-reset", episodeId: "pr2", sessionId: "s-pruned-reset", agentSessionId: AGENT_C, boundAt: 200 }));
+  const registry = new Registry();
+  registry.upsertTask({ ...getTask("pruned-reset")!, status: "done" });
+  assert.equal(registry.getTask("pruned-reset")?.agentSessionId, AGENT_C);
+  const seen = upserts(registry, "pruned-reset");
+  // The reset deletes the current binding, the re-read falls back to pr1, and the cleanup that
+  // runs next deletes pr1 too: what the dashboard holds must follow it.
+  registry.resetWorkEpisode("s-pruned-reset");
+  assert.equal(getTask("pruned-reset")?.agentSessionId, null);
+  assert.equal(registry.getTask("pruned-reset")?.agentSessionId, null);
+  assert.equal(seen.at(-1), null);
+});
+
 test("readsHistory and the server's history slot are one fact", () => {
   for (const agent of AGENT_TYPES) {
     assert.equal(
