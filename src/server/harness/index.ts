@@ -25,6 +25,7 @@ import { claudeDetect } from "./claude/detect.ts";
 import { claudeBin } from "./claude/bin.ts";
 import { claudeControl } from "./claude/control.ts";
 import { claudeSdk } from "./claude/sdk.ts";
+import { claudeHistory } from "./claude/history.ts";
 import { discoverClaudeModels } from "./claude/model-catalog.ts";
 import { codexTranscript } from "./codex/transcript.ts";
 import { codexTui } from "./codex/tui.ts";
@@ -128,6 +129,8 @@ export const HARNESSES: Record<AgentType, Harness> = {
         ...claudeResumeModeArgs(permissionMode),
       ],
     },
+    // Session History's reader over `~/.claude/projects`. See `HistorySpec`.
+    history: claudeHistory,
   },
   // `hooks` was null here, as a statement rather than a gap - "Codex pushes nothing at
   // us". The spike that was supposed to test that claim did, and refuted it: Codex takes
@@ -185,6 +188,9 @@ export const HARNESSES: Record<AgentType, Harness> = {
         ...codexResumeModeArgs(permissionMode),
       ],
     },
+    // No Codex rollouts exist on any machine this was built on, so there is nothing to test a
+    // reader against yet. Implementing this slot is all Codex needs to appear in History.
+    history: null,
   },
   // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image
   // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process
@@ -236,6 +242,9 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // unread: pi declares `permissionModes: null`, so there is no mode to carry and no
     // flag to spell one with.
     resume: { argv: (agentSessionId) => ["--session", agentSessionId] },
+    // No Pi sessions exist on any machine this was built on, so there is nothing to test a
+    // reader against yet. Implementing this slot is all Pi needs to appear in History.
+    history: null,
   },
 };
 

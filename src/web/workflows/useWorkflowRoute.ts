@@ -253,12 +253,20 @@ export type MissionRoute =
       archiveKey?: string;
       filters?: ScoutFilters;
     }
+  | {
+      /**
+       * Session History: every agent session this machine holds on disk, whether or not
+       * Mission Control ever saw it, newest activity first. Bare for now - filters and a
+       * session's detail join the hash when those surfaces ship.
+       */
+      page: "history";
+    }
   | { page: "settings"; category: SettingsCategoryId };
 
 /**
  * The route a direct page shortcut navigates to, or `null` when it must stand down.
  *
- * Fleet, Library, Runs and Scouts each own a chord. None doubles as a toggle, so the key means
+ * Fleet, Library, Runs, Scouts and History each own a chord. None doubles as a toggle, so the key means
  * the same destination from every page. The common guards stay pure and shared with App's
  * global keydown handler: a letter types, renames, or leaves an overlay in control instead of
  * navigating behind it.
@@ -269,7 +277,7 @@ export type MissionRoute =
  */
 export function pageShortcutRoute(state: {
   /** The page whose resolved shortcut matched, or null when no page chord matched. */
-  target: "fleet" | "library" | "runs" | "scouts" | null;
+  target: "fleet" | "library" | "runs" | "scouts" | "history" | null;
   typing: boolean;
   renaming: boolean;
   overlayOpen: boolean;
@@ -365,6 +373,8 @@ export function parseMissionRoute(hash: string): MissionRoute {
       ...(withScoutFilters ? { filters: withScoutFilters } : {}),
     };
   }
+  // A deeper path names a surface this build does not have yet, so it lands on the list.
+  if (path === "/history" || path.startsWith("/history/")) return { page: "history" };
   if (path === "/library") return { page: "library" };
   const library = /^\/library\/([^/]+)(?:\/([^/]+))?$/.exec(path);
   if (library) {
@@ -503,6 +513,7 @@ export function missionRouteHash(route: MissionRoute): string {
   // compile - it silently serializes to `#/ensembles`, and `navigate({page:"shipped"})`
   // lands on the wrong page with no error anywhere.
   if (route.page === "shipped") return "#/shipped";
+  if (route.page === "history") return "#/history";
   if (route.page === "scouts") {
     // The key is emitted only when it is well formed, mirroring the parser. A hand-built
     // route carrying a malformed key would otherwise serialize to a hash that parses back

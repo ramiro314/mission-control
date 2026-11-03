@@ -199,7 +199,10 @@ let db: DatabaseSync | undefined;
 // 11: fork - the slot history table (`worktree_slot_history`), empty on an upgraded database.
 //    `CREATE ... IF NOT EXISTS` and not gated by this number, so when an upstream sync brings
 //    its own 11, renumbering this entry is safe, as #618 did for the fork's 7 to 9.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 11;
+// 12: fork - Session History's catalog (`history_sessions`), empty on an upgraded database and
+//    filled in the background after the daemon is serving. Created in `migrate()` with
+//    `CREATE ... IF NOT EXISTS` and not gated by this number, so renumbering is safe as for 11.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 12;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3302,6 +3305,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
   addColumn(d, "task_session_closures", "retired_at", "INTEGER");
   migrateWorktreeOrdinalHighWater(d);
+  migrateHistoryCatalog(d);
   // Dependency claims. Null on every existing slot, which is exact: no slot was ever claimed
   // before these columns existed, so each one's next claim runs every step.
   addColumn(d, "worktree_slots", "deps_state", "TEXT");
@@ -4485,6 +4489,64 @@ function rebuildDerivedPartialIndexIfStale(
  * interrupted between an older branch adding the column and filling it can therefore recover,
  * while MAX never lowers a high-water mark after the highest live row has been deleted.
  */
+/**
+ * Session History's catalog (`docs/history.md`): one row per `(agent, agent_session_id)` an
+ * agent's transcript store holds, written only by `HistoryStore` from the daemon's reconciler.
+ *
+ * Created here, in the upgrade path, with its indexes beside it. Every row is derived from a
+ * transcript, but the table is NOT disposable the way the archive index is: when Claude Code's
+ * retention deletes a transcript, its row stays with `transcript_state = 'gone'`, and that row
+ * is then the only record of the session. Rows are never deleted.
+ *
+ * `kind` and `transcript_state` are unconstrained TEXT read back as strings, on
+ * `worktree_slots.state`'s rule (`HISTORY_KINDS`, `HISTORY_TRANSCRIPT_STATES`). `fingerprint`
+ * is JSON `{size, mtimeMs, ino}`; `reader_state` is opaque to everything but the harness reader
+ * that wrote it, which uses it with `parsed_bytes` to fold in only appended bytes.
+ * `resumed_from` is reserved for a History Resume fork and is NULL until that ships.
+ */
+function migrateHistoryCatalog(d: DatabaseSync): void {
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS history_sessions (
+      agent             TEXT    NOT NULL,
+      agent_session_id  TEXT    NOT NULL,
+      transcript_path   TEXT    NOT NULL,
+      fingerprint       TEXT    NOT NULL,
+      parsed_bytes      INTEGER NOT NULL DEFAULT 0,
+      reader_state      TEXT,
+      transcript_state  TEXT    NOT NULL DEFAULT 'present',
+      gone_at           INTEGER,
+      cwd               TEXT,
+      repo_root         TEXT,
+      branch            TEXT,
+      entrypoint        TEXT,
+      version           TEXT,
+      kind              TEXT    NOT NULL,
+      custom_title      TEXT,
+      ai_title          TEXT,
+      first_prompt      TEXT,
+      started_at        INTEGER,
+      last_activity_at  INTEGER NOT NULL,
+      duration_ms       INTEGER,
+      model             TEXT,
+      cost_usd          REAL,
+      input_tokens      INTEGER,
+      output_tokens     INTEGER,
+      lines_added       INTEGER,
+      lines_removed     INTEGER,
+      pr_urls           TEXT    NOT NULL DEFAULT '[]',
+      continued_in      TEXT,
+      resumed_from      TEXT,
+      subagent_count    INTEGER NOT NULL DEFAULT 0,
+      indexed_at        INTEGER NOT NULL,
+      PRIMARY KEY (agent, agent_session_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_history_sessions_activity
+      ON history_sessions(last_activity_at, agent, agent_session_id);
+    CREATE INDEX IF NOT EXISTS idx_history_sessions_kind_activity
+      ON history_sessions(kind, last_activity_at);
+  `);
+}
+
 function migrateWorktreeOrdinalHighWater(d: DatabaseSync): void {
   d.exec("BEGIN IMMEDIATE;");
   try {

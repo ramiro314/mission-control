@@ -98,6 +98,42 @@ export function archiveReconcileMs(raw = envVar("SCOUT_RECONCILE_MS")): number |
   return ms;
 }
 
+const DEFAULT_HISTORY_RECONCILE_MS = 30_000;
+const DEFAULT_HISTORY_BATCH_SIZE = 25;
+
+/**
+ * How often Session History rescans the agents' transcript stores, or null when recurring
+ * reconciliation is OFF (`MISSION_HISTORY_RECONCILE_MS=0`, on `archiveReconcileMs`'s rule).
+ * An unchanged transcript costs one `lstat` per pass.
+ */
+export function historyReconcileMs(raw = envVar("HISTORY_RECONCILE_MS")): number | null {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_HISTORY_RECONCILE_MS;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms)) return DEFAULT_HISTORY_RECONCILE_MS;
+  if (ms <= 0) return null;
+  return ms;
+}
+
+/**
+ * How many transcripts one History batch summarizes before it writes them in one short
+ * transaction and yields. `MISSION_HISTORY_BATCH_SIZE` exists so a test can make a small
+ * fixture store span several batches; an unusable value falls back to the shipped size.
+ */
+export function historyBatchSize(raw = envVar("HISTORY_BATCH_SIZE")): number {
+  const size = Number(raw);
+  return raw !== undefined && Number.isSafeInteger(size) && size > 0 ? size : DEFAULT_HISTORY_BATCH_SIZE;
+}
+
+/**
+ * An extra pause after each History batch, in ms. 0 in production, where each batch already
+ * yields to the event loop; `MISSION_HISTORY_BATCH_PAUSE_MS` lets the browser suite watch a
+ * first-run backfill that would otherwise finish before a page could draw it.
+ */
+export function historyBatchPauseMs(raw = envVar("HISTORY_BATCH_PAUSE_MS")): number {
+  const ms = Number(raw);
+  return raw !== undefined && Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
 /**
  * The skills catalog (`skills/<id>/SKILL.md`), baked into the repo and shipped with
  * the app - resolved absolutely, so it never depends on the daemon's working

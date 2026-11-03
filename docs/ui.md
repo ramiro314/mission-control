@@ -356,7 +356,7 @@ unfinished list: the [Ship log](library-and-line.md#the-ship-log) is the only fu
 permanent chrome. The one door it does have is two clicks inside the fleet - the Line's ⚑
 Shipped stage opens its [drawer](#the-stage-drawers), whose header escalates here - so
 <kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app.
-Fleet, the Library, Runs and Scouts are one press of the segmented control away, and a
+Fleet, the Library, Runs, Scouts and History are one press of the segmented control away, and a
 palette row beside a visible door would only be a second door. Scouts has one anyway,
 because the words an operator reaches for - investigation, findings, evidence, research -
 are none of them the page's name; that row is a static destination, and the archive
@@ -1687,6 +1687,7 @@ either platform.
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Select the previous or next authored stage | Workflow Runs pipeline |
 | <kbd>Enter</kbd> | Load a completed stage's recorded details in the Review worklist | Workflow Runs pipeline |
 | <kbd>⇧</kbd><kbd>S</kbd> | Open **Scouts** - the archive of finished investigations | Anywhere |
+| <kbd>h</kbd> | Open **History** - every agent session this machine holds on disk ([Session History](history.md)) | Anywhere |
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
 | <kbd>+</kbd> | Start the guided dispatch pass. <kbd>Tab</kbd> reaches the ordinary form in one key | Anywhere |
 | type, <kbd>↑</kbd><kbd>↓</kbd>, <kbd>Enter</kbd> | Filter repositories by name, move through the matches and take one | Guided dispatch: Repo |

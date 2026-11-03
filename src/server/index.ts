@@ -73,6 +73,7 @@ import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
 import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ArchiveManager } from "./archives/manager.ts";
+import { HistoryService } from "./history/service.ts";
 import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
 import { getCostConfig, reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
@@ -299,6 +300,10 @@ const archives = new ArchiveManager({
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
 registry.onSessionExit((session) => archives.reserveOnExit(session));
+// Session History's catalog of every agent session on disk. Constructed here, started only
+// after the port is won (below), for the archive library's reason: a first run indexes
+// thousands of transcripts, and the daemon serves while it does.
+const history = new HistoryService();
 registry.subscribe((event) => {
   if (event.type === "session_remove") archives.sessionRemoved(event.id);
 });
@@ -836,6 +841,7 @@ const app = buildApp({
   pendingTurns,
   keepAwake,
   archives,
+  history,
   workflowCommands,
   testingSettings,
   commandDocumentProposals,
@@ -918,6 +924,9 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // design - a library that could not be walked is a background failure to log, never a
   // reason a daemon does not start.
   archives.start();
+  // Session History's backfill: newest first, in short batches that yield between writes, and
+  // fire-and-forget for the archive library's reason above.
+  history.start();
   // The session scope's probe, and the stop and reset of this instance's scopes a previous run
   // left behind. After the port for the same reason: it runs `systemd-run` and `systemctl`, and
   // a session start that comes first awaits the same probe, bounded at 5 s, never fails on it.
@@ -1112,6 +1121,9 @@ async function shutdown(): Promise<void> {
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.
   archives.stop();
+  // A History pass in flight writes whole rows per batch, so abandoning it costs the next pass
+  // a re-summarize of the files it had not reached and nothing else.
+  history.stop();
   // Release the idle-sleep assertion while we can still do it gracefully. IOKit drops the
   // native assertion with this process, and the Linux inhibitor's `tail --pid=<daemon PID>`
   // exits with it, so this is the orderly half of a two-part cleanup, not the only one.

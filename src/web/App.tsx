@@ -61,6 +61,7 @@ import { SpendChip } from "./components/SpendChip.tsx";
 import { KeepAwakeControl } from "./components/KeepAwakeControl.tsx";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
+import { HistoryPage } from "./components/history/HistoryPage.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
@@ -287,8 +288,15 @@ const PAGE_SEGMENTS = [
     glyph: "⌖",
     hint: "Scouts - finished investigations and the evidence they kept",
   },
+  {
+    id: "history",
+    action: "history",
+    label: "History",
+    glyph: "◷",
+    hint: "History - every agent session this machine holds on disk",
+  },
 ] as const satisfies readonly {
-  id: "fleet" | "library" | "runs" | "scouts";
+  id: "fleet" | "library" | "runs" | "scouts" | "history";
   action: ActionId;
   label: string;
   glyph: string;
@@ -398,6 +406,10 @@ export function App(): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [keybindingHints] = useKeybindingHints();
   useEffect(() => {
+    // History has no telemetry feature id yet, and the feature catalog is an approved,
+    // audited contract (`FEATURE_IDS`), so a History visit is not recorded rather than being
+    // filed under another page's name.
+    if (route.page === "history") return;
     const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
       : route.page === "settings" ? "settings" : route.page === "library" ? "library"
       : route.page === "ensembles" ? "ensembles" : route.page === "shipped" ? "reports"
@@ -4262,6 +4274,11 @@ export function App(): React.JSX.Element {
                 overlayOpen={overlays.anyOpen}
               />
             ) : null
+          }
+          history={
+            // Mounted only on its own route, like Scouts, so the catalog fetch never runs
+            // while somebody is on another page.
+            route.page === "history" ? <HistoryPage /> : null
           }
           shipped={
             // The Ship log owns its own `ExecutionPage` frame, unlike the two above: the
