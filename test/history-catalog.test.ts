@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -569,5 +569,33 @@ test("an unchanged duplicate-id group is not re-parsed; a change in it re-runs t
   await reconciler.trigger();
   assert.deepEqual([...calls].sort(), [copy, original].sort());
   assert.equal(store.index("claude").get(id)?.transcriptPath, original);
+  rmSync(projects, { recursive: true, force: true });
+});
+
+test("a project folder the walk cannot read fails the walk, so nothing in it is marked gone", { skip: process.getuid?.() === 0 ? "root reads any folder" : false }, async () => {
+  clearCatalog();
+  const projects = freshProjects();
+  const id = sessionId();
+  writeTranscript(projects, "-w", id, records(id, { cwd: "/w", entrypoint: "cli" }));
+  const store = new HistoryStore();
+  const reconciler = new HistoryReconciler({ store, readers: [{ agent: "claude", spec: createClaudeHistory(projects) }], resolveRepository: () => null });
+  await reconciler.trigger();
+  const folder = join(projects, "-w");
+  try {
+    // Unlistable (EACCES on readdir), then listable but unsearchable (EACCES on lstat).
+    for (const mode of [0o000, 0o444]) {
+      chmodSync(folder, mode);
+      await assert.rejects(createClaudeHistory(projects).enumerate(projects), /EACCES/);
+      const pass = await reconciler.trigger();
+      assert.equal(pass.complete, false, `mode ${mode.toString(8)}: the walk is reported incomplete`);
+      assert.equal(pass.gone, 0);
+      assert.equal(store.index("claude").get(id)?.transcriptState, "present");
+    }
+  } finally {
+    chmodSync(folder, 0o755);
+  }
+  // A folder that is really gone is still an empty one.
+  rmSync(folder, { recursive: true, force: true });
+  assert.equal((await reconciler.trigger()).gone, 1);
   rmSync(projects, { recursive: true, force: true });
 });

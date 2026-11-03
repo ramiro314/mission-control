@@ -256,6 +256,51 @@ test("Load more lands while slow indexing re-reads keep running", async ({ dashb
   await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
 });
 
+test("a re-read that started before Load more does not undo it when it lands later", async ({ dashboard, daemon }) => {
+  await seedAndRestart(daemon);
+  await backfilled(daemon);
+  // The first read reports indexing, so the page starts its poll. Every later re-read is slow
+  // and reports the backfill done, so if one lands after Load more and replaces its rows, no
+  // further poll ever puts them back. Load more itself is quick.
+  let windowReads = 0;
+  let slowReadSettled = false;
+  await dashboard.route("**/api/history/sessions**", async (route) => {
+    if (route.request().url().includes("cursor=")) {
+      await route.fulfill({ response: await route.fetch() });
+      return;
+    }
+    windowReads += 1;
+    if (windowReads === 1) {
+      const response = await route.fetch();
+      const body = await response.json() as { progress: unknown };
+      body.progress = { indexing: true, indexed: 50, total: 57 };
+      await route.fulfill({ response, json: body });
+      return;
+    }
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await route.fulfill({ response: await route.fetch() });
+    } catch {
+      // The page cancelled this read, which is the fix under test.
+    } finally {
+      slowReadSettled = true;
+    }
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/history`);
+  const page = dashboard.getByRole("main", { name: "History" });
+  const rows = page.getByRole("listitem");
+  await expect(rows).toHaveCount(50);
+  // Wait for the poll's re-read to be in flight, then page.
+  await expect.poll(() => windowReads, { timeout: 5_000 }).toBeGreaterThanOrEqual(2);
+  await page.getByRole("button", { name: "Load more" }).click();
+  await expect(rows).toHaveCount(57);
+  await expect.poll(() => slowReadSettled, { timeout: 10_000 }).toBe(true);
+  // Give a late answer the chance to render before asserting it did not.
+  await dashboard.waitForTimeout(300);
+  await expect(rows).toHaveCount(57);
+  await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
+});
+
 test("a Load more the daemon refuses says why, and keeps the rows and the button", async ({ dashboard, daemon }) => {
   await seedAndRestart(daemon);
   await backfilled(daemon);

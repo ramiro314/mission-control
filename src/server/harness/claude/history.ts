@@ -334,9 +334,12 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
         let names: string[];
         try {
           names = await readdir(dir);
-        } catch {
-          // A project folder removed mid-walk is simply not there.
-          continue;
+        } catch (error) {
+          // A project folder removed mid-walk is simply not there. Anything else (EACCES, EIO,
+          // EMFILE) means the walk did not see it, and an incomplete walk must decide nothing:
+          // read as empty, every row in the folder would be marked gone.
+          if (isMissing(error)) continue;
+          throw error;
         }
         const stats = await Promise.all(names.map(async (name) => {
           const match = SESSION_FILE.exec(name);
@@ -350,8 +353,11 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
               agentSessionId: match[1]!.toLowerCase(),
               fingerprint: { size: stat.size, mtimeMs: Math.trunc(stat.mtimeMs), ino: stat.ino },
             } satisfies HistoryFile;
-          } catch {
-            return null;
+          } catch (error) {
+            // Removed between the listing and the stat. Any other failure is a file the walk
+            // could not see, so it fails the walk for the reason above.
+            if (isMissing(error)) return null;
+            throw error;
           }
         }));
         for (const file of stats) if (file) files.push(file);

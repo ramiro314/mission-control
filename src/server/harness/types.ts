@@ -1231,8 +1231,9 @@ export interface HistorySpec {
   /** Directories to walk. None has to exist; an absent root is an empty one. */
   roots(): string[];
   /**
-   * The top-level transcripts under one root, each with its fingerprint. Rejects only when
-   * the root exists and could not be walked, so the caller can tell "empty" from "unknown".
+   * The top-level transcripts under one root, each with its fingerprint. Resolves only for a
+   * complete walk, where an absent root, folder or file counts as empty. Rejects when any part
+   * that exists could not be read, so the caller can tell "empty" from "unknown".
    */
   enumerate(root: string): Promise<HistoryFile[]>;
   /**

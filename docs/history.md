@@ -63,8 +63,9 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   them appeared, went or changed. New and
   changed files are indexed newest first in batches of 25, each written in one short
   transaction followed by a yield to the event loop. A row is marked gone only after a pass
-  walked every root of its harness without seeing the file; a root that could not be read
-  decides nothing.
+  walked every root of its harness without seeing the file. A root, project folder or file
+  that exists but could not be read (permissions, I/O) makes the walk incomplete, and an
+  incomplete walk decides nothing; only one that is not there at all counts as empty.
 - **Repository.** Resolved when a row is indexed and stored: a worktree pool slot maps to its
   pool's main checkout even after the slot is gone, a `worktrees/<taskId>` checkout to its
   task's repository, and any other existing path through Git.

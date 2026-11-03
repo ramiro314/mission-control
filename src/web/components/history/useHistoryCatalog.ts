@@ -94,6 +94,11 @@ export function useHistoryCatalog(): HistoryCatalog {
     const controller = new AbortController();
     moreAbort.current?.abort();
     moreAbort.current = controller;
+    // A window re-read already in flight was started for the depth before this page. Landing
+    // after it, it would replace the appended rows with the shorter window and the older
+    // cursor, and if it was the read reporting the backfill done, no poll would follow to put
+    // them back. Cancel it: the poll resumes a second after this page lands.
+    listAbort.current?.abort();
     setLoadingMore(true);
     setMoreError(null);
     void api.historySessions({ cursor, limit: HISTORY_PAGE_LIMITS.defaultLimit }, controller.signal).then((result) => {
