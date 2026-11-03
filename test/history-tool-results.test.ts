@@ -400,6 +400,33 @@ test("the detail lists subagent runs from the session's own listing, and each pa
   f.done();
 });
 
+test("paging a subagent run looks up its one file, without reading every run to label it", async () => {
+  openDb().exec("DELETE FROM history_sessions");
+  const projects = mkdtempSync(join(tmpdir(), "mission-history-tool-results-projects-"));
+  const claude = createClaudeHistory(projects);
+  let labelled = 0;
+  const spec = { ...claude, subagents: (...args: Parameters<typeof claude.subagents>) => { labelled += 1; return claude.subagents(...args); } };
+  const history = new HistoryService({ readers: [{ agent: "claude", spec }], resolveRepository: () => null });
+  const id = sessionId();
+  writeSession(projects, id, []);
+  const subagents = join(sessionDir(projects, id), "subagents");
+  mkdirSync(subagents, { recursive: true });
+  for (const agentId of ["0123abcd", "89abcdef", "feedface"]) {
+    writeLines(join(subagents, `agent-${agentId}.jsonl`), [{ ...base(id), isSidechain: true, timestamp: at(1), uuid: `s-${agentId}`, type: "user", message: { role: "user", content: `run ${agentId}` } }]);
+  }
+  await history.reconciler.trigger();
+
+  const detail = await history.detail("claude", id, () => null);
+  assert.equal(detail?.subagents.length, 3);
+  assert.equal(labelled, 1, "the detail labels every run once");
+  const page = await history.subagentMessages("claude", id, "89abcdef", {});
+  assert.equal(page.ok && page.page.messages[0]?.text, "run 89abcdef");
+  const missing = await history.subagentMessages("claude", id, "deadbeef", {});
+  assert.equal(missing.ok ? 200 : missing.status, 404);
+  assert.equal(labelled, 1, "a page read never labels the runs");
+  rmSync(projects, { recursive: true, force: true });
+});
+
 test("a gone transcript answers 410 for its results and runs, and lists no subagents", async () => {
   const f = await fixture();
   const id = sessionId();

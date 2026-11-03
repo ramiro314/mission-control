@@ -1279,6 +1279,12 @@ export interface HistorySpec {
    * holds are returned, each with the folder the caller must confine it to.
    */
   subagents(transcriptPath: string, agentSessionId: string): Promise<HistorySubagentFile[]>;
+  /**
+   * One subagent run's file, when the session's own listing holds it, or null. The same
+   * listing as `subagents`, without reading any run to label it, so paging one run costs one
+   * listing rather than a read of every run.
+   */
+  subagentFile(transcriptPath: string, agentSessionId: string, agentId: string): Promise<{ path: string; folder: string } | null>;
   /** A subagent transcript, read as conversation like `messages`. */
   subagentMessages: TranscriptMessages;
 }

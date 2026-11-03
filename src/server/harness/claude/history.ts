@@ -416,6 +416,21 @@ async function findToolResult(
   }
 }
 
+/**
+ * The regular files in a session's own `subagents/` folder, or none when the folder is missing,
+ * unreadable, or resolves anywhere else (then it is not this session's). A symlink in the
+ * listing is never followed, here or by the route.
+ */
+async function subagentListing(folder: string): Promise<Set<string>> {
+  try {
+    if ((await realpath(folder)) !== folder) return new Set();
+    const entries = await readdir(folder, { withFileTypes: true });
+    return new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
+  } catch {
+    return new Set();
+  }
+}
+
 /** A subagent's metadata file, read leniently: a missing or malformed one labels nothing. */
 async function subagentMeta(path: string): Promise<{ agentType: string | null; description: string | null }> {
   try {
@@ -488,16 +503,7 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
 
     async subagents(transcriptPath, agentSessionId): Promise<HistorySubagentFile[]> {
       const folder = join(dirname(transcriptPath), agentSessionId, SUBAGENT_DIR);
-      let entries;
-      try {
-        // A folder that resolves anywhere else is not this session's, so nothing in it is listed.
-        if ((await realpath(folder)) !== folder) return [];
-        entries = await readdir(folder, { withFileTypes: true });
-      } catch {
-        return [];
-      }
-      // Regular files only: a symlink in the listing is never followed, here or by the route.
-      const files = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
+      const files = await subagentListing(folder);
       const runs = await Promise.all([...files].map(async (name): Promise<HistorySubagentFile | null> => {
         const agentId = SUBAGENT_ID.exec(name)?.[1];
         if (!agentId || !isHistorySubagentId(agentId)) return null;
@@ -509,6 +515,15 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
       return runs
         .filter((run): run is HistorySubagentFile => run !== null)
         .sort((a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity) || (a.agentId < b.agentId ? -1 : 1));
+    },
+
+    async subagentFile(transcriptPath, agentSessionId, agentId) {
+      // The same listing `subagents` reads, without opening any run to label it: a page read
+      // needs only the one file.
+      if (!isHistorySubagentId(agentId)) return null;
+      const folder = join(dirname(transcriptPath), agentSessionId, SUBAGENT_DIR);
+      const name = `agent-${agentId}.jsonl`;
+      return (await subagentListing(folder)).has(name) ? { path: join(folder, name), folder } : null;
     },
 
     async enumerate(root) {

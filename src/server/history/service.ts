@@ -240,7 +240,7 @@ export class HistoryService {
     const transcript = await this.transcript(agent, id);
     if (!transcript.ok) return transcript;
     const { reader, entry, path } = transcript.page;
-    const run = (await reader.spec.subagents(path, entry.summary.agentSessionId)).find((candidate) => candidate.agentId === agentId);
+    const run = await reader.spec.subagentFile(path, entry.summary.agentSessionId, agentId);
     if (!run) return unknown;
     let real: string;
     try {
