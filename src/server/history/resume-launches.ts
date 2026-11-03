@@ -39,6 +39,9 @@ export type HistoryResumeCancelResult =
   | { ok: true; launch: HistoryResumeLaunch }
   | { ok: false; reason: "not_found" | "not_pending" | "has_slot"; launch?: HistoryResumeLaunch };
 
+/** Whether a slot is still held by a launch's lease, or by its owner key. See `HistoryResumeSlots.holds`. */
+export type HistoryResumeSlotHolds = (slotId: string, leaseKey: string | null, ownerKey: string) => boolean;
+
 interface Row {
   launch_id: string;
   agent: string;
@@ -46,6 +49,7 @@ interface Row {
   expected_agent_session_id: string;
   cwd: string;
   slot_id: string | null;
+  lease_key: string | null;
   launched_at: number;
   mc_session_id: string | null;
   state: string;
@@ -180,21 +184,19 @@ export class HistoryResumeLaunches {
    * be taking its lease, and is left alone. One made before it cannot be: no request survives a
    * restart, so it is judged by its owner key alone, and a lease that was never granted
    * releases it rather than holding its session's one open launch forever.
+   *
+   * Whether a slot still holds a launch is the worktree manager's to answer (`holds`), so this
+   * reads only its own table.
    */
-  slotsReturned(now: number, before: number): HistoryResumeLaunch[] {
+  slotsReturned(now: number, before: number, holds: HistoryResumeSlotHolds): HistoryResumeLaunch[] {
     const rows = this.db.prepare(
-      `SELECT * FROM history_resume_launches AS launch
-        WHERE launch.slot_id IS NOT NULL AND launch.state != 'released'
-          AND (launch.lease_key IS NOT NULL OR launch.launched_at < ?)
-          AND NOT EXISTS (
-            SELECT 1 FROM worktree_slots AS slot
-             WHERE slot.id = launch.slot_id
-               AND (slot.active_lease_id = launch.lease_key
-                 OR (slot.active_owner_kind = 'manual' AND slot.active_owner_key = ? || launch.launch_id))
-          )`,
-    ).all(before, historyResumeOwnerKey("")) as unknown as Row[];
-    return rows.flatMap((row) =>
-      this.transition(row.launch_id, ["pending", "expired", "bound", "ended"], "released", now) ? [this.get(row.launch_id)!] : []);
+      `SELECT * FROM history_resume_launches
+        WHERE slot_id IS NOT NULL AND state != 'released' AND (lease_key IS NOT NULL OR launched_at < ?)`,
+    ).all(before) as unknown as Row[];
+    return rows.flatMap((row) => {
+      if (holds(row.slot_id!, row.lease_key, historyResumeOwnerKey(row.launch_id))) return [];
+      return this.transition(row.launch_id, ["pending", "expired", "bound", "ended"], "released", now) ? [this.get(row.launch_id)!] : [];
+    });
   }
 
   /**
@@ -328,7 +330,13 @@ export interface HistoryResumeRegistry {
 export function trackHistoryResumeLaunches(
   launches: HistoryResumeLaunches,
   registry: HistoryResumeRegistry,
-  options: { graceMs: number; tickMs: number; now?: () => number },
+  options: {
+    graceMs: number;
+    tickMs: number;
+    now?: () => number;
+    /** The worktree manager's answer to whether a slot still holds a launch; none means no pool. */
+    slotHolds?: HistoryResumeSlotHolds | null;
+  },
 ): () => void {
   const now = options.now ?? Date.now;
   const startedAt = now();
@@ -339,11 +347,15 @@ export function trackHistoryResumeLaunches(
       console.error(`[history] resume launch ${what} failed: ${String(error)}`);
     }
   };
+  const holds = options.slotHolds ?? null;
+  const releaseReturned = () => {
+    if (holds) guarded("slot release", () => launches.slotsReturned(now(), startedAt, holds));
+  };
   const unsubscribe = registry.subscribe((event) => {
     if (event.type === "session_upsert") guarded("binding", () => launches.bind(event.session, now()));
     else if (event.type === "session_remove") guarded("end", () => launches.sessionRemoved(event.id, now()));
     // A slot Returned from its card releases the launch that held it.
-    else if (event.type === "worktrees_changed") guarded("slot release", () => launches.slotsReturned(now(), startedAt));
+    else if (event.type === "worktrees_changed") releaseReturned();
   });
   const unobserved = registry.onSessionsObserved(() =>
     guarded("startup check", () => launches.startup(registry.liveSessions(), now(), startedAt)));
@@ -351,7 +363,7 @@ export function trackHistoryResumeLaunches(
   // daemon was down.
   const timer = setInterval(() => {
     guarded("expiry", () => launches.expire(now(), options.graceMs));
-    guarded("slot release", () => launches.slotsReturned(now(), startedAt));
+    releaseReturned();
   }, options.tickMs);
   timer.unref?.();
   return () => {

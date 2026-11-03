@@ -1,5 +1,5 @@
-import { realpath } from "node:fs/promises";
 import type { HistoryResumeSlot } from "@shared/history.ts";
+import { canonical } from "../worktrees/git.ts";
 import {
   observedIdleRefusal,
   type NativeWorktreeLease,
@@ -28,15 +28,14 @@ export interface HistoryResumeObservedSlot {
 
 export interface HistoryResumeSlots {
   observe(): Promise<HistoryResumeObservedSlot[]>;
-  /** The repository a slot belongs to, resolved through symlinks, without observing anything. */
-  repositoryOf(slotId: string): Promise<string | null>;
   lease(slotId: string, owner: WorktreeOwner, branch: string | null): Promise<WorktreeLeaseForResumeResult>;
   /** Return a lease a failed launch never used, resetting the slot as any Return does. */
   giveBack(lease: NativeWorktreeLease): Promise<boolean>;
-}
-
-async function canonical(path: string): Promise<string> {
-  return realpath(path).catch(() => path);
+  /**
+   * Whether the slot is still held by a launch: by its recorded lease, or by its owner key when
+   * no lease was recorded. False once the lease is Returned, destroyed or recovered.
+   */
+  holds(slotId: string, leaseKey: string | null, ownerKey: string): boolean;
 }
 
 export function historyResumeSlots(manager: WorktreeManager): HistoryResumeSlots {
@@ -50,15 +49,12 @@ export function historyResumeSlots(manager: WorktreeManager): HistoryResumeSlots
         idle: observedIdleRefusal(status) === null,
       }))));
     },
-    async repositoryOf(slotId) {
-      const pool = manager.store.poolForSlot(slotId);
-      return pool ? canonical(pool.mainCheckoutRoot) : null;
-    },
     lease: (slotId, owner, branch) => manager.leaseForResume(slotId, owner, branch),
     async giveBack(lease) {
       const released = await manager.release(lease, { ownerAuthorized: true, requireClean: true });
       return released.outcome === "released" || released.outcome === "alreadyReleased";
     },
+    holds: (slotId, leaseKey, ownerKey) => manager.holds(slotId, leaseKey, { kind: "manual", key: ownerKey }),
   };
 }
 

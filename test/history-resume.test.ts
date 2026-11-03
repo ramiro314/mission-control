@@ -703,7 +703,11 @@ test("an original directory that is an idle pool slot is leased, its branch chec
   const p = pooled("mission-history-resume-slot-", registry);
   const f = await fixture(launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
   await p.seed(1);
-  const stop = trackHistoryResumeLaunches(f.history.launches, registry, { graceMs: GRACE, tickMs: 60_000 });
+  const stop = trackHistoryResumeLaunches(f.history.launches, registry, {
+    graceMs: GRACE,
+    tickMs: 60_000,
+    slotHolds: historyResumeSlots(p.m).holds,
+  });
   try {
     const [slot] = p.slots;
     gitIn(p.clone, "branch", "feature/resumed");
@@ -912,6 +916,7 @@ test("a slot launch whose lease was never recorded closes after a restart, by it
   await p.seed(2);
   try {
     const [granted, never] = p.slots;
+    const { holds } = historyResumeSlots(p.m);
     const claim = (slotId: string) => {
       const claimed = f.history.launches.claim(
         { agent: "claude", sourceSessionId: sessionId(), expectedAgentSessionId: "x", cwd: "/x", slotId },
@@ -927,14 +932,36 @@ test("a slot launch whose lease was never recorded closes after a restart, by it
     const lost = claim(never!.slotId);
 
     // In the daemon that made them, a launch with no lease key may still be taking its lease.
-    assert.deepEqual(f.history.launches.slotsReturned(2_000, 1_000), []);
+    assert.deepEqual(f.history.launches.slotsReturned(2_000, 1_000, holds), []);
     // After a restart, none can be: the one no slot is owned by closes at once.
-    assert.deepEqual(f.history.launches.slotsReturned(2_000, 1_500).map((launch) => launch.launchId), [lost]);
+    assert.deepEqual(f.history.launches.slotsReturned(2_000, 1_500, holds).map((launch) => launch.launchId), [lost]);
     assert.equal(f.history.launches.get(held)?.state, "pending", "its slot is still leased to it");
 
     // Returning that slot from its card releases the other.
     await p.returnSlot(granted!.slotId);
-    assert.deepEqual(f.history.launches.slotsReturned(3_000, 1_500).map((launch) => launch.launchId), [held]);
+    assert.deepEqual(f.history.launches.slotsReturned(3_000, 1_500, holds).map((launch) => launch.launchId), [held]);
+  } finally {
+    f.done();
+  }
+});
+
+test("the manager says a slot holds a launch by its lease, or by its owner when no lease was recorded", async () => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-holds-", registry);
+  const f = await fixture(fakeLauncher().launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(1);
+  try {
+    const [slot] = p.slots;
+    const owner = historyResumeOwnerKey("00000000-0000-4000-8000-0000000000aa");
+    assert.equal(p.m.holds(slot!.slotId, null, { kind: "manual", key: owner }), false, "an available slot holds nothing");
+    const taken = await p.m.leaseForResume(slot!.slotId, { kind: "manual", key: owner }, null);
+    assert.equal(taken.outcome, "leased");
+    if (taken.outcome !== "leased") return;
+    assert.equal(p.m.holds(slot!.slotId, taken.lease.leaseId, { kind: "manual", key: "someone-else" }), true, "by its lease");
+    assert.equal(p.m.holds(slot!.slotId, null, { kind: "manual", key: owner }), true, "by its owner");
+    assert.equal(p.m.holds(slot!.slotId, "another-lease", { kind: "manual", key: "someone-else" }), false);
+    await p.returnSlot(slot!.slotId);
+    assert.equal(p.m.holds(slot!.slotId, taken.lease.leaseId, { kind: "manual", key: owner }), false, "Returned");
   } finally {
     f.done();
   }

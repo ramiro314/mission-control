@@ -23,7 +23,12 @@ import { historyBatchPauseMs, historyBatchSize, historyReconcileMs, pollInterval
 import { RESUME_START_MS } from "../terminal/resume-lease.ts";
 import { HistoryReconciler, historyReaders, type HistoryReader, type HistoryReconcilerOptions } from "./reconciler.ts";
 import { HistoryResume } from "./resume.ts";
-import { HistoryResumeLaunches, trackHistoryResumeLaunches, type HistoryResumeRegistry } from "./resume-launches.ts";
+import {
+  HistoryResumeLaunches,
+  trackHistoryResumeLaunches,
+  type HistoryResumeRegistry,
+  type HistoryResumeSlotHolds,
+} from "./resume-launches.ts";
 import { historySearchNeedle } from "./search.ts";
 import { HistoryStore } from "./store.ts";
 import { clipUtf8Bytes, decodeUtf8Whole, utf8Bytes } from "../util/utf8.ts";
@@ -149,11 +154,12 @@ export class HistoryService {
    * Keep Resume's launch records in step with the Registry: binding, ending, the startup twin
    * after the first discovery sweep, and the grace-window expiry. Idempotent.
    */
-  trackResumes(registry: HistoryResumeRegistry): void {
+  trackResumes(registry: HistoryResumeRegistry, slotHolds: HistoryResumeSlotHolds | null = null): void {
     if (this.stopResumeTracking) return;
     this.stopResumeTracking = trackHistoryResumeLaunches(this.launches, registry, {
       graceMs: historyResumeGraceMs(),
       tickMs: pollIntervalMs() ?? RESUME_TICK_FALLBACK_MS,
+      slotHolds,
     });
   }
 

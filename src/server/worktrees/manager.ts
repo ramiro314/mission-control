@@ -1878,6 +1878,18 @@ export class WorktreeManager {
   }
 
   /**
+   * Whether `slotId` is still held by the lease `leaseId`, or by `owner`, as its active lease.
+   * Read from the slot row alone, so it answers at once and never waits on the slot lock. A
+   * caller that recorded only who it leased for (and not yet the lease id) asks by owner.
+   */
+  holds(slotId: string, leaseId: string | null, owner: WorktreeOwner): boolean {
+    const slot = this.store.slot(slotId);
+    if (!slot || slot.activeLeaseId === null) return false;
+    if (leaseId !== null && slot.activeLeaseId === leaseId) return true;
+    return slot.activeOwnerKind === owner.kind && slot.activeOwnerKey === owner.key;
+  }
+
+  /**
    * Give back a `leaseAsIs` lease nothing used, because the launcher refused before it tried.
    * Nothing touched the slot, so unlike a return this neither fetches nor resets: it takes the
    * ordinary two transitions at the HEAD the lease recorded. False when the slot moved on since,

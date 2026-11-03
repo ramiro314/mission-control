@@ -165,7 +165,9 @@ the agent like any other terminal session, which turns the row **Live**.
 - **Returning a slot.** A launch with a slot stays open, and holds the slot, until the operator
   Returns the slot from its card in Settings, Worktrees. The launch row records the slot and
   its lease, and once that lease is gone (on the Registry's `worktrees_changed`, and on every
-  expiry tick) the launch is `released`, so a new Resume can start. A slot also still holds a
+  expiry tick) the launch is `released`, so a new Resume can start. Whether a slot still holds
+  a launch is the worktree manager's answer (`WorktreeManager.holds`); History reads only its
+  own table. A slot also still holds a
   launch while its active owner is that launch's `history-resume-<launchId>`, which covers a
   daemon that stopped after granting the lease and before recording it. A launch a previous
   daemon made with no lease recorded is judged by that owner alone, since no lease can still be

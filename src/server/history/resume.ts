@@ -19,6 +19,7 @@ import type { PreparedResume } from "../harness/resume.ts";
 import { TerminalLaunchError } from "../terminal/launch-error.ts";
 import type { ManagedResumeLaunch } from "../terminal/resume-launch.ts";
 import type { TerminalLaunchOutcome } from "../terminal/targets.ts";
+import { canonical } from "../worktrees/git.ts";
 import type { NativeWorktreeLease } from "../worktrees/manager.ts";
 import { historyResumeOwnerKey } from "../worktrees/owners.ts";
 import type { HistoryReader } from "./reconciler.ts";
@@ -364,7 +365,7 @@ export class HistoryResume {
       if (original.state === "usable") return { ok: true, target: { cwd: original.resolved!, slot: null } };
       // The original's own slot, whatever it was observed as: its lease decides whether it is
       // still idle, after the claim, so one taken meanwhile is refused and the claim released.
-      if (original.slot) return { ok: true, target: { cwd: await canonicalPath(original.slot.path), slot: original.slot } };
+      if (original.slot) return { ok: true, target: { cwd: await canonical(original.slot.path), slot: original.slot } };
       return {
         ok: false,
         refusal: original.state === "missing"
@@ -381,7 +382,7 @@ export class HistoryResume {
     if (!offered) {
       return { ok: false, refusal: refusal("slot_not_offered", "That slot is not one this Resume offers: it belongs to another repository, or is gone.") };
     }
-    return { ok: true, target: { cwd: await canonicalPath(offered.path), slot: offered } };
+    return { ok: true, target: { cwd: await canonical(offered.path), slot: offered } };
   }
 
   /**
@@ -408,17 +409,13 @@ export class HistoryResume {
     } catch {
       return { cwd, resolved: null, state: "missing", slot: null };
     }
-    const pools = await Promise.all(this.deps.store.worktreePools().map(({ poolPath }) => realpath(poolPath).catch(() => poolPath)));
+    const pools = await Promise.all(this.deps.store.worktreePools().map(({ poolPath }) => canonical(poolPath)));
     if (!pools.some((pool) => isInside(pool, resolved))) return { cwd, resolved, state: "usable", slot: null };
     // A pool directory is a slot target on its own slot when that slot is idle. Held by another
     // owner, or not provably idle, it counts as reused.
     const slot = (await observed.slots()).find((entry) => isInside(entry.canonicalPath, resolved)) ?? null;
     return { cwd, resolved, state: slot?.idle ? "pool_slot" : "slot_reused", slot: slot?.slot ?? null };
   }
-}
-
-async function canonicalPath(path: string): Promise<string> {
-  return realpath(path).catch(() => path);
 }
 
 /** One observation of the pool per request, read only when something asks for it. */
