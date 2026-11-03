@@ -896,13 +896,10 @@ test("the checkout warning says the code may not match for a missing branch, and
     historyResumeCheckoutWarning({ state: "missing", branch: "feature/x" }),
     "The branch feature/x was not found here or on origin, so the slot stays detached where it was: the code may not match the conversation.",
   );
-  for (const branch of [null, "HEAD"]) {
-    assert.equal(
-      historyResumeCheckoutWarning({ state: "missing", branch }),
-      "This conversation recorded no branch, so the slot stays detached where it was: the code may not match the conversation.",
-      String(branch),
-    );
-  }
+  assert.equal(
+    historyResumeCheckoutWarning({ state: "missing", branch: null }),
+    "This conversation recorded no usable branch, so the slot stays detached where it was: the code may not match the conversation.",
+  );
   assert.equal(
     historyResumeCheckoutWarning({ state: "elsewhere", branch: "main", path: "/repo" }),
     "The branch main is checked out in /repo, so this slot has its tip detached: commits made here will not move the branch.",

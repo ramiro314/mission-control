@@ -155,7 +155,8 @@ the agent like any other terminal session, which turns the row **Live**.
   - A branch another worktree holds (a slot another owner has, a task worktree, or a checkout
     outside the pool) has its tip checked out detached. The dialog warns that commits made in
     the slot will not move the branch.
-  - A branch found nowhere, or none recorded, leaves the slot detached where it was. The
+  - A branch found nowhere, or nothing recorded that is a branch name (none, `HEAD`, or a value
+    Git would read as an option), leaves the slot detached where it was. The
     dialog warns that the code may not match the conversation.
 
   A slot that is no longer idle when the Resume runs is refused with `slot_unavailable`, and

@@ -1808,7 +1808,8 @@ export class WorktreeManager {
         const entered = await this.enteredSinceReservation(reservation, idle.slot, "it was leased", "operator");
         if (entered) return { outcome: entered.returned ? "refused" : "outcomeUnknown", reason: entered.reason };
 
-        let checkout: HistoryResumeCheckout = { state: "missing", branch };
+        // A recorded value that is no branch name is never looked up, and the result says so.
+        let checkout: HistoryResumeCheckout = { state: "missing", branch: isCheckoutBranchName(branch) ? branch : null };
         let mode: BranchCheckoutMode | null = null;
         if (isCheckoutBranchName(branch)) {
           const listed = await this.deps.git.list(identity);

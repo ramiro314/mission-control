@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
+import { historyResumeCheckoutWarning, type HistoryResumeCheckout } from "../src/shared/history.ts";
 import { openDb } from "../src/server/db.ts";
 import { isCheckoutBranchName, NativeWorktreeGit, parseWorktreePorcelain } from "../src/server/worktrees/git.ts";
 import { WorktreeManager, type NativeWorktreeLease, type WorktreeManagerDeps } from "../src/server/worktrees/manager.ts";
@@ -110,7 +111,9 @@ test("a missing recorded branch, or none at all, leaves the slot detached where 
   for (const branch of [null, "HEAD", "-f", "a..b"]) {
     const result = await s.m.leaseForResume(s.slotId, OWNER, branch);
     const taken = leased(result);
-    assert.deepEqual(result.outcome === "leased" && result.checkout, { state: "missing", branch }, String(branch));
+    assert.deepEqual(result.outcome === "leased" && result.checkout, { state: "missing", branch: null }, String(branch));
+    // The warning reads the manager's decision, so a name never looked up is never called "not found".
+    assert.match(historyResumeCheckoutWarning((result as { checkout: HistoryResumeCheckout }).checkout)!, /recorded no usable branch/);
     assert.equal(symbolicHead(s.path), null);
     assert.equal((await s.m.release(taken, { ownerAuthorized: true })).outcome, "released");
   }

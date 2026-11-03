@@ -536,9 +536,10 @@ export type HistoryResumeCancel = z.infer<typeof HistoryResumeCancelSchema>;
 
 /**
  * What a slot target checked out. `branch`: the recorded branch, attached. `missing`: no
- * local or remote-tracking ref of it here (or none recorded), so the slot stays detached as
- * it was. `elsewhere`: another worktree (`path`) holds the branch, so its tip is checked out
- * detached.
+ * local or remote-tracking ref of it here, so the slot stays detached as it was; `branch` is
+ * null when the transcript recorded nothing the daemon would hand to Git as a branch name (it
+ * decides that, so this never re-judges it). `elsewhere`: another worktree (`path`) holds the
+ * branch, so its tip is checked out detached.
  */
 export type HistoryResumeCheckout =
   | { state: "branch"; branch: string }
@@ -551,8 +552,8 @@ export function historyResumeCheckoutWarning(checkout: HistoryResumeCheckout): s
     case "branch":
       return null;
     case "missing":
-      return checkout.branch === null || checkout.branch === "HEAD"
-        ? "This conversation recorded no branch, so the slot stays detached where it was: the code may not match the conversation."
+      return checkout.branch === null
+        ? "This conversation recorded no usable branch, so the slot stays detached where it was: the code may not match the conversation."
         : `The branch ${checkout.branch} was not found here or on origin, so the slot stays detached where it was: the code may not match the conversation.`;
     case "elsewhere":
       return `The branch ${checkout.branch} is checked out in ${checkout.path}, so this slot has its tip detached: commits made here will not move the branch.`;
