@@ -647,6 +647,32 @@ test("an exited card and its re-minted successor keep each other's holds", async
   assert.deepEqual(await pass(), [], "neither card's prune erases the other's history");
 });
 
+test("a card whose summary lags a round does not reset the newer round's history", async () => {
+  const pass = () =>
+    heldLines(
+      "held-lag",
+      heldDaemon(() => parked("held-lag-new", { agentSessionId: "agent-held-lag", inspector: summary({ round: 4 }) })),
+    );
+  const lagging = () =>
+    heldLines(
+      "held-lag",
+      fakeDaemon({
+        sessions: () => [
+          parked("held-lag-old", { agentSessionId: "agent-held-lag", state: "exited", inspector: summary({ round: 3 }) }),
+          parked("held-lag-new", { agentSessionId: "agent-held-lag", inspector: summary({ round: 4 }) }),
+        ],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-lag-new: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await lagging(), [], "the round-3 card is older than what was logged");
+  assert.deepEqual(await lagging(), []);
+});
+
 test("a session whose id is re-minted keeps its logged holds", async () => {
   const held = (id: string) => heldDaemon(() => parked(id, { agentSessionId: "agent-held-remint" }));
   assert.equal((await heldLines("held-remint-a", held("held-remint-a"))).length, 1);

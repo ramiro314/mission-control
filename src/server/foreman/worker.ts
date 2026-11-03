@@ -987,6 +987,8 @@ function logHeldFindings(session: Session, pr: FollowupPr, why: string, open: nu
   const logged = heldLogged.get(key) ?? new Map<string, { round: number; reasons: Set<string> }>();
   heldLogged.set(key, logged);
   let held = logged.get(pr.prKey);
+  // Rounds only advance; a card whose summary lags would otherwise reset the newer history every pass.
+  if (held && round < held.round) return;
   if (!held || held.round !== round) {
     held = { round, reasons: new Set() };
     logged.set(pr.prKey, held);
