@@ -181,8 +181,9 @@ Neither `:toolUseId` nor `:agentId` ever becomes part of a path on its own:
 
 - `:toolUseId` must match `^[A-Za-z0-9_-]{1,128}$`. The result is found by that id in the parent
   transcript. A result kept in a sidecar names its file inside its own record: only the "saved
-  to" line of Claude Code's `<persisted-output>` preview counts, so a result that merely mentions
-  a `tool-results/` path (a `wc -l` on a saved output, an error naming one) stays its own inline
+  to" line of a result that opens with Claude Code's `<persisted-output>` preview counts, so a
+  result that merely mentions a `tool-results/` path (a `wc -l` on a saved output, an error
+  naming one) or quotes another record's preview (a grep over transcripts) stays its own inline
   result. Only that path's last segment is taken, and it is read from this session's own
   `<sessionId>/tool-results/` folder. A sidecar no record names is never reachable.
 - `:agentId` must match `^[0-9a-f]{8,64}$`. It names `agent-<agentId>.jsonl` only when that

@@ -362,15 +362,19 @@ function resultText(content: unknown): string {
 /**
  * The sidecar file a result record names, or null. Claude Code replaces an output too large to
  * keep inline with a `<persisted-output>` preview whose "saved to" line prints the file's path.
- * Only that line of that block names a file: a result that merely mentions a path into
- * `tool-results/` (a `wc -l` on a saved output, an error naming one) is its own inline result.
+ * Only that line of a result that IS such a preview names a file: a result that merely mentions
+ * a path into `tool-results/` (a `wc -l` on a saved output, an error naming one) or quotes
+ * another record's preview is its own inline result.
  * Only the path's last segment is taken, so the record names a file and never a place.
  */
 function sidecarName(text: string): string | null {
-  const start = text.indexOf(PERSISTED_OUTPUT);
-  if (start === -1) return null;
-  const end = text.indexOf(PERSISTED_OUTPUT_END, start);
-  const block = text.slice(start + PERSISTED_OUTPUT.length, end === -1 ? undefined : end);
+  // The preview replaces the whole output, so a result is one only when it opens with the
+  // marker. A result that quotes a preview mid-text (a grep over transcripts, a Read of one)
+  // is that tool's own output, and names no file of this call's.
+  const body = text.trimStart();
+  if (!body.startsWith(PERSISTED_OUTPUT)) return null;
+  const end = body.indexOf(PERSISTED_OUTPUT_END);
+  const block = body.slice(PERSISTED_OUTPUT.length, end === -1 ? undefined : end);
   const name = SAVED_TO.exec(block)?.[1];
   return name && name !== "." && name !== ".." ? name : null;
 }

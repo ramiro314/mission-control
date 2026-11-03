@@ -136,13 +136,17 @@ test("a tool call's result is read inline, or from the sidecar file its own reco
   f.done();
 });
 
-test("a result that only mentions a sidecar path is its own inline result; only a preview's saved-to line names a file", async () => {
+test("a result that only mentions a sidecar path, or quotes another record's preview, is its own inline result; only a preview's saved-to line names a file", async () => {
   const f = await fixture();
   const id = sessionId();
   const saved = join(sessionDir(f.projects, id), "tool-results", "toolu_saved.txt");
   const counted = `412 ${saved}`;
   const missing = `cat: ${join(sessionDir(f.projects, id), "tool-results", "toolu_x.txt")}: No such file or directory`;
   const noSavedTo = "<persisted-output>\nOutput too large. Preview mentions tool-results/toolu_saved.txt\n</persisted-output>";
+  // A grep over transcripts: another record's preview, JSON-escaped, naming a file that exists here.
+  const quoted = `${id}.jsonl:{"type":"user","content":${JSON.stringify(persisted(f.projects, id, "toolu_saved.txt"))}}`;
+  // A Read of a transcript: the quoted preview arrives unescaped, mid-text.
+  const read2 = `1\tsome line\n2\t${persisted(f.projects, id, "toolu_saved.txt")}`;
   writeSession(f.projects, id, [
     toolUse(id, 1, "toolu_saved", { command: "npm test" }),
     toolResult(id, 2, "toolu_saved", persisted(f.projects, id, "toolu_saved.txt")),
@@ -152,6 +156,10 @@ test("a result that only mentions a sidecar path is its own inline result; only 
     toolResult(id, 6, "toolu_missing", missing, true),
     toolUse(id, 7, "toolu_preview", { command: "npm test" }),
     toolResult(id, 8, "toolu_preview", noSavedTo),
+    toolUse(id, 9, "toolu_grep", { command: "grep persisted-output *.jsonl" }),
+    toolResult(id, 10, "toolu_grep", quoted),
+    toolUse(id, 11, "toolu_read", { command: "cat -n transcript.jsonl" }),
+    toolResult(id, 12, "toolu_read", read2),
   ]);
   mkdirSync(join(sessionDir(f.projects, id), "tool-results"), { recursive: true });
   writeFileSync(saved, "the whole npm test output");
@@ -163,7 +171,13 @@ test("a result that only mentions a sidecar path is its own inline result; only 
     return await res.json() as HistoryToolResult;
   };
   assert.equal((await read("toolu_saved")).source, "sidecar", "the persisted output itself still reads its file");
-  for (const [toolUseId, text] of [["toolu_count", counted], ["toolu_missing", missing], ["toolu_preview", noSavedTo]] as const) {
+  for (const [toolUseId, text] of [
+    ["toolu_count", counted],
+    ["toolu_missing", missing],
+    ["toolu_preview", noSavedTo],
+    ["toolu_grep", quoted],
+    ["toolu_read", read2],
+  ] as const) {
     const result = await read(toolUseId);
     assert.equal(result.source, "inline", toolUseId);
     assert.equal(result.text, text, `${toolUseId} keeps its own recorded result`);
