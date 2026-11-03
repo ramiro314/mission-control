@@ -313,8 +313,9 @@ const history = new HistoryService({
 // Resume's launch records follow the Registry from here, before any Resume can be made: a
 // resumed agent binds when discovery registers it, and the startup twin waits for the first
 // sweep to judge launches a previous run left open. A slot launch closes when the worktree
-// manager says its slot no longer holds it.
-history.trackResumes(registry, historyResumeSlots(worktrees).holds);
+// manager says its slot no longer holds it, or when its session ends with the slot clean; a
+// change to what its slot card says republishes the worktree inventory.
+history.trackResumes(registry, historyResumeSlots(worktrees), () => registry.emitWorktreesChanged());
 registry.subscribe((event) => {
   if (event.type === "session_remove") archives.sessionRemoved(event.id);
 });
@@ -433,6 +434,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   notifyChanged: publishWorktreesChanged,
   staleLeases: () => leaseActivity.staleSinceBySlot(),
   unownedTrees: orphanTrees,
+  historyResumeLabel: (ownerKey) => history.slotLabel(ownerKey),
 });
 // No Warm survives a restart, so only the Warm logs a slot row still names are kept. Native
 // reconciliation above has already returned every slot a crashed Warm held.

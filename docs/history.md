@@ -166,8 +166,9 @@ the agent like any other terminal session, which turns the row **Live**.
   the launch is released. A checkout that failed and left the slot as it was hands the slot
   back; one that may have moved it quarantines the slot under the Resume's owner, whose card
   offers Return. A launcher that refuses after the lease Returns the slot, which resets it.
-- **Returning a slot.** A launch with a slot stays open, and holds the slot, until the operator
-  Returns the slot from its card in Settings, Worktrees. The launch row records the slot and
+- **Returning a slot.** A launch with a slot holds the slot until its session ends clean (see
+  **When the session ends**) or the operator Returns the slot from its card in Settings,
+  Worktrees. The launch row records the slot and
   its lease, and once that lease is gone (on the Registry's `worktrees_changed`, and on every
   expiry tick) the launch is `released`, so a new Resume can start. Whether a slot still holds
   a launch is the worktree manager's answer (`WorktreeManager.holds`); History reads only its
@@ -211,14 +212,31 @@ the agent like any other terminal session, which turns the row **Live**.
   expected id **and** whose working directory, resolved through symlinks, is the launch's
   directory. A session with the right id anywhere else binds nothing. When the bound session
   leaves the Registry the launch is `ended`.
+- **When the session ends.** An `ended` launch with a slot hands the slot back to the pool when
+  the slot is clean, and the launch is `released`. Clean means both: no uncommitted changes, and
+  no commit reachable from `HEAD` that no branch, tag or remote-tracking ref holds
+  (`git rev-list HEAD --not --branches --tags --remotes` is empty), so work made on a detached
+  `HEAD` is never reset away to the reflog. Commits on an attached branch do not count, since
+  the branch holds them. The check runs in the worktree manager (`returnResumed`), once before
+  the return fetches and again just before it resets. A slot that is not clean stays leased,
+  the launch stays `ended` with its reason in `kept_reason`, and the slot card says
+  "Kept: uncommitted changes from a resumed session" or "Kept: commits on no branch from a
+  resumed session" until the operator Returns it. A hand-back refused for a passing reason, such
+  as a process still inside the slot, is retried on every discovery tick. Only a launch that was
+  `bound` is ever released this way.
 - **Closing an unbound launch.** A launch with no worktree slot that has not bound within its
-  grace window (the managed resume start deadline plus two discovery sweeps) is `released`.
+  grace window (the managed resume start deadline plus two discovery sweeps) is `released`. A
+  launch with a slot is `expired` instead and keeps its lease, so the pool never hands out or
+  resets the slot under a late agent. Its slot card says "Held for a resumed session that has
+  not appeared" and offers Return, and a second Resume of the session is refused until then. An
+  agent that appears after expiry still binds, by id and directory, and its slot is handed back
+  like any bound launch's when it ends.
   While it is `pending`, the dialog offers **Cancel pending resume**, which releases it at once
   and revokes its prepared environment if no terminal has claimed it. A Resume still
   preparing or opening its terminal when that happens stops, and answers `cancelled`. After a
   restart, once the first discovery sweep finishes, a `bound` launch whose agent is no longer
-  running is `ended`, and a `pending` one is `released`; a slotless launch is never left
-  `expired`.
+  running is `ended` and goes through the same hand-back, and a `pending` one is `expired` when
+  it has a slot and `released` when it has none; a slotless launch is never left `expired`.
 - **Refusals** are explicit, each with a code and a sentence: a background run, a gone
   transcript, a live session, an open launch (naming its directory), no recorded directory, a
   missing directory, a reused slot, a pool that could not be read, a pool directory typed as a

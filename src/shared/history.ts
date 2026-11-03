@@ -397,6 +397,15 @@ export interface HistoryLaunchContext {
 export const HISTORY_RESUME_LAUNCH_STATES = ["pending", "expired", "bound", "ended", "released"] as const;
 export type HistoryResumeLaunchState = (typeof HISTORY_RESUME_LAUNCH_STATES)[number];
 
+/**
+ * Why an `ended` launch kept its slot leased instead of handing it back, in
+ * `history_resume_launches.kept_reason`: the slot had uncommitted changes, or `HEAD` held
+ * commits that no branch, tag or remote-tracking ref holds. Persisted: append, never rename or
+ * reorder.
+ */
+export const HISTORY_RESUME_KEPT_REASONS = ["uncommitted", "unbranched_commits"] as const;
+export type HistoryResumeKeptReason = (typeof HISTORY_RESUME_KEPT_REASONS)[number];
+
 /** One launch record as the routes serve it. */
 export interface HistoryResumeLaunch {
   launchId: string;
@@ -418,6 +427,8 @@ export interface HistoryResumeLaunch {
   mcSessionId: string | null;
   /** Read as a string, see `HISTORY_RESUME_LAUNCH_STATES`. */
   state: string;
+  /** Why an `ended` launch kept its slot, see `HISTORY_RESUME_KEPT_REASONS`; null otherwise. */
+  keptReason: string | null;
 }
 
 /**
@@ -531,6 +542,21 @@ export type HistoryResumeBody = z.infer<typeof HistoryResumeBodySchema>;
  */
 export function historyResumeCancellable(launch: Pick<HistoryResumeLaunch, "state" | "slotId">): boolean {
   return launch.state === "pending" && launch.slotId === null;
+}
+
+/**
+ * What a slot card says of the History Resume that holds it: why a slot it kept after its
+ * session ended is still leased, that its agent has not appeared, or plainly whose it is.
+ */
+export function historyResumeSlotLabel(launch: Pick<HistoryResumeLaunch, "state" | "keptReason">): string {
+  if (launch.state === "expired") return "Held for a resumed session that has not appeared";
+  if (launch.state === "ended" && launch.keptReason === "uncommitted") {
+    return "Kept: uncommitted changes from a resumed session";
+  }
+  if (launch.state === "ended" && launch.keptReason === "unbranched_commits") {
+    return "Kept: commits on no branch from a resumed session";
+  }
+  return "Resumed History session";
 }
 
 /** `POST /api/history/sessions/:agent/:id/resume/cancel`: close a pending launch with no slot. */

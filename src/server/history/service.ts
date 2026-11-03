@@ -6,6 +6,7 @@ import {
   HISTORY_TOOL_RESULT_CAP,
   decodeHistoryCursor,
   historyFilterKinds,
+  historyResumeSlotLabel,
   isHistorySessionId,
   isHistorySubagentId,
   isHistoryToolUseId,
@@ -27,10 +28,11 @@ import {
   HistoryResumeLaunches,
   trackHistoryResumeLaunches,
   type HistoryResumeRegistry,
-  type HistoryResumeSlotHolds,
+  type HistoryResumeSlotPool,
 } from "./resume-launches.ts";
 import { historySearchNeedle } from "./search.ts";
 import { HistoryStore } from "./store.ts";
+import { historyResumeLaunchId } from "../worktrees/owners.ts";
 import { clipUtf8Bytes, decodeUtf8Whole, utf8Bytes } from "../util/utf8.ts";
 import type { TranscriptMessages } from "../harness/types.ts";
 
@@ -151,16 +153,32 @@ export class HistoryService {
   }
 
   /**
-   * Keep Resume's launch records in step with the Registry: binding, ending, the startup twin
-   * after the first discovery sweep, and the grace-window expiry. Idempotent.
+   * Keep Resume's launch records in step with the Registry: binding, ending and handing a clean
+   * slot back, the startup twin after the first discovery sweep, and the grace-window expiry.
+   * `onSlotChanged` hears when a slot card's account of its launch changed. Idempotent.
    */
-  trackResumes(registry: HistoryResumeRegistry, slotHolds: HistoryResumeSlotHolds | null = null): void {
+  trackResumes(
+    registry: HistoryResumeRegistry,
+    slots: HistoryResumeSlotPool | null = null,
+    onSlotChanged?: () => void,
+  ): void {
     if (this.stopResumeTracking) return;
     this.stopResumeTracking = trackHistoryResumeLaunches(this.launches, registry, {
       graceMs: historyResumeGraceMs(),
       tickMs: pollIntervalMs() ?? RESUME_TICK_FALLBACK_MS,
-      slotHolds,
+      slots,
+      ...(onSlotChanged ? { onSlotChanged } : {}),
     });
+  }
+
+  /**
+   * What a slot card says of the History Resume a manual owner key names, or null when the key
+   * is not a History Resume's or its launch is unknown.
+   */
+  slotLabel(ownerKey: string): string | null {
+    const launchId = historyResumeLaunchId(ownerKey);
+    const launch = launchId ? this.launches.get(launchId) : null;
+    return launch ? historyResumeSlotLabel(launch) : null;
   }
 
   /**

@@ -23,10 +23,10 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { TerminalLaunchError } = await import("../src/server/terminal/launch-error.ts");
 const { managedResumeRoot, recheckManagedResumes, revokeUnclaimedResumes } = await import("../src/server/harness/resume.ts");
 const { beginResumeLaunch, claimResumeLease, createResumeLease } = await import("../src/server/terminal/resume-lease.ts");
-import { historyResumeCheckoutWarning, type HistoryResumeOptions } from "../src/shared/history.ts";
+import { historyResumeCheckoutWarning, historyResumeSlotLabel, type HistoryResumeOptions } from "../src/shared/history.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { HistoryResumeLauncher, HistoryResumeSession } from "../src/server/history/resume.ts";
-import type { HistoryResumeCandidate } from "../src/server/history/resume-launches.ts";
+import type { HistoryResumeCandidate, HistoryResumeSlotPool, HistoryResumeSlotReturn } from "../src/server/history/resume-launches.ts";
 import type { HistoryResumeSlots } from "../src/server/history/resume-slots.ts";
 import type { PreparedResume } from "../src/server/harness/resume.ts";
 import type { TerminalLaunchOutcome } from "../src/server/terminal/targets.ts";
@@ -290,6 +290,192 @@ test("the tracker binds on session_upsert, ends on session_remove, and runs the 
     now = 2_000;
     observed!();
     assert.equal(launches.get(earlier.launch.launchId)!.state, "released", "the previous run's pending launch is closed at the first sweep");
+  } finally {
+    stop();
+  }
+});
+
+// ---- ending: the hand-back of a clean slot, and the reason a dirty one is kept ----
+
+/** A Registry stand-in the test drives: emit its events, run its first sweep. */
+function drivenRegistry(live: HistoryResumeCandidate[] = []) {
+  const listeners: ((event: ServerEvent) => void)[] = [];
+  let observed: (() => void) | null = null;
+  return {
+    registry: {
+      subscribe: (fn: (event: ServerEvent) => void) => { listeners.push(fn); return () => {}; },
+      onSessionsObserved: (fn: () => void) => { observed = fn; return () => {}; },
+      liveSessions: () => live,
+    },
+    emit: (event: ServerEvent) => { for (const fn of listeners) fn(event); },
+    sweep: () => observed!(),
+    upsert(id: string, agentSessionId: string, cwd: string) {
+      this.emit({ type: "session_upsert", session: { id, agent: "claude", agentSessionId, cwd } as unknown as import("../src/shared/types.ts").Session });
+    },
+  };
+}
+
+/** A pool whose hand-back answers as scripted per slot, recording every call. */
+function scriptedPool(answers: Record<string, HistoryResumeSlotReturn[]>, held: Set<string> = new Set()) {
+  const calls: { slotId: string; leaseKey: string | null; ownerKey: string }[] = [];
+  const pool: HistoryResumeSlotPool = {
+    holds: (slotId) => held.has(slotId),
+    async returnResumed(slotId, leaseKey, ownerKey) {
+      calls.push({ slotId, leaseKey, ownerKey });
+      const queue = answers[slotId] ?? [];
+      return queue.length > 1 ? queue.shift()! : queue[0] ?? { outcome: "released" };
+    },
+  };
+  return { pool, calls };
+}
+
+async function until(what: string, check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+test("a bound launch whose session ends hands a clean slot back, and keeps a dirty one with its reason", async () => {
+  reset();
+  const launches = new HistoryResumeLaunches();
+  const driven = drivenRegistry();
+  const held = new Set(["slot-clean", "slot-dirty", "slot-unbranched", "slot-busy"]);
+  const { pool, calls } = scriptedPool({
+    "slot-clean": [{ outcome: "released" }],
+    "slot-dirty": [{ outcome: "kept", reason: "uncommitted" }],
+    "slot-unbranched": [{ outcome: "kept", reason: "unbranched_commits" }],
+    "slot-busy": [{ outcome: "refused", reason: "one or more processes still occupy the worktree" }, { outcome: "released" }],
+  }, held);
+  let notices = 0;
+  const stop = trackHistoryResumeLaunches(launches, driven.registry, {
+    graceMs: GRACE, tickMs: 20, slots: pool, onSlotChanged: () => { notices += 1; },
+  });
+  try {
+    const started = (slotId: string | null) => {
+      const id = sessionId();
+      const claimed = launches.claim({ agent: "claude", sourceSessionId: id, expectedAgentSessionId: id, cwd: `/${id}`, slotId, leaseKey: slotId ? `lease-${slotId}` : null }, Date.now());
+      assert.ok(claimed.ok);
+      driven.upsert(`term:${id}`, id, `/${id}`);
+      assert.equal(launches.get(claimed.launch.launchId)!.state, "bound");
+      return { id, launchId: claimed.launch.launchId };
+    };
+    const clean = started("slot-clean");
+    const dirty = started("slot-dirty");
+    const unbranched = started("slot-unbranched");
+    const busy = started("slot-busy");
+    const slotless = started(null);
+    const bound = notices;
+    for (const launch of [clean, dirty, unbranched, busy, slotless]) driven.emit({ type: "session_remove", id: `term:${launch.id}` });
+
+    await until("the clean slot's hand-back", () => launches.get(clean.launchId)!.state === "released");
+    await until("the kept reasons", () => launches.get(dirty.launchId)!.keptReason !== null && launches.get(unbranched.launchId)!.keptReason !== null);
+    const kept = launches.get(dirty.launchId)!;
+    assert.deepEqual([kept.state, kept.keptReason], ["ended", "uncommitted"], "a dirty slot stays leased: its launch is ended, not released");
+    assert.equal(historyResumeSlotLabel(kept), "Kept: uncommitted changes from a resumed session");
+    assert.equal(historyResumeSlotLabel(launches.get(unbranched.launchId)!), "Kept: commits on no branch from a resumed session");
+    assert.equal(notices - bound, 2, "each kept slot republishes its card");
+    assert.equal(launches.get(slotless.launchId)!.state, "ended", "a slotless launch has no slot to hand back");
+
+    // A passing refusal is retried on the tick, and the slot is handed back once it clears.
+    await until("the busy slot's retry", () => launches.get(busy.launchId)!.state === "released");
+    assert.equal(calls.filter((call) => call.slotId === "slot-busy").length, 2);
+    assert.equal(calls.filter((call) => call.slotId === "slot-dirty").length, 1, "a kept slot is never retried: it waits for Return");
+    assert.deepEqual(calls.find((call) => call.slotId === "slot-clean"), {
+      slotId: "slot-clean", leaseKey: "lease-slot-clean", ownerKey: historyResumeOwnerKey(clean.launchId),
+    });
+    assert.equal(calls.some((call) => call.slotId === null), false);
+
+    // Returning the kept slot from its card releases its launch.
+    assert.equal(launches.get(dirty.launchId)!.state, "ended");
+    held.delete("slot-dirty");
+    driven.emit({ type: "worktrees_changed" });
+    assert.equal(launches.get(dirty.launchId)!.state, "released");
+  } finally {
+    stop();
+  }
+});
+
+test("an unbound slotted launch expires and keeps its lease, blocks a second Resume until Returned, and a late agent is released when it ends", async () => {
+  reset();
+  const launches = new HistoryResumeLaunches();
+  const driven = drivenRegistry();
+  const held = new Set(["slot-late", "slot-abandoned"]);
+  const { pool, calls } = scriptedPool({}, held);
+  let notices = 0;
+  let now = 1_000;
+  const stop = trackHistoryResumeLaunches(launches, driven.registry, {
+    graceMs: GRACE, tickMs: 20, now: () => now, slots: pool, onSlotChanged: () => { notices += 1; },
+  });
+  try {
+    const claim = (slotId: string) => {
+      const id = sessionId();
+      const claimed = launches.claim({ agent: "claude", sourceSessionId: id, expectedAgentSessionId: id, cwd: `/${id}`, slotId, leaseKey: `lease-${slotId}` }, now);
+      assert.ok(claimed.ok);
+      return { id, launchId: claimed.launch.launchId };
+    };
+    const late = claim("slot-late");
+    const abandoned = claim("slot-abandoned");
+    now = 1_000 + GRACE;
+    await until("the grace window's expiry", () => launches.get(late.launchId)!.state === "expired");
+    await until("both expired", () => launches.get(abandoned.launchId)!.state === "expired");
+    assert.equal(historyResumeSlotLabel(launches.get(late.launchId)!), "Held for a resumed session that has not appeared");
+    assert.ok(notices >= 1, "an expiry republishes the slot card");
+    assert.equal(calls.length, 0, "an expired launch keeps its lease: nothing hands its slot back");
+
+    // A second Resume of the session is refused while its slot is held, and runs once it is Returned.
+    const again = () => launches.claim({ agent: "claude", sourceSessionId: abandoned.id, expectedAgentSessionId: abandoned.id, cwd: "/elsewhere" }, now);
+    assert.equal(again().ok, false);
+    held.delete("slot-abandoned");
+    driven.emit({ type: "worktrees_changed" });
+    assert.equal(launches.get(abandoned.launchId)!.state, "released");
+    assert.equal(again().ok, true);
+
+    // The late agent still binds, by id and cwd, and is released like any bound launch when it ends.
+    const before = notices;
+    driven.upsert("term:late", late.id, `/${late.id}`);
+    assert.equal(launches.get(late.launchId)!.state, "bound");
+    assert.equal(historyResumeSlotLabel(launches.get(late.launchId)!), "Resumed History session");
+    assert.ok(notices > before, "binding an expired launch republishes its card");
+    driven.emit({ type: "session_remove", id: "term:late" });
+    await until("the late launch's hand-back", () => launches.get(late.launchId)!.state === "released");
+    assert.deepEqual(calls.map((call) => call.slotId), ["slot-late"]);
+  } finally {
+    stop();
+  }
+});
+
+test("the startup twin releases a bound launch whose session ended while the daemon was down, and only expires a pending one", async () => {
+  reset();
+  const launches = new HistoryResumeLaunches();
+  const claim = (slotId: string, at: number) => {
+    const id = sessionId();
+    const claimed = launches.claim({ agent: "claude", sourceSessionId: id, expectedAgentSessionId: id, cwd: `/${id}`, slotId, leaseKey: `lease-${slotId}` }, at);
+    assert.ok(claimed.ok);
+    return { id, launchId: claimed.launch.launchId };
+  };
+  // Left by the previous run: one bound (its agent then ended with the daemon down), one bound
+  // and kept dirty, one still running, and one whose agent never appeared.
+  const ended = claim("slot-ended", 10);
+  launches.bind(candidate("term:ended", ended.id, `/${ended.id}`), 11);
+  const dirty = claim("slot-dirty", 10);
+  launches.bind(candidate("term:dirty", dirty.id, `/${dirty.id}`), 11);
+  const running = claim("slot-running", 10);
+  launches.bind(candidate("term:running", running.id, `/${running.id}`), 11);
+  const pending = claim("slot-pending", 10);
+
+  const driven = drivenRegistry([candidate("term:running-again", running.id, `/${running.id}`)]);
+  const { pool, calls } = scriptedPool({ "slot-dirty": [{ outcome: "kept", reason: "uncommitted" }] }, new Set(["slot-ended", "slot-dirty", "slot-running", "slot-pending"]));
+  const stop = trackHistoryResumeLaunches(launches, driven.registry, { graceMs: GRACE, tickMs: 60_000, slots: pool });
+  try {
+    driven.sweep();
+    await until("the startup hand-backs", () =>
+      launches.get(ended.launchId)!.state === "released" && launches.get(dirty.launchId)!.keptReason !== null);
+    assert.deepEqual([launches.get(dirty.launchId)!.state, launches.get(dirty.launchId)!.keptReason], ["ended", "uncommitted"]);
+    assert.equal(launches.get(running.launchId)!.state, "bound", "a launch whose agent is still running is left alone");
+    assert.equal(launches.get(pending.launchId)!.state, "expired", "a pending one only expires, keeping its lease");
+    assert.deepEqual(calls.map((call) => call.slotId).sort(), ["slot-dirty", "slot-ended"]);
   } finally {
     stop();
   }
@@ -966,7 +1152,11 @@ type Manager = InstanceType<typeof WorktreeManager>;
  * A clone, its manager, and the pieces a slot Resume and its Return run through. `seed` makes
  * its idle slots; call it after `fixture`, whose reset clears every pool.
  */
-function pooled(prefix: string, registry: InstanceType<typeof Registry>) {
+function pooled(
+  prefix: string,
+  registry: InstanceType<typeof Registry>,
+  historyResumeLabel: (ownerKey: string) => string | null = () => null,
+) {
   const { clone } = mkOriginAndClone(prefix);
   const sha = gitIn(clone, "rev-parse", "HEAD");
   const m: Manager = new WorktreeManager(openDb(), {
@@ -995,13 +1185,15 @@ function pooled(prefix: string, registry: InstanceType<typeof Registry>) {
     checkRecovery: async () => "unknown",
     notifyChanged: () => registry.emitWorktreesChanged(),
     diskBytes: async () => 0,
+    historyResumeLabel,
   });
   const card = async (slotId: string) =>
     (await operations.inventory()).repositories.flatMap((repo) => repo.slots).find((slot) => slot.id === slotId)!;
   const returnSlot = async (slotId: string) => {
     const preview = await operations.preview({ action: "return", slotId });
     assert.equal(preview.allowed, true, preview.blockers.join("; "));
-    await operations.execute(preview.token, []);
+    // A slot a resumed session left dirty asks for the same acknowledgement as any dirty Return.
+    await operations.execute(preview.token, preview.requiredAcknowledgements);
   };
   return { clone, m, slots, seed, card, returnSlot };
 }
@@ -1025,7 +1217,7 @@ test("an original directory that is an idle pool slot is leased, its branch chec
   const stop = trackHistoryResumeLaunches(f.history.launches, registry, {
     graceMs: GRACE,
     tickMs: 60_000,
-    slotHolds: historyResumeSlots(p.m).holds,
+    slots: historyResumeSlots(p.m),
   });
   try {
     const [slot] = p.slots;
@@ -1071,6 +1263,61 @@ test("an original directory that is an idle pool slot is leased, its branch chec
     assert.equal((await f.resume(id)).status, 200, "a new Resume can start");
   } finally {
     stop();
+    f.done();
+  }
+});
+
+test("a resumed session that ends dirty keeps its slot, saying why on the card, and one that ends clean returns it", async () => {
+  const registry = new Registry();
+  let f: Awaited<ReturnType<typeof fixture>> | null = null;
+  const p = pooled("mission-history-resume-end-", registry, (key) => f!.history.slotLabel(key));
+  f = await fixture(fakeLauncher().launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(1);
+  // The real Registry's events reach the tracker, and the test plays discovery's part.
+  const driven = drivenRegistry();
+  const forwarded = registry.subscribe((event) => driven.emit(event));
+  const stop = trackHistoryResumeLaunches(f.history.launches, driven.registry, {
+    graceMs: GRACE,
+    tickMs: 60_000,
+    slots: historyResumeSlots(p.m),
+    onSlotChanged: () => registry.emitWorktreesChanged(),
+  });
+  try {
+    const [slot] = p.slots;
+    const resumeEnded = async (leaveBehind: () => void) => {
+      const id = sessionId();
+      writeConversation(f!.projects, id, slot!.path, { branch: "main" });
+      await f!.history.reconciler.trigger();
+      const res = await f!.resume(id);
+      assert.equal(res.status, 200);
+      const { launch } = (await res.json()) as SlotStarted;
+      driven.upsert(`term:${id}`, id, slot!.path);
+      assert.equal(f!.history.launches.get(launch.launchId)?.state, "bound");
+      leaveBehind();
+      driven.emit({ type: "session_remove", id: `term:${id}` });
+      return launch.launchId;
+    };
+
+    const dirty = await resumeEnded(() => writeFileSync(join(slot!.path, "unsaved.txt"), "work in progress\n"));
+    await until("the dirty slot's reason", () => f!.history.launches.get(dirty)?.keptReason !== null);
+    assert.deepEqual([f.history.launches.get(dirty)?.state, f.history.launches.get(dirty)?.keptReason], ["ended", "uncommitted"]);
+    const kept = await p.card(slot!.slotId);
+    assert.equal(kept.state, "leased");
+    assert.deepEqual(kept.owner, { kind: "manual", key: historyResumeOwnerKey(dirty), label: "Kept: uncommitted changes from a resumed session" });
+    assert.equal(existsSync(join(slot!.path, "unsaved.txt")), true);
+
+    // The operator Returns it from its card, which closes the launch.
+    await p.returnSlot(slot!.slotId);
+    assert.equal(f.history.launches.get(dirty)?.state, "released");
+
+    const clean = await resumeEnded(() => {});
+    await until("the clean slot's hand-back", () => f!.history.launches.get(clean)?.state === "released");
+    const returned = await p.card(slot!.slotId);
+    assert.deepEqual([returned.state, returned.owner], ["available", null]);
+    assert.equal(symbolicHead(slot!.path), null, "returned detached, like any Return");
+  } finally {
+    stop();
+    forwarded();
     f.done();
   }
 });

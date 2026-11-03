@@ -6,6 +6,7 @@ import {
   type WorktreeLeaseForResumeResult,
   type WorktreeManager,
   type WorktreeOwner,
+  type WorktreeResumeReturnResult,
 } from "../worktrees/manager.ts";
 
 /**
@@ -39,6 +40,11 @@ export interface HistoryResumeSlots {
    * no lease was recorded. False once the lease is Returned, destroyed or recovered.
    */
   holds(slotId: string, leaseKey: string | null, ownerKey: string): boolean;
+  /**
+   * Once the launch's session ended: hand the slot back when it is clean, or keep it leased and
+   * say why (`WorktreeManager.returnResumed`).
+   */
+  returnResumed(slotId: string, leaseKey: string | null, ownerKey: string): Promise<WorktreeResumeReturnResult>;
 }
 
 export function historyResumeSlots(manager: WorktreeManager): HistoryResumeSlots {
@@ -58,6 +64,7 @@ export function historyResumeSlots(manager: WorktreeManager): HistoryResumeSlots
       return released.outcome === "released" || released.outcome === "alreadyReleased";
     },
     holds: (slotId, leaseKey, ownerKey) => manager.holds(slotId, leaseKey, { kind: "manual", key: ownerKey }),
+    returnResumed: (slotId, leaseKey, ownerKey) => manager.returnResumed(slotId, leaseKey, { kind: "manual", key: ownerKey }),
   };
 }
 

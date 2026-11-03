@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { lstat, realpath, rm, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { HistoryResumeCheckout } from "@shared/history.ts";
+import type { HistoryResumeCheckout, HistoryResumeKeptReason } from "@shared/history.ts";
 import type { WorktreeClaim, WorktreeClaimSeed } from "@shared/protocol.ts";
 import type { WorktreeProvider } from "@shared/types.ts";
 import {
@@ -209,6 +209,17 @@ export type WorktreeLeaseAsIsResult =
 
 export type WorktreeLeaseForResumeResult =
   | { outcome: "leased"; lease: NativeWorktreeLease; checkout: HistoryResumeCheckout }
+  | { outcome: "refused"; reason: string }
+  | { outcome: "outcomeUnknown"; reason: string };
+
+/**
+ * What `returnResumed` did with a History Resume's slot once its session ended: handed it back,
+ * kept it leased because it is not clean (and why), or found the launch no longer holds it.
+ */
+export type WorktreeResumeReturnResult =
+  | { outcome: "released" }
+  | { outcome: "kept"; reason: HistoryResumeKeptReason }
+  | { outcome: "notHeld" }
   | { outcome: "refused"; reason: string }
   | { outcome: "outcomeUnknown"; reason: string };
 
@@ -1902,6 +1913,58 @@ export class WorktreeManager {
     if (!slot || slot.activeLeaseId === null) return false;
     if (leaseId !== null && slot.activeLeaseId === leaseId) return true;
     return slot.activeOwnerKind === owner.kind && slot.activeOwnerKey === owner.key;
+  }
+
+  /**
+   * Hand a History Resume's slot back to the pool once its session ended, when the slot is
+   * clean: no uncommitted changes, and no commit at `HEAD` that no branch, tag or
+   * remote-tracking ref holds, so work made on a detached `HEAD` is never reset away to the
+   * reflog. A slot that is not clean stays leased and the answer says why. Clean is read before
+   * the return fetches, and again under the slot lock just before the reset intent is persisted,
+   * so work that lands in between is kept too.
+   *
+   * The lease is the one `leaseId` names, or the one `owner` holds when no lease was recorded.
+   */
+  async returnResumed(slotId: string, leaseId: string | null, owner: WorktreeOwner): Promise<WorktreeResumeReturnResult> {
+    if (!this.holds(slotId, leaseId, owner)) return { outcome: "notHeld" };
+    const active = this.store.slot(slotId)?.activeLeaseId;
+    if (!active) return { outcome: "notHeld" };
+    const found = this.lookupLease({ leaseId: active, owner });
+    if (found.state === "mismatch") return { outcome: "refused", reason: found.reason };
+    if (found.state !== "active") return { outcome: "notHeld" };
+    const { lease } = found;
+    try {
+      const kept = await this.resumeKeptReason(lease.path);
+      if (!kept.ok) return { outcome: kept.outcomeUnknown ? "outcomeUnknown" : "refused", reason: kept.reason };
+      if (kept.value) return { outcome: "kept", reason: kept.value };
+      // Assigned inside the callback; typed by assertion so the read below is not narrowed away.
+      let lateKept = null as HistoryResumeKeptReason | null;
+      const released = await this.release(lease, {
+        ownerAuthorized: true,
+        actor: "automatic",
+        beforeReset: async () => {
+          const again = await this.resumeKeptReason(lease.path);
+          if (!again.ok) return again.reason;
+          lateKept = again.value;
+          return lateKept ? "the slot is no longer clean" : null;
+        },
+      });
+      if (lateKept) return { outcome: "kept", reason: lateKept };
+      if (released.outcome === "released" || released.outcome === "alreadyReleased") return { outcome: "released" };
+      return { outcome: released.outcome, reason: released.reason };
+    } catch (error) {
+      return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+    }
+  }
+
+  /** Why a resumed session's slot is not clean enough to hand back, or null when it is. */
+  private async resumeKeptReason(path: string): Promise<GitResult<HistoryResumeKeptReason | null>> {
+    const inspected = await this.deps.git.inspect(path);
+    if (!inspected.ok) return inspected;
+    if (inspected.value.dirty) return { ok: true, value: "uncommitted" };
+    const unbranched = await this.deps.git.unbranchedCommits(path);
+    if (!unbranched.ok) return unbranched;
+    return { ok: true, value: unbranched.value ? "unbranched_commits" : null };
   }
 
   /**

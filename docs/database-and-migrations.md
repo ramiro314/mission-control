@@ -65,8 +65,10 @@ agent session id the launch waits for (a fork's minted id, which the catalog rea
 row's `resumed_from`), its directory resolved through symlinks, the worktree slot and lease id
 a slot target holds (`slot_id`, `lease_key`), the transcript copy a fork wrote or reused
 (`copy_path`, never canonical in `history_sessions`), the Mission Control session it
-bound to, and its state (`pending`, `expired`, `bound`, `ended`,
-`released`), read back as a string. A partial unique index over `(agent, source_session_id)`
+bound to, its state (`pending`, `expired`, `bound`, `ended`,
+`released`), read back as a string, and `kept_reason` (`uncommitted` or `unbranched_commits`),
+set when an `ended` launch kept its slot leased because the slot was not clean. `kept_reason` is
+added with `addColumn`, so a database already stamped 14 gains it on its next open. A partial unique index over `(agent, source_session_id)`
 where the state is `pending` or `expired` allows one open launch per session, which is what makes
 the row's insert a Resume's claim. Rows are never deleted. It arrived with schema version 14, a
 fork entry created in `migrate()` and not gated by the number.

@@ -4581,6 +4581,8 @@ function migrateHistoryResumeLaunches(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_history_resume_launches_session
       ON history_resume_launches(mc_session_id);
   `);
+  // Why an `ended` launch kept its slot leased (`HISTORY_RESUME_KEPT_REASONS`), NULL otherwise.
+  addColumn(d, "history_resume_launches", "kept_reason", "TEXT");
 }
 
 /**
