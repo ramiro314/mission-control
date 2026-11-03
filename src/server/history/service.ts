@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 import {
   HISTORY_MESSAGES_PAGE_TURNS,
   HISTORY_PAGE_LIMITS,
@@ -21,10 +21,24 @@ import { HistoryStore } from "./store.ts";
 /** The Registry session running an agent's conversation now, or null. Supplied by the routes. */
 export type HistoryLiveLookup = (agent: AgentType, agentSessionId: string) => string | null;
 
-/** A conversation window, or why there is none: unknown to History, or its transcript is gone. */
+/**
+ * A conversation window, or why there is none: unknown to History (404), its transcript gone
+ * (410), or a transcript still there that could not be read (500, with the reason).
+ */
 export type HistoryMessagesRead =
   | { ok: true; page: HistoryMessagesPage }
-  | { ok: false; status: 404 | 410; error: string };
+  | { ok: false; status: 404 | 410 | 500; error: string };
+
+/** Only a missing file is a removed transcript; anything else is a read that failed. */
+function isMissing(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function unreadable(error: unknown): { ok: false; status: 500; error: string } {
+  const reason = (error as NodeJS.ErrnoException | null)?.code ?? (error instanceof Error ? error.message : String(error));
+  return { ok: false, status: 500, error: `could not read this transcript (${reason})` };
+}
 
 /**
  * Session History's one owner in the daemon: the catalog store and the reconciler that fills
@@ -106,12 +120,31 @@ export class HistoryService {
     const { reader, entry } = found;
     const gone = { ok: false, status: 410, error: "transcript removed by Claude Code's retention" } as const;
     if (entry.summary.transcriptState === "gone") return gone;
-    const real = await realpath(entry.transcriptPath).catch(() => null);
-    // Removed since the last walk: the next one marks the row gone.
-    if (real === null) return gone;
+    let real: string;
+    try {
+      real = await realpath(entry.transcriptPath);
+    } catch (error) {
+      // Removed since the last walk: the next one marks the row gone. Any other failure (EACCES,
+      // ELOOP) is a transcript still there that cannot be read, and says so rather than
+      // blaming retention.
+      return isMissing(error) ? gone : unreadable(error);
+    }
     const roots = await Promise.all(reader.spec.roots().map((root) => realpath(root).catch(() => null)));
     if (!roots.some((root) => root !== null && isInside(root, real))) {
       return { ok: false, status: 404, error: "no such history session" };
+    }
+    // `after()` answers an unreadable file with an empty, finished page, which is right for a
+    // collector and wrong here: it would read as an empty conversation, or end one early. So
+    // the file is opened first, and only a readable regular file reaches it.
+    try {
+      const handle = await open(real, "r");
+      try {
+        if (!(await handle.stat()).isFile()) return unreadable(new Error("not a regular file"));
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      return isMissing(error) ? gone : unreadable(error);
     }
     const page = reader.spec.messages.after(real, Number(query.cursor ?? 0), HISTORY_MESSAGES_PAGE_TURNS);
     return { ok: true, page: { messages: page.messages, nextCursor: page.atEnd ? null : String(page.end) } };

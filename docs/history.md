@@ -147,7 +147,7 @@ path always comes from the catalog.
 |---|---|
 | `GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent` | The list, described above. |
 | `GET /api/history/sessions/:agent/:id` | `{session}`: the catalog row. 404 for an agent with no reader, a non-UUID id, or an id the catalog does not know. |
-| `GET /api/history/sessions/:agent/:id/messages?cursor` | `{messages, nextCursor}`: a window of turns read forward from the byte offset `cursor` (the top when absent), through the same path-based window reads a live session uses. A window is at least 100 turns and 512 KB. 410 when the transcript is gone; 404 as above, or when the cataloged path does not resolve, through symlinks, under one of its harness's roots. A malformed cursor is refused with 400. |
+| `GET /api/history/sessions/:agent/:id/messages?cursor` | `{messages, nextCursor}`: a window of turns read forward from the byte offset `cursor` (the top when absent), through the same path-based window reads a live session uses. A window is at least 100 turns and 512 KB. 410 when the transcript file is gone (missing on disk, whether or not a walk has marked it yet); 500 naming the reason (`EACCES`, `ELOOP`, not a regular file) when it is there but cannot be read, so it is never shown as removed, empty or finished; 404 as above, or when the cataloged path does not resolve, through symlinks, under one of its harness's roots. A malformed cursor is refused with 400. |
 
 Every row carries `liveSessionId`: the Registry session running that conversation now, joined
 when the row is served and never stored.

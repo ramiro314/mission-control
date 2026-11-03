@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -132,6 +132,55 @@ test("a gone transcript keeps its detail, and its conversation answers 410", asy
   assert.equal(detail.session.transcriptState, "gone");
   assert.equal(detail.session.cwd, "/work", "the record survives its transcript");
   assert.equal((await f.get(`/api/history/sessions/claude/${id}/messages`)).status, 410);
+  f.done();
+});
+
+test("a transcript that is there but cannot be read is a 500 naming why, never retention or an empty conversation", async () => {
+  const f = await fixture();
+  const id = sessionId();
+  const path = writeConversation(f.projects, id, 2);
+  await f.history.reconciler.trigger();
+  const point = (target: string) =>
+    openDb().prepare("UPDATE history_sessions SET transcript_path = ? WHERE agent_session_id = ?").run(target, id);
+  const read = async (query = "") => {
+    const res = await f.get(`/api/history/sessions/claude/${id}/messages${query}`);
+    return { status: res.status, error: ((await res.json()) as { error?: string }).error ?? "" };
+  };
+
+  // A symlink that resolves to itself: realpath fails with ELOOP, and the file is not gone.
+  const loop = join(f.projects, "-work", "loop.jsonl");
+  symlinkSync(loop, loop);
+  point(loop);
+  const looped = await read();
+  assert.equal(looped.status, 500);
+  assert.match(looped.error, /ELOOP/);
+  assert.doesNotMatch(looped.error, /retention/);
+
+  // A directory where the transcript should be.
+  const folder = join(f.projects, "-work", "a-folder.jsonl");
+  mkdirSync(folder);
+  point(folder);
+  assert.equal((await read()).status, 500);
+
+  // A transcript the daemon may not read: refused on the first window and on a later one, not
+  // answered with an empty page that says the conversation ended.
+  point(path);
+  if (process.getuid?.() !== 0) {
+    chmodSync(path, 0o000);
+    try {
+      for (const query of ["", "?cursor=100"]) {
+        const denied = await read(query);
+        assert.equal(denied.status, 500, `messages${query}`);
+        assert.match(denied.error, /EACCES/);
+      }
+    } finally {
+      chmodSync(path, 0o644);
+    }
+  }
+  // Readable again, it reads; a file that is really gone is still a 410.
+  assert.equal((await read()).status, 200);
+  rmSync(path);
+  assert.equal((await read()).status, 410);
   f.done();
 });
 
