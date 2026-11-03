@@ -396,3 +396,49 @@ test.describe("a window paged past the route's 200-row cap", () => {
     await expect(rows).toHaveCount(260);
   });
 });
+
+test.describe("an open History page with the recurring scan off", () => {
+  // `0` turns the recurring scan off, so only the daemon's watcher can notice a new or grown
+  // transcript, and only `history_changed` can tell the open page to re-read.
+  test.use({ daemonEnv: { MISSION_HISTORY_RECONCILE_MS: "0", MISSION_HISTORY_BATCH_SIZE: "100" } });
+
+  test("shows a session that starts, then follows it as it grows, without a reload", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon, 0);
+    await backfilled(daemon);
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(5);
+    await expect(page.getByRole("status")).toHaveText("");
+    // Marks this document, so a reload anywhere below would be caught by its absence.
+    await dashboard.evaluate(() => { (window as unknown as { historyMarker: boolean }).historyMarker = true; });
+
+    // A Claude session starts: its transcript lands in the fake projects directory.
+    const now = Date.now();
+    const started = writeSession(daemon, {
+      cwd: "/projects/live-service",
+      at: new Date(now).toISOString(),
+      prompt: "Started while the page was open",
+    });
+    const newest = rows.first();
+    await expect(newest).toContainText("Started while the page was open", { timeout: 10_000 });
+    await expect(rows).toHaveCount(6);
+    await expect(newest).toContainText("/projects/live-service");
+    await capture(dashboard, "live-session-started");
+
+    // It grows: Claude names it and records what it has cost so far.
+    const later = new Date(now + 90_000).toISOString();
+    const grown = [
+      { type: "ai-title", aiTitle: "Live title from the transcript", timestamp: later },
+      { type: "cost-state", totalCostUSD: 1.25, totalDuration: 90_000, startTime: now, timestamp: later },
+    ];
+    writeFileSync(started.path, grown.map((record) => `${JSON.stringify({ sessionId: started.id, ...record })}\n`).join(""), { flag: "a" });
+    await expect(newest).toContainText("Live title from the transcript", { timeout: 10_000 });
+    await expect(newest).toContainText("$1.25");
+    await expect(newest).toContainText("1m 30s");
+    await expect(page.getByText("Started while the page was open")).toHaveCount(0);
+    await expect(rows).toHaveCount(6);
+    expect(await dashboard.evaluate(() => (window as unknown as { historyMarker?: boolean }).historyMarker)).toBe(true);
+    await capture(dashboard, "live-session-grown");
+  });
+});

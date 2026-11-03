@@ -14,8 +14,9 @@ import { appendHistoryRows, readHistoryWindow } from "./history-window.ts";
  *    paged to, a page at a time past the route's cap, so a "Load more" is never undone.
  *
  * While the catalog reports a backfill in progress, the window is refetched a second after each
- * answer lands, so sessions appear as they are indexed. That poll stops the moment indexing does. Live updates
- * after the first run belong to the `history_changed` event, which is a later change.
+ * answer lands, so sessions appear as they are indexed. That poll stops the moment indexing does.
+ * After that the browser never polls: `revision` (the event stream's `historyRevision`, bumped by
+ * each `history_changed` and each reconnect) refetches the window when a session starts or grows.
  */
 
 /** How often an indexing catalog is re-read. */
@@ -36,7 +37,7 @@ export interface HistoryCatalog {
   refresh: () => void;
 }
 
-export function useHistoryCatalog(): HistoryCatalog {
+export function useHistoryCatalog(revision: number): HistoryCatalog {
   const [sessions, setSessions] = useState<HistorySessionSummary[]>([]);
   const [progress, setProgress] = useState<HistoryProgress | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -97,6 +98,16 @@ export function useHistoryCatalog(): HistoryCatalog {
     const timer = setTimeout(() => setTick((n) => n + 1), INDEXING_REFRESH_MS);
     return () => clearTimeout(timer);
   }, [indexing, landed, loadingMore]);
+
+  // A changed catalog re-reads the window at its current depth. Held while a Load more is in
+  // flight, for the poll's reason above, and taken as soon as it lands: the revision it waited
+  // on is still newer than the one last read.
+  const readRevision = useRef(revision);
+  useEffect(() => {
+    if (revision === readRevision.current || loadingMore) return;
+    readRevision.current = revision;
+    setTick((n) => n + 1);
+  }, [revision, loadingMore]);
 
   const loadMore = useCallback(() => {
     if (!cursor || loadingMore) return;

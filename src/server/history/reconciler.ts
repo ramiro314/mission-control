@@ -1,3 +1,4 @@
+import { watch, type FSWatcher } from "node:fs";
 import { setImmediate as yieldToLoop, setTimeout as sleep } from "node:timers/promises";
 import type { HistoryProgress } from "@shared/history.ts";
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
@@ -20,9 +21,22 @@ import type { HistoryIndexEntry, HistoryStore, HistoryUpsert } from "./store.ts"
  * - **Gone follows a COMPLETE walk.** A row is marked gone only when a pass walked every root
  *   of its harness and did not see the file - never because a root could not be read or a
  *   pass was stopped. Rows are never deleted.
+ * - **The watcher is a hint; the scan is the authority.** `fs.watch` on each root (recursive
+ *   where the platform has it) asks for a pass shortly after a transcript moves, so an open
+ *   page sees a session within seconds. Watchers drop events, overflow, and cannot watch a
+ *   root that does not exist yet, so a missed event only delays a row until the next pass.
+ * - **One `onChanged` per changing pass.** A pass that wrote or marked any row calls it once,
+ *   never once per file or batch; a pass that changed nothing does not call it.
  *
  * Started after the daemon is serving, and never awaited by startup.
  */
+
+/**
+ * How long after a watch event the pass starts. Further events in the window fold into the
+ * same pass, so a live session appending every few hundred milliseconds costs about one walk
+ * a second, not one per write.
+ */
+const WATCH_DEBOUNCE_MS = 1000;
 
 export interface HistoryReader {
   agent: AgentType;
@@ -35,6 +49,10 @@ export interface HistoryReconcilerOptions {
   readers?: readonly HistoryReader[];
   /** Recurring cadence in ms, or null to run only when triggered. */
   intervalMs?: number | null;
+  /** Whether to watch the roots for hints. Off in tests that drive passes directly. */
+  watch?: boolean;
+  /** Called once after a pass that wrote or marked any row. Never once per file. */
+  onChanged?: () => void;
   batchSize?: number;
   /** An extra pause after each batch; 0 in production. */
   batchPauseMs?: number;
@@ -85,6 +103,11 @@ export class HistoryReconciler {
   private readonly store: HistoryStore;
   private readonly readers: readonly HistoryReader[];
   private readonly intervalMs: number | null;
+  private readonly wantsWatch: boolean;
+  private readonly onChanged: () => void;
+  /** One watcher per root that could be watched, by root. */
+  private readonly watchers = new Map<string, FSWatcher>();
+  private watchTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly batchSize: number;
   private readonly batchPauseMs: number;
   private readonly resolveRepositoryOverride: ((cwd: string | null) => string | null) | null;
@@ -132,6 +155,8 @@ export class HistoryReconciler {
     this.store = options.store;
     this.readers = options.readers ?? historyReaders();
     this.intervalMs = options.intervalMs ?? null;
+    this.wantsWatch = options.watch ?? false;
+    this.onChanged = options.onChanged ?? ((): void => {});
     this.batchSize = Math.max(1, options.batchSize ?? 25);
     this.batchPauseMs = Math.max(0, options.batchPauseMs ?? 0);
     this.resolveRepositoryOverride = options.resolveRepository ?? null;
@@ -148,6 +173,10 @@ export class HistoryReconciler {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    if (this.watchTimer) clearTimeout(this.watchTimer);
+    this.watchTimer = null;
+    for (const watcher of this.watchers.values()) watcher.close();
+    this.watchers.clear();
   }
 
   progress(): HistoryProgress {
@@ -164,23 +193,64 @@ export class HistoryReconciler {
       this.retrigger = true;
       return this.running;
     }
-    const pass = this.runPass()
+    // Shared with `runPass`, which fills it as it goes, so a pass that wrote some batches and
+    // then failed still announces the rows it did write.
+    const result: HistoryReconcilePass = { scanned: 0, indexed: 0, gone: 0, failed: 0, complete: true };
+    const pass = this.runPass(result)
       .catch((error: unknown): HistoryReconcilePass => {
         console.warn("[history] reconcile pass failed:", error);
         this.state = { ...this.state, indexing: false };
-        return { scanned: 0, indexed: 0, gone: 0, failed: 0, complete: false };
+        return { ...result, complete: false };
       })
-      .then((result) => {
+      .then((outcome) => {
         this.running = null;
+        if (!this.stopped && outcome.indexed + outcome.gone > 0) this.onChanged();
         if (this.retrigger && !this.stopped) {
           this.retrigger = false;
           return this.trigger();
         }
         this.retrigger = false;
-        return result;
+        return outcome;
       });
     this.running = pass;
     return pass;
+  }
+
+  /**
+   * Watch every root not watched yet. Run before each pass rather than once, because a root
+   * that does not exist yet (no Claude session has ever run here) cannot be watched until it
+   * does. Best-effort in every direction: a root that cannot be watched is left to the scan.
+   */
+  private installWatchers(): void {
+    if (!this.wantsWatch || this.stopped) return;
+    for (const { spec } of this.readers) {
+      for (const root of spec.roots()) {
+        if (this.watchers.has(root)) continue;
+        const open = (recursive: boolean): FSWatcher | null => {
+          try {
+            return watch(root, { recursive, persistent: false }, () => this.hint());
+          } catch {
+            return null;
+          }
+        };
+        const watcher = open(true) ?? open(false);
+        if (!watcher) continue;
+        // A removed root or an overflow closes it; the next pass watches the root again.
+        watcher.on("error", () => {
+          watcher.close();
+          if (this.watchers.get(root) === watcher) this.watchers.delete(root);
+        });
+        this.watchers.set(root, watcher);
+      }
+    }
+  }
+
+  private hint(): void {
+    if (this.stopped || this.watchTimer) return;
+    this.watchTimer = unref(setTimeout(() => {
+      this.watchTimer = null;
+      void this.trigger();
+    }, WATCH_DEBOUNCE_MS));
   }
 
   private schedule(): void {
@@ -203,9 +273,9 @@ export class HistoryReconciler {
     };
   }
 
-  private async runPass(): Promise<HistoryReconcilePass> {
+  private async runPass(result: HistoryReconcilePass): Promise<HistoryReconcilePass> {
     this.passes += 1;
-    const result: HistoryReconcilePass = { scanned: 0, indexed: 0, gone: 0, failed: 0, complete: true };
+    this.installWatchers();
     const resolveRepository = this.repositoryResolver();
 
     // Walk every reader first, so progress names the whole job before the first batch.

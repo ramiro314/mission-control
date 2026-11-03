@@ -1435,6 +1435,15 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "archive_changed" });
   }
 
+  /**
+   * Announce that a Session History pass changed catalog rows. Content-free for
+   * `archive_changed`'s reason: the catalog is every session on disk, so open History pages
+   * re-read their own bounded window instead.
+   */
+  emitHistoryChanged(): void {
+    this.emitEvent({ type: "history_changed" });
+  }
+
   /** Announce one fully committed, reconciled settings restore to every open dashboard. */
   emitSettingsRestored(event: {
     snapshotId: string;

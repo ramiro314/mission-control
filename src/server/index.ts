@@ -302,8 +302,13 @@ const archives = new ArchiveManager({
 registry.onSessionExit((session) => archives.reserveOnExit(session));
 // Session History's catalog of every agent session on disk. Constructed here, started only
 // after the port is won (below), for the archive library's reason: a first run indexes
-// thousands of transcripts, and the daemon serves while it does.
-const history = new HistoryService();
+// thousands of transcripts, and the daemon serves while it does. As with archives, the watcher
+// is a latency hint under the recurring scan, and a pass that changed rows reaches open
+// History pages as one content-free `history_changed` through the Registry.
+const history = new HistoryService({
+  onChanged: () => registry.emitHistoryChanged(),
+  watch: true,
+});
 registry.subscribe((event) => {
   if (event.type === "session_remove") archives.sessionRemoved(event.id);
 });

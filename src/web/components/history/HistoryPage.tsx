@@ -59,8 +59,11 @@ function HistoryRow({ row }: { row: HistorySessionSummary }): React.JSX.Element 
   );
 }
 
-export function HistoryPage(): React.JSX.Element {
-  const catalog = useHistoryCatalog();
+export function HistoryPage({ revision }: {
+  /** `historyRevision` from the event stream: bumps per changing reconcile pass and per reconnect. */
+  revision: number;
+}): React.JSX.Element {
+  const catalog = useHistoryCatalog(revision);
   const progressLine = historyProgressLine(catalog.progress);
 
   const groups = useMemo(() => {

@@ -221,6 +221,12 @@ export interface MissionState {
    * skew waiting to happen; carrying the number costs nothing and starts no polling.
    */
   archivesRevision: number;
+  /**
+   * Bumped by every `history_changed` and once per reconnect, for `archivesRevision`'s reason:
+   * the Session History catalog rides no snapshot, so an open History page re-reads its own
+   * window when this moves.
+   */
+  historyRevision: number;
   /** Latest restore committed by another window. Notice only, never an automatic mutation. */
   settingsRestoreNotice: SettingsRestoredEvent | null;
   connected: boolean;
@@ -280,6 +286,7 @@ export function useEventStream(): MissionState {
   const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [worktreesRevision, setWorktreesRevision] = useState(0);
   const [archivesRevision, setArchivesRevision] = useState(0);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [settingsRestoreNotice, setSettingsRestoreNotice] = useState<SettingsRestoredEvent | null>(null);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
@@ -303,6 +310,8 @@ export function useEventStream(): MissionState {
       // reconciled, refused, or pruned while the channel is down, and a mounted Archives page
       // would otherwise go on showing the page it had before the gap.
       setArchivesRevision((n) => n + 1);
+      // And for Session History: sessions start and grow while the channel is down too.
+      setHistoryRevision((n) => n + 1);
     };
     es.onerror = () => {
       if (esRef.current !== es) return;
@@ -657,6 +666,10 @@ export function useEventStream(): MissionState {
         case "archive_changed":
           setArchivesRevision((n) => n + 1);
           break;
+        // One changing reconcile pass is one bump, on the same rule as archives.
+        case "history_changed":
+          setHistoryRevision((n) => n + 1);
+          break;
         case "settings_restored":
           latestSettingsRestoreRequestIdRef.current = msg.requestId;
           if (observeSettingsRestored(msg) === "external") setSettingsRestoreNotice(msg);
@@ -764,6 +777,7 @@ export function useEventStream(): MissionState {
     harnessesRevision,
     worktreesRevision,
     archivesRevision,
+    historyRevision,
     settingsRestoreNotice,
     connected,
     hasSnapshot,

@@ -25,6 +25,10 @@ sessions do not appear yet.
   the page reads "Indexing N of M sessions" and the rows appear newest first as they are
   indexed. While that line is showing, the page re-reads the catalog a second after each answer
   lands, so a slow read is never cut off by the next one.
+- **Live.** An open page updates within seconds, without a reload, when a session starts or
+  grows: its title, last activity and cost follow the transcript. The page does not poll for
+  this. It re-reads the rows on screen when the daemon announces a change, and once each time
+  the dashboard's event stream reconnects.
 
 ## Session kinds
 
@@ -56,8 +60,12 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   `migrate()` and written only by `HistoryStore`. See
   [database and migrations](database-and-migrations.md).
 - **Reconciler.** `HistoryReconciler` starts after the daemon is serving and rescans every
-  30 seconds. An unchanged transcript costs one `lstat`; a changed one is re-summarized from
-  the byte where its last parse stopped, and a shrunk file or a new inode starts over. A file
+  30 seconds. It also watches each root with `fs.watch` (recursive where the platform supports
+  it) and starts a pass a second after a transcript moves. The watcher is only a hint: a root
+  that does not exist yet is watched from the first pass after it appears, and an event the
+  watcher misses delays a row until the next scan. An unchanged transcript costs one `lstat`; a
+  changed one is re-summarized from the byte where its last parse stopped, and a file smaller
+  than it was or a new inode at the same path starts over. A file
   that holds nothing a row can be built from is remembered with its fingerprint and not read
   again until it changes. Several files carrying one session id are compared only when one of
   them appeared, went or changed. New and
@@ -66,6 +74,9 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   walked every root of its harness without seeing the file. A root, project folder or file
   that exists but could not be read (permissions, I/O) makes the walk incomplete, and an
   incomplete walk decides nothing; only one that is not there at all counts as empty.
+- **Change event.** A pass that wrote or marked any row publishes one `history_changed` server
+  event, however many rows and batches it covered; a pass that changed nothing publishes none.
+  The event carries no data. See [the event stream](event-stream.md).
 - **Repository.** Resolved when a row is indexed and stored: a worktree pool slot maps to its
   pool's main checkout even after the slot is gone, a `worktrees/<taskId>` checkout to its
   task's repository, and any other existing path through Git.
