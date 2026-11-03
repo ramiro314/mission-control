@@ -70,7 +70,7 @@ test("a pre-native database gains empty operational tables without rewriting old
 });
 
 test("a database stamped 10 takes its recovery point, gains slot history, and is stamped current", () => {
-  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 12);
+  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 13);
   const backups = join(home, "backups", "database");
   const recoveryPoints = () => readdirSync(backups).filter((name) => name.startsWith("pre-migration-"));
   assert.ok(existsSync(backups), "the open captured a recovery point before it upgraded");

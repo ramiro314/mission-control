@@ -1220,6 +1220,13 @@ export interface HistoryParse {
   summary: HistorySummary;
   parsedBytes: number;
   state: string | null;
+  /**
+   * The user prompts this parse read, in order, for the search index. Only prompts on lines
+   * counted in `parsedBytes`, so a resumed parse never yields one twice.
+   */
+  prompts: string[];
+  /** True when this parse read the file from the top, so `prompts` is every prompt it holds. */
+  fromStart: boolean;
 }
 
 /**
@@ -1247,6 +1254,11 @@ export interface HistorySpec {
    * never scan order, so a rebuilt catalog chooses the same file.
    */
   canonical(candidates: readonly { path: string; summary: HistorySummary }[]): string;
+  /**
+   * How long the agent keeps transcripts before deleting them itself, read from its own
+   * settings each time it is asked, or null when it deletes none. Never written.
+   */
+  retention(): Omit<import("@shared/history.ts").HistoryRetention, "agent"> | null;
 }
 
 /**

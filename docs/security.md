@@ -62,6 +62,19 @@ Requiring the daemon token, or an equivalent, for writes to executable settings 
 Commands, testing settings and bulk apply) is a recorded follow-up:
 [tokenless loopback writes](plans/worktree-claims-and-monorepo-testing/plan.md#follow-ups-not-in-this-plan).
 
+## Session History copies user prompts into `harness.db`
+
+[Session History](history.md) reads the agents' own transcript stores and serves them through
+the same tokenless loopback `/api/history/*` routes, so anything a transcript holds is readable
+by any local process that can reach `/api/*`. Its search index adds one thing the transcripts
+did not already put in Mission Control's state: `history_search_segments` in `harness.db` holds
+a lowercased copy of every user prompt of each conversation (up to 16,000 characters a prompt),
+and the capped first prompt of each one-shot and reviewer run, beside each session's titles,
+working directory, repository and branch. A secret pasted into a prompt is therefore also in
+`harness.db`, and stays there after Claude Code's retention deletes the transcript: catalog
+rows and their search text are never deleted. Nothing is redacted. Database recovery points
+copy it like the rest of the file. None of it is exposed through Mission Control's MCP tools.
+
 ## Public product issue reporting
 
 Product reports are public GitHub issues, not private support messages. The agent tool is defined

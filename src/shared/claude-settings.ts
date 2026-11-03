@@ -190,3 +190,18 @@ export function otelEnvInstalled(): boolean {
 export function sessionIdAttributionDisabled(): boolean {
   return otelEnvFlags().sessionIdDisabled;
 }
+
+/**
+ * `cleanupPeriodDays` from the user's settings file: how many days Claude Code keeps
+ * transcripts before its silent sweep deletes them. Null when unset, not a whole number of at
+ * least 1 (Claude Code refuses those), or the file cannot be read - the caller then shows
+ * Claude Code's own default. Read only; Mission Control never edits this setting.
+ */
+export function claudeCleanupPeriodDays(): number | null {
+  try {
+    const value = readSettings(claudeSettingsPath()).parsed.cleanupPeriodDays;
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 ? value : null;
+  } catch {
+    return null;
+  }
+}

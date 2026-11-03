@@ -150,6 +150,20 @@ test("History round-trips, and a path it does not know yet lands on the list", (
   assert.equal(missionRouteHash({ page: "history" }), "#/history");
 });
 
+test("History filters survive the hash, and a value the API would refuse is dropped", () => {
+  const filters = { q: "login retry", repo: "/code/app", from: "2026-10-01", to: "2026-10-31", kind: "all", agent: "claude" } as const;
+  const hash = missionRouteHash({ page: "history", filters });
+  assert.equal(hash, "#/history?q=login+retry&repo=%2Fcode%2Fapp&from=2026-10-01&to=2026-10-31&kind=all&agent=claude");
+  assert.deepEqual(parseMissionRoute(hash), { page: "history", filters });
+  assert.deepEqual(parseMissionRoute("#/history?kind=one_shot"), { page: "history", filters: { kind: "one_shot" } });
+  assert.deepEqual(
+    parseMissionRoute("#/history?kind=everything&agent=gpt&from=2026-02-31&to=yesterday&cursor=abc"),
+    { page: "history" },
+    "an unknown kind or agent, an impossible day, and a parameter the page has no field for",
+  );
+  assert.equal(missionRouteHash({ page: "history", filters: { from: "not-a-day" } }), "#/history");
+});
+
 // A well-formed archive key, in the portable `<producerId>~<archiveId>` shape the manifest,
 // the routes and SQLite all agree on. Both halves must be lowercase UUIDs or the router is
 // required to drop the key.
