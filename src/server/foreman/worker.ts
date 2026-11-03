@@ -954,13 +954,30 @@ const reviewNudged = new Map<string, Map<string, FollowupMark>>();
  */
 const heldLogged = new Map<string, Map<string, { round: number; reasons: Set<string> }>>();
 
-/** Forget the held PRs a session no longer follows through on, as `observeFollowupMarks` does. */
-function pruneHeldLogged(session: Session, prs: readonly FollowupPr[]): void {
-  const logged = heldLogged.get(noteKeyOf(session));
-  if (!logged) return;
-  const open = new Set(prs.map((pr) => pr.prKey));
-  for (const prKey of logged.keys()) if (!open.has(prKey)) logged.delete(prKey);
-  if (logged.size === 0) heldLogged.delete(noteKeyOf(session));
+/**
+ * Forget departed sessions, and, once the adoption read succeeded, the held PRs no card follows
+ * through on any more. Pruned against every card sharing a note key, because an exited card and
+ * its re-minted successor can follow different PRs, and pruning each alone would erase the
+ * other's history every pass.
+ */
+function pruneHeldLogged(sessions: readonly Session[], adopted: AdoptedInspection[] | null): void {
+  const followed = new Map<string, Set<string>>();
+  for (const session of sessions) {
+    const key = noteKeyOf(session);
+    const prKeys = followed.get(key) ?? new Set<string>();
+    if (adopted) for (const pr of reviewFollowupPrs(session, adopted)) prKeys.add(pr.prKey);
+    followed.set(key, prKeys);
+  }
+  for (const [key, logged] of heldLogged) {
+    const prKeys = followed.get(key);
+    if (!prKeys) {
+      heldLogged.delete(key);
+      continue;
+    }
+    if (!adopted) continue;
+    for (const prKey of logged.keys()) if (!prKeys.has(prKey)) logged.delete(prKey);
+    if (logged.size === 0) heldLogged.delete(key);
+  }
 }
 
 function logHeldFindings(session: Session, pr: FollowupPr, why: string, open: number): void {
@@ -1075,10 +1092,8 @@ export async function runReviewFollowup(
   // Drop markers for sessions that have gone away, so the map tracks the live fleet.
   const liveIds = new Set(sessions.map((s) => s.id));
   for (const id of reviewNudged.keys()) if (!liveIds.has(id)) reviewNudged.delete(id);
-  const liveNoteKeys = new Set(sessions.map(noteKeyOf));
-  for (const key of heldLogged.keys()) if (!liveNoteKeys.has(key)) heldLogged.delete(key);
-
   const adopted = await readAdoptedInspections(client);
+  pruneHeldLogged(sessions, adopted);
   const shipping = await client.shippingConfig().catch(() => null);
   const now = Date.now();
   for (const session of sessions) {
@@ -1086,7 +1101,6 @@ export async function runReviewFollowup(
     // later new PR starts fresh. Everything below is scoped to pull requests a mark can be
     // keyed to.
     const prs = reviewFollowupPrs(session, adopted ?? []);
-    if (adopted) pruneHeldLogged(session, prs);
     if (prs.length === 0) {
       if (adopted) reviewNudged.delete(session.id);
       continue;
@@ -1206,7 +1220,7 @@ export async function runReviewFollowup(
         logHeldFindings(
           fresh,
           freshPr,
-          heldSkipReason(freshPr, freshDecision.why, read?.pr.round),
+          heldSkipReason(freshPr, freshDecision.why, read?.pr.round, freshCfg.trackReviewFeedback),
           heldFindingsCount(freshPr, read?.findings, read?.pr.round),
         );
       }

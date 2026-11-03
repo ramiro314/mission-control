@@ -476,7 +476,7 @@ async function heldLines(name: string, fake: ReturnType<typeof fakeDaemon>): Pro
   } finally {
     console.log = original;
   }
-  return lines.filter((line) => line.startsWith(`[foreman] ${name}: holding`));
+  return lines.filter((line) => line.startsWith(`[foreman] ${name}`) && line.includes(": holding "));
 }
 
 function heldDaemon(session: () => Session, runs: () => Array<{ status: string }> = () => [{ status: ACTIVE_RUN }]) {
@@ -600,6 +600,51 @@ test("a stale read that found nothing logs the round mismatch, not 'nothing to a
       "the findings read and the snapshot are from different GitHub Inspector rounds",
   ]);
   assert.deepEqual(raced.injected, []);
+});
+
+test("a stale read with review tracking turned off during it logs the real reason", async () => {
+  const fake = fakeDaemon({
+    sessions: (afterRead) => [
+      parked("held-stale-off", { inspector: afterRead ? summary({ open: 1, round: 4 }) : summary({ open: 1, round: 3 }) }),
+    ],
+    findings: async () => response([draft({ status: "resolved" })], 3),
+    config: { ...CFG, trackReviewFeedback: false } as ForemanConfig,
+  });
+  assert.deepEqual(await heldLines("held-stale-off", fake), [
+    "[foreman] held-stale-off: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - " +
+      "no enabled review comments, failing CI or merge conflict",
+  ]);
+});
+
+test("an exited card and its re-minted successor keep each other's holds", async () => {
+  const pass = () =>
+    heldLines(
+      "held-twin",
+      fakeDaemon({
+        sessions: () => [
+          parked("held-twin-old", { agentSessionId: "agent-held-twin", state: "exited" }),
+          parked("held-twin-new", {
+            agentSessionId: "agent-held-twin",
+            prUrl: null,
+            prNumber: null,
+            prState: null,
+            inspector: null,
+            gitBranch: BRANCH,
+          }),
+        ],
+        openInspections: async () => [
+          adoptedBy("held-twin-new", { key: "owner/repo#8", url: "https://github.com/owner/repo/pull/8", number: 8 }),
+        ],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-twin-old: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 3) - the session exited",
+    "[foreman] held-twin-new: holding 1 GitHub Inspector finding(s) on owner/repo#8 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await pass(), [], "neither card's prune erases the other's history");
 });
 
 test("a session whose id is re-minted keeps its logged holds", async () => {

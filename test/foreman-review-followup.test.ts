@@ -709,10 +709,11 @@ test("the held log reports a stale read's 'nothing to act on' as the round misma
   const nothing = decide({ session: mkSession({ inspector: inspector({ open: 0 }) }) });
   assert.deepEqual(nothing, { kind: "skip", why: SKIP_NOTHING_OPEN });
 
-  assert.equal(heldSkipReason(pr, SKIP_NOTHING_OPEN, 3), SKIP_ROUND_MISMATCH);
-  assert.equal(heldSkipReason(pr, SKIP_NOTHING_OPEN, 4), SKIP_NOTHING_OPEN);
-  assert.equal(heldSkipReason(pr, SKIP_NOTHING_OPEN), SKIP_NOTHING_OPEN);
-  assert.equal(heldSkipReason(pr, "an active workflow owns this session", 3), "an active workflow owns this session");
+  assert.equal(heldSkipReason(pr, SKIP_NOTHING_OPEN, 3, true), SKIP_ROUND_MISMATCH);
+  assert.equal(heldSkipReason(pr, SKIP_NOTHING_OPEN, 3, false), SKIP_NOTHING_OPEN, "untracked review feedback is the real reason");
+  assert.equal(heldSkipReason(pr, SKIP_NOTHING_OPEN, 4, true), SKIP_NOTHING_OPEN);
+  assert.equal(heldSkipReason(pr, SKIP_NOTHING_OPEN, undefined, true), SKIP_NOTHING_OPEN);
+  assert.equal(heldSkipReason(pr, "an active workflow owns this session", 3, true), "an active workflow owns this session");
 });
 
 test("a later PR resets the mark - no collision with the prior PR at the same round", () => {

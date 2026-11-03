@@ -616,12 +616,18 @@ export const SKIP_ROUND_MISMATCH = "the findings read and the snapshot are from 
 
 /**
  * The reason the held-findings log gives. A read for another round that found nothing open
- * says nothing about the snapshot's round, so that "nothing to act on" is the round mismatch.
- * Log wording only: the decision is unchanged.
+ * says nothing about the snapshot's round, so that "nothing to act on" is the round mismatch -
+ * unless review feedback is not tracked, which is then the real reason. Log wording only: the
+ * decision is unchanged.
  */
-export function heldSkipReason(pr: FollowupPr, why: string, findingsRound?: number): string {
+export function heldSkipReason(
+  pr: FollowupPr,
+  why: string,
+  findingsRound: number | undefined,
+  trackReviewComments: boolean,
+): string {
   const stale = findingsRound !== undefined && findingsRound !== (pr.inspector?.round ?? 0);
-  return stale && why === SKIP_NOTHING_OPEN ? SKIP_ROUND_MISMATCH : why;
+  return stale && trackReviewComments && why === SKIP_NOTHING_OPEN ? SKIP_ROUND_MISMATCH : why;
 }
 
 /** The normal waiting states. The worker never logs them as a hold, or the line would repeat every pass. */
