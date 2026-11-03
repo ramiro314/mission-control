@@ -7,7 +7,6 @@ import {
   isHistoryConversationKind,
   type HistoryResumeBody,
   type HistoryResumeCheckout,
-  type HistoryResumeDirectoryState,
   type HistoryResumeLaunch,
   type HistoryResumeOptions,
   type HistoryResumeRefusal,
@@ -214,7 +213,7 @@ export class HistoryResume {
     const original = await this.original(summary.cwd, observed);
     const openLaunch = this.deps.launches.open(summary.agent, summary.agentSessionId);
     const refused = this.sessionRefusal(summary, openLaunch);
-    const originalRefusal = directoryRefusal(summary.cwd, original.state);
+    const originalRefusal = directoryRefusal(summary.cwd, original, observed);
     return {
       ok: true,
       options: {
@@ -440,14 +439,14 @@ export class HistoryResume {
       // The original's own slot, whatever it was observed as: its lease decides whether it is
       // still idle, after the claim, so one taken meanwhile is refused and the claim released.
       if (original.slot) return { ok: true, target: { cwd: await canonical(original.slot.path), fork: null, slot: original.slot } };
-      const refused = directoryRefusal(summary.cwd, original.state);
+      const refused = directoryRefusal(summary.cwd, original, observed);
       return refused ? { ok: false, refusal: refused } : { ok: true, target: { cwd: original.resolved!, fork: null, slot: null } };
     }
     if (target.kind === "slot") {
       const original = await this.original(summary.cwd, observed);
       const offered = original.slot?.slotId === target.slotId
         ? original.slot
-        : directoryRefusal(summary.cwd, original.state)
+        : directoryRefusal(summary.cwd, original, observed)
           ? (await this.picker(summary, observed, true)).find((slot) => slot.slotId === target.slotId) ?? null
           : null;
       if (!offered) {
@@ -599,24 +598,47 @@ function canFork(agent: HistorySessionSummary["agent"]): boolean {
   return typeof resumeFor(agent)?.forkArgv === "function";
 }
 
-/** Why the original directory cannot be resumed in, or null when it can (an idle slot can). */
-function directoryRefusal(cwd: string | null, state: HistoryResumeDirectoryState): HistoryResumeRefusal | null {
+/**
+ * Why the original directory cannot be resumed in, or null when it can (an idle slot can). A
+ * pool directory whose pool could not be read is not called reused: the refusal says the pool
+ * was unreadable, and why.
+ */
+function directoryRefusal(cwd: string | null, original: Original, observed: SlotObservation): HistoryResumeRefusal | null {
+  const { state } = original;
   if (state === "unrecorded") return refusal("no_directory", "This transcript recorded no working directory to resume in.");
   if (state === "missing") return refusal("directory_missing", `The original directory ${cwd} no longer exists.`);
+  if (state === "slot_reused" && original.slot === null && observed.error !== null) {
+    return refusal(
+      "pool_unavailable",
+      `The original directory ${cwd} is in a worktree pool that could not be read (${observed.error}), so whether its slot is idle is unknown.`,
+    );
+  }
   if (state === "slot_reused") {
     return refusal("slot_reused", `The original directory ${cwd} is a worktree slot that is in use or not idle.`);
   }
   return null;
 }
 
-/** One observation of the pool per request, read only when something asks for it. */
+/**
+ * One observation of the pool per request, read only when something asks for it. A read that
+ * fails offers no slot, and is logged and kept as `error`, so a refusal can say why rather than
+ * call a slot it never saw reused.
+ */
 class SlotObservation {
   private observed: Promise<HistoryResumeObservedSlot[]> | null = null;
+  /** Why the pool could not be read, once a read has failed; null otherwise. */
+  error: string | null = null;
 
   constructor(private readonly source: HistoryResumeSlots | null) {}
 
   slots(): Promise<HistoryResumeObservedSlot[]> {
-    this.observed ??= this.source ? this.source.observe().catch(() => []) : Promise.resolve([]);
+    this.observed ??= this.source
+      ? this.source.observe().catch((error: unknown) => {
+        this.error = error instanceof Error ? error.message : String(error);
+        console.error(`[history] could not read the worktree pools for Resume: ${this.error}`);
+        return [];
+      })
+      : Promise.resolve([]);
     return this.observed;
   }
 }

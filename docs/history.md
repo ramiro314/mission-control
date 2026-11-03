@@ -139,11 +139,13 @@ the agent like any other terminal session, which turns the row **Live**.
 - **Original slot.** An idle slot never keeps a branch, so an original directory inside a pool
   is a slot target on its own slot. When that slot is idle, the Resume leases it and checks out
   the recorded branch (below). When another owner holds it, or it is not idle for any other
-  reason, it counts as reused.
+  reason (a slot left standing on a branch included), it counts as reused.
 - **Picker.** When the original directory is gone, reused or never recorded, the dialog offers
-  the idle, clean slots of the session's repository (the slots acquisition's own idle rule
-  would hand out, read from one inventory observation) and, as another choice, a directory to
-  type (below). A session with no resolvable repository is offered no slot. A slot of another
+  the idle, clean slots of the session's repository (the slots the slot lease below would
+  take: acquisition's own idle rule plus a detached HEAD, read from one inventory observation,
+  `observedAsIsRefusal`) and, as another choice, a directory to type (below). A pool that
+  cannot be read offers no slot, and an original directory inside it is refused with
+  `pool_unavailable`, naming why, rather than called reused. A session with no resolvable repository is offered no slot. A slot of another
   repository, or one never offered, is refused with `slot_not_offered`. The terminal opens in
   the slot's root.
 - **Slot target.** The worktree manager's `leaseForResume` leases the slot to the manual owner
@@ -219,7 +221,8 @@ the agent like any other terminal session, which turns the row **Live**.
   `expired`.
 - **Refusals** are explicit, each with a code and a sentence: a background run, a gone
   transcript, a live session, an open launch (naming its directory), no recorded directory, a
-  missing directory, a reused slot, a pool directory typed as a directory, a relative typed
+  missing directory, a reused slot, a pool that could not be read, a pool directory typed as a
+  directory, a relative typed
   path, a file in the destination project folder that is not History's copy of this session, a
   slot never offered, a slot no longer idle, a harness that cannot resume, a terminal that
   cannot host an agent, a launch that failed, or a launch Cancel pending resume closed while it

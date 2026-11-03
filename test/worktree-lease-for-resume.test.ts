@@ -5,7 +5,7 @@ import { afterEach, test } from "node:test";
 import { historyResumeCheckoutWarning, type HistoryResumeCheckout } from "../src/shared/history.ts";
 import { openDb } from "../src/server/db.ts";
 import { isCheckoutBranchName, NativeWorktreeGit, parseWorktreePorcelain } from "../src/server/worktrees/git.ts";
-import { WorktreeManager, type NativeWorktreeLease, type WorktreeManagerDeps } from "../src/server/worktrees/manager.ts";
+import { observedAsIsRefusal, WorktreeManager, type NativeWorktreeLease, type WorktreeManagerDeps } from "../src/server/worktrees/manager.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { historyResumeOwnerKey } from "../src/server/worktrees/owners.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -138,6 +138,11 @@ test("a slot attached to a branch is refused, and left exactly as it was", async
   gitIn(s.path, "checkout", "-qb", "left-behind");
   const before = s.m.store.slot(s.slotId)!;
 
+  // The observation the Resume options read applies the same rule as the lease.
+  const status = (await s.m.status()).flatMap((pool) => pool.slots).find((entry) => entry.slot.id === s.slotId)!;
+  assert.equal(status.headDetached, false);
+  assert.equal(observedAsIsRefusal(status), "the slot is attached to a branch, which only a reset can undo");
+
   const result = await s.m.leaseForResume(s.slotId, OWNER, "main");
   assert.deepEqual(result, { outcome: "refused", reason: "the slot is attached to a branch, which only a reset can undo" });
   const after = s.m.store.slot(s.slotId)!;
@@ -147,6 +152,8 @@ test("a slot attached to a branch is refused, and left exactly as it was", async
 
 test("a slot another owner holds is refused, and its lease stands", async () => {
   const s = await idleSlot("mission-resume-lease-held-");
+  const before = (await s.m.status()).flatMap((pool) => pool.slots).find((entry) => entry.slot.id === s.slotId)!;
+  assert.equal(observedAsIsRefusal(before), null, "an idle detached slot is leasable as it stands");
   const held = await s.m.leaseAsIs(s.slotId, { kind: "manual", key: "terminal-other" });
   assert.equal(held.outcome, "leased");
 

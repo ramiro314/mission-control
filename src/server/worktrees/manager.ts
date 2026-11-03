@@ -278,6 +278,8 @@ export interface NativeSlotStatus {
   repositoryMatches: boolean | null;
   observedHead: string | null;
   dirty: boolean | null;
+  /** HEAD names a commit rather than a branch, or null when Git could not be read. */
+  headDetached: boolean | null;
   occupancy: WorktreeOccupancy;
   ownerReferenced: boolean | null;
   mergedIntoDefault: boolean | null;
@@ -851,6 +853,20 @@ export function observedIdleRefusal(status: NativeSlotStatus): IdleSlotRefusal |
       ? { ok: false, reason: "the slot's Git state could not be read" }
       : { ok: true, pathMatches: status.repositoryMatches, dirty: status.dirty },
   });
+}
+
+const ATTACHED_REFUSAL = "the slot is attached to a branch, which only a reset can undo";
+
+/**
+ * Why `leaseAsIs` or `leaseForResume` would refuse this slot, read from an inventory
+ * observation: acquisition's idle rule, and then the detached HEAD those leases require because
+ * they never reset. Null when the slot would be leased, as far as the observation can tell. A
+ * HEAD that could not be read counts against the slot, as it would at the lease.
+ */
+export function observedAsIsRefusal(status: NativeSlotStatus): string | null {
+  const idle = observedIdleRefusal(status);
+  if (idle) return idle.reason;
+  return status.headDetached === true ? null : status.headDetached === false ? ATTACHED_REFUSAL : "the slot's HEAD could not be read";
 }
 
 /** Native worktree sweep interval, or null when MISSION_WORKTREE_SWEEP_MS disables it. */
@@ -1751,9 +1767,7 @@ export class WorktreeManager {
     const screened = await this.screenIdleSlots(pool, identity, [slot]);
     const idle = screened.ok ? screened.idle.find((entry) => entry.slot.id === slotId) ?? null : null;
     if (!idle) return { outcome: "refused", reason: notIdleReason(screened, slotId) };
-    if (!idle.headDetached) {
-      return { outcome: "refused", reason: "the slot is attached to a branch, which only a reset can undo" };
-    }
+    if (!idle.headDetached) return { outcome: "refused", reason: ATTACHED_REFUSAL };
     const leaseId = this.deps.randomId();
     let reservation: WorktreeSlotRow | null;
     try {
@@ -4350,6 +4364,7 @@ export class WorktreeManager {
             : null,
           observedHead: inspection?.ok === true ? inspection.value.head : null,
           dirty: inspection?.ok === true ? inspection.value.dirty : null,
+          headDetached: inspection?.ok === true ? inspection.value.detached : null,
           occupancy: occupancy.get(slot.path) ?? { status: "unknown", reason: "path is missing" },
           ownerReferenced: referenced,
           mergedIntoDefault,

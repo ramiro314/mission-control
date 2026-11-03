@@ -1284,3 +1284,57 @@ test("the manager says a slot holds a launch by its lease, or by its owner when 
     f.done();
   }
 });
+
+test("an available slot left on a branch is never offered, and as the original it counts as reused", async () => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-attached-", registry);
+  const f = await fixture(fakeLauncher().launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(2);
+  try {
+    const [attached, idle] = p.slots;
+    // Available and clean, but standing on a branch: the as-is lease always refuses it.
+    gitIn(attached!.path, "checkout", "-qb", "left-behind");
+    const id = sessionId();
+    writeConversation(f.projects, id, attached!.path);
+    await f.history.reconciler.trigger();
+
+    const options = await f.options(id);
+    assert.equal(options.original.state, "slot_reused", "not pool_slot: the lease would refuse it");
+    assert.equal(options.original.refusal?.code, "slot_reused");
+    assert.deepEqual(options.picker?.slots.map((slot) => slot.slotId), [idle!.slotId], "the attached slot is not offered");
+
+    const gone = sessionId();
+    writeConversation(f.projects, gone, join(directory("parent"), "deleted"));
+    await f.history.reconciler.trigger();
+    assert.deepEqual((await f.options(gone)).picker?.slots.map((slot) => slot.slotId), [idle!.slotId]);
+  } finally {
+    f.done();
+  }
+});
+
+test("a pool that cannot be read is said so, and logged, rather than calling the original slot reused", async (t) => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-unreadable-", registry);
+  const failing: HistoryResumeSlots = { ...historyResumeSlots(p.m), observe: async () => { throw new Error("git worktree list timed out"); } };
+  const f = await fixture(fakeLauncher().launcher, registry, { repository: p.clone, slots: failing });
+  await p.seed(1);
+  const logged: string[] = [];
+  t.mock.method(console, "error", (message: unknown) => { logged.push(String(message)); });
+  try {
+    const id = sessionId();
+    writeConversation(f.projects, id, p.slots[0]!.path);
+    await f.history.reconciler.trigger();
+
+    const options = await f.options(id);
+    assert.equal(options.original.refusal?.code, "pool_unavailable");
+    assert.match(options.original.refusal!.error, /could not be read \(git worktree list timed out\)/);
+    assert.deepEqual(options.picker?.slots, []);
+    assert.ok(logged.some((line) => line.includes("git worktree list timed out")), logged.join("\n"));
+
+    const res = await f.resume(id);
+    assert.equal(((await res.json()) as { code: string }).code, "pool_unavailable");
+    assert.equal(f.history.launches.open("claude", id), null);
+  } finally {
+    f.done();
+  }
+});

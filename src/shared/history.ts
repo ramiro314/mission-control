@@ -445,6 +445,7 @@ export const HISTORY_RESUME_REFUSALS = [
   "slot_reused",
   "slot_unavailable",
   "slot_not_offered",
+  "pool_unavailable",
 ] as const;
 export type HistoryResumeRefusalCode = (typeof HISTORY_RESUME_REFUSALS)[number];
 

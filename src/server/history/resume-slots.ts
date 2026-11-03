@@ -1,7 +1,7 @@
 import type { HistoryResumeSlot } from "@shared/history.ts";
 import { canonical } from "../worktrees/git.ts";
 import {
-  observedIdleRefusal,
+  observedAsIsRefusal,
   type NativeWorktreeLease,
   type WorktreeLeaseForResumeResult,
   type WorktreeManager,
@@ -22,7 +22,10 @@ export interface HistoryResumeObservedSlot {
   canonicalPath: string;
   /** Its pool's main checkout, resolved through symlinks: the repository the slot belongs to. */
   repository: string;
-  /** Acquisition's own idle rule held: available, unowned, clean, and nothing running in it. */
+  /**
+   * The lease's own rule held (`observedAsIsRefusal`): available, unowned, clean, nothing
+   * running in it, and detached, so a slot offered here is one the lease would take.
+   */
   idle: boolean;
 }
 
@@ -46,7 +49,7 @@ export function historyResumeSlots(manager: WorktreeManager): HistoryResumeSlots
         slot: { slotId: status.slot.id, ordinal: status.slot.ordinal, path: status.slot.path, head: status.observedHead },
         canonicalPath: await canonical(status.slot.path),
         repository: await canonical(pool.pool.mainCheckoutRoot),
-        idle: observedIdleRefusal(status) === null,
+        idle: observedAsIsRefusal(status) === null,
       }))));
     },
     lease: (slotId, owner, branch) => manager.leaseForResume(slotId, owner, branch),
