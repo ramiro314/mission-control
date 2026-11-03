@@ -23,7 +23,8 @@ sessions do not appear yet.
   deleted.
 - **First run.** The catalog fills in the background after the daemon starts. While it does,
   the page reads "Indexing N of M sessions" and the rows appear newest first as they are
-  indexed. The page re-reads the catalog once a second only while that line is showing.
+  indexed. While that line is showing, the page re-reads the catalog a second after each answer
+  lands, so a slow read is never cut off by the next one.
 
 ## Session kinds
 
@@ -56,7 +57,10 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   [database and migrations](database-and-migrations.md).
 - **Reconciler.** `HistoryReconciler` starts after the daemon is serving and rescans every
   30 seconds. An unchanged transcript costs one `lstat`; a changed one is re-summarized from
-  the byte where its last parse stopped, and a shrunk file or a new inode starts over. New and
+  the byte where its last parse stopped, and a shrunk file or a new inode starts over. A file
+  that holds nothing a row can be built from is remembered with its fingerprint and not read
+  again until it changes. Several files carrying one session id are compared only when one of
+  them appeared, went or changed. New and
   changed files are indexed newest first in batches of 25, each written in one short
   transaction followed by a yield to the event loop. A row is marked gone only after a pass
   walked every root of its harness without seeing the file; a root that could not be read

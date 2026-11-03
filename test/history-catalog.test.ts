@@ -503,3 +503,71 @@ test("a prompt_snapshot with no tools array counts as no snapshot, never as an e
   assert.equal((await reader.summarize(await enumerateOne(projects, paired), null))?.summary.kind, "reviewer");
   rmSync(projects, { recursive: true, force: true });
 });
+
+/** A reader whose summarize calls are counted, by file name. */
+function countingReader(projects: string): { spec: import("../src/server/harness/types.ts").HistorySpec; calls: string[] } {
+  const base = createClaudeHistory(projects);
+  const calls: string[] = [];
+  return { calls, spec: { ...base, summarize: (file, point) => { calls.push(file.path); return base.summarize(file, point); } } };
+}
+
+test("a transcript that summarizes to nothing is not re-read until it changes", async () => {
+  clearCatalog();
+  const projects = freshProjects();
+  const emptyId = sessionId();
+  const summaryOnly = sessionId();
+  const emptyPath = writeTranscript(projects, "-w", emptyId, []);
+  writeFileSync(emptyPath, "");
+  const summaryPath = writeTranscript(projects, "-w", summaryOnly, [{ type: "summary", summary: "no timestamp, cwd or entrypoint", leafUuid: "x" }]);
+  const { spec, calls } = countingReader(projects);
+  const reconciler = new HistoryReconciler({ store: new HistoryStore(), readers: [{ agent: "claude", spec }], resolveRepository: () => null });
+
+  const first = await reconciler.trigger();
+  assert.equal(first.indexed, 0);
+  assert.equal(calls.length, 2, "each is read once");
+  assert.deepEqual(reconciler.progress(), { indexing: false, indexed: 2, total: 2 });
+
+  calls.length = 0;
+  const again = await reconciler.trigger();
+  assert.equal(again.indexed, 0);
+  assert.deepEqual(calls, [], "an unchanged file that yielded nothing is not read again");
+  assert.deepEqual(reconciler.progress(), { indexing: false, indexed: 2, total: 2 });
+
+  // It changes: now it carries a real record, so it is read once more and gains a row.
+  appendFileSync(summaryPath, `${JSON.stringify({ ...envelope(summaryOnly, "/w", "cli", "2026-10-20T10:00:00.000Z"), type: "user", message: { role: "user", content: "now it has a prompt" } })}\n`);
+  const later = new Date(Date.now() + 5_000);
+  utimesSync(summaryPath, later, later);
+  const third = await reconciler.trigger();
+  assert.deepEqual(calls, [summaryPath]);
+  assert.equal(third.indexed, 1);
+  rmSync(projects, { recursive: true, force: true });
+});
+
+test("an unchanged duplicate-id group is not re-parsed; a change in it re-runs the choice", async () => {
+  clearCatalog();
+  const projects = freshProjects();
+  const id = sessionId();
+  const cwd = "/work/dup";
+  const copy = writeTranscript(projects, "aaa-copy", id, records(id, { cwd, entrypoint: "cli" }));
+  const original = writeTranscript(projects, claudeProjectDir(cwd, projects).slice(projects.length + 1), id, records(id, { cwd, entrypoint: "cli" }));
+  const { spec, calls } = countingReader(projects);
+  const store = new HistoryStore();
+  const reconciler = new HistoryReconciler({ store, readers: [{ agent: "claude", spec }], resolveRepository: () => null });
+
+  await reconciler.trigger();
+  assert.equal(calls.length, 2, "the first choice reads both candidates");
+  assert.equal(store.index("claude").get(id)?.transcriptPath, original);
+
+  calls.length = 0;
+  assert.equal((await reconciler.trigger()).indexed, 0);
+  assert.deepEqual(calls, [], "nothing in the group changed, so nothing is read");
+
+  // The copy changes: the choice runs again, and still lands on the original.
+  appendFileSync(copy, `${JSON.stringify({ type: "ai-title", aiTitle: "copy only", sessionId: id })}\n`);
+  const later = new Date(Date.now() + 5_000);
+  utimesSync(copy, later, later);
+  await reconciler.trigger();
+  assert.deepEqual([...calls].sort(), [copy, original].sort());
+  assert.equal(store.index("claude").get(id)?.transcriptPath, original);
+  rmSync(projects, { recursive: true, force: true });
+});

@@ -71,6 +71,16 @@ function sameFile(entry: HistoryIndexEntry | undefined, file: HistoryFile): bool
     && known.ino === file.fingerprint.ino;
 }
 
+/** A fingerprint as one comparable string. */
+function fingerprintKey(file: HistoryFile): string {
+  return `${file.fingerprint.ino}:${file.fingerprint.size}:${file.fingerprint.mtimeMs}`;
+}
+
+/** Every file of a duplicate-id group and its fingerprint, independent of scan order. */
+function groupSignature(group: readonly HistoryFile[]): string {
+  return group.map((file) => `${file.path}|${fingerprintKey(file)}`).sort().join("\n");
+}
+
 export class HistoryReconciler {
   private readonly store: HistoryStore;
   private readonly readers: readonly HistoryReader[];
@@ -80,6 +90,19 @@ export class HistoryReconciler {
   private readonly resolveRepositoryOverride: ((cwd: string | null) => string | null) | null;
   private readonly now: () => number;
   private readonly complainedRoots = new Set<string>();
+  /**
+   * Files a reader summarized to nothing (an empty transcript, or one with no record a row can
+   * be built from), by path, with the fingerprint they had. They have no row for `sameFile` to
+   * match, so without this each pass would read them again from byte 0. Kept in memory: a
+   * restart re-reads each once.
+   */
+  private readonly empty = new Map<string, string>();
+  /**
+   * For a session id several files share, the group's signature when its canonical file was
+   * last chosen. Choosing summarizes every candidate from the top, so it runs again only when a
+   * file in the group appeared, went, or changed.
+   */
+  private readonly groupChoices = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running: Promise<HistoryReconcilePass> | null = null;
   private retrigger = false;
@@ -200,26 +223,45 @@ export class HistoryReconciler {
       }
       const parsed = new Map<string, HistoryParse>();
       const canonical: HistoryFile[] = [];
-      for (const group of byId.values()) {
+      const walkedPaths = new Set(files.map((file) => file.path));
+      for (const path of this.empty.keys()) if (!walkedPaths.has(path)) this.empty.delete(path);
+      for (const [id, group] of byId) {
         if (group.length === 1) {
           canonical.push(group[0]!);
           continue;
         }
-        // Rare: several files share one session id. Each is summarized from the top so the
-        // harness's stable rule can choose, and the chosen parse is kept for the write.
-        const candidates: { file: HistoryFile; parse: HistoryParse }[] = [];
-        for (const file of group) {
-          const parse = await reader.spec.summarize(file, null).catch(() => null);
-          if (parse) candidates.push({ file, parse });
+        // Rare: several files share one session id. Nothing in the group changed since the
+        // last choice, and the row still follows one of its files unchanged: keep that one.
+        const signature = groupSignature(group);
+        const kept = group.find((file) => sameFile(index.get(id), file));
+        if (kept && this.groupChoices.get(id) === signature) {
+          canonical.push(kept);
+          continue;
         }
+        // Otherwise each candidate is summarized from the top so the harness's stable rule can
+        // choose, and the chosen parse is kept for the write.
+        const candidates: { file: HistoryFile; parse: HistoryParse }[] = [];
+        let unreadable = false;
+        for (const file of group) {
+          if (this.empty.get(file.path) === fingerprintKey(file)) continue;
+          const parse = await reader.spec.summarize(file, null).catch(() => undefined);
+          if (parse === undefined) unreadable = true;
+          else if (parse === null) this.empty.set(file.path, fingerprintKey(file));
+          else candidates.push({ file, parse });
+        }
+        // A candidate that could not be read leaves the choice open for the next pass.
+        if (unreadable) this.groupChoices.delete(id);
+        else this.groupChoices.set(id, signature);
         if (candidates.length === 0) continue;
         const chosen = reader.spec.canonical(candidates.map(({ file, parse }) => ({ path: file.path, summary: parse.summary })));
         const winner = candidates.find(({ file }) => file.path === chosen) ?? candidates[0]!;
         canonical.push(winner.file);
         if (!sameFile(index.get(winner.file.agentSessionId), winner.file)) parsed.set(winner.file.path, winner.parse);
       }
+      for (const id of this.groupChoices.keys()) if ((byId.get(id)?.length ?? 0) < 2) this.groupChoices.delete(id);
       const work = canonical
         .filter((file) => !sameFile(index.get(file.agentSessionId), file))
+        .filter((file) => this.empty.get(file.path) !== fingerprintKey(file))
         .sort((a, b) => b.fingerprint.mtimeMs - a.fingerprint.mtimeMs || (a.path < b.path ? -1 : 1));
       plans.push({ reader, complete, seen: new Set(byId.keys()), work, parsed, index });
       this.state = {
@@ -250,7 +292,12 @@ export class HistoryReconciler {
               continue;
             }
           }
-          if (!parse) continue;
+          if (!parse) {
+            // Nothing to build a row from. Remembered, so it is not read again until it changes.
+            this.empty.set(file.path, fingerprintKey(file));
+            continue;
+          }
+          this.empty.delete(file.path);
           rows.push({
             agent,
             agentSessionId: file.agentSessionId,

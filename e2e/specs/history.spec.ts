@@ -91,10 +91,12 @@ async function capture(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
 }
 
-test("History lists conversations as they are indexed, newest first by day, with Load more", async ({
-  dashboard,
-  daemon,
-}) => {
+/**
+ * Seeds the fixture store: five conversations carrying every row field, two background runs,
+ * one transcript the spec will delete, and enough filler for a second page. Then restarts the
+ * daemon onto it, which is what a first run is.
+ */
+async function seedAndRestart(daemon: DaemonHandle): Promise<{ id: string; path: string }> {
   // The newest row, and the one that carries every field a row shows.
   writeSession(daemon, {
     cwd: "/projects/alpha-service",
@@ -127,11 +129,19 @@ test("History lists conversations as they are indexed, newest first by day, with
       prompt: `Filler conversation ${String(i).padStart(2, "0")}`,
     });
   }
-
   // A first run is a daemon starting onto a store that already holds transcripts. This one's
   // first pass saw the store empty, so it is restarted onto the seeded store.
   await daemon.crash();
   await daemon.restart();
+  return gone;
+}
+
+test("History lists conversations as they are indexed, newest first by day, with Load more", async ({
+  dashboard,
+  daemon,
+}) => {
+  const gone = await seedAndRestart(daemon);
+
   await dashboard.goto(`${daemon.baseURL}/#/history`);
   const page = dashboard.getByRole("main", { name: "History" });
   await expect(page.getByRole("heading", { name: "History", level: 2 })).toBeVisible();
@@ -190,4 +200,23 @@ test("History lists conversations as they are indexed, newest first by day, with
   const goneRow = page.getByRole("listitem").filter({ hasText: "A transcript Claude Code will delete" });
   await expect(goneRow).toContainText("Transcript gone");
   await capture(dashboard, "transcript-gone");
+});
+
+test("a catalog read slower than the poll interval still lands, so the backfill is seen to finish", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedAndRestart(daemon);
+  // Every read takes longer than the one-second poll. A poll that fires on a timer rather than
+  // on an answer would abort each read before it landed and freeze the list mid-backfill.
+  await dashboard.route("**/api/history/sessions**", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await route.continue();
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/history`);
+  const page = dashboard.getByRole("main", { name: "History" });
+  const progress = page.getByRole("status");
+  await expect(progress).toHaveText(/Indexing \d+ of \d+ sessions/, { timeout: 10_000 });
+  await expect(progress).toHaveText("", { timeout: 30_000 });
+  await expect(page.getByRole("listitem")).toHaveCount(50);
 });

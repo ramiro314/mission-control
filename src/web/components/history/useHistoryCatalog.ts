@@ -12,8 +12,8 @@ import { api } from "../../lib/api.ts";
  * 2. **A refresh keeps the depth on screen.** It refetches as many rows as the operator has
  *    paged to, so a "Load more" is never silently undone.
  *
- * While the catalog reports a backfill in progress, the window is refetched once a second so
- * sessions appear as they are indexed. That poll stops the moment indexing does. Live updates
+ * While the catalog reports a backfill in progress, the window is refetched a second after each
+ * answer lands, so sessions appear as they are indexed. That poll stops the moment indexing does. Live updates
  * after the first run belong to the `history_changed` event, which is a later change.
  */
 
@@ -54,6 +54,8 @@ export function useHistoryCatalog(): HistoryCatalog {
   const [listError, setListError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [tick, setTick] = useState(0);
+  /** Bumped when a window lands. The indexing poll waits on this, never on a timer alone. */
+  const [landed, setLanded] = useState(0);
   /** Rows the operator has paged to; a refresh asks for at least this many. */
   const depth = useRef<number>(HISTORY_PAGE_LIMITS.defaultLimit);
   const listAbort = useRef<AbortController | null>(null);
@@ -79,17 +81,21 @@ export function useHistoryCatalog(): HistoryCatalog {
       setProgress(result.value.progress);
       setListError(null);
       setListState("ready");
+      setLanded((n) => n + 1);
     });
     return () => controller.abort();
   }, [tick]);
 
-  // Re-read while the first backfill runs, so rows appear as they are indexed.
+  // Re-read while the first backfill runs, so rows appear as they are indexed. The next read is
+  // scheduled only after the previous one landed: keyed on the request instead, a read slower
+  // than the interval would be aborted by the next one every time, and the list would freeze
+  // on its first answer while the poll ran on for ever.
   const indexing = progress?.indexing === true;
   useEffect(() => {
     if (!indexing) return;
     const timer = setTimeout(() => setTick((n) => n + 1), INDEXING_REFRESH_MS);
     return () => clearTimeout(timer);
-  }, [indexing, tick]);
+  }, [indexing, landed]);
 
   const loadMore = useCallback(() => {
     if (!cursor || loadingMore) return;
