@@ -43,6 +43,15 @@ export function useHistoryCatalog(revision: number): HistoryCatalog {
   /** The rows on screen as of the last render, so a refresh can keep down to the last of them. */
   const onScreen = useRef(sessions);
   onScreen.current = sessions;
+  /** The newest `history_changed` revision, as of the last render. */
+  const latestRevision = useRef(revision);
+  latestRevision.current = revision;
+  /**
+   * The revision the last window that LANDED was read for. Set when an answer arrives, never
+   * when a read starts: a read that Load more cancels has shown nothing, so the change it was
+   * asked for is still unread.
+   */
+  const readRevision = useRef(revision);
   const [progress, setProgress] = useState<HistoryProgress | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [listState, setListState] = useState<HistoryListState>("first");
@@ -61,6 +70,7 @@ export function useHistoryCatalog(revision: number): HistoryCatalog {
 
   useEffect(() => {
     const controller = new AbortController();
+    const askedRevision = latestRevision.current;
     listAbort.current?.abort();
     listAbort.current = controller;
     moreAbort.current?.abort();
@@ -84,6 +94,7 @@ export function useHistoryCatalog(revision: number): HistoryCatalog {
         return;
       }
       hasWindow.current = true;
+      readRevision.current = askedRevision;
       setSessions(result.value.sessions);
       setCursor(result.value.nextCursor);
       setProgress(result.value.progress);
@@ -109,11 +120,11 @@ export function useHistoryCatalog(revision: number): HistoryCatalog {
 
   // A changed catalog re-reads the window at its current depth. Held while a Load more is in
   // flight, for the poll's reason above, and taken as soon as it lands: the revision it waited
-  // on is still newer than the one last read.
-  const readRevision = useRef(revision);
+  // on is still newer than the one last read. That holds from the other side too: a re-read
+  // already in flight when Load more is clicked is cancelled by it, never lands, and so leaves
+  // its revision unread for this effect to take when Load more lands.
   useEffect(() => {
     if (revision === readRevision.current || loadingMore) return;
-    readRevision.current = revision;
     setTick((n) => n + 1);
   }, [revision, loadingMore]);
 

@@ -492,4 +492,48 @@ test.describe("an open History page with the recurring scan off", () => {
     await expect(page.getByText(`Filler conversation ${String(FILLER - 1).padStart(2, "0")}`)).toBeVisible();
     await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
   });
+
+  test("a re-read that Load more cancels leaves its change unread, so it is taken once Load more lands", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon);
+    await backfilled(daemon);
+    // After the first window, hold every window re-read until the test lets them through, so
+    // the one `history_changed` starts is still in flight when Load more is clicked.
+    let holdWindows = false;
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let heldReads = 0;
+    await dashboard.route("**/api/history/sessions**", async (route) => {
+      if (!route.request().url().includes("cursor=") && holdWindows) {
+        heldReads += 1;
+        await released;
+        try {
+          await route.fulfill({ response: await route.fetch() });
+        } catch {
+          // Cancelled by Load more, which is the case under test.
+        }
+        return;
+      }
+      await route.fulfill({ response: await route.fetch() });
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(50);
+    await expect(page.getByRole("status")).toHaveText("");
+    holdWindows = true;
+
+    writeSession(daemon, { cwd: "/projects/live-service", at: new Date().toISOString(), prompt: "Started before Load more" });
+    await expect.poll(() => heldReads, { timeout: 10_000 }).toBe(1);
+    await page.getByRole("button", { name: "Load more" }).click();
+    const conversations = 5 + FILLER;
+    await expect(rows).toHaveCount(conversations);
+    await expect(page.getByText("Started before Load more")).toHaveCount(0);
+
+    // Let later reads through. The cancelled one showed nothing, so its change is read again.
+    holdWindows = false;
+    release();
+    await expect(rows.first()).toContainText("Started before Load more", { timeout: 10_000 });
+    await expect(rows).toHaveCount(conversations + 1);
+    await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
+  });
 });
