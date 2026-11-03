@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ForemanEpisode,
   PendingTurn,
@@ -1528,6 +1528,7 @@ export function ConversationMessages({
   find,
   flashedTurnId = null,
   received = NO_IDS,
+  toolDetails,
 }: {
   rows: readonly ConversationRow[];
   agentLabel: string;
@@ -1550,13 +1551,18 @@ export function ConversationMessages({
   flashedTurnId?: string | null;
   /** Turns that just replaced a steered row. */
   received?: ReadonlySet<string>;
+  /**
+   * More about a row's tool calls, drawn right after that row. History passes it to expand a
+   * call's full input and its result; the live panel does not, and draws exactly what it did.
+   */
+  toolDetails?: (rowId: string, tools: ToolCall[]) => React.ReactNode;
 }): React.JSX.Element {
   const hits = find?.hits ?? [];
   const currentKey = find?.currentKey ?? null;
-  return (
-    <>
-      {rows.map((row) =>
-            row.kind === "episode" ? (
+  const drawRow = (row: ConversationRow): React.JSX.Element =>
+            row.kind === "turn" && isCompaction(row.message) ? (
+              <CompactionMarker key={row.id} m={row.message} />
+            ) : row.kind === "episode" ? (
               <div
                 key={`ep-${row.episode.id}`}
                 className="transcript-episode"
@@ -1614,9 +1620,48 @@ export function ConversationMessages({
                 flashed={row.id === flashedTurnId}
                 receivedBy={received.has(row.message.id) ? agentLabel : undefined}
               />
-            ),
-      )}
+            );
+  return (
+    <>
+      {rows.map((row) => {
+        const drawn = drawRow(row);
+        if (!toolDetails || (row.kind !== "tools" && row.kind !== "turn")) return drawn;
+        const tools = row.kind === "tools" ? row.tools : row.message.tools;
+        return tools.length === 0 ? drawn : <Fragment key={row.id}>{drawn}{toolDetails(row.id, tools)}</Fragment>;
+      })}
     </>
+  );
+}
+
+function isCompaction(m: TranscriptMessage): boolean {
+  return m.presentation?.kind === "compaction" || m.presentation?.kind === "compaction_summary";
+}
+
+/**
+ * Where the agent compacted its context, and the summary it carried past it. Only Session
+ * History's reader marks these; the live readers never do, so the live panel never draws one.
+ */
+function CompactionMarker({ m }: { m: TranscriptMessage }): React.JSX.Element {
+  const presentation = m.presentation;
+  if (presentation?.kind === "compaction") {
+    const detail = [
+      presentation.trigger,
+      presentation.preTokens !== null ? `${presentation.preTokens.toLocaleString()} tokens before` : null,
+    ].filter(Boolean).join(" · ");
+    return (
+      <div className="transcript-compaction" role="separator" aria-label="Context compacted" data-turn-id={m.id}>
+        <span>Context compacted{detail ? ` (${detail})` : ""}</span>
+        <ConversationTimestamp at={m.ts} className="turn-time" />
+      </div>
+    );
+  }
+  return (
+    <details className="transcript-compaction-summary" data-turn-id={m.id}>
+      <Tooltip label="Show the summary the agent kept of everything before this point">
+        <summary>Summary carried past the compaction</summary>
+      </Tooltip>
+      <div className="transcript-compaction-summary-text">{m.text}</div>
+    </details>
   );
 }
 

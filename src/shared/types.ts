@@ -3776,6 +3776,11 @@ export interface ToolCall {
    * reviewer through here or not at all.
    */
   input?: string;
+  /**
+   * The agent's own id for this call (Claude's `tool_use.id`). Set only by Session History's
+   * reader, which looks a call's result up by it; the live readers leave it out.
+   */
+  id?: string;
 }
 
 /** One normalized turn from a Claude/Codex transcript, for the session detail. */
@@ -3819,8 +3824,8 @@ export interface TranscriptMessage {
    *
    * Additive and advisory: `text`, `tools`, `ts`, `role` and `id` are the native record
    * either way, so a server-side evidence consumer that ignores this field reads exactly
-   * what it read before the field existed. Only `src/web/lib/launch-presentation.ts` acts
-   * on it.
+   * what it read before the field existed. `src/web/lib/launch-presentation.ts` acts on
+   * `launch`, and the conversation renderer draws the two compaction kinds.
    */
   presentation?: TranscriptPresentation;
 }
@@ -3841,10 +3846,28 @@ export interface TranscriptMessage {
  * launch had no distinct human-authored request, and the turn is omitted from the visible
  * log rather than drawn as platform instructions or invented prose.
  */
-export type TranscriptPresentation = {
-  kind: "launch";
-  displayText: string | null;
-};
+export type TranscriptPresentation =
+  | {
+    kind: "launch";
+    displayText: string | null;
+  }
+  /**
+   * Where the agent compacted its context: everything above was summarized away. An empty
+   * turn that stands for the boundary itself. Only Session History's reader emits it.
+   */
+  | {
+    kind: "compaction";
+    /** How compaction started (`auto`, `manual`), when the transcript says. */
+    trigger: string | null;
+    /** The context size, in tokens, just before it was compacted. */
+    preTokens: number | null;
+  }
+  /**
+   * The summary the agent carried past a compaction. Recorded as a user turn but written by
+   * the agent, so it is drawn as the summary rather than as the operator speaking. Only
+   * Session History's reader emits it.
+   */
+  | { kind: "compaction_summary" };
 
 /**
  * The non-human authors of a "user" turn.

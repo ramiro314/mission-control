@@ -1,17 +1,23 @@
-import { lstat, open, readdir } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { lstat, open, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { HistoryKind } from "@shared/history.ts";
+import { createInterface } from "node:readline";
+import { isHistorySubagentId, type HistoryKind } from "@shared/history.ts";
+import type { TranscriptMessage } from "@shared/types.ts";
 import type {
   HistoryFile,
   HistoryParse,
   HistoryParsePoint,
+  HistoryRecordedToolResult,
   HistorySpec,
+  HistorySubagentFile,
   HistorySummary,
 } from "../types.ts";
 import { claudeCleanupPeriodDays } from "@shared/claude-settings.ts";
+import { mapBounded } from "../../util/map-bounded.ts";
 import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "./project-dir.ts";
 import { readClaudeLaunchContext } from "./launch-context.ts";
-import { claudeMessages, toMessage } from "./transcript.ts";
+import { claudeHistoryMessages, claudeSubagentMessages, toHistoryMessage, toMessage } from "./transcript.ts";
 
 /**
  * Claude Code's history reader: `~/.claude/projects/<encoded cwd>/<sessionId>.jsonl`.
@@ -27,7 +33,6 @@ import { claudeMessages, toMessage } from "./transcript.ts";
  */
 
 const SESSION_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
-const SUBAGENT_FILE = /^agent-[^/]+\.jsonl$/;
 /** The first prompt is a title fallback and a search seed, not a transcript. */
 const FIRST_PROMPT_CAP = 500;
 const READ_CHUNK = 1 << 20;
@@ -314,13 +319,176 @@ async function foldFrom(path: string, offset: number, acc: Accumulator, prompts:
   }
 }
 
+/**
+ * How many subagent runs a session's detail will list: the same regular files with an id in
+ * the route's format that `subagents` lists, so the row's count and the detail always agree.
+ */
 async function countSubagents(transcriptPath: string, agentSessionId: string): Promise<number> {
   try {
-    const names = await readdir(join(dirname(transcriptPath), agentSessionId, "subagents"));
-    return names.filter((name) => SUBAGENT_FILE.test(name)).length;
+    const entries = await readdir(join(dirname(transcriptPath), agentSessionId, SUBAGENT_DIR), { withFileTypes: true });
+    return entries.filter((entry) => entry.isFile() && subagentIdOf(entry.name) !== null).length;
   } catch {
     return 0;
   }
+}
+
+/** Where Claude Code keeps a session's large tool outputs and its subagent runs, beside the transcript. */
+const SIDECAR_DIR = "tool-results";
+const SUBAGENT_DIR = "subagents";
+const SUBAGENT_ID = /^agent-(.+)\.jsonl$/;
+
+/** The run id a listed file name carries, or null when it is not a subagent run History can address. */
+function subagentIdOf(name: string): string | null {
+  const agentId = SUBAGENT_ID.exec(name)?.[1];
+  return agentId && isHistorySubagentId(agentId) ? agentId : null;
+}
+/** The bytes of a subagent transcript read for its label and start time. */
+const SUBAGENT_HEAD_BYTES = 64 * 1024;
+const SUBAGENT_PROMPT_CAP = 200;
+/** Subagent runs whose label is read at once: each holds up to two files open. */
+const SUBAGENT_LABEL_CONCURRENCY = 8;
+/** How Claude Code wraps the preview of an output it saved to a sidecar file, and closes it. */
+const PERSISTED_OUTPUT = "<persisted-output>";
+const PERSISTED_OUTPUT_END = "</persisted-output>";
+/**
+ * The preview's "saved to" line, and the file name after `tool-results/` in the path it prints:
+ * one segment, never a separator.
+ */
+const SAVED_TO = /saved to:?[ \t]+\S*tool-results\/([^/\\\s"'<>]{1,255})/i;
+
+/** A tool result's content as text: a string, or its text blocks, with an image as a placeholder. */
+function resultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (typeof block === "string") parts.push(block);
+    else if (block && typeof block === "object") {
+      const b = block as Record<string, unknown>;
+      if (b.type === "text" && typeof b.text === "string") parts.push(b.text);
+      else if (b.type === "image") parts.push("[image]");
+    }
+  }
+  return parts.join("\n");
+}
+
+/**
+ * The sidecar file a result record names, or null. Claude Code replaces an output too large to
+ * keep inline with a `<persisted-output>` preview whose "saved to" line prints the file's path.
+ * Only that line of a result that IS such a preview names a file: a result that merely mentions
+ * a path into `tool-results/` (a `wc -l` on a saved output, an error naming one) or quotes
+ * another record's preview is its own inline result.
+ * Only the path's last segment is taken, so the record names a file and never a place.
+ */
+function sidecarName(text: string): string | null {
+  // The preview replaces the whole output, so a result is one only when it opens with the
+  // marker. A result that quotes a preview mid-text (a grep over transcripts, a Read of one)
+  // is that tool's own output, and names no file of this call's.
+  const body = text.trimStart();
+  if (!body.startsWith(PERSISTED_OUTPUT)) return null;
+  const end = body.indexOf(PERSISTED_OUTPUT_END);
+  const block = body.slice(PERSISTED_OUTPUT.length, end === -1 ? undefined : end);
+  const name = SAVED_TO.exec(block)?.[1];
+  return name && name !== "." && name !== ".." ? name : null;
+}
+
+/**
+ * The `tool_result` block answering `toolUseId`, and its record, read forward through the
+ * whole transcript. A line that does not contain the id is never parsed.
+ */
+async function findToolResult(
+  path: string,
+  toolUseId: string,
+): Promise<{ record: Record<string, unknown>; block: Record<string, unknown> } | null> {
+  const stream = createReadStream(path);
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line.includes(toolUseId)) continue;
+      let record: unknown;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!record || typeof record !== "object") continue;
+      const rec = record as Record<string, unknown>;
+      const content = (rec.message as Record<string, unknown> | undefined)?.content;
+      if (rec.type !== "user" || !Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block && typeof block === "object") {
+          const b = block as Record<string, unknown>;
+          if (b.type === "tool_result" && b.tool_use_id === toolUseId) return { record: rec, block: b };
+        }
+      }
+    }
+    return null;
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
+}
+
+/**
+ * The regular files in a session's own `subagents/` folder, or none when the folder is missing,
+ * unreadable, or resolves anywhere else (then it is not this session's). A symlink in the
+ * listing is never followed, here or by the route.
+ */
+async function subagentListing(folder: string): Promise<Set<string>> {
+  try {
+    if ((await realpath(folder)) !== folder) return new Set();
+    const entries = await readdir(folder, { withFileTypes: true });
+    return new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
+  } catch {
+    return new Set();
+  }
+}
+
+/** A subagent's metadata file, read leniently: a missing or malformed one labels nothing. */
+async function subagentMeta(path: string): Promise<{ agentType: string | null; description: string | null }> {
+  try {
+    const meta = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    return { agentType: str(meta.agentType), description: str(meta.description) };
+  } catch {
+    return { agentType: null, description: null };
+  }
+}
+
+/** A subagent transcript's opening prompt and first timestamp, from its first bytes. */
+async function subagentHead(path: string): Promise<{ firstPrompt: string | null; startedAt: number | null }> {
+  let text: string;
+  try {
+    const handle = await open(path, "r");
+    try {
+      const buffer = Buffer.alloc(SUBAGENT_HEAD_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, SUBAGENT_HEAD_BYTES, 0);
+      text = buffer.toString("utf8", 0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return { firstPrompt: null, startedAt: null };
+  }
+  let firstPrompt: string | null = null;
+  let startedAt: number | null = null;
+  for (const line of text.split("\n")) {
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const at = typeof (record as Record<string, unknown>)?.timestamp === "string"
+      ? Date.parse((record as Record<string, unknown>).timestamp as string)
+      : NaN;
+    if (startedAt === null && Number.isFinite(at)) startedAt = at;
+    const message: TranscriptMessage | null = firstPrompt === null ? toHistoryMessage(record, true) : null;
+    if (message?.role === "user" && message.text) {
+      firstPrompt = message.text.length > SUBAGENT_PROMPT_CAP ? `${message.text.slice(0, SUBAGENT_PROMPT_CAP - 1)}…` : message.text;
+    }
+    if (firstPrompt !== null && startedAt !== null) break;
+  }
+  return { firstPrompt, startedAt };
 }
 
 function isMissing(error: unknown): boolean {
@@ -331,8 +499,49 @@ function isMissing(error: unknown): boolean {
 export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): HistorySpec {
   return {
     roots: () => [projectsDir],
-    messages: claudeMessages,
+    messages: claudeHistoryMessages,
+    subagentMessages: claudeSubagentMessages,
     launchContext: readClaudeLaunchContext,
+
+    async toolResult(transcriptPath, agentSessionId, toolUseId): Promise<HistoryRecordedToolResult | null> {
+      const found = await findToolResult(transcriptPath, toolUseId);
+      if (!found) return null;
+      const text = resultText(found.block.content);
+      const name = sidecarName(text);
+      return {
+        isError: found.block.is_error === true,
+        text,
+        sidecar: name ? { folder: join(dirname(transcriptPath), agentSessionId, SIDECAR_DIR), name } : null,
+      };
+    },
+
+    async subagents(transcriptPath, agentSessionId): Promise<HistorySubagentFile[]> {
+      const folder = join(dirname(transcriptPath), agentSessionId, SUBAGENT_DIR);
+      const files = await subagentListing(folder);
+      // Bounded: each label read holds a file open across its awaits, and a session can have
+      // hundreds of runs. An unbounded fan-out could exhaust file descriptors, and the readers
+      // would then answer EMFILE with blank labels.
+      const runs = await mapBounded([...files], SUBAGENT_LABEL_CONCURRENCY, async (name): Promise<HistorySubagentFile | null> => {
+        const agentId = subagentIdOf(name);
+        if (!agentId) return null;
+        const path = join(folder, name);
+        const metaName = `agent-${agentId}.meta.json`;
+        const meta = files.has(metaName) ? await subagentMeta(join(folder, metaName)) : { agentType: null, description: null };
+        return { agentId, path, folder, ...meta, ...(await subagentHead(path)) };
+      });
+      return runs
+        .filter((run): run is HistorySubagentFile => run !== null)
+        .sort((a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity) || (a.agentId < b.agentId ? -1 : 1));
+    },
+
+    async subagentFile(transcriptPath, agentSessionId, agentId) {
+      // The same listing `subagents` reads, without opening any run to label it: a page read
+      // needs only the one file.
+      if (!isHistorySubagentId(agentId)) return null;
+      const folder = join(dirname(transcriptPath), agentSessionId, SUBAGENT_DIR);
+      const name = `agent-${agentId}.jsonl`;
+      return (await subagentListing(folder)).has(name) ? { path: join(folder, name), folder } : null;
+    },
 
     async enumerate(root) {
       let projects;

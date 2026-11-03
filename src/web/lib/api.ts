@@ -186,6 +186,7 @@ import type {
   HistoryPage,
   HistorySessionDetail,
   HistorySessionsQuery,
+  HistoryToolResult,
 } from "@shared/history.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
@@ -2292,6 +2293,21 @@ export const api = {
   historyLaunchContext: (agent: string, id: string, signal?: AbortSignal) =>
     archiveJson<HistoryLaunchContext>(
       `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/launch-context`,
+      signal,
+    ),
+
+  /** One tool call's result, read on demand; a 404 means none is available for it. */
+  historyToolResult: (agent: string, id: string, toolUseId: string, signal?: AbortSignal) =>
+    archiveJson<HistoryToolResult>(
+      `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/tool-results/${encodeURIComponent(toolUseId)}`,
+      signal,
+    ),
+
+  /** One forward window of a History session's subagent run. */
+  historySubagentMessages: (agent: string, id: string, agentId: string, cursor: string | null, signal?: AbortSignal) =>
+    archiveJson<HistoryMessagesPage>(
+      `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/subagents/${encodeURIComponent(agentId)}/messages`
+        + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""),
       signal,
     ),
 
