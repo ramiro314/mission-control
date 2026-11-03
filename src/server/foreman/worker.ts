@@ -101,6 +101,7 @@ import {
   advanceFollowupMark,
   decideReviewFollowup,
   followupPrs,
+  heldFindingsCount,
   reviewFollowupPrs,
   workflowHoldsReviewFollowup,
   workflowReleasedFollowupOnly,
@@ -951,8 +952,7 @@ const reviewNudged = new Map<string, Map<string, FollowupMark>>();
  */
 const heldLogged = new Map<string, Map<string, { round: number; reasons: Set<string> }>>();
 
-function logHeldFindings(session: Session, pr: FollowupPr, why: string): void {
-  const open = pr.inspector?.open ?? 0;
+function logHeldFindings(session: Session, pr: FollowupPr, why: string, open: number): void {
   if (open === 0 || ROUTINE_FOLLOWUP_SKIPS.has(why)) return;
   const round = pr.inspector?.round ?? 0;
   const logged = heldLogged.get(session.id) ?? new Map<string, { round: number; reasons: Set<string> }>();
@@ -1119,7 +1119,7 @@ export async function runReviewFollowup(
         now,
       });
       if (decision.kind === "skip") {
-        logHeldFindings(session, pr, decision.why);
+        logHeldFindings(session, pr, decision.why, heldFindingsCount(pr));
         continue;
       }
       // Handing a conflict to the operator types nothing, so it claims no pane and needs no
@@ -1194,7 +1194,9 @@ export async function runReviewFollowup(
       });
       // An escalation that appeared between the two reads is the next pass's to send, and so
       // are findings that appeared in it: this pass read none, so it has no text to type.
-      if (freshDecision.kind === "skip") logHeldFindings(fresh, freshPr, freshDecision.why);
+      if (freshDecision.kind === "skip") {
+        logHeldFindings(fresh, freshPr, freshDecision.why, heldFindingsCount(freshPr, read?.findings));
+      }
       if (freshDecision.kind !== "nudge" || !holdsLease()) break;
 
       const outcome = await deliverReviewFollowup(client, fresh, freshMarks, freshDecision);

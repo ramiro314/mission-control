@@ -556,6 +556,24 @@ test("a hold the freshness recheck finds is logged in the same pass, and a routi
   assert.deepEqual(busy.injected, []);
 });
 
+test("the recheck counts the read's findings, so findings resolved before it are not logged as held", async () => {
+  const resolved = fakeDaemon({
+    sessions: () => [parked("held-recheck-resolved")],
+    findings: async () => response([draft({ status: "resolved" })]),
+  });
+  assert.deepEqual(await heldLines("held-recheck-resolved", resolved), []);
+
+  const twoLeft = fakeDaemon({
+    sessions: () => [parked("held-recheck-count", { inspector: summary({ open: 3 }) })],
+    workflowRuns: (afterRead) => (afterRead ? [{ status: ACTIVE_RUN }] : []),
+    findings: async () =>
+      response([draft(), draft({ id: "c2", fingerprint: "fp-2" }), draft({ id: "c3", fingerprint: "fp-3", status: "resolved" })]),
+  });
+  assert.deepEqual(await heldLines("held-recheck-count", twoLeft), [
+    "[foreman] held-recheck-count: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+  ]);
+});
+
 test("a held PR without findings logs nothing", async () => {
   const fake = heldDaemon(() => parked("held-clean", { inspector: summary({ open: 0 }) }));
   assert.deepEqual(await heldLines("held-clean", fake), []);

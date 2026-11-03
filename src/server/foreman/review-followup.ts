@@ -521,6 +521,11 @@ function unresolvedFindings(findings: readonly InspectorComment[]): InspectorCom
   return findings.filter((finding) => finding.status !== "resolved");
 }
 
+/** The findings a held PR still carries: the read's unresolved set once there is one, since the snapshot's count can be stale. */
+export function heldFindingsCount(pr: FollowupPr, findings?: readonly InspectorComment[]): number {
+  return findings ? dedupeInspectorFindings(unresolvedFindings(findings)).length : (pr.inspector?.open ?? 0);
+}
+
 /**
  * `open` already counts drafted, posting and open rows (`INSPECTION_TALLY_FROM`), so a
  * dry-run draft triggers this exactly as a posted finding does. Once the worker has read the
