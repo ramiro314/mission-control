@@ -537,6 +537,25 @@ test("two held PRs on one session are each logged once", async () => {
   assert.deepEqual(await pass(), []);
 });
 
+test("a hold the freshness recheck finds is logged in the same pass, and a routine one is not", async () => {
+  const owned = fakeDaemon({
+    sessions: () => [parked("held-recheck")],
+    workflowRuns: (afterRead) => (afterRead ? [{ status: ACTIVE_RUN }] : []),
+    findings: async () => response([draft()]),
+  });
+  assert.deepEqual(await heldLines("held-recheck", owned), [
+    "[foreman] held-recheck: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(owned.injected, []);
+
+  const busy = fakeDaemon({
+    sessions: (afterRead) => [parked("held-recheck-busy", afterRead ? { state: "working", lastActivity: Date.now() } : {})],
+    findings: async () => response([draft()]),
+  });
+  assert.deepEqual(await heldLines("held-recheck-busy", busy), []);
+  assert.deepEqual(busy.injected, []);
+});
+
 test("a held PR without findings logs nothing", async () => {
   const fake = heldDaemon(() => parked("held-clean", { inspector: summary({ open: 0 }) }));
   assert.deepEqual(await heldLines("held-clean", fake), []);
