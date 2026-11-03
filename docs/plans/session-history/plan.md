@@ -417,7 +417,8 @@ flowchart TD
   - When the branch is attached to any **other worktree** (a slot another owner holds, a task
     worktree, or a checkout outside the pool), the chosen slot checks out the branch tip
     detached (`git checkout --detach <branch>`). The dialog warns that the branch is checked
-    out in that path, and that commits made here will not move the branch.
+    out in that path, and that commits made here will not move the branch. Such commits are
+    never lost: the release check below keeps the slot leased while they exist.
 - **Directory target.** For a directory outside the session's repository, the transcript is
   copied into that directory's Claude project folder and the session starts with
   `claude --resume <id> --fork-session`. The original is untouched; the fork gets its own id,
@@ -479,13 +480,20 @@ flowchart TD
   binds as above and is then released like any bound launch.
 - **Slot release.** When `session_remove` arrives for a bound launch's `mc_session_id`, the
   launch is `ended`. A clean slot is handed back to the pool and the launch becomes `released`.
-  A dirty slot stays leased, with its card saying "Kept: uncommitted changes from a resumed
-  session", until the operator Returns it. Only a `bound` launch is ever released
-  automatically. The **startup twin** runs once the first discovery sweep after startup has
-  finished. A `bound` launch with no live Registry session carrying its
-  `expected_agent_session_id` ended while the daemon was down, and goes through the same
-  release step. A `pending` launch with no live session becomes `expired` and keeps its lease,
-  exactly as above. All of these matches use the same id-and-cwd key.
+  A dirty slot stays leased until the operator Returns it, with its card saying why. Only a
+  `bound` launch is ever released automatically.
+- **What clean means.** Both checks must pass:
+  - No uncommitted changes. Otherwise the card says "Kept: uncommitted changes from a resumed
+    session".
+  - No commits reachable from `HEAD` that no branch, tag or remote-tracking ref holds
+    (`git rev-list HEAD --not --branches --tags --remotes` is empty). Otherwise the card says
+    "Kept: commits on no branch from a resumed session". This protects work made on a detached
+    `HEAD`, which a pool return would otherwise reset away to the reflog.
+- **Startup twin.** It runs once the first discovery sweep after startup has finished. A
+  `bound` launch with no live Registry session carrying its `expected_agent_session_id` ended
+  while the daemon was down, and goes through the same release step. A `pending` launch with no
+  live session becomes `expired` and keeps its lease, exactly as above. All of these matches use
+  the same id-and-cwd key.
 - **Refusals** are explicit: the transcript is gone, the session is live, a `pending` or
   `expired` launch of it already holds a directory, the directory does not exist, the
   destination project folder already holds a file with that session id that is not a History
@@ -565,6 +573,10 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
 - Resume: eligibility, refusals, original-directory and reused-slot detection, branch checkout,
   copy and fork for a directory, release of a clean slot and retention of a dirty one, the
   startup twin.
+- Release on a detached `HEAD`: a slot checked out detached whose session committed and then
+  exited with a clean tree stays leased with the "commits on no branch" reason, and its commit
+  is still at `HEAD`; the same slot with no new commits is released; and commits on an attached
+  branch do not block release, since the branch holds them.
 - Directory copy: a destination whose encoded folder collides with the original's refuses and
   leaves the original byte-identical; an existing History copy of the session is reused with
   no write; any other existing file of that name refuses; the copy is created exclusively.
@@ -646,7 +658,7 @@ Definition of done as in `AGENTS.md`: typecheck, lint, build and smoke, and the 
    the stated rule, and a fork's id is known before launch. A directory copy never overwrites
    an existing file, and concurrent Resumes of one session produce exactly one launch.
 9. A slot taken for Resume returns to the pool when the session ends clean and stays leased
-   when dirty, including when the session ended while the daemon was down. The link is the
+   when dirty (uncommitted changes, or commits that no branch, tag or remote ref holds), including when the session ended while the daemon was down. The link is the
    launch record's `expected_agent_session_id` together with its `cwd`. A launch whose agent
    never appeared keeps its lease until it binds or the operator Returns it, and blocks another
    Resume of the same session until then.
@@ -726,7 +738,7 @@ The Plan Feasibility Judge asked for five clarifications. None changes a human d
 
 ### Review repairs (GitHub Inspector on #725)
 
-Six findings over three reviews, none of which changes a human decision above:
+Seven findings over four reviews, none of which changes a human decision above:
 
 - An unbound launch past its grace window expires and keeps its lease instead of being
   released, and a late agent still binds (Resume).
@@ -739,6 +751,8 @@ Six findings over three reviews, none of which changes a human decision above:
   any other existing file (Resume).
 - The one-open-launch rule is a partial unique index, and the insert claims the session before
   any lease, copy or launch (Resume).
+- A slot whose `HEAD` holds commits that no ref holds counts as dirty for release, so work made
+  on a detached `HEAD` is never reset away (Resume).
 
 ### Assumptions stated during the interview
 
