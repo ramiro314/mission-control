@@ -13,7 +13,7 @@ import { hasPane } from "./queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
 import { currentMergeability, mergeConflictResolutionSteps } from "@shared/pr-mergeable.ts";
 import { findingPublication, type FindingPublicationState } from "@shared/inspector-findings.ts";
-import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import { WORKFLOW_LIMITS, workflowRunReleasesFollowup } from "@shared/workflow.ts";
 import type { CiStrictness } from "@shared/ci-checks.ts";
 import { dedupeInspectorFindings, renderInspectorFindings } from "../inspector/findings-text.ts";
 import { utf8Bytes } from "../util/utf8.ts";
@@ -417,6 +417,30 @@ export function activeWorkflowOwnsSession(
   runs: readonly Pick<WorkflowRunSummary, "status">[],
 ): boolean {
   return runs.some((run) => !["completed", "cancelled", "failed"].includes(run.status));
+}
+
+/**
+ * Does a workflow run hold Foreman's PR follow-through for this session? Gate 6's input.
+ *
+ * Narrower than `activeWorkflowOwnsSession`: a blocked run that only the operator or the session
+ * can restart (`workflowRunReleasesFollowup`) delivers nothing while it waits, so it stops
+ * silencing findings, CI and conflicts. Every other caller still asks the wider question.
+ */
+export function workflowHoldsReviewFollowup(
+  runs: readonly Pick<WorkflowRunSummary, "status" | "phase" | "round" | "maxRepairRounds">[],
+): boolean {
+  return runs.some((run) => activeWorkflowOwnsSession([run]) && !workflowRunReleasesFollowup(run));
+}
+
+/**
+ * True when open runs own the session but none holds the follow-through. Such a session must be
+ * decided with CodeRabbit auto-resolve off, because the inject route's CodeRabbit guard still
+ * refuses while any run is open.
+ */
+export function workflowReleasedFollowupOnly(
+  runs: readonly Pick<WorkflowRunSummary, "status" | "phase" | "round" | "maxRepairRounds">[],
+): boolean {
+  return activeWorkflowOwnsSession(runs) && !workflowHoldsReviewFollowup(runs);
 }
 
 /**

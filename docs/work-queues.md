@@ -335,7 +335,12 @@ Each nudge is typed into the session's pane, so it carries the usual gates and o
   CI that merely goes green does not re-nudge the findings already relayed);
 - it stands down while the session **needs you**, while it has a live **work queue**
   (the drain trigger owns that checkout), and while a non-terminal **workflow run owns the
-  session and branch**;
+  session and branch**. A run **Blocked** where only you or the session can restart it is the
+  exception: one that spent its repair budget, or stopped on `unchanged_evidence_exhausted` or
+  `session_disappeared`, delivers nothing while it waits, so findings, failing CI and conflicts
+  reach the session again. Granting rounds, reattaching or resubmitting puts the run back in
+  charge, and every other blocked phase keeps holding the session. CodeRabbit follow-up still
+  waits for the run to finish;
 - the findings half counts every **unresolved** GitHub Inspector finding, whether it was
   posted on GitHub, is being posted, or was drafted and never posted (in dry run, for example).
   The Inspector's mode decides only whether a finding reaches GitHub, never whether the session

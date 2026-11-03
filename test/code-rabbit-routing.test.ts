@@ -290,6 +290,20 @@ test("busy, awaiting-input, uninvited, queued, exited and workflow-owned session
   }
 });
 
+test("CodeRabbit follow-up keeps waiting for a blocked run that has released the review follow-through", async () => {
+  for (const phase of ["round_limit", "unchanged_evidence_exhausted", "session_disappeared", "check_cleanup_unresolved"]) {
+    const f = fixture();
+    f.setRuns([{ noteKey: f.owner.noteKey, sessionId: f.session.id, status: "blocked", phase, round: 4, maxRepairRounds: 3 } as unknown as WorkflowRunSummary]);
+    assert.equal(codeRabbitStanding(f.registry, f.key).delivery, "an active workflow owns this session", phase);
+    assert.equal(codeRabbitCandidate(f.registry, f.session.id, f.request).error, "an active workflow owns this session", phase);
+    const response = await f.post();
+    assert.ok(response.status >= 400, phase);
+    assert.match(await response.text(), /an active workflow owns this session/i, phase);
+    assert.deepEqual(f.messages, [], phase);
+    assert.deepEqual(readCodeRabbit(f.key)!.receipts, [], phase);
+  }
+});
+
 test("revocation, workflow, ownership, intent, queue and head races at the write lock positively release the exact claim", async () => {
   for (const mutate of [
     (f: ReturnType<typeof fixture>) => { f.session.foremanInvite = null; },
