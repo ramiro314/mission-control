@@ -450,7 +450,7 @@ test.describe("a transcript deleted after its row was indexed", () => {
   // No recurring scan: the one pass at startup indexes the row, and nothing marks it gone after.
   test.use({ daemonEnv: { MISSION_HISTORY_RECONCILE_MS: "0" } });
 
-  test("shows the retention message while its row still says present", async ({ dashboard, daemon }) => {
+  test("shows the retention message on both tabs while its row still says present", async ({ dashboard, daemon }) => {
     const session = writeConversation(daemon, { cwd: "/projects/zeta", at: "2026-10-27T10:00:00.000Z", title: "Deleted between scans", pairs: 1 });
     // The fixture daemon's startup pass saw an empty store; a restart is a startup onto this one.
     await daemon.crash();
@@ -464,6 +464,21 @@ test.describe("a transcript deleted after its row was indexed", () => {
     await expect(detail.getByRole("note")).toHaveText(/removed by Claude Code's retention/);
     // The read found it gone; the catalog has not walked since, so the row is not yet badged.
     await expect(detail.getByText("Transcript gone")).toHaveCount(0);
+    expect((await catalogRow(daemon, session.id) as CatalogRow & { transcriptState: string }).transcriptState).toBe("present");
+
+    // The Launch context tab reads the transcript too: its 410 is the retention message, not a failed read.
+    let launchStatus = 0;
+    dashboard.on("response", (response) => {
+      if (new URL(response.url()).pathname === `/api/history/sessions/claude/${session.id}/launch-context`) launchStatus = response.status();
+    });
+    await detail.getByRole("tab", { name: "Launch context" }).click();
+    const panel = detail.getByRole("tabpanel");
+    await expect(panel.getByRole("note")).toHaveText(/removed by Claude Code's retention/);
+    expect(launchStatus, "the tab fetched, rather than short-circuiting on a gone row").toBe(410);
+    await expect(panel.getByRole("region")).toHaveCount(0);
+    await expect(panel.getByText("Could not read the launch context")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Try again" })).toHaveCount(0);
+    await capture(dashboard, "launch-context-deleted-between-scans");
     expect((await catalogRow(daemon, session.id) as CatalogRow & { transcriptState: string }).transcriptState).toBe("present");
   });
 });
