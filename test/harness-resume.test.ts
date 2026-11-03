@@ -172,6 +172,12 @@ test("the composed argv leads with the resolved harness binary", async () => {
     const withMode = await resumeArgvFor("claude", "agent-9", "auto");
     assert.ok(withMode);
     assert.deepEqual(withMode.slice(1), ["--resume", "agent-9", "--permission-mode", "auto"]);
+
+    // A History fork resumes the source under an id minted before launch.
+    const fork = await resumeArgvFor("claude", "agent-9", "auto", "fork-1");
+    assert.ok(fork);
+    assert.deepEqual(fork.slice(1), ["--resume", "agent-9", "--permission-mode", "auto", "--fork-session", "--session-id", "fork-1"]);
+    await assert.rejects(resumeArgvFor("pi", "agent-9", null, "fork-1"), /cannot fork/);
   } finally {
     if (previousClaudeBin === undefined) delete process.env.MISSION_CLAUDE_BIN;
     else process.env.MISSION_CLAUDE_BIN = previousClaudeBin;
@@ -187,7 +193,7 @@ test("both resume readers compose from the harness and pass the session's stored
   // symptom - a resumed session opening in the wrong mode - reproduces only with a real
   // CLI at the other end.
   const src = readFileSync(new URL("../src/server/harness/resume.ts", import.meta.url), "utf8");
-  assert.match(src, /resumeArgvFor\(session\.agent, session\.agentSessionId, session\.permissionMode\)/);
+  assert.match(src, /resumeArgvFor\(session\.agent, session\.agentSessionId, session\.permissionMode, forkSessionId\)/);
   assert.doesNotMatch(src, /\.resumeArgv\(/);
   const routes = readFileSync(new URL("../src/server/routes.ts", import.meta.url), "utf8");
   assert.match(

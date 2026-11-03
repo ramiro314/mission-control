@@ -1,4 +1,4 @@
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
@@ -154,7 +154,7 @@ test("Resume opens a terminal in the original directory, and a pending launch bl
   await expect.poll(() => workspaces(daemon).length, { timeout: 15_000 }).toBe(2);
 });
 
-test("Resume is offered only on conversations whose transcript is present, and refuses a directory that is gone", async ({
+test("Resume is offered only on conversations whose transcript is present, and a directory that is gone opens the picker", async ({
   dashboard,
   daemon,
 }) => {
@@ -172,12 +172,80 @@ test("Resume is offered only on conversations whose transcript is present, and r
   await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
   await expect(dialog.getByText("No longer exists", { exact: true })).toBeVisible();
-  await expect(dialog.getByRole("alert")).toHaveText(
+  await expect(dialog.getByText(
     `The original directory ${join(daemon.home, "projects", "deleted-checkout")} no longer exists.`,
-  );
+    { exact: true },
+  )).toBeVisible();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  // The original cannot be used, so the picker offers a typed directory, and the terminals
+  // wait for one.
+  await expect(dialog.getByRole("textbox", { name: "Resume in another directory" })).toBeVisible();
   await expect(dialog.getByRole("menu", { name: "Resume in" })).toHaveCount(0);
   await capture(dashboard, "05-missing");
   expect(workspaces(daemon)).toHaveLength(0);
+});
+
+test("a typed directory resumes a fork from a copy of the transcript, in the directory resolved through symlinks", async ({
+  dashboard,
+  daemon,
+}) => {
+  const id = writeSession(daemon, { cwd: join(daemon.home, "projects", "removed-checkout"), title: "Split the parser", at: "2026-10-27T12:00:00.000Z" });
+  await indexed(daemon, id);
+  const real = join(daemon.home, "projects", "fork-target");
+  mkdirSync(real, { recursive: true });
+  const alias = join(daemon.home, "projects", "fork-alias");
+  symlinkSync(real, alias);
+  const resolved = realpathSync(real);
+  const copyPath = join(daemon.home, ".claude", "projects", resolved.replace(/[^a-zA-Z0-9]/g, "-"), `${id}.jsonl`);
+
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${id}`);
+  await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
+  // This session has no repository, so the picker is the directory field alone.
+  const field = dialog.getByRole("textbox", { name: "Resume in another directory" });
+  await expect(field).toBeVisible();
+  await expect(dialog.getByRole("textbox")).toHaveCount(1);
+  await expect(dialog.getByText("in a directory you choose, because the original cannot be used", { exact: false })).toBeVisible();
+  await expect(dialog.getByRole("listbox")).toHaveCount(0);
+  await expectContentClearsBorder(dialog);
+
+  // A relative path is refused, and the field stays up to correct it.
+  await field.fill("projects/fork-target");
+  const menu = dialog.getByRole("menu", { name: "Resume in" });
+  await menu.getByRole("menuitem").filter({ hasText: "cmux" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("projects/fork-target is a relative path: type the directory's absolute path.");
+  await expect(field).toBeVisible();
+  await capture(dashboard, "07-relative");
+  expect(workspaces(daemon)).toHaveLength(0);
+
+  await field.fill(alias);
+  await capture(dashboard, "08-typed");
+  await menu.getByRole("menuitem").filter({ hasText: "cmux" }).click();
+  await expect(dialog.getByRole("status")).toHaveText(
+    `Started a fork in cmux, in ${resolved}, from the transcript copied to ${copyPath}. The fork appears in History as its own session once Mission Control finds the agent.`,
+  );
+  await capture(dashboard, "09-fork-started");
+
+  // The copy is in the resolved directory's project folder, byte for byte the original.
+  expect(existsSync(copyPath)).toBe(true);
+  const original = join(daemon.home, ".claude", "projects", join(daemon.home, "projects", "removed-checkout").replace(/[^a-zA-Z0-9]/g, "-"), `${id}.jsonl`);
+  expect(readFileSync(copyPath, "utf8")).toBe(readFileSync(original, "utf8"));
+
+  // The terminal runs in the resolved directory, resuming THIS conversation as a fork under
+  // the id Mission Control minted for it.
+  await expect.poll(() => workspaces(daemon).length, { timeout: 15_000 }).toBe(1);
+  const [workspace] = workspaces(daemon);
+  expect(flag(workspace!, "--cwd")).toBe(resolved);
+  const launch = launchedCommand(flag(workspace!, "--command")!);
+  const options = (await (await fetch(`${daemon.baseURL}/api/history/sessions/claude/${id}/resume-options`)).json()) as {
+    openLaunch: { expectedAgentSessionId: string; copyPath: string; cwd: string };
+  };
+  const fork = options.openLaunch.expectedAgentSessionId;
+  expect(fork).not.toBe(id);
+  expect(options.openLaunch.copyPath).toBe(copyPath);
+  expect(launch).toContain(`'--resume' '${id}'`);
+  expect(launch).toContain(`'--fork-session' '--session-id' '${fork}'`);
+  expect(launch).not.toContain("--mcp-config");
 });
 
 test("a Cancel pending resume the daemon refuses says why, and the dialog offers Resume again once nothing holds it", async ({

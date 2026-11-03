@@ -344,6 +344,81 @@ test("two files with one session id: the canonical file does not depend on scan 
   rmSync(projects, { recursive: true, force: true });
 });
 
+/** Record `copyPath` as a History Resume's transcript copy of `id`, as a fork launch does. */
+function recordCopy(id: string, copyPath: string): void {
+  openDb().prepare(
+    `INSERT INTO history_resume_launches (launch_id, agent, source_session_id, expected_agent_session_id, cwd, copy_path,
+       launched_at, state, updated_at) VALUES (?, 'claude', ?, ?, '/copy', ?, 1, 'released', 1)`,
+  ).run(`launch-${copyPath}`, id, sessionId(), copyPath);
+}
+
+test("a rebuilt catalog that scans the History copy first still picks the original, and the copy makes no second row", async () => {
+  clearCatalog();
+  openDb().exec("DELETE FROM history_resume_launches");
+  const projects = freshProjects();
+  const id = sessionId();
+  const cwd = "/work/copied-from";
+  const original = writeTranscript(projects, claudeProjectDir(cwd, projects).slice(projects.length + 1), id, records(id, { cwd, entrypoint: "cli" }));
+  // The copy sorts first, starts earlier, and sits in a folder that is not its first cwd's, so
+  // only the recorded copy rule keeps it out: without it, the earliest-start rule would pick it.
+  const copy = writeTranscript(projects, "-aaa-typed", id, records(id, { cwd: "/elsewhere", entrypoint: "cli", at: "2026-10-01T10:00:00.000Z" }));
+  recordCopy(id, copy);
+  const reader = createClaudeHistory(projects);
+  for (const order of [false, true]) {
+    clearCatalog();
+    const store = new HistoryStore();
+    const reconciler = new HistoryReconciler({
+      store,
+      readers: [{ agent: "claude", spec: { ...reader, enumerate: async (root) => {
+        const files = await reader.enumerate(root);
+        return order ? files.reverse() : files;
+      } } }],
+      resolveRepository: () => null,
+    });
+    await reconciler.trigger();
+    assert.equal(store.index("claude").get(id)?.transcriptPath, original, "the original is canonical whatever the scan order");
+    assert.equal(openDb().prepare("SELECT COUNT(*) AS n FROM history_sessions WHERE agent_session_id = ?").get(id)!.n, 1);
+  }
+
+  // A recorded copy alone never creates a row, even when the original was never indexed.
+  clearCatalog();
+  rmSync(original);
+  const store = new HistoryStore();
+  await new HistoryReconciler({ store, readers: [{ agent: "claude", spec: reader }], resolveRepository: () => null }).trigger();
+  assert.equal(store.index("claude").get(id), undefined);
+  rmSync(projects, { recursive: true, force: true });
+  openDb().exec("DELETE FROM history_resume_launches");
+});
+
+test("a gone canonical file marks its row gone and is never repointed at a copy", async () => {
+  clearCatalog();
+  openDb().exec("DELETE FROM history_resume_launches");
+  const projects = freshProjects();
+  const reader = createClaudeHistory(projects);
+  const store = new HistoryStore();
+  const reconciler = new HistoryReconciler({ store, readers: [{ agent: "claude", spec: reader }], resolveRepository: () => null, now: () => 5_000 });
+  for (const recorded of [true, false]) {
+    const id = sessionId();
+    const cwd = `/work/gone-original-${String(recorded)}`;
+    const original = writeTranscript(projects, claudeProjectDir(cwd, projects).slice(projects.length + 1), id, records(id, { cwd, entrypoint: "cli" }));
+    const copy = writeTranscript(projects, `-typed-${String(recorded)}`, id, records(id, { cwd, entrypoint: "cli" }));
+    if (recorded) recordCopy(id, copy);
+    await reconciler.trigger();
+    assert.equal(store.index("claude").get(id)?.transcriptPath, original);
+
+    rmSync(original);
+    await reconciler.trigger();
+    const row = store.index("claude").get(id);
+    assert.equal(row?.transcriptState, "gone", `the row is gone (copy ${recorded ? "recorded" : "unrecorded"})`);
+    assert.equal(row?.transcriptPath, original, "and still names the original, not the copy");
+    // A later pass does not revive it through the copy either.
+    await reconciler.trigger();
+    assert.equal(store.index("claude").get(id)?.transcriptState, "gone");
+  }
+  rmSync(projects, { recursive: true, force: true });
+  openDb().exec("DELETE FROM history_resume_launches");
+});
+
 test("repository resolution: pool slots, task worktrees, git checkouts and unknown paths", () => {
   const sources = {
     pools: [{ poolPath: "/state/worktree-pools/app-1234", mainCheckoutRoot: "/code/app" }],

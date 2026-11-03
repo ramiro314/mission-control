@@ -650,6 +650,10 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
       return sorted[0]!.path;
     },
 
+    copyDestination(cwd, agentSessionId) {
+      return join(claudeProjectDir(cwd, projectsDir), `${agentSessionId}.jsonl`);
+    },
+
     retention() {
       // The user settings file only: the header speaks for the whole machine, and a project's
       // own `.claude/settings.json` applies to that project's sessions alone.

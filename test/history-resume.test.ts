@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -306,23 +306,30 @@ test("resume-options reports the original directory's status and the open launch
     await f.history.reconciler.trigger();
 
     const ready = await f.options(usable);
-    assert.deepEqual(ready.original, { cwd, resolved: cwd, state: "usable" });
+    assert.deepEqual(ready.original, { cwd, resolved: cwd, state: "usable", refusal: null });
     assert.equal(ready.refusal, null);
     assert.equal(ready.openLaunch, null);
+    assert.equal(ready.picker, null, "a usable original needs no picker");
 
+    // A directory that is gone or reused refuses the original only: the picker offers a typed
+    // directory, and nothing refuses the session as a whole.
     const gone = await f.options(missing);
     assert.equal(gone.original.state, "missing");
-    assert.equal(gone.refusal?.code, "directory_missing");
+    assert.equal(gone.original.refusal?.code, "directory_missing");
+    assert.equal(gone.refusal, null);
+    assert.deepEqual(gone.picker, { directory: true });
 
     const inPool = await f.options(pooled);
     assert.equal(inPool.original.state, "pool_slot");
-    assert.equal(inPool.refusal?.code, "pool_slot");
+    assert.equal(inPool.original.refusal?.code, "pool_slot");
+    assert.deepEqual(inPool.picker, { directory: true });
 
     assert.equal((await f.resume(usable)).status, 200);
     const open = await f.options(usable);
     assert.equal(open.openLaunch?.cwd, cwd);
     assert.equal(open.refusal?.code, "open_launch");
     assert.match(open.refusal!.error, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.equal(open.picker, null, "a refusal of the whole session offers no picker");
 
     assert.equal((await f.get(`/api/history/sessions/claude/${sessionId()}/resume-options`)).status, 404);
   } finally {
@@ -355,6 +362,7 @@ test("Resume resolves the directory once: the launch, the binding key and the te
       permissionMode: "acceptEdits",
       cwd: real,
       runtime: "terminal",
+      forkSessionId: null,
     }], "prepared from the catalog row, carrying the recorded mode, in the resolved directory");
     assert.match(prepared[0]!.id, /^history-resume:/);
     assert.deepEqual(launched, [{ backend: "cmux", cwd: real }]);
@@ -586,6 +594,213 @@ test("Cancel pending resume that lands while the terminal opens is reported as c
     assert.equal(body.code, "cancelled");
     assert.equal(body.launch.state, "released");
     assert.match(body.error, /while cmux was opening/);
+  } finally {
+    f.done();
+  }
+});
+
+// ---- a typed directory: copy and fork ----
+
+const { claudeProjectDir } = await import("../src/server/harness/claude/project-dir.ts");
+const { resumeFor } = await import("../src/server/harness/index.ts");
+
+type Started = { ok: true; launch: { launchId: string; cwd: string; expectedAgentSessionId: string; sourceSessionId: string; copyPath: string | null }; label: string };
+
+function resumeInto(f: Awaited<ReturnType<typeof fixture>>, id: string, path: string) {
+  return f.post(`/api/history/sessions/claude/${id}/resume`, { backend: "cmux", target: { kind: "directory", path } });
+}
+
+/** A conversation whose original directory is gone, so the picker is what Resume offers. */
+async function orphaned(f: Awaited<ReturnType<typeof fixture>>, cwd = join(directory("parent"), "deleted")) {
+  const id = sessionId();
+  const transcript = writeConversation(f.projects, id, cwd);
+  await f.history.reconciler.trigger();
+  return { id, transcript };
+}
+
+function launchCount(): number {
+  return Number(openDb().prepare("SELECT COUNT(*) AS n FROM history_resume_launches").get()!.n);
+}
+
+test("Claude forks under a given id: --fork-session with --session-id", () => {
+  assert.deepEqual(resumeFor("claude")?.forkArgv?.("11111111-2222-4333-8444-555555555555"), [
+    "--fork-session", "--session-id", "11111111-2222-4333-8444-555555555555",
+  ]);
+});
+
+test("a typed directory: a relative path is refused, and a symlink is resolved once for the copy, the launch and the terminal", async () => {
+  const { launcher, prepared, launched } = fakeLauncher();
+  const f = await fixture(launcher);
+  try {
+    const { id, transcript } = await orphaned(f);
+
+    const relative = await resumeInto(f, id, "projects/elsewhere");
+    assert.equal(relative.status, 400);
+    assert.equal(((await relative.json()) as { code: string }).code, "directory_relative");
+    const nowhere = await resumeInto(f, id, join(directory("parent"), "never-made"));
+    assert.equal(nowhere.status, 409);
+    assert.equal(((await nowhere.json()) as { code: string }).code, "directory_missing");
+    assert.equal(launchCount(), 0, "a refused target claims nothing");
+
+    const real = directory("typed-real");
+    const alias = join(directory("typed-aliases"), "alias");
+    symlinkSync(real, alias);
+    const res = await resumeInto(f, id, alias);
+    assert.equal(res.status, 200);
+    const { launch } = (await res.json()) as Started;
+    const copyPath = join(claudeProjectDir(real, f.projects), `${id}.jsonl`);
+    assert.equal(launch.cwd, real, "the launch row's directory is the resolved one");
+    assert.equal(launch.copyPath, copyPath, "the copy is in the RESOLVED directory's project folder");
+    assert.equal(readFileSync(copyPath, "utf8"), readFileSync(transcript, "utf8"));
+    assert.equal(existsSync(claudeProjectDir(alias, f.projects)), false, "nothing is written under the alias's encoding");
+    assert.equal(prepared[0]!.cwd, real, "the terminal's working directory");
+    assert.deepEqual(launched, [{ backend: "cmux", cwd: real }]);
+
+    // The fork's id is minted before launch: it is the launch's expected id, it is what the
+    // agent is started under, and it is not the source's.
+    assert.equal(launch.sourceSessionId, id);
+    assert.match(launch.expectedAgentSessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.notEqual(launch.expectedAgentSessionId, id);
+    assert.equal(prepared[0]!.agentSessionId, id, "the fork resumes the source conversation");
+    assert.equal(prepared[0]!.forkSessionId, launch.expectedAgentSessionId);
+  } finally {
+    f.done();
+  }
+});
+
+test("a destination folder that collides with the original's refuses, and the original stays byte-identical", async () => {
+  const { launcher, prepared } = fakeLauncher();
+  const f = await fixture(launcher);
+  try {
+    // `<parent>/a-b` (gone) and `<parent>/a/b` encode to the same project folder.
+    const parent = directory("collide");
+    const { id, transcript } = await orphaned(f, join(parent, "a-b"));
+    const typed = join(parent, "a", "b");
+    mkdirSync(typed, { recursive: true });
+    assert.equal(claudeProjectDir(typed, f.projects), claudeProjectDir(join(parent, "a-b"), f.projects));
+    const before = { bytes: readFileSync(transcript), stat: statSync(transcript) };
+
+    const res = await resumeInto(f, id, typed);
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string; error: string };
+    assert.equal(body.code, "copy_exists");
+    assert.ok(body.error.includes(transcript), "the refusal names the file it would not overwrite");
+    assert.deepEqual(readFileSync(transcript), before.bytes);
+    assert.equal(statSync(transcript).mtimeMs, before.stat.mtimeMs);
+    assert.equal(statSync(transcript).ino, before.stat.ino);
+    assert.equal(launchCount(), 0);
+    assert.equal(prepared.length, 0);
+  } finally {
+    f.done();
+  }
+});
+
+test("the copy is an exclusive create: a file that appears after the check is never overwritten, and the claim is freed", async () => {
+  let intruder: string | null = null;
+  const { launcher, prepared } = fakeLauncher();
+  // The host check runs after the target is checked and before the claim and the copy, which
+  // is the window another writer would have to land in.
+  launcher.hostUnavailable = () => {
+    if (intruder) writeFileSync(intruder, "someone else's file\n");
+    return null;
+  };
+  const f = await fixture(launcher);
+  try {
+    const { id } = await orphaned(f);
+    const typed = directory("raced");
+    intruder = join(claudeProjectDir(typed, f.projects), `${id}.jsonl`);
+    mkdirSync(claudeProjectDir(typed, f.projects), { recursive: true });
+
+    const res = await resumeInto(f, id, typed);
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { code: string }).code, "copy_exists");
+    assert.equal(readFileSync(intruder, "utf8"), "someone else's file\n");
+    assert.equal(f.history.launches.open("claude", id), null, "the claim is released, so the next Resume can run");
+    assert.equal(f.history.launches.inStates(["released"])[0]?.copyPath, null, "a refused copy is never recorded as one");
+    assert.equal(prepared.length, 0);
+  } finally {
+    f.done();
+  }
+});
+
+test("an existing History copy is reused with no write; any other existing file refuses", async () => {
+  const { launcher } = fakeLauncher();
+  const f = await fixture(launcher);
+  try {
+    const { id } = await orphaned(f);
+    const typed = directory("reused");
+    const first = (await (await resumeInto(f, id, typed)).json()) as Started;
+    const copyPath = first.launch.copyPath!;
+    const written = { bytes: readFileSync(copyPath), stat: statSync(copyPath) };
+    assert.equal((await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: first.launch.launchId })).status, 200);
+
+    const again = await resumeInto(f, id, typed);
+    assert.equal(again.status, 200);
+    const second = (await again.json()) as Started;
+    assert.equal(second.launch.copyPath, copyPath, "the second launch records the same copy");
+    assert.notEqual(second.launch.expectedAgentSessionId, first.launch.expectedAgentSessionId, "each fork gets its own id");
+    assert.deepEqual(readFileSync(copyPath), written.bytes);
+    assert.equal(statSync(copyPath).mtimeMs, written.stat.mtimeMs, "reused as it stands: no write");
+    assert.equal(statSync(copyPath).ino, written.stat.ino);
+
+    // Another session's file of that name that History did not copy is not reused.
+    const { id: other } = await orphaned(f);
+    const foreign = join(claudeProjectDir(typed, f.projects), `${other}.jsonl`);
+    writeFileSync(foreign, "not a History copy\n");
+    const refused = await resumeInto(f, other, typed);
+    assert.equal(refused.status, 409);
+    assert.equal(((await refused.json()) as { code: string }).code, "copy_exists");
+    assert.equal(readFileSync(foreign, "utf8"), "not a History copy\n");
+  } finally {
+    f.done();
+  }
+});
+
+test("resumed_from is known at launch: the fork's row reads it from the launch, and the copy makes no second row", async () => {
+  const registry = new Registry();
+  const { launcher } = fakeLauncher();
+  const f = await fixture(launcher, registry);
+  try {
+    const { id, transcript } = await orphaned(f);
+    const typed = directory("forked");
+    const { launch } = (await (await resumeInto(f, id, typed)).json()) as Started;
+    const fork = launch.expectedAgentSessionId;
+
+    // What Claude writes for the fork: a transcript under the minted id beside the copy.
+    writeConversation(f.projects, fork, typed);
+    await f.history.reconciler.trigger();
+    const rows = openDb().prepare("SELECT agent_session_id, transcript_path, resumed_from FROM history_sessions ORDER BY agent_session_id").all() as {
+      agent_session_id: string; transcript_path: string; resumed_from: string | null;
+    }[];
+    assert.deepEqual(rows.find((row) => row.agent_session_id === fork)?.resumed_from, id);
+    const source = rows.filter((row) => row.agent_session_id === id);
+    assert.equal(source.length, 1, "the copy never creates a second row");
+    assert.equal(source[0]!.transcript_path, transcript, "and the original stays canonical");
+    assert.equal(source[0]!.resumed_from, null);
+
+    // The fork binds by its minted id in the resolved directory.
+    assert.equal(f.history.launches.bind(candidate("fork-session", fork, typed), 5).length, 1);
+    assert.equal(f.history.launches.get(launch.launchId)?.state, "bound");
+  } finally {
+    f.done();
+  }
+});
+
+test("a typed directory inside a worktree pool is refused", async () => {
+  const f = await fixture();
+  try {
+    const { id } = await orphaned(f);
+    const pool = directory("typed-pool");
+    const slot = join(pool, "2", "repo");
+    mkdirSync(slot, { recursive: true });
+    openDb().prepare(
+      `INSERT INTO worktree_pools (id, git_common_dir, main_checkout_root, pool_path, created_at, updated_at)
+       VALUES ('pool-typed', '/repo/.git', '/repo', ?, 1, 1)`,
+    ).run(pool);
+    const res = await resumeInto(f, id, slot);
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { code: string }).code, "pool_slot");
+    assert.equal(launchCount(), 0);
   } finally {
     f.done();
   }

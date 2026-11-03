@@ -1,4 +1,8 @@
-import { realpath, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, open, realpath, stat, unlink } from "node:fs/promises";
+import { dirname, isAbsolute } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { createReadStream } from "node:fs";
 import {
   isHistoryConversationKind,
   type HistoryResumeBody,
@@ -6,6 +10,7 @@ import {
   type HistoryResumeLaunch,
   type HistoryResumeOptions,
   type HistoryResumeRefusal,
+  type HistoryResumeTarget,
   type HistoryResumeRefusalCode,
   type HistorySessionSummary,
 } from "@shared/history.ts";
@@ -27,12 +32,22 @@ import type { HistoryStore } from "./store.ts";
  * terminal, with no task context and no Mission Control tools. Discovery then registers the
  * agent like any other terminal session, which makes the row Live.
  *
- * Only the original directory is a target here, and only when it is outside every worktree
- * pool: a pool slot is never idle on a branch, so resuming into one is the slot target's job.
+ * Two targets: the original directory, when it still exists outside every worktree pool, and
+ * a directory the operator typed, which the dialog offers when the original cannot be used. A
+ * pool slot is never idle on a branch, so resuming into one is the slot target's job.
+ *
+ * A typed directory runs a FORK. The transcript is copied into that directory's project folder
+ * as an exclusive create, never over an existing file, and the agent starts with a fork id
+ * Mission Control minted, so the fork's identity is known before launch and the original is
+ * never touched. That copy is History's only write into the agent's store, and an unofficial
+ * workaround that may break with an agent format change.
  */
 
 /** The fields of a session a managed terminal resume is prepared from. */
-export type HistoryResumeSession = Pick<Session, "id" | "agent" | "agentSessionId" | "permissionMode" | "cwd" | "runtime">;
+export type HistoryResumeSession = Pick<Session, "id" | "agent" | "agentSessionId" | "permissionMode" | "cwd" | "runtime"> & {
+  /** Set for a fork: the id Mission Control minted for it, which the agent starts under. */
+  forkSessionId?: string | null;
+};
 
 /** The terminal half of a Resume, supplied by the routes so this file never opens a window itself. */
 export interface HistoryResumeLauncher {
@@ -69,7 +84,19 @@ export type HistoryResumeOptionsRead =
 
 export type HistoryResumeOutcome =
   | { ok: true; status: 200; launch: HistoryResumeLaunch; label: string }
-  | { ok: false; status: 404 | 409 | 410 | 504; refusal: HistoryResumeRefusal; launch?: HistoryResumeLaunch };
+  | { ok: false; status: 400 | 404 | 409 | 410 | 504; refusal: HistoryResumeRefusal; launch?: HistoryResumeLaunch };
+
+/**
+ * A target resolved once, through symlinks: that one `cwd` is the copy folder's encoding, the
+ * launch row's directory, the terminal's working directory and the binding key. A fork also
+ * carries where its transcript copy goes and the id minted for it.
+ */
+interface ResolvedTarget {
+  cwd: string;
+  fork: { copyPath: string; forkSessionId: string } | null;
+}
+
+type TargetRead = { ok: true; target: ResolvedTarget } | { ok: false; refusal: HistoryResumeRefusal };
 
 export type HistoryResumeCancelOutcome =
   | { ok: true; launch: HistoryResumeLaunch }
@@ -82,10 +109,22 @@ function refusal(code: HistoryResumeRefusalCode, error: string): HistoryResumeRe
 }
 
 /** The status a refusal answers with. */
-function refusalStatus(code: HistoryResumeRefusalCode): 409 | 410 | 504 {
+function refusalStatus(code: HistoryResumeRefusalCode): 400 | 409 | 410 | 504 {
+  if (code === "directory_relative") return 400;
   if (code === "transcript_gone") return 410;
   if (code === "launch_unknown") return 504;
   return 409;
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === code;
+}
+
+function copyExistsRefusal(copyPath: string): HistoryResumeRefusal {
+  return refusal(
+    "copy_exists",
+    `${copyPath} already exists and is not a copy History made of this conversation, so nothing was written. Choose another directory.`,
+  );
 }
 
 function openLaunchRefusal(launch: HistoryResumeLaunch): HistoryResumeRefusal {
@@ -109,9 +148,16 @@ export class HistoryResume {
     const summary = { ...found.entry.summary, liveSessionId: live(found.entry.summary.agent, found.entry.summary.agentSessionId) };
     const original = await this.original(summary.cwd);
     const openLaunch = this.deps.launches.open(summary.agent, summary.agentSessionId);
+    const refused = this.sessionRefusal(summary, openLaunch);
+    const originalRefusal = directoryRefusal(summary.cwd, original.state);
     return {
       ok: true,
-      options: { original, openLaunch, refusal: this.refusal(summary, original.state, openLaunch) },
+      options: {
+        original: { ...original, refusal: originalRefusal },
+        openLaunch,
+        refusal: refused,
+        picker: refused || !originalRefusal ? null : { directory: canFork(summary.agent) },
+      },
     };
   }
 
@@ -132,25 +178,41 @@ export class HistoryResume {
     if (!found) return { ok: false, status: 404, refusal: refusal("not_resumable", NOT_FOUND) };
     const { reader, entry } = found;
     const summary = { ...entry.summary, liveSessionId: live(entry.summary.agent, entry.summary.agentSessionId) };
-    // The one target this build offers, resolved once: the launch row, the binding and the
-    // terminal all use this value, never the spelling the transcript recorded.
-    const original = await this.original(summary.cwd);
-    const refused = this.refusal(summary, original.state, this.deps.launches.open(summary.agent, summary.agentSessionId));
+    const refused = this.sessionRefusal(summary, this.deps.launches.open(summary.agent, summary.agentSessionId));
     if (refused) return this.refuse(refused, summary);
+    // The target, resolved once: the copy, the launch row, the binding and the terminal all
+    // use this value, never the spelling the transcript recorded or the operator typed.
+    const resolved = await this.target(body.target, summary, reader);
+    if (!resolved.ok) return this.refuse(resolved.refusal, summary);
+    const { cwd, fork } = resolved.target;
     const hostRefusal = launcher.hostUnavailable(body.backend);
     if (hostRefusal) return this.refuse(refusal("host_unavailable", hostRefusal), summary);
-    const cwd = original.resolved!;
 
     const claimed = this.deps.launches.claim(
-      { agent: summary.agent, sourceSessionId: summary.agentSessionId, expectedAgentSessionId: summary.agentSessionId, cwd },
+      {
+        agent: summary.agent,
+        sourceSessionId: summary.agentSessionId,
+        // A fork is discovered under the id minted for it; `resumed_from` reads this row.
+        expectedAgentSessionId: fork?.forkSessionId ?? summary.agentSessionId,
+        cwd,
+      },
       this.now(),
     );
     if (!claimed.ok) return { ok: false, status: 409, refusal: openLaunchRefusal(claimed.open), launch: claimed.open };
-    const { launch } = claimed;
+    let { launch } = claimed;
     const failed = (error: string): HistoryResumeOutcome => {
       this.deps.launches.release(launch.launchId, this.now());
       return { ok: false, status: 409, refusal: refusal("launch_failed", error), launch: this.deps.launches.get(launch.launchId) ?? launch };
     };
+
+    if (fork) {
+      const copied = await this.copy(launch, entry.transcriptPath, fork.copyPath);
+      if (!copied.ok) {
+        this.deps.launches.release(launch.launchId, this.now());
+        return { ok: false, status: 409, refusal: copied.refusal, launch: this.deps.launches.get(launch.launchId) ?? launch };
+      }
+      launch = this.deps.launches.get(launch.launchId) ?? launch;
+    }
 
     let prepared: PreparedResume;
     try {
@@ -164,6 +226,7 @@ export class HistoryResume {
         permissionMode,
         cwd,
         runtime: "terminal",
+        forkSessionId: fork?.forkSessionId ?? null,
       });
     } catch (error) {
       return failed(error instanceof Error ? error.message : String(error));
@@ -253,12 +316,8 @@ export class HistoryResume {
     return { ok: false, status: refusalStatus(found.code), refusal: found, ...(launch ? { launch } : {}) };
   }
 
-  /** The first refusal that applies, in the order the page reads them, or null. */
-  private refusal(
-    summary: HistorySessionSummary,
-    directory: HistoryResumeDirectoryState,
-    openLaunch: HistoryResumeLaunch | null,
-  ): HistoryResumeRefusal | null {
+  /** The first refusal that blocks every target, in the order the page reads them, or null. */
+  private sessionRefusal(summary: HistorySessionSummary, openLaunch: HistoryResumeLaunch | null): HistoryResumeRefusal | null {
     if (!isHistoryConversationKind(summary.kind)) {
       return refusal("not_conversation", "Background runs (one-shot and reviewer) are readable here but cannot be resumed.");
     }
@@ -272,31 +331,128 @@ export class HistoryResume {
       return refusal("not_resumable", `${summary.agent} cannot reopen a conversation in a terminal.`);
     }
     if (openLaunch) return openLaunchRefusal(openLaunch);
-    if (directory === "unrecorded") return refusal("no_directory", "This transcript recorded no working directory to resume in.");
-    if (directory === "missing") {
-      return refusal("directory_missing", `The original directory ${summary.cwd} no longer exists.`);
-    }
-    if (directory === "pool_slot") {
-      return refusal(
-        "pool_slot",
-        `The original directory ${summary.cwd} is a worktree pool slot, which another task may be using. Resuming into a slot is not available yet.`,
-      );
-    }
     return null;
   }
 
+  /** The target a request names, resolved once, or why it cannot be used. Touches nothing. */
+  private async target(target: HistoryResumeTarget, summary: HistorySessionSummary, reader: HistoryReader): Promise<TargetRead> {
+    if (target.kind === "original") {
+      const original = await this.original(summary.cwd);
+      const refused = directoryRefusal(summary.cwd, original.state);
+      return refused ? { ok: false, refusal: refused } : { ok: true, target: { cwd: original.resolved!, fork: null } };
+    }
+    if (!canFork(summary.agent)) {
+      return { ok: false, refusal: refusal("not_resumable", `${summary.agent} cannot fork a conversation into another directory.`) };
+    }
+    if (!isAbsolute(target.path)) {
+      return { ok: false, refusal: refusal("directory_relative", `${target.path} is a relative path: type the directory's absolute path.`) };
+    }
+    const typed = await this.resolveDirectory(target.path);
+    if (typed.state === "missing") {
+      return { ok: false, refusal: refusal("directory_missing", `The directory ${target.path} does not exist.`) };
+    }
+    if (typed.state === "pool_slot") {
+      return {
+        ok: false,
+        refusal: refusal("pool_slot", `${target.path} is inside a worktree pool, which another task may be using. Resuming into a slot is not available yet.`),
+      };
+    }
+    const copyPath = reader.spec.copyDestination(typed.resolved, summary.agentSessionId);
+    // Advisory, so a refusal costs no launch row; the exclusive create after the claim decides.
+    if (await this.foreignFile(summary.agent, summary.agentSessionId, copyPath)) return { ok: false, refusal: copyExistsRefusal(copyPath) };
+    return { ok: true, target: { cwd: typed.resolved, fork: { copyPath, forkSessionId: randomUUID() } } };
+  }
+
+  /** Whether `copyPath` holds a file that is not a History copy of this session, the canonical transcript included. */
+  private async foreignFile(agent: HistorySessionSummary["agent"], sourceSessionId: string, copyPath: string): Promise<boolean> {
+    try {
+      await lstat(copyPath);
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) return false;
+      throw error;
+    }
+    return !this.deps.launches.isCopyOf(agent, sourceSessionId, copyPath);
+  }
+
+  /**
+   * Put the transcript at `copyPath` for a fork, and record it on the launch. An existing
+   * History copy of this session is reused as it stands, with no write: a fork never changes
+   * its source, so it is still faithful. Anything else at that path, the canonical transcript
+   * included, refuses with nothing written: the copy is an exclusive create (`O_EXCL`), so it
+   * never writes over a file, whoever made it.
+   */
+  private async copy(
+    launch: HistoryResumeLaunch,
+    source: string,
+    copyPath: string,
+  ): Promise<{ ok: true } | { ok: false; refusal: HistoryResumeRefusal }> {
+    try {
+      if (await this.foreignFile(launch.agent, launch.sourceSessionId, copyPath)) {
+        return { ok: false, refusal: copyExistsRefusal(copyPath) };
+      }
+      await mkdir(dirname(copyPath), { recursive: true });
+      let created = false;
+      try {
+        const handle = await open(copyPath, "wx", 0o600);
+        created = true;
+        await pipeline(createReadStream(source), handle.createWriteStream());
+      } catch (error) {
+        if (!created && isErrno(error, "EEXIST")) {
+          // Lost to a file that appeared since the check: reuse it only if it is our own copy.
+          if (this.deps.launches.isCopyOf(launch.agent, launch.sourceSessionId, copyPath)) {
+            this.deps.launches.recordCopy(launch.launchId, copyPath, this.now());
+            return { ok: true };
+          }
+          return { ok: false, refusal: copyExistsRefusal(copyPath) };
+        }
+        // A partial copy this request created is removed, so it never blocks the next Resume.
+        if (created) await unlink(copyPath).catch(() => {});
+        throw error;
+      }
+    } catch (error) {
+      return { ok: false, refusal: refusal("launch_failed", `Could not copy the transcript to ${copyPath}: ${error instanceof Error ? error.message : String(error)}`) };
+    }
+    this.deps.launches.recordCopy(launch.launchId, copyPath, this.now());
+    return { ok: true };
+  }
+
   /** The recorded directory, resolved once through symlinks, and whether Resume can use it. */
-  private async original(cwd: string | null): Promise<HistoryResumeOptions["original"]> {
+  private async original(cwd: string | null): Promise<Omit<HistoryResumeOptions["original"], "refusal">> {
     if (!cwd) return { cwd, resolved: null, state: "unrecorded" };
+    return { cwd, ...(await this.resolveDirectory(cwd)) };
+  }
+
+  /** A directory resolved once through symlinks, and whether it exists outside every worktree pool. */
+  private async resolveDirectory(path: string): Promise<
+    { resolved: null; state: "missing" } | { resolved: string; state: "usable" | "pool_slot" }
+  > {
     let resolved: string;
     try {
-      resolved = await realpath(cwd);
-      if (!(await stat(resolved)).isDirectory()) return { cwd, resolved: null, state: "missing" };
+      resolved = await realpath(path);
+      if (!(await stat(resolved)).isDirectory()) return { resolved: null, state: "missing" };
     } catch {
-      return { cwd, resolved: null, state: "missing" };
+      return { resolved: null, state: "missing" };
     }
     const pools = await Promise.all(this.deps.store.worktreePools().map(({ poolPath }) => realpath(poolPath).catch(() => poolPath)));
-    if (pools.some((pool) => isInside(pool, resolved))) return { cwd, resolved, state: "pool_slot" };
-    return { cwd, resolved, state: "usable" };
+    if (pools.some((pool) => isInside(pool, resolved))) return { resolved, state: "pool_slot" };
+    return { resolved, state: "usable" };
   }
+}
+
+/** Whether this agent's CLI can start a fork under an id Mission Control mints. */
+function canFork(agent: HistorySessionSummary["agent"]): boolean {
+  return typeof resumeFor(agent)?.forkArgv === "function";
+}
+
+/** Why the original directory cannot be resumed in, or null when it can. */
+function directoryRefusal(cwd: string | null, state: HistoryResumeDirectoryState): HistoryResumeRefusal | null {
+  if (state === "unrecorded") return refusal("no_directory", "This transcript recorded no working directory to resume in.");
+  if (state === "missing") return refusal("directory_missing", `The original directory ${cwd} no longer exists.`);
+  if (state === "pool_slot") {
+    return refusal(
+      "pool_slot",
+      `The original directory ${cwd} is a worktree pool slot, which another task may be using. Resuming into a slot is not available yet.`,
+    );
+  }
+  return null;
 }

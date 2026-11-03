@@ -733,6 +733,13 @@ export interface ResumeSpec {
    * harness's mode would abort the resume instead of opening it.
    */
   argv(agentSessionId: string, permissionMode: PermissionMode | null): readonly string[];
+  /**
+   * The argv appended to `argv` that starts the conversation as a fork under `forkSessionId`,
+   * an id the caller minted, so the fork's identity is known before launch. Absent when the
+   * CLI cannot fork under a given id. Measured for Claude Code 2.1.296: `--fork-session`
+   * together with `--session-id` starts the fork under that id.
+   */
+  forkArgv?(forkSessionId: string): readonly string[];
 }
 
 export interface SdkLaunchOptions {
@@ -1257,6 +1264,12 @@ export interface HistorySpec {
    * never scan order, so a rebuilt catalog chooses the same file.
    */
   canonical(candidates: readonly { path: string; summary: HistorySummary }[]): string;
+  /**
+   * Where a transcript copied for a Resume in `cwd` must lie for the agent to find
+   * `agentSessionId` there: Claude's project folder for `cwd`. `cwd` is already resolved
+   * through symlinks, because the agent encodes the directory it actually runs in.
+   */
+  copyDestination(cwd: string, agentSessionId: string): string;
   /**
    * How long the agent keeps transcripts before deleting them itself, read from its own
    * settings each time it is asked, or null when it deletes none. Never written.
