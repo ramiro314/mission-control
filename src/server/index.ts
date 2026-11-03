@@ -74,6 +74,7 @@ import { buildApp } from "./routes.ts";
 import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ArchiveManager } from "./archives/manager.ts";
 import { HistoryService } from "./history/service.ts";
+import { historyResumeSlots } from "./history/resume-slots.ts";
 import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
 import { getCostConfig, reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
@@ -311,8 +312,9 @@ const history = new HistoryService({
 });
 // Resume's launch records follow the Registry from here, before any Resume can be made: a
 // resumed agent binds when discovery registers it, and the startup twin waits for the first
-// sweep to judge launches a previous run left open.
-history.trackResumes(registry);
+// sweep to judge launches a previous run left open. A slot launch closes when the worktree
+// manager says its slot no longer holds it.
+history.trackResumes(registry, historyResumeSlots(worktrees).holds);
 registry.subscribe((event) => {
   if (event.type === "session_remove") archives.sessionRemoved(event.id);
 });

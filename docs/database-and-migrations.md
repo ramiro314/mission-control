@@ -62,8 +62,9 @@ already gone gets its fields segment from the row itself. User prompts are there
 `history_resume_launches` holds one row per History Resume, written only by
 `HistoryResumeLaunches` (see [Session History](history.md#resume)): the source session, the
 agent session id the launch waits for (a fork's minted id, which the catalog reads as the fork
-row's `resumed_from`), its directory resolved through symlinks, the transcript copy a fork wrote
-or reused (`copy_path`, never canonical in `history_sessions`), the Mission Control session it
+row's `resumed_from`), its directory resolved through symlinks, the worktree slot and lease id
+a slot target holds (`slot_id`, `lease_key`), the transcript copy a fork wrote or reused
+(`copy_path`, never canonical in `history_sessions`), the Mission Control session it
 bound to, and its state (`pending`, `expired`, `bound`, `ended`,
 `released`), read back as a string. A partial unique index over `(agent, source_session_id)`
 where the state is `pending` or `expired` allows one open launch per session, which is what makes

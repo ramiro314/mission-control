@@ -73,7 +73,7 @@ import {
   type WorktreeOperationSettled,
 } from "./manager.ts";
 import { runAsWorktreeActor } from "./actor.ts";
-import { isTerminalOwnerKey } from "./owners.ts";
+import { isHistoryResumeOwnerKey, isTerminalOwnerKey } from "./owners.ts";
 import { depsCutOff, type WorktreeSlotRow } from "./store.ts";
 import { indexLockBlocker } from "./index-lock.ts";
 import {
@@ -356,9 +356,13 @@ function ownerView(
   };
 }
 
-/** A manual lease Open terminal took, one named by `make session --label`, or by its key alone. */
+/**
+ * A manual lease Open terminal or a History Resume took, one named by `make session --label`,
+ * or by its key alone.
+ */
 function manualLabel(key: string): string {
   if (isTerminalOwnerKey(key)) return "Terminal from Settings";
+  if (isHistoryResumeOwnerKey(key)) return "Resumed History session";
   const separator = key.indexOf(":");
   const label = separator === -1 ? "" : key.slice(separator + 1);
   return label ? `Manual lease ${key.slice(0, 8)}: ${label}` : `Manual lease ${key.slice(0, 8)}`;

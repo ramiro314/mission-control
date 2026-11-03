@@ -717,6 +717,10 @@ this order:
   is unknown or unavailable is refused before anything is launched, so the lease is given back with
   no fetch or reset and the slot is available again as it was. A launcher that tried and failed may
   still have opened a shell, so that lease stands and the error says to Return it.
+  A History Resume leases a slot the same way, and on the same idle, detached terms, through
+  `leaseForResume`, which then checks out the session's recorded branch. Its card shows a manual
+  lease labelled "Resumed History session", and Returning it releases the Resume's launch. See
+  [Session History](history.md#resume).
 
   Each slot card ends in a **History** disclosure: what happened to the slot, newest first, 50
   entries at a time through `GET /api/worktrees/:slotId/history`, each with its state change, its

@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { historyResumeCancellable, type HistoryResumeLaunch } from "@shared/history.ts";
 import type { AgentType, ServerEvent, Session } from "@shared/types.ts";
 import { openDb } from "../db.ts";
+import { historyResumeOwnerKey } from "../worktrees/owners.ts";
 
 /**
  * History Resume's launch records (`history_resume_launches`, `docs/history.md`): the claim a
@@ -37,6 +38,9 @@ export type HistoryResumeCancelResult =
   | { ok: true; launch: HistoryResumeLaunch }
   | { ok: false; reason: "not_found" | "not_pending" | "has_slot"; launch?: HistoryResumeLaunch };
 
+/** Whether a slot is still held by a launch's lease, or by its owner key. See `HistoryResumeSlots.holds`. */
+export type HistoryResumeSlotHolds = (slotId: string, leaseKey: string | null, ownerKey: string) => boolean;
+
 interface Row {
   launch_id: string;
   agent: string;
@@ -44,6 +48,7 @@ interface Row {
   expected_agent_session_id: string;
   cwd: string;
   slot_id: string | null;
+  lease_key: string | null;
   copy_path: string | null;
   launched_at: number;
   mc_session_id: string | null;
@@ -176,6 +181,41 @@ export class HistoryResumeLaunches {
     return this.transition(launchId, ["pending", "expired", "ended"], "released", now);
   }
 
+  /** Record the lease a slot launch took, once the slot is leased. */
+  attachLease(launchId: string, leaseKey: string, now: number): boolean {
+    const result = this.db.prepare(
+      "UPDATE history_resume_launches SET lease_key = ?, updated_at = ? WHERE launch_id = ? AND slot_id IS NOT NULL",
+    ).run(leaseKey, now, launchId);
+    return Number(result.changes) > 0;
+  }
+
+  /**
+   * Release every launch whose slot lease is gone: the operator Returned the slot from its card
+   * (or it was destroyed, or recovered). The slot row is the authority, so whichever way the
+   * lease ended, the launch it held closes with it and a new Resume can start. A slot still
+   * holds a launch while its active lease is the launch's, or its active owner is the launch's
+   * own `historyResumeOwnerKey`, which covers a lease granted just before a daemon stopped and
+   * never recorded on the row.
+   *
+   * A launch with no lease key made by this daemon (at or after `before`, its start) may still
+   * be taking its lease, and is left alone. One made before it cannot be: no request survives a
+   * restart, so it is judged by its owner key alone, and a lease that was never granted
+   * releases it rather than holding its session's one open launch forever.
+   *
+   * Whether a slot still holds a launch is the worktree manager's to answer (`holds`), so this
+   * reads only its own table.
+   */
+  slotsReturned(now: number, before: number, holds: HistoryResumeSlotHolds): HistoryResumeLaunch[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM history_resume_launches
+        WHERE slot_id IS NOT NULL AND state != 'released' AND (lease_key IS NOT NULL OR launched_at < ?)`,
+    ).all(before) as unknown as Row[];
+    return rows.flatMap((row) => {
+      if (holds(row.slot_id!, row.lease_key, historyResumeOwnerKey(row.launch_id))) return [];
+      return this.transition(row.launch_id, ["pending", "expired", "bound", "ended"], "released", now) ? [this.get(row.launch_id)!] : [];
+    });
+  }
+
   /**
    * Cancel pending resume: close a `pending` launch with no slot at once. A launch with a
    * slot is closed by Returning that slot instead, so the pool never resets it under a late
@@ -300,13 +340,20 @@ export interface HistoryResumeRegistry {
 
 /**
  * Keep launch records in step with the Registry: bind a launch when discovery registers its
- * agent, end it when that session leaves, run the startup twin after the first sweep, and
- * close unbound launches past their grace window on every tick. Returns the stop function.
+ * agent, end it when that session leaves, release it when its slot's lease is gone, run the
+ * startup twin after the first sweep, and close unbound launches past their grace window on
+ * every tick. Returns the stop function.
  */
 export function trackHistoryResumeLaunches(
   launches: HistoryResumeLaunches,
   registry: HistoryResumeRegistry,
-  options: { graceMs: number; tickMs: number; now?: () => number },
+  options: {
+    graceMs: number;
+    tickMs: number;
+    now?: () => number;
+    /** The worktree manager's answer to whether a slot still holds a launch; none means no pool. */
+    slotHolds?: HistoryResumeSlotHolds | null;
+  },
 ): () => void {
   const now = options.now ?? Date.now;
   const startedAt = now();
@@ -317,13 +364,24 @@ export function trackHistoryResumeLaunches(
       console.error(`[history] resume launch ${what} failed: ${String(error)}`);
     }
   };
+  const holds = options.slotHolds ?? null;
+  const releaseReturned = () => {
+    if (holds) guarded("slot release", () => launches.slotsReturned(now(), startedAt, holds));
+  };
   const unsubscribe = registry.subscribe((event) => {
     if (event.type === "session_upsert") guarded("binding", () => launches.bind(event.session, now()));
     else if (event.type === "session_remove") guarded("end", () => launches.sessionRemoved(event.id, now()));
+    // A slot Returned from its card releases the launch that held it.
+    else if (event.type === "worktrees_changed") releaseReturned();
   });
   const unobserved = registry.onSessionsObserved(() =>
     guarded("startup check", () => launches.startup(registry.liveSessions(), now(), startedAt)));
-  const timer = setInterval(() => guarded("expiry", () => launches.expire(now(), options.graceMs)), options.tickMs);
+  // The tick also catches a slot change whose notice never arrived, such as one made while the
+  // daemon was down.
+  const timer = setInterval(() => {
+    guarded("expiry", () => launches.expire(now(), options.graceMs));
+    releaseReturned();
+  }, options.tickMs);
   timer.unref?.();
   return () => {
     unsubscribe();

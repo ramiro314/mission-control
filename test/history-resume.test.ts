@@ -23,10 +23,11 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { TerminalLaunchError } = await import("../src/server/terminal/launch-error.ts");
 const { managedResumeRoot, recheckManagedResumes, revokeUnclaimedResumes } = await import("../src/server/harness/resume.ts");
 const { beginResumeLaunch, claimResumeLease, createResumeLease } = await import("../src/server/terminal/resume-lease.ts");
-import type { HistoryResumeOptions } from "../src/shared/history.ts";
+import { historyResumeCheckoutWarning, type HistoryResumeOptions } from "../src/shared/history.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { HistoryResumeLauncher, HistoryResumeSession } from "../src/server/history/resume.ts";
 import type { HistoryResumeCandidate } from "../src/server/history/resume-launches.ts";
+import type { HistoryResumeSlots } from "../src/server/history/resume-slots.ts";
 import type { PreparedResume } from "../src/server/harness/resume.ts";
 import type { TerminalLaunchOutcome } from "../src/server/terminal/targets.ts";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -43,7 +44,10 @@ function sessionId(): string {
 }
 
 function reset(): void {
-  openDb().exec("DELETE FROM history_sessions; DELETE FROM history_resume_launches; DELETE FROM worktree_pools");
+  openDb().exec(
+    "DELETE FROM history_sessions; DELETE FROM history_resume_launches; DELETE FROM worktree_slot_history; " +
+      "DELETE FROM worktree_slots; DELETE FROM worktree_pools",
+  );
 }
 
 /** A directory that exists, under the worker's temp dir. */
@@ -54,10 +58,22 @@ function directory(name: string): string {
 }
 
 /** A two-turn transcript recorded in `cwd`, of `kind` (an SDK prompt snapshot for one-shot). */
-function writeConversation(projects: string, id: string, cwd: string, extra: { oneShot?: boolean; mode?: string } = {}): string {
+function writeConversation(
+  projects: string,
+  id: string,
+  cwd: string,
+  extra: { oneShot?: boolean; mode?: string; branch?: string } = {},
+): string {
   const dir = join(projects, cwd.replace(/[^a-zA-Z0-9]/g, "-"));
   mkdirSync(dir, { recursive: true });
-  const base = { sessionId: id, cwd, entrypoint: extra.oneShot ? "sdk-cli" : "cli", version: "2.1.296", gitBranch: "main", isSidechain: false };
+  const base = {
+    sessionId: id,
+    cwd,
+    entrypoint: extra.oneShot ? "sdk-cli" : "cli",
+    version: "2.1.296",
+    gitBranch: extra.branch ?? "main",
+    isSidechain: false,
+  };
   const lines: unknown[] = [];
   if (extra.mode) lines.push({ type: "permission-mode", permissionMode: "default", sessionId: id });
   if (extra.oneShot) {
@@ -108,11 +124,26 @@ function fakeLauncher(script: {
   return { launcher, prepared, launched, abandoned, disposed };
 }
 
-async function fixture(launcher: HistoryResumeLauncher = fakeLauncher().launcher, registry = new Registry()) {
+async function fixture(
+  launcher: HistoryResumeLauncher = fakeLauncher().launcher,
+  registry = new Registry(),
+  pool: { repository?: string | null; slots?: HistoryResumeSlots } = {},
+) {
   reset();
   const projects = mkdtempSync(join(tmpdir(), "mission-history-resume-projects-"));
-  const history = new HistoryService({ readers: [{ agent: "claude", spec: createClaudeHistory(projects) }], resolveRepository: () => null });
-  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks: {} as TaskManager, queues: {} as QueueManager, history, historyResumeLauncher: launcher });
+  const history = new HistoryService({
+    readers: [{ agent: "claude", spec: createClaudeHistory(projects) }],
+    resolveRepository: () => pool.repository ?? null,
+  });
+  const app = buildApp({
+    registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    history,
+    historyResumeLauncher: launcher,
+    ...(pool.slots ? { historyResumeSlots: pool.slots } : {}),
+  });
   const get = (path: string) => app.request(path, { headers: LOOPBACK });
   const post = (path: string, body: unknown) => app.request(path, { method: "POST", headers: LOOPBACK, body: JSON.stringify(body) });
   const resume = (id: string) => post(`/api/history/sessions/claude/${id}/resume`, { backend: "cmux", target: { kind: "original" } });
@@ -306,7 +337,7 @@ test("resume-options reports the original directory's status and the open launch
     await f.history.reconciler.trigger();
 
     const ready = await f.options(usable);
-    assert.deepEqual(ready.original, { cwd, resolved: cwd, state: "usable", refusal: null });
+    assert.deepEqual(ready.original, { cwd, resolved: cwd, state: "usable", slot: null, refusal: null });
     assert.equal(ready.refusal, null);
     assert.equal(ready.openLaunch, null);
     assert.equal(ready.picker, null, "a usable original needs no picker");
@@ -317,12 +348,15 @@ test("resume-options reports the original directory's status and the open launch
     assert.equal(gone.original.state, "missing");
     assert.equal(gone.original.refusal?.code, "directory_missing");
     assert.equal(gone.refusal, null);
-    assert.deepEqual(gone.picker, { directory: true });
+    assert.deepEqual(gone.picker, { directory: true, slots: [] });
 
+    // Inside a pool, but no slot the manager knows: reused, and with no repository resolved
+    // there is no slot to offer instead.
     const inPool = await f.options(pooled);
-    assert.equal(inPool.original.state, "pool_slot");
-    assert.equal(inPool.original.refusal?.code, "pool_slot");
-    assert.deepEqual(inPool.picker, { directory: true });
+    assert.equal(inPool.original.state, "slot_reused");
+    assert.equal(inPool.original.refusal?.code, "slot_reused");
+    assert.equal(inPool.refusal, null);
+    assert.deepEqual(inPool.picker, { directory: true, slots: [] });
 
     assert.equal((await f.resume(usable)).status, 200);
     const open = await f.options(usable);
@@ -476,9 +510,13 @@ test("refusals are explicit, and none of them claims the session", async () => {
     assert.equal(openDb().prepare("SELECT COUNT(*) AS n FROM history_resume_launches").get()!.n, 0);
     assert.equal(hostless.prepared.length, 0);
 
-    // A target this build does not offer, or a backend it does not know, is refused by the schema.
+    // A slot the options never offered is refused before anything is claimed.
     const slot = await f.post(`/api/history/sessions/claude/${ready}/resume`, { backend: "cmux", target: { kind: "slot", slotId: "s" } });
-    assert.equal(slot.status, 400);
+    assert.equal(slot.status, 409);
+    assert.equal(((await slot.json()) as { code: string }).code, "slot_not_offered");
+    assert.equal(openDb().prepare("SELECT COUNT(*) AS n FROM history_resume_launches").get()!.n, 0);
+
+    // A backend this build does not know is refused by the schema.
     const backend = await f.post(`/api/history/sessions/claude/${ready}/resume`, { backend: "nope", target: { kind: "original" } });
     assert.equal(backend.status, 400);
   } finally {
@@ -908,6 +946,394 @@ test("a recorded copy is reused only while nothing has written to it: one resume
     assert.match(body.error, /something has written to it since/);
     assert.deepEqual(readFileSync(copyPath), written, "nothing was written");
     assert.equal(launchCount(), launchesBefore, "refused before any claim");
+  } finally {
+    f.done();
+  }
+});
+
+// ---- slot targets: a real worktree manager over a real clone ----
+
+const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
+const { WorktreeOperationsService } = await import("../src/server/worktrees/operations.ts");
+const { LegacyTreehouseService } = await import("../src/server/worktrees/legacy-treehouse.ts");
+const { CheckLeaseManager } = await import("../src/server/workflows/check-lease.ts");
+const { historyResumeSlots } = await import("../src/server/history/resume-slots.ts");
+const { historyResumeOwnerKey } = await import("../src/server/worktrees/owners.ts");
+const { gitIn, mkOriginAndClone } = await import("./helpers/git-fixture.ts");
+type Manager = InstanceType<typeof WorktreeManager>;
+
+/**
+ * A clone, its manager, and the pieces a slot Resume and its Return run through. `seed` makes
+ * its idle slots; call it after `fixture`, whose reset clears every pool.
+ */
+function pooled(prefix: string, registry: InstanceType<typeof Registry>) {
+  const { clone } = mkOriginAndClone(prefix);
+  const sha = gitIn(clone, "rev-parse", "HEAD");
+  const m: Manager = new WorktreeManager(openDb(), {
+    occupancy: (paths: readonly string[]) => Promise.resolve(new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }]))),
+    fileHolders: async () => [],
+    resolvePolicy: () => ({ enabled: true, maxSlots: 8, setupArgv: null }),
+    publishChanged: () => registry.emitWorktreesChanged(),
+  });
+  const slots: { slotId: string; path: string }[] = [];
+  const seed = async (count: number) => {
+    const leases = [];
+    for (let index = 0; index < count; index += 1) {
+      const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "task", key: `seed-${index}` } });
+      assert.equal(acquired.outcome, "acquired", JSON.stringify(acquired));
+      if (acquired.outcome !== "acquired") throw new Error("not acquired");
+      leases.push(acquired.lease);
+    }
+    for (const lease of leases) assert.equal((await m.release(lease, { ownerAuthorized: true })).outcome, "released");
+    slots.push(...leases.map((lease) => ({ slotId: lease.slotId, path: lease.path })));
+  };
+  const legacy = new LegacyTreehouseService(openDb());
+  const operations = new WorktreeOperationsService(m, {
+    legacy,
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks: new CheckLeaseManager(openDb(), { manager: m, legacy }),
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => registry.emitWorktreesChanged(),
+    diskBytes: async () => 0,
+  });
+  const card = async (slotId: string) =>
+    (await operations.inventory()).repositories.flatMap((repo) => repo.slots).find((slot) => slot.id === slotId)!;
+  const returnSlot = async (slotId: string) => {
+    const preview = await operations.preview({ action: "return", slotId });
+    assert.equal(preview.allowed, true, preview.blockers.join("; "));
+    await operations.execute(preview.token, []);
+  };
+  return { clone, m, slots, seed, card, returnSlot };
+}
+
+function symbolicHead(path: string): string | null {
+  try {
+    return gitIn(path, "symbolic-ref", "--quiet", "HEAD");
+  } catch {
+    return null;
+  }
+}
+
+type SlotStarted = { ok: true; launch: { launchId: string; slotId: string | null; cwd: string; state: string }; checkout: unknown };
+
+test("an original directory that is an idle pool slot is leased, its branch checked out, and Return releases the launch", async () => {
+  const registry = new Registry();
+  const { launcher, launched } = fakeLauncher();
+  const p = pooled("mission-history-resume-slot-", registry);
+  const f = await fixture(launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(1);
+  const stop = trackHistoryResumeLaunches(f.history.launches, registry, {
+    graceMs: GRACE,
+    tickMs: 60_000,
+    slotHolds: historyResumeSlots(p.m).holds,
+  });
+  try {
+    const [slot] = p.slots;
+    gitIn(p.clone, "branch", "feature/resumed");
+    const id = sessionId();
+    writeConversation(f.projects, id, slot!.path, { branch: "feature/resumed" });
+    await f.history.reconciler.trigger();
+
+    const options = await f.options(id);
+    assert.equal(options.original.state, "pool_slot");
+    assert.equal(options.original.slot?.slotId, slot!.slotId);
+    assert.equal(options.refusal, null);
+    assert.equal(options.original.refusal, null);
+    assert.equal(options.picker, null, "an idle original needs no picker");
+
+    const res = await f.resume(id);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as SlotStarted;
+    assert.equal(body.launch.slotId, slot!.slotId);
+    assert.equal(body.launch.cwd, slot!.path);
+    assert.deepEqual(body.checkout, { state: "branch", branch: "feature/resumed" });
+    assert.deepEqual(launched, [{ backend: "cmux", cwd: slot!.path }]);
+    assert.equal(symbolicHead(slot!.path), "refs/heads/feature/resumed");
+
+    // The slot card names the owner, and the launch row records the slot and its lease.
+    const leasedCard = await p.card(slot!.slotId);
+    assert.equal(leasedCard.state, "leased");
+    assert.deepEqual(leasedCard.owner, { kind: "manual", key: historyResumeOwnerKey(body.launch.launchId), label: "Resumed History session" });
+    const row = openDb().prepare("SELECT slot_id, lease_key, state FROM history_resume_launches WHERE launch_id = ?").get(body.launch.launchId);
+    assert.deepEqual({ ...row }, { slot_id: slot!.slotId, lease_key: p.m.store.slot(slot!.slotId)!.activeLeaseId, state: "pending" });
+
+    // Cancel pending resume never closes a slot launch; Returning the slot from its card does.
+    const cancel = await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: body.launch.launchId });
+    assert.equal(((await cancel.json()) as { code: string }).code, "launch_has_slot");
+    assert.match((await f.options(id)).refusal!.error, /Return the slot from its card/);
+    await p.returnSlot(slot!.slotId);
+    assert.equal(f.history.launches.get(body.launch.launchId)?.state, "released");
+    assert.equal(symbolicHead(slot!.path), null, "the Return reset the slot detached");
+
+    const again = await f.options(id);
+    assert.equal(again.openLaunch, null);
+    assert.equal(again.refusal, null);
+    assert.equal((await f.resume(id)).status, 200, "a new Resume can start");
+  } finally {
+    stop();
+    f.done();
+  }
+});
+
+test("an original slot held by another owner opens the picker, which offers only idle, clean slots of the session's repository", async () => {
+  const registry = new Registry();
+  const { launcher, launched } = fakeLauncher();
+  const p = pooled("mission-history-resume-picker-", registry);
+  const other = pooled("mission-history-resume-other-", registry);
+  const f = await fixture(launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(3);
+  await other.seed(1);
+  try {
+    const [held, idle, dirty] = p.slots;
+    assert.equal((await p.m.leaseAsIs(held!.slotId, { kind: "manual", key: "terminal-someone" })).outcome, "leased");
+    writeFileSync(join(dirty!.path, "scratch.txt"), "uncommitted\n");
+    const id = sessionId();
+    writeConversation(f.projects, id, held!.path, { branch: "feature/nowhere" });
+    await f.history.reconciler.trigger();
+
+    const options = await f.options(id);
+    assert.equal(options.original.state, "slot_reused");
+    assert.equal(options.original.refusal?.code, "slot_reused");
+    assert.equal(options.refusal, null);
+    assert.deepEqual(options.picker?.slots.map((slot) => slot.slotId), [idle!.slotId], "not the held slot, the dirty one, or another repository's");
+    assert.equal(options.picker?.directory, true, "a typed directory is offered beside the slots");
+
+    // The original is still not leasable: its lease refuses, and the claim is released.
+    const original = await f.resume(id);
+    assert.equal(original.status, 409);
+    assert.equal(((await original.json()) as { code: string }).code, "slot_unavailable");
+    assert.equal(f.history.launches.open("claude", id), null);
+    assert.equal(p.m.store.slot(held!.slotId)?.activeOwnerKey, "terminal-someone");
+
+    const elsewhere = await f.post(`/api/history/sessions/claude/${id}/resume`, { backend: "cmux", target: { kind: "slot", slotId: other.slots[0]!.slotId } });
+    assert.equal(((await elsewhere.json()) as { code: string }).code, "slot_not_offered");
+
+    const res = await f.post(`/api/history/sessions/claude/${id}/resume`, { backend: "cmux", target: { kind: "slot", slotId: idle!.slotId } });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as SlotStarted;
+    assert.equal(body.launch.cwd, idle!.path);
+    assert.deepEqual(body.checkout, { state: "missing", branch: "feature/nowhere" }, "a missing branch leaves the slot detached");
+    assert.equal(symbolicHead(idle!.path), null);
+    assert.deepEqual(launched, [{ backend: "cmux", cwd: idle!.path }]);
+  } finally {
+    f.done();
+  }
+});
+
+test("a branch attached elsewhere is checked out detached in the chosen slot", async () => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-held-branch-", registry);
+  const f = await fixture(fakeLauncher().launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(1);
+  try {
+    const id = sessionId();
+    // Recorded in a directory since deleted, on the branch the main checkout holds.
+    writeConversation(f.projects, id, join(directory("parent"), "deleted"), { branch: "main" });
+    await f.history.reconciler.trigger();
+    const options = await f.options(id);
+    assert.equal(options.original.state, "missing");
+    const res = await f.post(`/api/history/sessions/claude/${id}/resume`, { backend: "cmux", target: { kind: "slot", slotId: options.picker!.slots[0]!.slotId } });
+    assert.equal(res.status, 200);
+    assert.deepEqual(((await res.json()) as SlotStarted).checkout, { state: "elsewhere", branch: "main", path: p.clone });
+    assert.equal(symbolicHead(p.slots[0]!.path), null);
+    assert.equal(symbolicHead(p.clone), "refs/heads/main");
+  } finally {
+    f.done();
+  }
+});
+
+test("a session with no resolvable repository is offered no slot", async () => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-norepo-", registry);
+  const f = await fixture(fakeLauncher().launcher, registry, { repository: null, slots: historyResumeSlots(p.m) });
+  await p.seed(1);
+  try {
+    const id = sessionId();
+    writeConversation(f.projects, id, join(directory("parent"), "deleted"));
+    await f.history.reconciler.trigger();
+    const options = await f.options(id);
+    assert.deepEqual(options.picker, { directory: true, slots: [] });
+    assert.equal(options.original.refusal?.code, "directory_missing");
+    const res = await f.post(`/api/history/sessions/claude/${id}/resume`, { backend: "cmux", target: { kind: "slot", slotId: p.slots[0]!.slotId } });
+    assert.equal(((await res.json()) as { code: string }).code, "slot_not_offered");
+  } finally {
+    f.done();
+  }
+});
+
+test("a slot no longer idle at launch is refused, the claim is released, and no terminal opens", async () => {
+  const registry = new Registry();
+  const { launcher, prepared, launched } = fakeLauncher();
+  const p = pooled("mission-history-resume-taken-", registry);
+  const f = await fixture(launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(1);
+  try {
+    const id = sessionId();
+    writeConversation(f.projects, id, join(directory("parent"), "deleted"));
+    await f.history.reconciler.trigger();
+    const offered = (await f.options(id)).picker!.slots[0]!;
+    // Taken between the dialog's read and the click.
+    assert.equal((await p.m.leaseAsIs(offered.slotId, { kind: "manual", key: "terminal-first" })).outcome, "leased");
+
+    const res = await f.post(`/api/history/sessions/claude/${id}/resume`, { backend: "cmux", target: { kind: "slot", slotId: offered.slotId } });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string; launch: { state: string } };
+    assert.equal(body.code, "slot_unavailable");
+    assert.equal(body.launch.state, "released");
+    assert.equal(f.history.launches.open("claude", id), null);
+    assert.equal(prepared.length, 0);
+    assert.equal(launched.length, 0);
+  } finally {
+    f.done();
+  }
+});
+
+test("a launcher that refuses after the lease hands the slot back, reset detached", async () => {
+  const registry = new Registry();
+  const { launcher } = fakeLauncher({ launch: () => ({ ok: false, label: "cmux", status: 409, error: "cmux refused" }) });
+  const p = pooled("mission-history-resume-handback-", registry);
+  const f = await fixture(launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(1);
+  try {
+    const [slot] = p.slots;
+    gitIn(p.clone, "branch", "feature/handback");
+    const id = sessionId();
+    writeConversation(f.projects, id, slot!.path, { branch: "feature/handback" });
+    await f.history.reconciler.trigger();
+    const res = await f.resume(id);
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { launch: { state: string } }).launch.state, "released");
+    const after = p.m.store.slot(slot!.slotId)!;
+    assert.deepEqual([after.state, after.activeLeaseId], ["available", null]);
+    assert.equal(symbolicHead(slot!.path), null);
+  } finally {
+    f.done();
+  }
+});
+
+test("the checkout warning says the code may not match for a missing branch, and commits will not move a branch held elsewhere", () => {
+  assert.equal(historyResumeCheckoutWarning({ state: "branch", branch: "feature/x" }), null);
+  assert.equal(
+    historyResumeCheckoutWarning({ state: "missing", branch: "feature/x" }),
+    "The branch feature/x was not found here or on origin, so the slot stays detached where it was: the code may not match the conversation.",
+  );
+  assert.equal(
+    historyResumeCheckoutWarning({ state: "missing", branch: null }),
+    "This conversation recorded no usable branch, so the slot stays detached where it was: the code may not match the conversation.",
+  );
+  assert.equal(
+    historyResumeCheckoutWarning({ state: "elsewhere", branch: "main", path: "/repo" }),
+    "The branch main is checked out in /repo, so this slot has its tip detached: commits made here will not move the branch.",
+  );
+});
+
+test("a slot launch whose lease was never recorded closes after a restart, by its owner key", async () => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-unrecorded-", registry);
+  const f = await fixture(fakeLauncher().launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(2);
+  try {
+    const [granted, never] = p.slots;
+    const { holds } = historyResumeSlots(p.m);
+    const claim = (slotId: string) => {
+      const claimed = f.history.launches.claim(
+        { agent: "claude", sourceSessionId: sessionId(), expectedAgentSessionId: "x", cwd: "/x", slotId },
+        1_000,
+      );
+      assert.ok(claimed.ok);
+      return claimed.launch.launchId;
+    };
+    // The daemon stopped after the lease was granted, before the row recorded it; and another
+    // stopped before any lease was granted at all.
+    const held = claim(granted!.slotId);
+    assert.equal((await p.m.leaseForResume(granted!.slotId, { kind: "manual", key: historyResumeOwnerKey(held) }, null)).outcome, "leased");
+    const lost = claim(never!.slotId);
+
+    // In the daemon that made them, a launch with no lease key may still be taking its lease.
+    assert.deepEqual(f.history.launches.slotsReturned(2_000, 1_000, holds), []);
+    // After a restart, none can be: the one no slot is owned by closes at once.
+    assert.deepEqual(f.history.launches.slotsReturned(2_000, 1_500, holds).map((launch) => launch.launchId), [lost]);
+    assert.equal(f.history.launches.get(held)?.state, "pending", "its slot is still leased to it");
+
+    // Returning that slot from its card releases the other.
+    await p.returnSlot(granted!.slotId);
+    assert.deepEqual(f.history.launches.slotsReturned(3_000, 1_500, holds).map((launch) => launch.launchId), [held]);
+  } finally {
+    f.done();
+  }
+});
+
+test("the manager says a slot holds a launch by its lease, or by its owner when no lease was recorded", async () => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-holds-", registry);
+  const f = await fixture(fakeLauncher().launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(1);
+  try {
+    const [slot] = p.slots;
+    const owner = historyResumeOwnerKey("00000000-0000-4000-8000-0000000000aa");
+    assert.equal(p.m.holds(slot!.slotId, null, { kind: "manual", key: owner }), false, "an available slot holds nothing");
+    const taken = await p.m.leaseForResume(slot!.slotId, { kind: "manual", key: owner }, null);
+    assert.equal(taken.outcome, "leased");
+    if (taken.outcome !== "leased") return;
+    assert.equal(p.m.holds(slot!.slotId, taken.lease.leaseId, { kind: "manual", key: "someone-else" }), true, "by its lease");
+    assert.equal(p.m.holds(slot!.slotId, null, { kind: "manual", key: owner }), true, "by its owner");
+    assert.equal(p.m.holds(slot!.slotId, "another-lease", { kind: "manual", key: "someone-else" }), false);
+    await p.returnSlot(slot!.slotId);
+    assert.equal(p.m.holds(slot!.slotId, taken.lease.leaseId, { kind: "manual", key: owner }), false, "Returned");
+  } finally {
+    f.done();
+  }
+});
+
+test("an available slot left on a branch is never offered, and as the original it counts as reused", async () => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-attached-", registry);
+  const f = await fixture(fakeLauncher().launcher, registry, { repository: p.clone, slots: historyResumeSlots(p.m) });
+  await p.seed(2);
+  try {
+    const [attached, idle] = p.slots;
+    // Available and clean, but standing on a branch: the as-is lease always refuses it.
+    gitIn(attached!.path, "checkout", "-qb", "left-behind");
+    const id = sessionId();
+    writeConversation(f.projects, id, attached!.path);
+    await f.history.reconciler.trigger();
+
+    const options = await f.options(id);
+    assert.equal(options.original.state, "slot_reused", "not pool_slot: the lease would refuse it");
+    assert.equal(options.original.refusal?.code, "slot_reused");
+    assert.deepEqual(options.picker?.slots.map((slot) => slot.slotId), [idle!.slotId], "the attached slot is not offered");
+
+    const gone = sessionId();
+    writeConversation(f.projects, gone, join(directory("parent"), "deleted"));
+    await f.history.reconciler.trigger();
+    assert.deepEqual((await f.options(gone)).picker?.slots.map((slot) => slot.slotId), [idle!.slotId]);
+  } finally {
+    f.done();
+  }
+});
+
+test("a pool that cannot be read is said so, and logged, rather than calling the original slot reused", async (t) => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-unreadable-", registry);
+  const failing: HistoryResumeSlots = { ...historyResumeSlots(p.m), observe: async () => { throw new Error("git worktree list timed out"); } };
+  const f = await fixture(fakeLauncher().launcher, registry, { repository: p.clone, slots: failing });
+  await p.seed(1);
+  const logged: string[] = [];
+  t.mock.method(console, "error", (message: unknown) => { logged.push(String(message)); });
+  try {
+    const id = sessionId();
+    writeConversation(f.projects, id, p.slots[0]!.path);
+    await f.history.reconciler.trigger();
+
+    const options = await f.options(id);
+    assert.equal(options.original.refusal?.code, "pool_unavailable");
+    assert.match(options.original.refusal!.error, /could not be read \(git worktree list timed out\)/);
+    assert.deepEqual(options.picker?.slots, []);
+    assert.ok(logged.some((line) => line.includes("git worktree list timed out")), logged.join("\n"));
+
+    const res = await f.resume(id);
+    assert.equal(((await res.json()) as { code: string }).code, "pool_unavailable");
+    assert.equal(f.history.launches.open("claude", id), null);
   } finally {
     f.done();
   }

@@ -442,6 +442,10 @@ export const HISTORY_RESUME_REFUSALS = [
   "launch_has_slot",
   "directory_relative",
   "copy_exists",
+  "slot_reused",
+  "slot_unavailable",
+  "slot_not_offered",
+  "pool_unavailable",
 ] as const;
 export type HistoryResumeRefusalCode = (typeof HISTORY_RESUME_REFUSALS)[number];
 
@@ -452,12 +456,24 @@ export interface HistoryResumeRefusal {
 
 /**
  * Where the session was recorded running, and whether Resume can use it. `usable` is an
- * existing directory outside every worktree pool; `pool_slot` is one inside a pool, which the
- * slot-target Resume handles; `missing` no longer resolves to a directory; `unrecorded` means
- * the transcript named no working directory.
+ * existing directory outside every worktree pool; `pool_slot` is an idle pool slot, which the
+ * Resume leases and checks the recorded branch out in; `slot_reused` is a pool directory that
+ * another owner holds or that is otherwise not idle, so it counts as reused; `missing` no
+ * longer resolves to a directory; `unrecorded` means the transcript named no working
+ * directory. Append-only: the browser reads these.
  */
-export const HISTORY_RESUME_DIRECTORY_STATES = ["usable", "missing", "pool_slot", "unrecorded"] as const;
+export const HISTORY_RESUME_DIRECTORY_STATES = ["usable", "missing", "pool_slot", "unrecorded", "slot_reused"] as const;
 export type HistoryResumeDirectoryState = (typeof HISTORY_RESUME_DIRECTORY_STATES)[number];
+
+/** A worktree pool slot a Resume can lease, as the dialog lists it. */
+export interface HistoryResumeSlot {
+  slotId: string;
+  /** The slot's number in its pool, as its card shows it. */
+  ordinal: number;
+  path: string;
+  /** The commit the slot was last observed at, or null when that could not be read. */
+  head: string | null;
+}
 
 /** `GET /api/history/sessions/:agent/:id/resume-options`. */
 export interface HistoryResumeOptions {
@@ -467,6 +483,8 @@ export interface HistoryResumeOptions {
     /** That directory resolved through symlinks, when it still resolves. */
     resolved: string | null;
     state: HistoryResumeDirectoryState;
+    /** The pool slot the directory is, when it is one (`pool_slot` or `slot_reused`). */
+    slot: HistoryResumeSlot | null;
     /** Why a Resume in this directory would be refused, or null when it is usable. */
     refusal: HistoryResumeRefusal | null;
   };
@@ -475,20 +493,23 @@ export interface HistoryResumeOptions {
   /** Why no Resume can run right now, whatever the target, or null. */
   refusal: HistoryResumeRefusal | null;
   /**
-   * The other targets the dialog offers when the original directory cannot be used and
-   * nothing else refuses: a typed directory. Null when the original is usable or a refusal
-   * blocks every target.
+   * The other targets the dialog offers when the original directory cannot be used (gone,
+   * reused or unrecorded) and nothing else refuses: idle, clean slots of the session's
+   * repository (none for a session with no resolvable repository), and a typed directory when
+   * the agent can fork. Null when the original is usable or a refusal blocks every target.
    */
-  picker: { directory: boolean } | null;
+  picker: { directory: boolean; slots: HistoryResumeSlot[] } | null;
 }
 
 /**
- * Where a Resume runs: the original directory, or a directory the operator typed. A typed
- * path must be absolute; the daemon refuses a relative one with `directory_relative`, so the
- * dialog can say why, and resolves the rest once through symlinks.
+ * Where a Resume runs: the original directory (leased as a slot when it is an idle one), a
+ * slot the picker offered, or a directory the operator typed. A typed path must be absolute;
+ * the daemon refuses a relative one with `directory_relative`, so the dialog can say why, and
+ * resolves the rest once through symlinks.
  */
 export const HistoryResumeTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("original") }).strict(),
+  z.object({ kind: z.literal("slot"), slotId: z.string().min(1).max(200) }).strict(),
   z.object({ kind: z.literal("directory"), path: z.string().min(1).max(4096) }).strict(),
 ]);
 export type HistoryResumeTarget = z.infer<typeof HistoryResumeTargetSchema>;
@@ -518,12 +539,40 @@ export const HistoryResumeCancelSchema = z
   .strict();
 export type HistoryResumeCancel = z.infer<typeof HistoryResumeCancelSchema>;
 
+/**
+ * What a slot target checked out. `branch`: the recorded branch, attached. `missing`: no
+ * local or remote-tracking ref of it here, so the slot stays detached as it was; `branch` is
+ * null when the transcript recorded nothing the daemon would hand to Git as a branch name (it
+ * decides that, so this never re-judges it). `elsewhere`: another worktree (`path`) holds the
+ * branch, so its tip is checked out detached.
+ */
+export type HistoryResumeCheckout =
+  | { state: "branch"; branch: string }
+  | { state: "missing"; branch: string | null }
+  | { state: "elsewhere"; branch: string; path: string };
+
+/** The warning a slot's checkout carries, or null when the recorded branch is checked out. */
+export function historyResumeCheckoutWarning(checkout: HistoryResumeCheckout): string | null {
+  switch (checkout.state) {
+    case "branch":
+      return null;
+    case "missing":
+      return checkout.branch === null
+        ? "This conversation recorded no usable branch, so the slot stays detached where it was: the code may not match the conversation."
+        : `The branch ${checkout.branch} was not found here or on origin, so the slot stays detached where it was: the code may not match the conversation.`;
+    case "elsewhere":
+      return `The branch ${checkout.branch} is checked out in ${checkout.path}, so this slot has its tip detached: commits made here will not move the branch.`;
+  }
+}
+
 /** A launch that started, or whose terminal may have opened (`unknown`). */
 export interface HistoryResumeStarted {
   ok: true;
   launch: HistoryResumeLaunch;
   /** The terminal backend that took it, for the confirmation the page shows. */
   label: string;
+  /** What a slot target checked out, or null for a directory outside the pool. */
+  checkout: HistoryResumeCheckout | null;
 }
 
 /** A refused Resume, with the open launch it collided with when that is the reason. */

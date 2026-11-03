@@ -276,6 +276,7 @@ import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import type { HistoryLiveLookup, HistoryService } from "./history/service.ts";
 import type { HistoryResumeLauncher } from "./history/resume.ts";
+import { historyResumeSlots, type HistoryResumeSlots } from "./history/resume-slots.ts";
 import {
   HistoryMessagesQuerySchema,
   HistoryResumeBodySchema,
@@ -1258,6 +1259,11 @@ export interface RouteDeps {
    */
   historyResumeLauncher?: HistoryResumeLauncher;
   /**
+   * The worktree pool as a History Resume reads and leases it. Absent means the one built over
+   * `worktreeOperations`' manager, or none when there is no manager: then no slot is offered.
+   */
+  historyResumeSlots?: HistoryResumeSlots;
+  /**
    * The Global Command catalog owner. Absent means the catalog routes answer 503 and the
    * legacy config route projects an empty command list. A route-built twin would be a second
    * writer of one catalog and a second emitter on one live stream.
@@ -1353,6 +1359,7 @@ export const ROUTE_DEP_NAMES = [
   "archives",
   "history",
   "historyResumeLauncher",
+  "historyResumeSlots",
   "workflowCommands",
   "testingSettings",
   "commandDocumentProposals",
@@ -1652,6 +1659,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     archives,
     history,
     historyResumeLauncher,
+    historyResumeSlots: injectedResumeSlots,
     workflowCommands,
     testingSettings,
     commandDocumentProposals,
@@ -4069,17 +4077,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
   });
   // Resume: a new unmanaged terminal running the agent's own resume command in the session's
-  // original directory, with no task context and no Mission Control tools. The directory is
-  // the catalog's, resolved by the daemon; the body names only a backend and a target kind.
+  // original directory or a worktree slot, with no task context and no Mission Control tools.
+  // The directory is the catalog's, resolved by the daemon, and a slot is one the daemon
+  // offered; the body names only a backend and a target.
   const resumeLauncher: HistoryResumeLauncher = historyResumeLauncher ?? {
     hostUnavailable: (backend) => agentHostUnavailable(backend, configuredTerminalTargetDeps),
     prepare: (session) => prepareTerminalResume(session, { managed: false, requiredTools: [], extraDirs: [] }),
     launch: (backend, input) => launchManagedAgentTerminal(backend, input, terminalLauncher),
     abandon: (owner) => { revokeUnclaimedResumes(owner); },
   };
+  const resumeSlots = injectedResumeSlots ?? (worktreeOperations ? historyResumeSlots(worktreeOperations.manager) : null);
   app.get("/api/history/sessions/:agent/:id/resume-options", async (c) => {
     if (!history) return c.json({ error: "session history unavailable" }, 503);
-    const read = await history.resume.options(c.req.param("agent"), c.req.param("id"), liveHistorySessions());
+    const read = await history.resume.options(c.req.param("agent"), c.req.param("id"), liveHistorySessions(), resumeSlots);
     return read.ok ? c.json(read.options) : c.json({ error: read.error }, read.status);
   });
   app.post("/api/history/sessions/:agent/:id/resume", async (c) => {
@@ -4087,8 +4097,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, HistoryResumeBodySchema);
     if (!parsed.ok) return parsed.res;
     const outcome = await history.resume.resume(c.req.param("agent"), c.req.param("id"), parsed.data,
-      liveHistorySessions(), resumeLauncher);
-    if (outcome.ok) return c.json({ ok: true, launch: outcome.launch, label: outcome.label });
+      liveHistorySessions(), resumeLauncher, resumeSlots);
+    if (outcome.ok) return c.json({ ok: true, launch: outcome.launch, label: outcome.label, checkout: outcome.checkout });
     return c.json({ ok: false, ...outcome.refusal, ...(outcome.launch ? { launch: outcome.launch } : {}) }, outcome.status);
   });
   app.post("/api/history/sessions/:agent/:id/resume/cancel", async (c) => {
