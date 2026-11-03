@@ -226,7 +226,10 @@ export interface HistoryMessagesPage {
  */
 export const HISTORY_TOOL_INPUT_CAP = 256 * 1024;
 
-/** Where History cuts one tool result's text, inline or read from its sidecar file. */
+/**
+ * Where History cuts one tool result's text, in UTF-8 bytes, inline or read from its sidecar
+ * file alike. The cut falls on a character boundary, so it can leave up to 3 bytes unused.
+ */
 export const HISTORY_TOOL_RESULT_CAP = 1024 * 1024;
 
 /**

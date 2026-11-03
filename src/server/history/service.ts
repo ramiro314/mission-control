@@ -23,6 +23,7 @@ import { historyBatchPauseMs, historyBatchSize, historyReconcileMs } from "../co
 import { HistoryReconciler, historyReaders, type HistoryReader, type HistoryReconcilerOptions } from "./reconciler.ts";
 import { historySearchNeedle } from "./search.ts";
 import { HistoryStore } from "./store.ts";
+import { clipUtf8Bytes, decodeUtf8Whole, utf8Bytes } from "../util/utf8.ts";
 import type { TranscriptMessages } from "../harness/types.ts";
 
 /** The Registry session running an agent's conversation now, or null. Supplied by the routes. */
@@ -203,15 +204,17 @@ export class HistoryService {
       return isMissing(error) ? GONE : unreadable(error);
     }
     if (!recorded) return { ok: false, status: 404, error: "no result is recorded for this tool call" };
+    // Both paths cap in UTF-8 bytes and cut only on a character boundary, so "cut at 1 MB"
+    // means the same amount wherever the result came from, and never ends in U+FFFD.
     if (!recorded.sidecar) {
-      const truncated = recorded.text.length > HISTORY_TOOL_RESULT_CAP;
+      const truncated = utf8Bytes(recorded.text) > HISTORY_TOOL_RESULT_CAP;
       return {
         ok: true,
         page: {
           toolUseId,
           source: "inline",
           isError: recorded.isError,
-          text: truncated ? recorded.text.slice(0, HISTORY_TOOL_RESULT_CAP) : recorded.text,
+          text: truncated ? clipUtf8Bytes(recorded.text, HISTORY_TOOL_RESULT_CAP) : recorded.text,
           truncated,
         },
       };
@@ -238,7 +241,7 @@ export class HistoryService {
             toolUseId,
             source: "sidecar",
             isError: recorded.isError,
-            text: buffer.toString("utf8", 0, bytesRead),
+            text: decodeUtf8Whole(buffer.subarray(0, bytesRead)),
             truncated: stat.size > HISTORY_TOOL_RESULT_CAP,
           },
         };

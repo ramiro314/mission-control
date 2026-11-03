@@ -223,6 +223,34 @@ test("a result past the 1 MB cap is cut at the cap and says so, inline and from 
   f.done();
 });
 
+test("the result cap is UTF-8 bytes on both paths and never splits a character", async () => {
+  const f = await fixture();
+  const id = sessionId();
+  // One ASCII byte, then two-byte characters: the cap lands in the middle of one.
+  const wide = `x${"é".repeat(HISTORY_TOOL_RESULT_CAP / 2 + 10)}`;
+  writeSession(f.projects, id, [
+    toolUse(id, 1, "toolu_wide_inline", { command: "cat wide" }),
+    toolResult(id, 2, "toolu_wide_inline", wide),
+    toolUse(id, 3, "toolu_wide_saved", { command: "cat wide" }),
+    toolResult(id, 4, "toolu_wide_saved", persisted(f.projects, id, "toolu_wide_saved.txt")),
+  ]);
+  const sidecars = join(sessionDir(f.projects, id), "tool-results");
+  mkdirSync(sidecars, { recursive: true });
+  writeFileSync(join(sidecars, "toolu_wide_saved.txt"), wide);
+  await f.history.reconciler.trigger();
+
+  const results = [];
+  for (const toolUseId of ["toolu_wide_inline", "toolu_wide_saved"]) {
+    const result = await (await f.get(`/api/history/sessions/claude/${id}/tool-results/${toolUseId}`)).json() as HistoryToolResult;
+    assert.equal(result.truncated, true, toolUseId);
+    assert.ok(!result.text.includes("\uFFFD"), `${toolUseId} ends on a whole character`);
+    assert.equal(Buffer.byteLength(result.text, "utf8"), HISTORY_TOOL_RESULT_CAP - 1, `${toolUseId} stops at the last whole character under the cap`);
+    results.push(result.text);
+  }
+  assert.equal(results[0], results[1], "inline and sidecar cut the same text at the same place");
+  f.done();
+});
+
 test("a sidecar no transcript record names is not reachable, and a named one that is missing is unavailable", async () => {
   const f = await fixture();
   const id = sessionId();
