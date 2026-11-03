@@ -13,6 +13,7 @@ import type {
 } from "../types.ts";
 import { claudeCleanupPeriodDays } from "@shared/claude-settings.ts";
 import { CLAUDE_PROJECTS_DIR, claudeProjectDir } from "./project-dir.ts";
+import { readClaudeLaunchContext } from "./launch-context.ts";
 import { claudeMessages, toMessage } from "./transcript.ts";
 
 /**
@@ -356,6 +357,7 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
   return {
     roots: () => [projectsDir],
     messages: claudeMessages,
+    launchContext: readClaudeLaunchContext,
     permissionMode: lastPermissionMode,
 
     async enumerate(root) {

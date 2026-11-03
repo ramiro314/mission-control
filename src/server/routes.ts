@@ -4048,6 +4048,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const read = await history.messages(c.req.param("agent"), c.req.param("id"), parsed.data);
     return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
   });
+  app.get("/api/history/sessions/:agent/:id/launch-context", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const read = await history.launchContext(c.req.param("agent"), c.req.param("id"));
+    return read.ok ? c.json(read.context) : c.json({ error: read.error }, read.status);
+  });
   // Resume: a new unmanaged terminal running the agent's own resume command in the session's
   // original directory, with no task context and no Mission Control tools. The directory is
   // the catalog's, resolved by the daemon; the body names only a backend and a target kind.

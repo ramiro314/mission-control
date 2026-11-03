@@ -1267,6 +1267,11 @@ export interface HistorySpec {
    */
   messages: TranscriptMessages;
   /**
+   * What a cataloged session was launched with, parsed from the transcript at the catalog's
+   * path on demand and never stored. Rejects only when that file cannot be read.
+   */
+  launchContext(path: string): Promise<import("@shared/history.ts").HistoryLaunchContext>;
+  /**
    * The permission mode a cataloged transcript last recorded, so a Resume reopens the session
    * where the operator left it; null when it recorded none. Read on demand from the catalog's
    * path. Rejects when the file cannot be read.
