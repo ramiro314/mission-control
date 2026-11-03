@@ -679,6 +679,8 @@ function routeDestination(route: MissionRoute): string {
       return "the Ship log";
     case "scouts":
       return "Scouts";
+    case "history":
+      return "History";
     case "settings":
       return `${settingsCategory(route.category).label} settings`;
     case "fleet":

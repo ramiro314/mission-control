@@ -274,6 +274,8 @@ import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
+import type { HistoryService } from "./history/service.ts";
+import { HistorySessionsQuerySchema } from "@shared/history.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
@@ -1238,6 +1240,12 @@ export interface RouteDeps {
    */
   archives?: ArchiveManager;
   /**
+   * Session History's catalog and reconciler. Absent means the history routes answer 503
+   * rather than constructing a service here: a route-built twin would be a second walker of
+   * the agents' transcript stores and a second writer of one catalog.
+   */
+  history?: HistoryService;
+  /**
    * The Global Command catalog owner. Absent means the catalog routes answer 503 and the
    * legacy config route projects an empty command list. A route-built twin would be a second
    * writer of one catalog and a second emitter on one live stream.
@@ -1331,6 +1339,7 @@ export const ROUTE_DEP_NAMES = [
   "paneDeps",
   "keepAwake",
   "archives",
+  "history",
   "workflowCommands",
   "testingSettings",
   "commandDocumentProposals",
@@ -1628,6 +1637,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     paneDeps,
     keepAwake,
     archives,
+    history,
     workflowCommands,
     testingSettings,
     commandDocumentProposals,
@@ -3992,6 +4002,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ ok: false, error: known?.message ?? "could not open session file" }, status);
     }
   });
+  // --- Session History ---
+  //
+  // Read-only, loopback-only like the rest of `/api/*`, and never exposed as an MCP tool. A
+  // request names no path: rows come from the catalog the daemon's reconciler writes.
+  app.get("/api/history/sessions", (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const parsed = HistorySessionsQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid history query" }, 400);
+    return c.json(history.list(parsed.data));
+  });
+
   // --- The archive library ---
   //
   // Thin adapters over `ArchiveManager`. Nothing here touches the store, the

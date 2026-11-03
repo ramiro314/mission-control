@@ -365,8 +365,17 @@ test("file actions own Shift+F, Shift+O, and l and every default round-trips fro
     // letter the bare `conversation` chord uses, which is the point of deriving this set
     // from real keydowns: the modifier has to survive or the two would be one chord.
     chordFromEvent(key("g", { ctrl: true })),
+    // `h`, Open History.
+    chordFromEvent(key("h")),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
+});
+
+test("History is a global page action on a bare h", () => {
+  const history = ACTIONS.find((a) => a.id === "history");
+  assert.equal(history?.defaultBinding, "h");
+  assert.equal(history?.group, "global");
+  assert.equal(ACTIONS.filter((a) => a.defaultBinding === "h").length, 1, "no other action ships on h");
 });
 
 test("context menu is one global action with Shift+F10 as its customizable chord", () => {
@@ -404,6 +413,7 @@ test("each page shortcut returns its named destination instead of toggling anoth
   assert.deepEqual(pageShortcutRoute({ target: "fleet", ...clear }), { page: "fleet" });
   assert.deepEqual(pageShortcutRoute({ target: "library", ...clear }), { page: "library" });
   assert.deepEqual(pageShortcutRoute({ target: "runs", ...clear }), { page: "runs" });
+  assert.deepEqual(pageShortcutRoute({ target: "history", ...clear }), { page: "history" });
 });
 
 test("the page shortcuts stand down while typing, renaming, or an overlay is open", () => {

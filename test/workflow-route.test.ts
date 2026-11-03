@@ -143,6 +143,13 @@ test("the Ship log parses and serializes, and never falls through to the ensembl
   assert.deepEqual(parseMissionRoute("#/workflows/shipped"), { page: "library" });
 });
 
+test("History round-trips, and a path it does not know yet lands on the list", () => {
+  assert.deepEqual(parseMissionRoute("#/history"), { page: "history" });
+  assert.deepEqual(parseMissionRoute("#/history/"), { page: "history" });
+  assert.deepEqual(parseMissionRoute("#/history/claude/not-yet"), { page: "history" });
+  assert.equal(missionRouteHash({ page: "history" }), "#/history");
+});
+
 // A well-formed archive key, in the portable `<producerId>~<archiveId>` shape the manifest,
 // the routes and SQLite all agree on. Both halves must be lowercase UUIDs or the router is
 // required to drop the key.
@@ -480,6 +487,7 @@ test("global overlays stay mounted on every page, and only one page body renders
     ensembles: "ensembles body",
     shipped: "shipped body",
     scouts: "scouts body",
+    history: "history body",
     settings: "settings body",
   };
   const pages = Object.keys(bodies) as MissionRoute["page"][];
@@ -492,6 +500,7 @@ test("global overlays stay mounted on every page, and only one page body renders
       ensembles: createElement("main", null, bodies.ensembles),
       shipped: createElement("main", null, bodies.shipped),
       scouts: createElement("main", null, bodies.scouts),
+      history: createElement("main", null, bodies.history),
       settings: createElement("main", null, bodies.settings),
       overlays: createElement("aside", null, "global overlays"),
     }));

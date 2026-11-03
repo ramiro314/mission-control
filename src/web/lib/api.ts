@@ -180,6 +180,7 @@ import type {
   ArchivePage,
   ArchiveSearchQuery,
 } from "@shared/archives.ts";
+import type { HistoryPage } from "@shared/history.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
 import type {
@@ -2253,6 +2254,17 @@ export const api = {
   /** Deliver a whole multi-line prompt as one bracketed-paste submission. */
   injectPrompt: (id: string, text: string, buffer = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text, buffer }),
+
+  // ---- Session History ----
+
+  /** One page of the History catalog, newest activity first, with backfill progress. */
+  historySessions: (query: { cursor?: string; limit?: number }, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (query.cursor) params.set("cursor", query.cursor);
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    const search = params.toString();
+    return archiveJson<HistoryPage>(search ? `/api/history/sessions?${search}` : "/api/history/sessions", signal);
+  },
 
   // ---- Archives ----
 

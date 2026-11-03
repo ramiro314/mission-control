@@ -198,7 +198,7 @@ test("each shelf's cross-link sits beside its question rather than in the page's
   await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/ensembles");
 });
 
-test("the topbar segments directly open Fleet, Library, Runs and Scouts, while Shift+P opens Sitrep", async ({
+test("the topbar segments directly open Fleet, Library, Runs, Scouts and History, while Shift+P opens Sitrep", async ({
   dashboard,
 }) => {
   const pages = dashboard.getByRole("navigation", { name: "Pages" });
@@ -206,15 +206,17 @@ test("the topbar segments directly open Fleet, Library, Runs and Scouts, while S
   const library = pages.getByRole("button", { name: /Library/ });
   const runs = pages.getByRole("button", { name: /Runs/ });
   const scouts = pages.getByRole("button", { name: /Scouts/ });
-  // FOUR since Scouts became a top-level page. This count is the guard that a page added to
+  const history = pages.getByRole("button", { name: /History/ });
+  // FIVE since History became a top-level page. This count is the guard that a page added to
   // the bar is a deliberate act - the bar is the densest strip in the app, and every segment
   // is width the responsive ladder has to find somewhere.
-  await expect(pages.getByRole("button")).toHaveCount(4);
+  await expect(pages.getByRole("button")).toHaveCount(5);
   await expect(fleet).toHaveAttribute("aria-current", "page");
   await expect(fleet.locator("kbd")).toHaveText("f");
   await expect(library.locator("kbd")).toHaveText("w");
   await expect(runs.locator("kbd")).toHaveText("r");
   await expect(scouts.locator("kbd")).toHaveText(platformKeycap("⇧S"));
+  await expect(history.locator("kbd")).toHaveText("h");
   // Sitrep left the title bar to make room for the third page segment.
   await expect(dashboard.locator("header.topbar").getByRole("button", { name: "Sitrep" }))
     .toHaveCount(0);
@@ -239,6 +241,11 @@ test("the topbar segments directly open Fleet, Library, Runs and Scouts, while S
   await expect(runs).toHaveAttribute("aria-current", "page");
   await expect(dashboard.getByRole("heading", { name: "Workflow runs", level: 2 })).toBeVisible();
   expect(await dashboard.evaluate(() => location.hash)).toBe("#/runs");
+
+  await dashboard.keyboard.press("h");
+  await expect(history).toHaveAttribute("aria-current", "page");
+  await expect(dashboard.getByRole("heading", { name: "History", level: 2 })).toBeVisible();
+  expect(await dashboard.evaluate(() => location.hash)).toBe("#/history");
 
   // `r` no longer opens Sitrep. Its new Shift+P binding remains fleet-scoped like the panel.
   await dashboard.keyboard.press("f");

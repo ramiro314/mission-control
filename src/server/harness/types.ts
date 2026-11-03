@@ -1161,6 +1161,94 @@ export interface TuiSpec {
   dialog: DialogSpec | null;
 }
 
+/** A transcript file's identity on disk: unchanged files cost one `lstat` to recognize. */
+export interface HistoryFingerprint {
+  size: number;
+  mtimeMs: number;
+  ino: number;
+}
+
+/** One top-level transcript a history root holds. */
+export interface HistoryFile {
+  path: string;
+  /** The agent's own session id, read from the file's name. */
+  agentSessionId: string;
+  fingerprint: HistoryFingerprint;
+}
+
+/**
+ * What a reader extracts from one transcript: the catalog row's agent-specific fields.
+ * Mission Control's own records are never part of it - they are joined at read time.
+ */
+export interface HistorySummary {
+  cwd: string | null;
+  branch: string | null;
+  entrypoint: string | null;
+  version: string | null;
+  kind: import("@shared/history.ts").HistoryKind;
+  customTitle: string | null;
+  aiTitle: string | null;
+  firstPrompt: string | null;
+  startedAt: number | null;
+  /** The last recorded timestamp, or null when no record carried one. */
+  lastActivityAt: number | null;
+  durationMs: number | null;
+  model: string | null;
+  costUsd: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  linesAdded: number | null;
+  linesRemoved: number | null;
+  prUrls: string[];
+  continuedIn: string | null;
+  subagentCount: number;
+}
+
+/**
+ * Where an incremental parse left off. `state` is opaque to everything but the reader that
+ * wrote it: whatever it needs, beyond the summary, to fold in appended bytes.
+ */
+export interface HistoryParsePoint {
+  summary: HistorySummary;
+  parsedBytes: number;
+  ino: number;
+  state: string | null;
+}
+
+/** A summary plus the point to resume from next time. */
+export interface HistoryParse {
+  summary: HistorySummary;
+  parsedBytes: number;
+  state: string | null;
+}
+
+/**
+ * How Session History reads one harness's sessions from disk. The slot owns everything
+ * agent-specific - where transcripts live, how a record is read, and how a session's kind is
+ * decided - so the catalog, the reconciler, the routes and the page never branch on agent.
+ */
+export interface HistorySpec {
+  /** Directories to walk. None has to exist; an absent root is an empty one. */
+  roots(): string[];
+  /**
+   * The top-level transcripts under one root, each with its fingerprint. Resolves only for a
+   * complete walk, where an absent root, folder or file counts as empty. Rejects when any part
+   * that exists could not be read, so the caller can tell "empty" from "unknown".
+   */
+  enumerate(root: string): Promise<HistoryFile[]>;
+  /**
+   * Summarize a transcript. Given where the last parse stopped, it folds in only the bytes
+   * appended since; a shrunk file or a changed inode restarts from the top. Null when the
+   * file holds nothing a row can be built from.
+   */
+  summarize(file: HistoryFile, previous: HistoryParsePoint | null): Promise<HistoryParse | null>;
+  /**
+   * Of several files carrying one session id, the one the catalog row follows. A stable rule,
+   * never scan order, so a rebuilt catalog chooses the same file.
+   */
+  canonical(candidates: readonly { path: string; summary: HistorySummary }[]): string;
+}
+
 /**
  * One agent, and everything the daemon needs from it.
  *
@@ -1216,4 +1304,9 @@ interface HarnessDaemonSlots {
    * cannot reopen one. See `ResumeSpec` - notably why this is NOT part of `sdk`.
    */
   resume: ResumeSpec | null;
+  /**
+   * How Session History lists this harness's sessions from disk, or null when it has no
+   * history reader yet. See `HistorySpec`.
+   */
+  history: HistorySpec | null;
 }

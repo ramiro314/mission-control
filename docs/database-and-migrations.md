@@ -40,6 +40,14 @@ only delete. The table arrived with schema version 11, a fork entry: the migrati
 `CREATE ... IF NOT EXISTS` and is not gated by the number, so an upstream 11 can renumber it, as
 #618 did for the fork's 7 to 9.
 
+`history_sessions` is Session History's catalog: one row per agent session a harness's transcript
+store holds, written only by `HistoryStore` from the daemon's reconciler (see
+[Session History](history.md)). Rows are derived from transcripts, but unlike the archive index the
+table is not disposable: when Claude Code's retention deletes a transcript, its row is marked
+`transcript_state = 'gone'` and kept, and is then the only record of the session. Rows are never
+deleted. The table arrived with schema version 12, a fork entry, created in `migrate()` with
+`CREATE ... IF NOT EXISTS` and not gated by the number, so an upstream 12 can renumber it.
+
 ## Full-database recovery points
 
 Mission Control creates verified recovery points for normal operation and schema upgrades. See

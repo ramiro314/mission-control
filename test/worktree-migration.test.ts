@@ -69,8 +69,8 @@ test("a pre-native database gains empty operational tables without rewriting old
   );
 });
 
-test("a database stamped 10 takes its recovery point, gains slot history, and is stamped 11", () => {
-  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 11);
+test("a database stamped 10 takes its recovery point, gains slot history, and is stamped current", () => {
+  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 12);
   const backups = join(home, "backups", "database");
   const recoveryPoints = () => readdirSync(backups).filter((name) => name.startsWith("pre-migration-"));
   assert.ok(existsSync(backups), "the open captured a recovery point before it upgraded");
@@ -90,7 +90,7 @@ test("a database stamped 10 takes its recovery point, gains slot history, and is
       .map((row) => row.name),
   });
   const expected = {
-    version: 11,
+    version: CURRENT_DATABASE_SCHEMA_VERSION,
     objects: ["idx_worktree_slot_history_pool_at", "idx_worktree_slot_history_slot", "worktree_slot_history"],
     columns: [
       "id", "pool_id", "slot_id", "ordinal", "at", "kind", "from_state", "to_state", "reason", "detail",
