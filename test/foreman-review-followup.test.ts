@@ -461,6 +461,8 @@ test("only a blocked run that the operator or the session must restart releases 
     ["waiting for session", run("waiting_for_session", "persona_feedback"), true],
     ["spent round_limit", run("blocked", "round_limit", 4), false],
     ["round_limit granted more rounds", run("blocked", "round_limit", 3), true],
+    ["spent inspector_round_limit", run("blocked", "inspector_round_limit", 4), false],
+    ["inspector_round_limit granted more rounds", run("blocked", "inspector_round_limit", 3), true],
     ["unchanged_evidence_exhausted", run("blocked", "unchanged_evidence_exhausted"), false],
     ["session_disappeared", run("blocked", "session_disappeared"), false],
     ["check_cleanup_unresolved", run("blocked", "check_cleanup_unresolved"), true],
