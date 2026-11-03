@@ -204,7 +204,16 @@ export class HistoryReconciler {
       })
       .then((outcome) => {
         this.running = null;
-        if (!this.stopped && outcome.indexed + outcome.gone > 0) this.onChanged();
+        if (!this.stopped && outcome.indexed + outcome.gone > 0) {
+          // Every caller but a test discards this promise (`void this.trigger()`), so a listener
+          // that throws must not reject it: that would be an unhandled rejection, fatal to the
+          // daemon, and it would skip the follow-up pass a trigger asked for.
+          try {
+            this.onChanged();
+          } catch (error) {
+            console.warn("[history] change listener failed:", error);
+          }
+        }
         if (this.retrigger && !this.stopped) {
           this.retrigger = false;
           return this.trigger();

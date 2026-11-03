@@ -338,3 +338,48 @@ test("a root that did not exist when watching began is watched from the first pa
   }
   rmSync(parent, { recursive: true, force: true });
 });
+
+test("a change listener that throws is logged, and neither rejects the pass nor skips the follow-up", async (t) => {
+  openDb().exec("DELETE FROM history_sessions");
+  const projects = freshProjects();
+  const first = sessionId();
+  const second = sessionId();
+  writeSession(projects, first, opening(first, "/w", "the first"));
+  const warn = t.mock.method(console, "warn", () => {});
+  const store = new HistoryStore();
+  const spec = createClaudeHistory(projects);
+  let reconciler!: InstanceType<typeof HistoryReconciler>;
+  let asked = false;
+  let signals = 0;
+  reconciler = new HistoryReconciler({
+    store,
+    readers: [{
+      agent: "claude",
+      spec: {
+        ...spec,
+        // Mid-pass, a new session lands and a trigger asks for one more pass.
+        summarize: (file, point) => {
+          if (!asked) {
+            asked = true;
+            writeSession(projects, second, opening(second, "/w", "the second"));
+            void reconciler.trigger();
+          }
+          return spec.summarize(file, point);
+        },
+      },
+    }],
+    resolveRepository: () => null,
+    onChanged: () => {
+      signals += 1;
+      if (signals === 1) throw new Error("a broken subscriber");
+    },
+  });
+  // Resolves with the follow-up pass's result: the throw neither rejected it nor skipped it.
+  const pass = await reconciler.trigger();
+  assert.equal(reconciler.passCount, 2);
+  assert.equal(pass.indexed, 1, "the follow-up pass indexed the second session");
+  assert.equal(signals, 2, "and still announced it");
+  assert.ok(store.index("claude").has(first) && store.index("claude").has(second));
+  assert.ok(warn.mock.calls.some((call) => String(call.arguments[0]).includes("change listener failed")));
+  rmSync(projects, { recursive: true, force: true });
+});
