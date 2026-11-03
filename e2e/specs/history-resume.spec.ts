@@ -302,4 +302,18 @@ test("an original slot another owner holds opens the picker; the chosen slot is 
   await expect(picker.getByRole("radio")).toHaveCount(1);
   await expect(dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "cmux" })).toBeEnabled();
   await capture(dashboard, "10-resume-again");
+  await dialog.locator(".modal-foot").getByRole("button", { name: "Close", exact: true }).click();
+
+  // A conversation recorded on a branch this clone has nowhere: the slot stays detached, warned.
+  const lost = writeSession(daemon, { cwd: held.path, title: "Revive the parser", at: "2026-10-31T10:00:00.000Z", branch: "feature/never-pushed" });
+  await indexed(daemon, lost);
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${lost}`);
+  await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
+  await expect(picker.getByRole("radio", { name: /^Slot 2\b/ })).toBeChecked();
+  await dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "cmux" }).click();
+  await expect(dialog.getByRole("status")).toContainText(`Started in cmux, in ${spare.path}`);
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "The branch feature/never-pushed was not found here or on origin, so the slot stays detached where it was: the code may not match the conversation.",
+  );
+  await capture(dashboard, "11-missing-branch");
 });

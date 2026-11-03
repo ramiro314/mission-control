@@ -23,7 +23,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { TerminalLaunchError } = await import("../src/server/terminal/launch-error.ts");
 const { managedResumeRoot, recheckManagedResumes, revokeUnclaimedResumes } = await import("../src/server/harness/resume.ts");
 const { beginResumeLaunch, claimResumeLease, createResumeLease } = await import("../src/server/terminal/resume-lease.ts");
-import type { HistoryResumeOptions } from "../src/shared/history.ts";
+import { historyResumeCheckoutWarning, type HistoryResumeOptions } from "../src/shared/history.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { HistoryResumeLauncher, HistoryResumeSession } from "../src/server/history/resume.ts";
 import type { HistoryResumeCandidate } from "../src/server/history/resume-launches.ts";
@@ -884,4 +884,23 @@ test("a launcher that refuses after the lease hands the slot back, reset detache
   } finally {
     f.done();
   }
+});
+
+test("the checkout warning says the code may not match for a missing branch, and commits will not move a branch held elsewhere", () => {
+  assert.equal(historyResumeCheckoutWarning({ state: "branch", branch: "feature/x" }), null);
+  assert.equal(
+    historyResumeCheckoutWarning({ state: "missing", branch: "feature/x" }),
+    "The branch feature/x was not found here or on origin, so the slot stays detached where it was: the code may not match the conversation.",
+  );
+  for (const branch of [null, "HEAD"]) {
+    assert.equal(
+      historyResumeCheckoutWarning({ state: "missing", branch }),
+      "This conversation recorded no branch, so the slot stays detached where it was: the code may not match the conversation.",
+      String(branch),
+    );
+  }
+  assert.equal(
+    historyResumeCheckoutWarning({ state: "elsewhere", branch: "main", path: "/repo" }),
+    "The branch main is checked out in /repo, so this slot has its tip detached: commits made here will not move the branch.",
+  );
 });
