@@ -284,6 +284,8 @@ test("Launch context renders every recorded section, the instruction files as lo
   await files.getByText(claudeMd, { exact: true }).click();
   await expect(files.getByText(/Run only the focused test\./)).toBeVisible();
   await expect(files.getByText(/Rewritten after the session ran/)).toHaveCount(0);
+  await files.scrollIntoViewIfNeeded();
+  await capture(dashboard, "launch-context-instructions");
 
   // The standing block is split off the appended value it was joined into.
   await expect(section("Standing instructions")).toContainText("Never push without asking.");
@@ -341,6 +343,8 @@ test("Launch context renders every recorded section, the instruction files as lo
   }
   await expect(section("Skills").getByText("Not recorded", { exact: true })).toBeVisible();
   await capture(dashboard, "launch-context-not-recorded");
+  await section("Hooks").scrollIntoViewIfNeeded();
+  await capture(dashboard, "launch-context-not-recorded-hooks");
 
   // A gone transcript shows the retention message and nothing else.
   rmSync(gone.path);
