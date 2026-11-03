@@ -37130,6 +37130,7 @@ a.history-row-title:focus-visible { outline: 2px solid var(--find); outline-offs
   overflow-wrap: anywhere;
 }
 .history-tool-note { margin: 0; font-size: 12px; color: var(--muted); }
+.history-tool-failed { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 /* Where the agent compacted its context, drawn across the conversation. */
 .transcript-compaction {
   display: flex;

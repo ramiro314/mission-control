@@ -206,3 +206,60 @@ test("tool calls expand to their whole input and their result, compaction is mar
   // The parent conversation is still there, below the run.
   await expect(panel.getByText("All fixed.")).toBeVisible();
 });
+
+test("a result read that fails is asked again on Try again or the next open, while a missing result is kept", async ({
+  dashboard,
+  daemon,
+}) => {
+  writeSession(daemon);
+  await indexed(daemon);
+  const reads = new Map<string, number>();
+  dashboard.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.includes("/tool-results/")) {
+      const id = path.split("/").pop()!;
+      reads.set(id, (reads.get(id) ?? 0) + 1);
+    }
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${ID}`);
+  const panel = dashboard.getByRole("main", { name: "History session" }).getByRole("tabpanel");
+  await expect(panel.getByText("All fixed.")).toBeVisible();
+  const call = (name: string) => panel.getByRole("listitem").filter({ has: dashboard.getByRole("button", { name }) });
+
+  // A failed read offers Try again, which reads it again.
+  const saved = `**/api/history/sessions/claude/${ID}/tool-results/toolu_saved`;
+  await dashboard.route(saved, (route) => route.fulfill({ status: 500, json: { error: "the disk is busy" } }));
+  const tests = call("bash npm");
+  await tests.getByRole("button", { name: "bash npm" }).click();
+  const testsResult = tests.getByRole("region", { name: "Result" });
+  await expect(testsResult.getByRole("alert")).toHaveText("Could not read the result: the disk is busy");
+  await capture(dashboard, "tool-result-failed");
+  await dashboard.unroute(saved);
+  await testsResult.getByRole("button", { name: "Try again" }).click();
+  await expect(testsResult).toContainText("all 412 tests passed");
+  await expect(testsResult.getByRole("alert")).toHaveCount(0);
+
+  // A failed read is also asked again when the call is closed and opened.
+  const inline = `**/api/history/sessions/claude/${ID}/tool-results/toolu_inline`;
+  await dashboard.route(inline, (route) => route.abort("connectionreset"));
+  const status = call("bash git");
+  await status.getByRole("button", { name: "bash git" }).click();
+  await expect(status.getByRole("region", { name: "Result" }).getByRole("alert")).toContainText("Could not read the result");
+  await dashboard.unroute(inline);
+  await status.getByRole("button", { name: "bash git" }).click();
+  await status.getByRole("button", { name: "bash git" }).click();
+  await expect(status.getByRole("region", { name: "Result" })).toContainText("M src/server/registry.ts");
+
+  // A result the daemon says is not there is kept: reopening does not ask again.
+  const orphan = call("bash sleep");
+  await orphan.getByRole("button", { name: "bash sleep" }).click();
+  await expect(orphan.getByRole("region", { name: "Result" })).toContainText("Result unavailable: no result is recorded for this tool call");
+  await orphan.getByRole("button", { name: "bash sleep" }).click();
+  await orphan.getByRole("button", { name: "bash sleep" }).click();
+  await expect(orphan.getByRole("region", { name: "Result" })).toContainText("Result unavailable");
+  await expect(orphan.getByRole("button", { name: "Try again" })).toHaveCount(0);
+  expect(reads.get("toolu_orphan")).toBe(1);
+  expect(reads.get("toolu_saved")).toBe(2);
+  expect(reads.get("toolu_inline")).toBe(2);
+});

@@ -37,7 +37,15 @@ type ResultState =
   | { state: "idle" }
   | { state: "loading" }
   | { state: "ready"; result: HistoryToolResult }
-  | { state: "unavailable"; error: string };
+  /** The daemon answered that there is no result to read (404, 410): final for this view. */
+  | { state: "unavailable"; error: string }
+  /** The read itself failed (5xx, a dropped connection): asked again on Try again or the next open. */
+  | { state: "failed"; error: string };
+
+/** Only a definite "nothing to read" is kept; anything else may succeed if asked again. */
+function isFinalRefusal(status: number | undefined): boolean {
+  return status === 404 || status === 410;
+}
 
 /** The input as JSON laid out to read, or as recorded when it was cut and no longer parses. */
 function readableInput(input: string): string {
@@ -64,14 +72,19 @@ function HistoryToolCall({
   const chip = toolChip(tool);
   const toolUseId = tool.id;
 
+  const fetchResult = (): void => {
+    if (!toolUseId) return;
+    setResult({ state: "loading" });
+    void api.historyToolResult(agent, id, toolUseId).then((read) => {
+      if (read.ok) setResult({ state: "ready", result: read.value });
+      else setResult({ state: isFinalRefusal(read.status) ? "unavailable" : "failed", error: read.error });
+    });
+  };
+
   const toggle = (): void => {
     const next = !open;
     setOpen(next);
-    if (!next || !results || !toolUseId || result.state !== "idle") return;
-    setResult({ state: "loading" });
-    void api.historyToolResult(agent, id, toolUseId).then((read) => {
-      setResult(read.ok ? { state: "ready", result: read.value } : { state: "unavailable", error: read.error });
-    });
+    if (next && results && (result.state === "idle" || result.state === "failed")) fetchResult();
   };
 
   return (
@@ -101,6 +114,13 @@ function HistoryToolCall({
                 <p className="history-tool-note">Reading the result…</p>
               ) : result.state === "unavailable" ? (
                 <p className="history-tool-note" role="note">Result unavailable: {result.error}</p>
+              ) : result.state === "failed" ? (
+                <div className="history-tool-failed">
+                  <p className="history-tool-note" role="alert">Could not read the result: {result.error}</p>
+                  <Tooltip label="Ask the daemon for this call's result again">
+                    <button type="button" className="btn" onClick={fetchResult}>Try again</button>
+                  </Tooltip>
+                </div>
               ) : (
                 <>
                   {result.result.source === "sidecar" ? (
