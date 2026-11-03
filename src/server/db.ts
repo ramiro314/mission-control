@@ -202,7 +202,10 @@ let db: DatabaseSync | undefined;
 // 12: fork - Session History's catalog (`history_sessions`), empty on an upgraded database and
 //    filled in the background after the daemon is serving. Created in `migrate()` with
 //    `CREATE ... IF NOT EXISTS` and not gated by this number, so renumbering is safe as for 11.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 12;
+// 13: fork - History's search text (`history_search_segments`). Created in `migrate()` and not
+//    gated by this number; when the table is new, existing `history_sessions` rows are queued
+//    for a re-read so their prompts are indexed. Renumbering is safe as for 11.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 13;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4537,7 +4540,37 @@ function migrateHistoryCatalog(d: DatabaseSync): void {
       ON history_sessions(last_activity_at, agent, agent_session_id);
     CREATE INDEX IF NOT EXISTS idx_history_sessions_kind_activity
       ON history_sessions(kind, last_activity_at);
+    CREATE INDEX IF NOT EXISTS idx_history_sessions_repo
+      ON history_sessions(repo_root);
   `);
+  migrateHistorySearchSegments(d);
+}
+
+/**
+ * The text History's search scans (`docs/history.md`), on `archive_search_segments`'s model:
+ * literal matching on text folded in JavaScript, deliberately not FTS5. Ordinal 0 holds a
+ * session's title fields, cwd, repository and branch; ordinals from 1 hold its user prompts,
+ * split into overlapping chunks. Written only by `HistoryStore`, beside its row.
+ *
+ * Created after `history_sessions`, which a database stamped 12 already holds rows in. Those
+ * rows were indexed before there was anywhere to put their prompts, so when this table is new
+ * their fingerprints are cleared: the reconciler then re-reads each present transcript from
+ * the top, and the store seeds ordinal 0 for a gone one from its row.
+ */
+function migrateHistorySearchSegments(d: DatabaseSync): void {
+  const existed = d.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'history_search_segments'",
+  ).get() !== undefined;
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS history_search_segments (
+      agent             TEXT    NOT NULL,
+      agent_session_id  TEXT    NOT NULL,
+      ordinal           INTEGER NOT NULL,
+      text_fold         TEXT    NOT NULL,
+      PRIMARY KEY (agent, agent_session_id, ordinal)
+    );
+  `);
+  if (!existed) d.exec("UPDATE history_sessions SET fingerprint = '{}'");
 }
 
 /**

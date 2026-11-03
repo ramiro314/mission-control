@@ -6,6 +6,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * Session History's first page: a fake `~/.claude/projects` in the daemon's redirected home,
@@ -394,5 +395,122 @@ test.describe("a window paged past the route's 200-row cap", () => {
     // The cursor still continues below the window: the next page holds the last ten.
     await page.getByRole("button", { name: "Load more" }).click();
     await expect(rows).toHaveCount(260);
+  });
+});
+
+test.describe("search and filters", () => {
+  // A fast backfill: these fixtures are few, and the first run is not what is under test.
+  test.use({ daemonEnv: { MISSION_HISTORY_RECONCILE_MS: "300", MISSION_HISTORY_BATCH_SIZE: "100" } });
+
+  const POOL = "/projects/worktree-pools/app-1f2e";
+
+  /**
+   * Two slots of one worktree pool whose directories never existed on disk, a plain checkout,
+   * and a background run in the pool. The pool row is what an earlier daemon would have left;
+   * the restart is the first run that indexes them.
+   */
+  async function seedFilters(daemon: DaemonHandle): Promise<void> {
+    withDaemonDb(daemon, (db) => {
+      db.prepare(
+        `INSERT INTO worktree_pools (id, git_common_dir, main_checkout_root, pool_path, created_at, updated_at)
+         VALUES ('e2e-history-pool', '/projects/app/.git', '/projects/app', ?, 0, 0)`,
+      ).run(POOL);
+    });
+    writeSession(daemon, {
+      cwd: `${POOL}/3/app`,
+      at: "2026-10-15T12:00:00.000Z",
+      prompt: "Set up the build",
+      extra: [
+        { type: "user", timestamp: "2026-10-15T12:05:00.000Z", message: { role: "user", content: "Then rename the walrus module" } },
+        { type: "ai-title", aiTitle: "Module rename" },
+      ],
+    });
+    writeSession(daemon, { cwd: `${POOL}/5/app`, at: "2026-10-05T12:00:00.000Z", prompt: "Older slot work" });
+    writeSession(daemon, { cwd: "/projects/plain", at: "2026-10-25T12:00:00.000Z", prompt: "Plain checkout work" });
+    writeSession(daemon, {
+      cwd: `${POOL}/4/app`,
+      at: "2026-10-16T12:00:00.000Z",
+      entrypoint: "sdk-ts",
+      tools: [],
+      prompt: "Generate a commit message",
+      extra: [{ type: "user", message: { role: "user", content: "A second background prompt about the walrus" } }],
+    });
+    await daemon.crash();
+    await daemon.restart();
+  }
+
+  test("search finds a conversation by a later prompt, and the filters survive a reload", async ({ dashboard, daemon }) => {
+    await seedFilters(daemon);
+    await backfilled(daemon);
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(3);
+    await expect(page.getByText("Generate a commit message")).toHaveCount(0);
+    // Only Claude has a history reader, so there is nothing to choose between.
+    await expect(page.getByRole("combobox", { name: "Agent", exact: true })).toHaveCount(0);
+
+    // A conversation's later prompt is indexed. The background run's second prompt is not, so
+    // even with background runs shown it does not match.
+    const search = page.getByRole("searchbox", { name: "Search history" });
+    await search.fill("WALRUS");
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("Module rename");
+    await expect(dashboard).toHaveURL(/#\/history\?q=WALRUS$/);
+    await page.getByRole("combobox", { name: "Kind", exact: true }).selectOption("all");
+    await expect(rows).toHaveCount(1);
+    await search.fill("commit message");
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("Generate a commit message");
+    await expect(rows.first()).toContainText("One-shot");
+    await search.fill("");
+    await expect(rows).toHaveCount(4);
+    await page.getByRole("combobox", { name: "Kind", exact: true }).selectOption("");
+    await expect(rows).toHaveCount(3);
+
+    // Pool slots collapse to their repository, in the filter and in each row.
+    const repository = page.getByRole("combobox", { name: "Repository", exact: true });
+    await expect(repository.getByRole("option")).toHaveText(["Any repository", "/projects/app"]);
+    await repository.selectOption("/projects/app");
+    await expect(rows).toHaveCount(2);
+    await expect(rows.filter({ hasText: "Plain checkout work" })).toHaveCount(0);
+    await expect(rows.filter({ hasText: "Module rename" })).toContainText("app");
+
+    // A date range, then the Kind filter adds the background run inside it.
+    await page.getByLabel("From", { exact: true }).fill("2026-10-10");
+    await page.getByLabel("To", { exact: true }).fill("2026-10-20");
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("Module rename");
+    await page.getByRole("combobox", { name: "Kind", exact: true }).selectOption("all");
+    await expect(rows).toHaveCount(2);
+    await expect(rows.filter({ hasText: "Generate a commit message" })).toHaveCount(1);
+    await expect(dashboard).toHaveURL(/#\/history\?repo=%2Fprojects%2Fapp&from=2026-10-10&to=2026-10-20&kind=all$/);
+    await capture(dashboard, "filters");
+
+    // The filters are the route, so a reload lands on the same list with the same controls.
+    await dashboard.reload();
+    await expect(rows).toHaveCount(2);
+    await expect(repository).toHaveValue("/projects/app");
+    await expect(page.getByLabel("From", { exact: true })).toHaveValue("2026-10-10");
+    await expect(page.getByLabel("To", { exact: true })).toHaveValue("2026-10-20");
+    await expect(page.getByRole("combobox", { name: "Kind", exact: true })).toHaveValue("all");
+
+    await page.getByRole("button", { name: "Clear filters" }).click();
+    await expect(rows).toHaveCount(3);
+    await expect(dashboard).toHaveURL(/#\/history$/);
+  });
+
+  test("the header shows Claude Code's retention, 30 days when unset, and links to the setting", async ({ dashboard, daemon }) => {
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    await expect(page.getByText("Claude Code keeps transcripts for 30 days.")).toBeVisible();
+    const link = page.getByRole("link", { name: "cleanupPeriodDays" });
+    await expect(link).toHaveAttribute("href", "https://code.claude.com/docs/en/settings-reference#cleanupperioddays");
+
+    mkdirSync(join(daemon.home, ".claude"), { recursive: true });
+    writeFileSync(join(daemon.home, ".claude", "settings.json"), JSON.stringify({ cleanupPeriodDays: 14 }));
+    await dashboard.reload();
+    await expect(page.getByText("Claude Code keeps transcripts for 14 days.")).toBeVisible();
+    await capture(dashboard, "retention-configured");
   });
 });

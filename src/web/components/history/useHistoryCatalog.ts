@@ -1,7 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { HISTORY_PAGE_LIMITS, type HistoryProgress, type HistorySessionSummary } from "@shared/history.ts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  HISTORY_PAGE_LIMITS,
+  type HistoryFacets,
+  type HistoryProgress,
+  type HistorySessionSummary,
+} from "@shared/history.ts";
 import { api } from "../../lib/api.ts";
-import { appendHistoryRows, readHistoryWindow } from "./history-window.ts";
+import type { HistoryFilters } from "../../workflows/useWorkflowRoute.ts";
+import { appendHistoryRows, historyFilterQuery, readHistoryWindow } from "./history-window.ts";
 
 /**
  * The History page's data, and the only place that talks to `/api/history/sessions`.
@@ -11,7 +17,8 @@ import { appendHistoryRows, readHistoryWindow } from "./history-window.ts";
  * 1. **A failed read is not an empty history.** The page says "could not ask" differently
  *    from "nothing recorded".
  * 2. **A refresh keeps the depth on screen.** It refetches as many rows as the operator has
- *    paged to, a page at a time past the route's cap, so a "Load more" is never undone.
+ *    paged to, a page at a time past the route's cap, so a "Load more" is never undone. A
+ *    change of filters is a different list, so it starts again from one page.
  *
  * While the catalog reports a backfill in progress, the window is refetched a second after each
  * answer lands, so sessions appear as they are indexed. That poll stops the moment indexing does. Live updates
@@ -26,6 +33,8 @@ export type HistoryListState = "first" | "ready" | "error";
 export interface HistoryCatalog {
   sessions: HistorySessionSummary[];
   progress: HistoryProgress | null;
+  /** What the filters and header offer, from the latest answer; null before the first. */
+  facets: HistoryFacets | null;
   listState: HistoryListState;
   listError: string | null;
   hasMore: boolean;
@@ -36,9 +45,15 @@ export interface HistoryCatalog {
   refresh: () => void;
 }
 
-export function useHistoryCatalog(): HistoryCatalog {
+export function useHistoryCatalog(filters: HistoryFilters | undefined): HistoryCatalog {
   const [sessions, setSessions] = useState<HistorySessionSummary[]>([]);
   const [progress, setProgress] = useState<HistoryProgress | null>(null);
+  const [facets, setFacets] = useState<HistoryFacets | null>(null);
+  // Keyed by value, so a route object rebuilt with the same filters is not a new list.
+  const filterKey = JSON.stringify(historyFilterQuery(filters));
+  const query = useMemo(() => JSON.parse(filterKey) as ReturnType<typeof historyFilterQuery>, [filterKey]);
+  /** The filters the depth below was paged under; another set starts again from one page. */
+  const depthKey = useRef(filterKey);
   const [cursor, setCursor] = useState<string | null>(null);
   const [listState, setListState] = useState<HistoryListState>("first");
   const [listError, setListError] = useState<string | null>(null);
@@ -61,7 +76,12 @@ export function useHistoryCatalog(): HistoryCatalog {
     moreAbort.current?.abort();
     moreAbort.current = null;
     setLoadingMore(false);
-    void readHistoryWindow((query) => api.historySessions(query, controller.signal), depth.current).then((result) => {
+    setMoreError(null);
+    if (depthKey.current !== filterKey) {
+      depthKey.current = filterKey;
+      depth.current = HISTORY_PAGE_LIMITS.defaultLimit;
+    }
+    void readHistoryWindow((page) => api.historySessions({ ...query, ...page }, controller.signal), depth.current).then((result) => {
       if (controller.signal.aborted) return;
       if (!result.ok) {
         if (!hasWindow.current) {
@@ -78,12 +98,13 @@ export function useHistoryCatalog(): HistoryCatalog {
       setSessions(result.value.sessions);
       setCursor(result.value.nextCursor);
       setProgress(result.value.progress);
+      setFacets(result.value.facets);
       setListError(null);
       setListState("ready");
       setLanded((n) => n + 1);
     });
     return () => controller.abort();
-  }, [tick]);
+  }, [tick, filterKey, query]);
 
   // Re-read while the first backfill runs, so rows appear as they are indexed. The next read is
   // scheduled only after the previous one landed: keyed on the request instead, a read slower
@@ -110,7 +131,7 @@ export function useHistoryCatalog(): HistoryCatalog {
     listAbort.current?.abort();
     setLoadingMore(true);
     setMoreError(null);
-    void api.historySessions({ cursor, limit: HISTORY_PAGE_LIMITS.defaultLimit }, controller.signal).then((result) => {
+    void api.historySessions({ ...query, cursor, limit: HISTORY_PAGE_LIMITS.defaultLimit }, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
       setLoadingMore(false);
       if (!result.ok) {
@@ -124,14 +145,16 @@ export function useHistoryCatalog(): HistoryCatalog {
       });
       setCursor(result.value.nextCursor);
       setProgress(result.value.progress);
+      setFacets(result.value.facets);
     });
-  }, [cursor, loadingMore]);
+  }, [cursor, loadingMore, query]);
 
   const refresh = useCallback(() => setTick((n) => n + 1), []);
 
   return {
     sessions,
     progress,
+    facets,
     listState,
     listError,
     hasMore: cursor !== null,

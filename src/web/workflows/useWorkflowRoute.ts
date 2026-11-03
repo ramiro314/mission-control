@@ -17,6 +17,8 @@ import {
   type ArchiveKind,
 } from "@shared/archives.ts";
 import { pipelineRepoKey, type PipelineProviderId } from "@shared/pipeline.ts";
+import { HISTORY_KIND_FILTERS, type HistoryKindFilter } from "@shared/history.ts";
+import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
 // dashboard has - fleet, Library, Runs, Ensembles, Settings - is a variant of `MissionRoute`
@@ -180,6 +182,50 @@ function scoutBound(raw: string | null): number | undefined {
   // but the route's own API would refuse is a link that lands on a 400 instead of a page.
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
+/**
+ * The History list's filters. In the hash, like Scouts', so a filtered list survives a reload
+ * and can be handed to someone; the page REPLACES the route as they change, so refining a
+ * search never leaves a trail for Back to walk.
+ */
+export interface HistoryFilters {
+  /** Literal search over titles, paths, branches and indexed prompts. */
+  q?: string;
+  /** A repository root, exactly as the page's repository filter lists it. */
+  repo?: string;
+  /** Local calendar days, `YYYY-MM-DD`, both inclusive, bounding last activity. */
+  from?: string;
+  to?: string;
+  /** Absent means conversations only. */
+  kind?: HistoryKindFilter;
+  agent?: AgentType;
+}
+
+/** A calendar day a date input produces, or undefined for anything else. */
+function historyDay(raw: string | null): string | undefined {
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return undefined;
+  const [year, month, day] = raw.split("-").map(Number) as [number, number, number];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  // `2026-02-31` is shaped right and names no day; it is dropped like any other bad value.
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? raw : undefined;
+}
+
+/** The filters a History hash names, each dropped when this build would refuse it. */
+function parseHistoryFilters(params: URLSearchParams): HistoryFilters | undefined {
+  const kind = params.get("kind");
+  const agent = params.get("agent");
+  const from = historyDay(params.get("from"));
+  const to = historyDay(params.get("to"));
+  const filters: HistoryFilters = {
+    ...(params.get("q") ? { q: params.get("q")! } : {}),
+    ...(params.get("repo") ? { repo: params.get("repo")! } : {}),
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
+    ...(kind && (HISTORY_KIND_FILTERS as readonly string[]).includes(kind) ? { kind: kind as HistoryKindFilter } : {}),
+    ...(agent && (AGENT_TYPES as readonly string[]).includes(agent) ? { agent: agent as AgentType } : {}),
+  };
+  return Object.keys(filters).length > 0 ? filters : undefined;
+}
+
 export type MissionRoute =
   | { page: "fleet" }
   | {
@@ -256,10 +302,11 @@ export type MissionRoute =
   | {
       /**
        * Session History: every agent session this machine holds on disk, whether or not
-       * Mission Control ever saw it, newest activity first. Bare for now - filters and a
-       * session's detail join the hash when those surfaces ship.
+       * Mission Control ever saw it, newest activity first. A session's detail joins the
+       * hash when that surface ships.
        */
       page: "history";
+      filters?: HistoryFilters;
     }
   | { page: "settings"; category: SettingsCategoryId };
 
@@ -374,7 +421,10 @@ export function parseMissionRoute(hash: string): MissionRoute {
     };
   }
   // A deeper path names a surface this build does not have yet, so it lands on the list.
-  if (path === "/history" || path.startsWith("/history/")) return { page: "history" };
+  if (path === "/history" || path.startsWith("/history/")) {
+    const historyFilters = parseHistoryFilters(params);
+    return { page: "history", ...(historyFilters ? { filters: historyFilters } : {}) };
+  }
   if (path === "/library") return { page: "library" };
   const library = /^\/library\/([^/]+)(?:\/([^/]+))?$/.exec(path);
   if (library) {
@@ -513,7 +563,19 @@ export function missionRouteHash(route: MissionRoute): string {
   // compile - it silently serializes to `#/ensembles`, and `navigate({page:"shipped"})`
   // lands on the wrong page with no error anywhere.
   if (route.page === "shipped") return "#/shipped";
-  if (route.page === "history") return "#/history";
+  if (route.page === "history") {
+    const params = new URLSearchParams();
+    // Fixed order, for the reason Scouts gives below; each value passes the parser's own check.
+    const filters = route.filters;
+    if (filters?.q) params.set("q", filters.q);
+    if (filters?.repo) params.set("repo", filters.repo);
+    if (historyDay(filters?.from ?? null)) params.set("from", filters!.from!);
+    if (historyDay(filters?.to ?? null)) params.set("to", filters!.to!);
+    if (filters?.kind && (HISTORY_KIND_FILTERS as readonly string[]).includes(filters.kind)) params.set("kind", filters.kind);
+    if (filters?.agent && (AGENT_TYPES as readonly string[]).includes(filters.agent)) params.set("agent", filters.agent);
+    const query = params.toString();
+    return query ? `#/history?${query}` : "#/history";
+  }
   if (route.page === "scouts") {
     // The key is emitted only when it is well formed, mirroring the parser. A hand-built
     // route carrying a malformed key would otherwise serialize to a hash that parses back

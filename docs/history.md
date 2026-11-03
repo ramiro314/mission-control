@@ -12,19 +12,48 @@ sessions do not appear yet.
 
 - **Order.** All time, newest activity first, grouped by day, 50 rows a page with **Load
   more** for older ones.
-- **Conversations only.** The list shows interactive, SDK and unclassified sessions. One-shot
-  and reviewer runs, which are most of what Mission Control's own background work leaves
-  behind, are cataloged but not listed.
+- **Conversations by default.** The list shows interactive, SDK and unclassified sessions.
+  One-shot and reviewer runs, which are most of what Mission Control's own background work
+  leaves behind, are listed only when the **Kind** filter asks for them.
 - **Title.** The session's custom title, else its AI title, else its first prompt.
 - **Row.** Repository (or the raw cwd when no repository was resolved, with the full cwd on
   hover), branch, kind, model, cost and duration.
 - **Transcript gone.** When Claude Code's retention (`cleanupPeriodDays`, 30 days by default)
   deletes a transcript, its row stays and carries a **Transcript gone** badge. Rows are never
   deleted.
+- **Retention header.** "Claude Code keeps transcripts for N days", where N is
+  `cleanupPeriodDays` from `~/.claude/settings.json` (30, Claude Code's default, when it is
+  unset or not a whole number of at least 1), linked to
+  [the setting's documentation](https://code.claude.com/docs/en/settings-reference#cleanupperioddays).
+  Only the user settings file is read, because the header speaks for every project. Mission
+  Control never edits the setting.
 - **First run.** The catalog fills in the background after the daemon starts. While it does,
   the page reads "Indexing N of M sessions" and the rows appear newest first as they are
   indexed. While that line is showing, the page re-reads the catalog a second after each answer
   lands, so a slow read is never cut off by the next one.
+
+## Search and filters
+
+Every control lives in the page's URL (`#/history?q=&repo=&from=&to=&kind=&agent=`) and
+replaces the route as it changes, so a filtered list survives a reload and can be shared,
+and refining it leaves no trail of entries for Back. A value this build would refuse (an
+unknown kind, an impossible day) is dropped from the URL rather than sent.
+
+- **Search** waits for typing to settle, then matches a literal, case-folded substring against
+  each session's titles (custom, AI and first prompt), cwd, repository, branch and indexed user
+  prompts. It narrows the list without reordering it.
+- **What is indexed.** A conversation indexes every user prompt, up to 16,000 characters each.
+  A one-shot or reviewer run indexes only its first prompt, capped at 500 characters, because
+  its prompts are large generated diffs. User prompts are therefore copied into `harness.db`;
+  see [security](security.md#session-history-copies-user-prompts-into-harnessdb).
+- **Repository** lists every repository a session resolved to (see Repository below), so the
+  slots of one worktree pool appear once, as their repository.
+- **From** and **To** are local calendar days, both inclusive, bounding last activity.
+- **Kind** is Conversations by default; **All kinds** adds one-shot and reviewer runs, and a
+  single kind narrows the list to it.
+- **Agent** appears only once a second harness has a history reader. Today only Claude has one,
+  so it is hidden.
+- **Clear filters** drops every filter and keeps the search words.
 
 ## Session kinds
 
@@ -52,8 +81,10 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   followed), lists only top-level `<sessionId>.jsonl` files, and counts subagent runs under
   `<sessionId>/subagents/` without listing them. It reads `cwd` from records, never from the
   project folder name, and skips record and attachment types it does not know.
-- **Store.** `history_sessions` in `harness.db`, one row per agent and session id, created in
-  `migrate()` and written only by `HistoryStore`. See
+- **Store.** `history_sessions` in `harness.db`, one row per agent and session id, and
+  `history_search_segments`, its folded search text (fields at ordinal 0, prompts after, in
+  overlapping chunks; not FTS5). Both are created in `migrate()` and written only by
+  `HistoryStore`. See
   [database and migrations](database-and-migrations.md).
 - **Reconciler.** `HistoryReconciler` starts after the daemon is serving and rescans every
   30 seconds. An unchanged transcript costs one `lstat`; a changed one is re-summarized from
@@ -66,16 +97,26 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   walked every root of its harness without seeing the file. A root, project folder or file
   that exists but could not be read (permissions, I/O) makes the walk incomplete, and an
   incomplete walk decides nothing; only one that is not there at all counts as empty.
+- **Search text.** Written with its row. An appended transcript adds the prompts on its new
+  complete lines; one read from the top replaces them all. A session indexed as a background run
+  that later reads as a conversation is read again from the top, so its earlier prompts are
+  indexed too.
 - **Repository.** Resolved when a row is indexed and stored: a worktree pool slot maps to its
-  pool's main checkout even after the slot is gone, a `worktrees/<taskId>` checkout to its
-  task's repository, and any other existing path through Git.
+  pool's main checkout by path segment over `worktree_pools` (`poolContainingPath`), even after
+  the slot directory is gone; a `worktrees/<taskId>` checkout maps to its task's repository; any
+  other existing path resolves through Git to its main repository root; anything else has no
+  repository, and the row shows its raw cwd.
 
 ## API
 
-`GET /api/history/sessions?cursor&limit` returns `{sessions, nextCursor, progress}`: one page
-of conversations, newest activity first, and the backfill's `{indexing, indexed, total}`. It
-is loopback-only like the rest of `/api/*`, takes no path, and is not exposed as an MCP tool.
-A malformed cursor or an out-of-range limit is refused with 400.
+`GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent` returns
+`{sessions, nextCursor, progress, facets}`: one page of matching sessions, newest activity
+first; the backfill's `{indexing, indexed, total}`; and `facets` - the agents with a reader,
+every resolved repository, and each reader's retention period. `from` and `to` are epoch
+milliseconds on last activity, `from` inclusive and `to` exclusive. `kind` is `all` or one
+kind; absent means conversations. It is loopback-only like the rest of `/api/*`, takes no path,
+and is not exposed as an MCP tool. A malformed cursor, an out-of-range limit, an unknown kind
+or agent, a query over 200 characters, or any parameter it does not know is refused with 400.
 
 ## Settings
 
