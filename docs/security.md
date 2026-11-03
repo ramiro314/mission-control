@@ -62,7 +62,9 @@ The same holds for reads. [Session History](history.md#api) serves every Claude 
 under `~/.claude/projects` as recorded, including anything a tool printed, to any loopback
 caller. Its routes take an agent name and a session UUID, never a path; the transcript path
 comes from the catalog and is read only when it resolves, through symlinks, under that harness's
-root. None of them is exposed as an MCP tool.
+root. None of them is exposed as an MCP tool. A session's launch context is parsed from the
+same transcript on each request, so the instruction files, standing instructions, appended
+system prompt and git status it shows are never copied into `harness.db`.
 
 Requiring the daemon token, or an equivalent, for writes to executable settings (pool policy,
 Commands, testing settings and bulk apply) is a recorded follow-up:

@@ -9,8 +9,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
  * One History session: its header, its read-only conversation paged from the transcript on
- * disk, the retention message once that transcript is gone, and Live with Open in Fleet for a
- * session the fake agent keeps running.
+ * disk, its launch context as the transcript recorded it, the retention message once that
+ * transcript is gone, and Live with Open in Fleet for a session the fake agent keeps running.
  *
  * Transcripts are written into the daemon's redirected `~/.claude/projects` by this file, and
  * the live session is a fake Claude launched through the real dispatch route. No model token
@@ -34,12 +34,23 @@ function sessionId(): string {
 /** Writes one interactive conversation the way Claude Code lays it out. */
 function writeConversation(
   daemon: DaemonHandle,
-  shape: { cwd: string; at: string; title: string; pairs: number; pad?: number },
+  shape: {
+    cwd: string;
+    at: string;
+    title: string;
+    pairs: number;
+    pad?: number;
+    /** Attachment bodies, recorded after the title. */
+    launch?: Record<string, unknown>[];
+    /** Whole records, recorded after the conversation. */
+    records?: Record<string, unknown>[];
+  },
 ): { id: string; path: string } {
   const id = sessionId();
   const base = { sessionId: id, cwd: shape.cwd, entrypoint: "cli", version: "2.1.296", gitBranch: "fix-login-retry", isSidechain: false };
   const start = Date.parse(shape.at);
   const lines: Record<string, unknown>[] = [{ ...base, timestamp: shape.at, type: "custom-title", customTitle: shape.title }];
+  for (const attachment of shape.launch ?? []) lines.push({ ...base, timestamp: shape.at, type: "attachment", attachment });
   for (let i = 0; i < shape.pairs; i++) {
     const timestamp = new Date(start + i * 1_000).toISOString();
     const n = String(i).padStart(3, "0");
@@ -57,6 +68,7 @@ function writeConversation(
       },
     });
   }
+  for (const record of shape.records ?? []) lines.push({ ...base, timestamp: shape.at, ...record });
   lines.push({ ...base, timestamp: shape.at, type: "cost-state", totalCostUSD: 1.25, totalDuration: 65_000, startTime: start });
   const dir = join(daemon.home, ".claude", "projects", shape.cwd.replace(/[^a-zA-Z0-9]/g, "-"));
   mkdirSync(dir, { recursive: true });
@@ -199,6 +211,152 @@ test("a session opens from its row and from a deep link, pages its conversation,
   await capture(dashboard, "transcript-gone");
 });
 
+test("Launch context renders every recorded section, the instruction files as loaded, and Not recorded for what is missing", async ({ dashboard, daemon }) => {
+  // The session loaded one CLAUDE.md, and the file on disk has been rewritten since.
+  const claudeMd = join(daemon.repo, "CLAUDE.md");
+  writeFileSync(claudeMd, "# Demo repo\nRewritten after the session ran.\n");
+  const session = writeConversation(daemon, {
+    cwd: daemon.repo,
+    at: "2026-10-30T15:00:00.000Z",
+    title: "Session with a launch context",
+    pairs: 1,
+    launch: [
+      {
+        type: "instructions",
+        reason: "session_start",
+        files: [
+          { path: claudeMd, type: "Project", content: "# Demo repo\nRun only the focused test." },
+          { path: "/home/op/.claude/CLAUDE.md", type: "User", content: "# Global\nPrefer small diffs." },
+        ],
+      },
+      {
+        type: "prompt_snapshot",
+        systemPrompt: ["Ask through the Mission Control channel.\n\n## Standing instructions for this repository\n\nNever push without asking."],
+      },
+      { type: "skill_listing", names: ["tdd", "brief"], skillCount: 2, isInitial: true },
+      { type: "mcp_instructions_delta", addedNames: ["docs"], addedBlocks: ["Search the docs before answering."], removedNames: [] },
+      {
+        type: "deferred_tools_delta",
+        addedNames: ["mcp__docs__search", "mcp__docs__read"],
+        removedNames: [],
+        pendingMcpServers: ["claude.ai Gmail"],
+        needsAuthMcpServers: ["claude.ai Slack"],
+        failedMcpServers: ["broken-server"],
+      },
+      { type: "environment", snapshot: { workingDirectory: daemon.repo, isWorktree: false, isGitRepo: true, additionalWorkingDirectories: [] } },
+      { type: "session_context", context: { gitStatus: "Current branch: fix-login-retry\n(clean)" } },
+      { type: "a_future_attachment", anything: true },
+    ],
+    records: [
+      {
+        type: "assistant",
+        uuid: "skill-call",
+        message: { id: "m-skill", role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: "toolu_skill", name: "Skill", input: { skill: "tdd" } }] },
+      },
+      { type: "system", subtype: "stop_hook_summary", hookCount: 1, hookInfos: [{ command: "notify.sh", durationMs: 400 }], hookErrors: [] },
+      { type: "system", subtype: "stop_hook_summary", hookCount: 1, hookInfos: [{ command: "notify.sh", durationMs: 700 }], hookErrors: [] },
+      { type: "attachment", attachment: { type: "hook_cancelled", hookName: "Stop", hookEvent: "Stop", command: "notify.sh", durationMs: 2_000, timedOut: true } },
+      { type: "system", subtype: "stop_hook_summary", hookCount: 1, hookInfos: [{ command: "lint.sh", durationMs: 250 }], hookErrors: [] },
+      { type: "system", subtype: "stop_hook_summary", hookCount: 1, hookInfos: [{ command: "lint.sh", durationMs: 100 }], hookErrors: ["exit code 1"] },
+    ],
+  });
+  const bare = writeConversation(daemon, { cwd: "/projects/beta", at: "2026-10-29T12:00:00.000Z", title: "Session with nothing recorded", pairs: 1 });
+  const gone = writeConversation(daemon, { cwd: "/projects/epsilon", at: "2026-10-28T10:00:00.000Z", title: "Launch context Claude Code will delete", pairs: 1 });
+  await indexed(daemon, session.id);
+  await indexed(daemon, bare.id);
+  await indexed(daemon, gone.id);
+
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${session.id}`);
+  const detail = dashboard.getByRole("main", { name: "History session" });
+  await expect(detail.getByRole("tab", { name: "Conversation", selected: true })).toBeVisible();
+  await detail.getByRole("tab", { name: "Launch context" }).click();
+  await expect(detail.getByRole("tab", { name: "Launch context", selected: true })).toBeVisible();
+  const panel = detail.getByRole("tabpanel");
+  await expect(panel).toHaveCount(1);
+  const section = (name: string) => panel.getByRole("region", { name });
+
+  // Instruction files: path, scope and reason, and the text as the session loaded it.
+  const files = section("Instruction files");
+  await expect(files.getByText(claudeMd, { exact: true })).toBeVisible();
+  await expect(files.getByText("/home/op/.claude/CLAUDE.md", { exact: true })).toBeVisible();
+  await expect(files.getByText("Project", { exact: true })).toBeVisible();
+  await expect(files.getByText("User", { exact: true })).toBeVisible();
+  await expect(files.getByText("Loaded at session start")).toHaveCount(2);
+  await files.getByText(claudeMd, { exact: true }).click();
+  await expect(files.getByText(/Run only the focused test\./)).toBeVisible();
+  await expect(files.getByText(/Rewritten after the session ran/)).toHaveCount(0);
+  await files.scrollIntoViewIfNeeded();
+  await capture(dashboard, "launch-context-instructions");
+
+  // The standing block is split off the appended value it was joined into.
+  await expect(section("Standing instructions")).toContainText("Never push without asking.");
+  const appended = section("Appended system prompt");
+  await expect(appended).not.toContainText("Never push without asking.");
+  await appended.getByText("Ask through the Mission Control channel.").first().click();
+  await expect(appended.locator("pre")).toHaveText("Ask through the Mission Control channel.");
+  await expect(section("Skills").getByRole("list", { name: "Skills available" })).toHaveText(/tdd\s*brief/);
+  await expect(section("Skills").getByRole("list", { name: "Skills used" })).toHaveText("tdd");
+  await expect(section("Environment")).toContainText("Current branch: fix-login-retry");
+
+  // MCP: each server with its status, the instructions one sent, and the tools offered.
+  const mcp = section("MCP servers and tools");
+  const server = (name: string) => mcp.getByRole("list", { name: "MCP servers" }).getByRole("listitem").filter({ hasText: name });
+  await expect(server("docs")).toContainText("Connected");
+  await expect(server("claude.ai Slack")).toContainText("Needs authentication");
+  await expect(server("claude.ai Gmail")).toContainText("Pending");
+  await expect(server("broken-server")).toContainText("Failed");
+  await server("docs").getByText("Instructions", { exact: true }).click();
+  await expect(server("docs")).toContainText("Search the docs before answering.");
+  await mcp.getByText("2 tools", { exact: true }).click();
+  await expect(mcp.getByRole("list", { name: "MCP tools" })).toHaveText(/mcp__docs__search\s*mcp__docs__read/);
+
+  // Hooks: one row per event and command, with runs, failures (cancelled or errored) and durations.
+  const hooks = section("Hooks");
+  const notify = hooks.getByRole("row").filter({ hasText: "notify.sh" });
+  await expect(notify.getByRole("cell")).toHaveText(["Stop", "notify.sh", "3 (1 failed)", "3s", "2s"]);
+  const lint = hooks.getByRole("row").filter({ hasText: "lint.sh" });
+  await expect(lint.getByRole("cell")).toHaveText(["Stop", "lint.sh", "2 (1 failed)", "350 ms", "250 ms"]);
+  await capture(dashboard, "launch-context");
+  await hooks.scrollIntoViewIfNeeded();
+  await capture(dashboard, "launch-context-mcp-hooks");
+
+  // Back on the Conversation tab, its transcript is still the one already read.
+  await detail.getByRole("tab", { name: "Conversation" }).click();
+  await expect(detail.getByRole("tabpanel").getByText("Question 000", { exact: true })).toBeVisible();
+
+  // A read that fails says so, and Try again reads it.
+  const launchUrl = `**/api/history/sessions/claude/${bare.id}/launch-context`;
+  await dashboard.route(launchUrl, (route) => route.fulfill({ status: 500, json: { error: "could not read this transcript (EACCES)" } }));
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${bare.id}`);
+  await detail.getByRole("tab", { name: "Launch context" }).click();
+  await expect(panel.getByText("Could not read the launch context")).toBeVisible();
+  await expect(panel.getByText("could not read this transcript (EACCES)")).toBeVisible();
+  await expect(panel.getByRole("region")).toHaveCount(0);
+  await dashboard.unroute(launchUrl);
+  await panel.getByRole("button", { name: "Try again" }).click();
+  await expect(section("Instruction files")).toBeVisible();
+
+  // A session that recorded no launch context at all: every section says Not recorded.
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${bare.id}`);
+  await detail.getByRole("tab", { name: "Launch context" }).click();
+  for (const name of ["Instruction files", "Standing instructions", "Appended system prompt", "MCP servers and tools", "Hooks"]) {
+    await expect(section(name).getByText("Not recorded", { exact: true }), name).toBeVisible();
+  }
+  await expect(section("Skills").getByText("Not recorded", { exact: true })).toBeVisible();
+  await capture(dashboard, "launch-context-not-recorded");
+  await section("Hooks").scrollIntoViewIfNeeded();
+  await capture(dashboard, "launch-context-not-recorded-hooks");
+
+  // A gone transcript shows the retention message and nothing else.
+  rmSync(gone.path);
+  await indexed(daemon, gone.id, "gone");
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${gone.id}`);
+  await detail.getByRole("tab", { name: "Launch context" }).click();
+  await expect(panel.getByRole("note")).toHaveText(/removed by Claude Code's retention/);
+  await expect(panel.getByRole("region")).toHaveCount(0);
+  await capture(dashboard, "launch-context-gone");
+});
+
 interface LiveSession {
   id: string;
   runtime: string;
@@ -297,7 +455,7 @@ test.describe("a transcript deleted after its row was indexed", () => {
   // No recurring scan: the one pass at startup indexes the row, and nothing marks it gone after.
   test.use({ daemonEnv: { MISSION_HISTORY_RECONCILE_MS: "0" } });
 
-  test("shows the retention message while its row still says present", async ({ dashboard, daemon }) => {
+  test("shows the retention message on both tabs while its row still says present", async ({ dashboard, daemon }) => {
     const session = writeConversation(daemon, { cwd: "/projects/zeta", at: "2026-10-27T10:00:00.000Z", title: "Deleted between scans", pairs: 1 });
     // The fixture daemon's startup pass saw an empty store; a restart is a startup onto this one.
     await daemon.crash();
@@ -311,6 +469,21 @@ test.describe("a transcript deleted after its row was indexed", () => {
     await expect(detail.getByRole("note")).toHaveText(/removed by Claude Code's retention/);
     // The read found it gone; the catalog has not walked since, so the row is not yet badged.
     await expect(detail.getByText("Transcript gone")).toHaveCount(0);
+    expect((await catalogRow(daemon, session.id) as CatalogRow & { transcriptState: string }).transcriptState).toBe("present");
+
+    // The Launch context tab reads the transcript too: its 410 is the retention message, not a failed read.
+    let launchStatus = 0;
+    dashboard.on("response", (response) => {
+      if (new URL(response.url()).pathname === `/api/history/sessions/claude/${session.id}/launch-context`) launchStatus = response.status();
+    });
+    await detail.getByRole("tab", { name: "Launch context" }).click();
+    const panel = detail.getByRole("tabpanel");
+    await expect(panel.getByRole("note")).toHaveText(/removed by Claude Code's retention/);
+    expect(launchStatus, "the tab fetched, rather than short-circuiting on a gone row").toBe(410);
+    await expect(panel.getByRole("region")).toHaveCount(0);
+    await expect(panel.getByText("Could not read the launch context")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Try again" })).toHaveCount(0);
+    await capture(dashboard, "launch-context-deleted-between-scans");
     expect((await catalogRow(daemon, session.id) as CatalogRow & { transcriptState: string }).transcriptState).toBe("present");
   });
 });
