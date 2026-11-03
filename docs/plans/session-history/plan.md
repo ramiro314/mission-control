@@ -438,10 +438,19 @@ flowchart TD
   `launched_at`, `mc_session_id` (empty until bound) and `state` (`pending`, `expired`,
   `bound`, `ended` or `released`). The slot's lease owner is
   `{kind: "manual", key: historyResumeOwnerKey(launch_id)}`, so the card names its owner.
-  `expected_agent_session_id` is the correlation key.
+  The correlation key is `expected_agent_session_id` **together with** `cwd`: a plain
+  `claude --resume <id>` keeps the source id, so the id alone cannot tell two launches of one
+  session apart.
+- **One open launch per session.** While a `pending` or `expired` launch exists for a source
+  session, Resume of that session is refused. The refusal names the launch's directory, and
+  says the slot is held for an agent that may still appear. The operator either waits, or
+  Returns that slot, which closes the launch (`released`) so a new Resume can start. A fork
+  launch counts too: its source is still the original session.
 - **Binding the discovered session.** When the Registry first holds a session whose
-  `agentSessionId` equals the `expected_agent_session_id` of a `pending` or `expired` launch,
-  the launch records that session's `mc_session_id` and becomes `bound`.
+  `agentSessionId` equals a `pending` or `expired` launch's `expected_agent_session_id`, **and
+  whose cwd, resolved through symlinks, is that launch's `cwd`**, the launch records the
+  session's `mc_session_id` and becomes `bound`. A session matching the id in any other
+  directory binds nothing, so it can never release a slot it does not run in.
 - **An agent that has not appeared yet.** A launch still unbound after a grace window (two
   discovery sweeps past the launch timeout) becomes `expired`. It is not treated as ended: a
   slow terminal, a cold start or an auth prompt can still produce the agent. An expired launch
@@ -457,9 +466,10 @@ flowchart TD
   finished. A `bound` launch with no live Registry session carrying its
   `expected_agent_session_id` ended while the daemon was down, and goes through the same
   release step. A `pending` launch with no live session becomes `expired` and keeps its lease,
-  exactly as above.
-- **Refusals** are explicit: the transcript is gone, the session is live, the directory does not
-  exist, the slot is no longer idle, or the agent host is unavailable.
+  exactly as above. All of these matches use the same id-and-cwd key.
+- **Refusals** are explicit: the transcript is gone, the session is live, a `pending` or
+  `expired` launch of it already holds a directory, the directory does not exist, the slot is
+  no longer idle, or the agent host is unavailable.
 
 **To verify first.** The first implementation ticket runs a token-free probe on Claude Code
 2.1.296. It opens each session interactively without sending a prompt, in a scratch
@@ -538,8 +548,10 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
 - Branch already checked out elsewhere: an idle pool slot holding the branch is offered first
   and leased as it stands; a branch held by another owner or outside the pool is checked out
   detached in the chosen slot, with the warning.
-- Launch correlation: a launch binds to the Registry session with its
-  `expected_agent_session_id`; the fork path passes the minted id with `--session-id`, or uses
+- Launch correlation: a launch binds only to a Registry session with its
+  `expected_agent_session_id` and its `cwd`, so a session with the right id in another
+  directory binds nothing; a second Resume of a session with a `pending` or `expired` launch is
+  refused until that slot is Returned; the fork path passes the minted id with `--session-id`, or uses
   the `forkSession` fallback's returned id, and writes `resumed_from` at launch; an unbound
   launch expires after its grace window and keeps its lease; an agent that appears after expiry
   still binds and is released when it ends; and the startup twin releases a bound launch whose
@@ -608,8 +620,9 @@ Definition of done as in `AGENTS.md`: typecheck, lint, build and smoke, and the 
    the stated rule, and a fork's id is known before launch.
 9. A slot taken for Resume returns to the pool when the session ends clean and stays leased
    when dirty, including when the session ended while the daemon was down. The link is the
-   launch record's `expected_agent_session_id`. A launch whose agent never appeared keeps its
-   lease until it binds or the operator Returns it.
+   launch record's `expected_agent_session_id` together with its `cwd`. A launch whose agent
+   never appeared keeps its lease until it binds or the operator Returns it, and blocks another
+   Resume of the same session until then.
 10. A Recent outcomes task title links to its session in History when one is bound.
 11. The list updates within seconds of a new session, and the first backfill shows sessions
     progressively.
@@ -686,13 +699,15 @@ The Plan Feasibility Judge asked for five clarifications. None changes a human d
 
 ### Review repairs (GitHub Inspector on #725)
 
-Three findings, none of which changes a human decision above:
+Four findings over two reviews, none of which changes a human decision above:
 
 - An unbound launch past its grace window expires and keeps its lease instead of being
   released, and a late agent still binds (Resume).
 - Classification reads tool lists only from a present `prompt_snapshot` (Catalog).
 - The canonical file for a duplicated session id is chosen by a stable rule, not scan order
   (Catalog).
+- A launch binds on its expected id together with its `cwd`, and a session with a `pending`
+  or `expired` launch cannot be resumed again until that slot is Returned (Resume).
 
 ### Assumptions stated during the interview
 
