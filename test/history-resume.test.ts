@@ -397,6 +397,39 @@ test("a bound launch whose session ends hands a clean slot back, and keeps a dir
   }
 });
 
+test("a hand-back refused for a lasting reason is retried with a doubling backoff, not on every tick", async () => {
+  reset();
+  const launches = new HistoryResumeLaunches();
+  const driven = drivenRegistry();
+  const refusal: HistoryResumeSlotReturn = { outcome: "refused", reason: "origin could not be fetched" };
+  const { pool, calls } = scriptedPool({ "slot-offline": [refusal] }, new Set(["slot-offline"]));
+  const TICK = 10;
+  let now = 1_000;
+  const stop = trackHistoryResumeLaunches(launches, driven.registry, { graceMs: GRACE, tickMs: TICK, now: () => now, slots: pool });
+  try {
+    const id = sessionId();
+    const claimed = launches.claim({ agent: "claude", sourceSessionId: id, expectedAgentSessionId: id, cwd: `/${id}`, slotId: "slot-offline" }, now);
+    assert.ok(claimed.ok);
+    driven.upsert(`term:${id}`, id, `/${id}`);
+    driven.emit({ type: "session_remove", id: `term:${id}` });
+    await until("the first hand-back", () => calls.length === 1);
+
+    // The clock is the tracker's own: real ticks keep firing, and none retries before its wait ends.
+    const ticks = async (count: number) => new Promise((resolve) => setTimeout(resolve, TICK * count));
+    for (const [wait, expected] of [[2 * TICK, 2], [4 * TICK, 3], [8 * TICK, 4]] as const) {
+      now += wait - 1;
+      await ticks(5);
+      assert.equal(calls.length, expected - 1, `nothing before ${wait}ms`);
+      now += 1;
+      await until(`attempt ${expected}`, () => calls.length === expected);
+    }
+    assert.equal(launches.get(claimed.launch.launchId)!.state, "ended", "still waiting for its slot");
+    assert.equal(launches.get(claimed.launch.launchId)!.keptReason, null);
+  } finally {
+    stop();
+  }
+});
+
 test("an unbound slotted launch expires and keeps its lease, blocks a second Resume until Returned, and a late agent is released when it ends", async () => {
   reset();
   const launches = new HistoryResumeLaunches();

@@ -222,7 +222,8 @@ the agent like any other terminal session, which turns the row **Live**.
   the launch stays `ended` with its reason in `kept_reason`, and the slot card says
   "Kept: uncommitted changes from a resumed session" or "Kept: commits on no branch from a
   resumed session" until the operator Returns it. A hand-back refused for a passing reason, such
-  as a process still inside the slot, is retried on every discovery tick. Only a launch that was
+  as a process still inside the slot or an origin that cannot be fetched, is retried on the
+  discovery tick with a backoff that doubles per refusal, up to ten minutes. Only a launch that was
   `bound` is ever released this way.
 - **Closing an unbound launch.** A launch with no worktree slot that has not bound within its
   grace window (the managed resume start deadline plus two discovery sweeps) is `released`. A

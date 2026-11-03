@@ -373,6 +373,9 @@ export class HistoryResumeLaunches {
   }
 }
 
+/** The longest a refused slot hand-back waits before it is tried again. */
+export const RESUME_RETURN_BACKOFF_MAX_MS = 10 * 60_000;
+
 /** What the tracker needs from the Registry. */
 export interface HistoryResumeRegistry {
   subscribe(fn: (event: ServerEvent) => void): () => void;
@@ -421,31 +424,41 @@ export function trackHistoryResumeLaunches(
   const releaseReturned = () => {
     if (slots) guarded("slot release", () => launches.slotsReturned(now(), startedAt, slots.holds));
   };
-  // A hand-back in flight is never started twice; one refused for a passing reason, such as a
-  // process still inside the slot, is retried on the next tick and logged once per reason.
+  // A hand-back in flight is never started twice. One refused for a passing reason, such as a
+  // process still inside the slot or an origin that cannot be fetched, is retried with a backoff
+  // that doubles per refusal up to `RESUME_RETURN_BACKOFF_MAX_MS`, so a lasting refusal never
+  // fetches on every tick. Each new reason is logged once.
   const returning = new Set<string>();
-  const lastRefusal = new Map<string, string>();
+  const refusals = new Map<string, { reason: string; count: number; retryAt: number }>();
+  const maxBackoff = Math.max(options.tickMs, RESUME_RETURN_BACKOFF_MAX_MS);
   let stopped = false;
   const returnEnded = () => {
     if (!slots || stopped) return;
     const awaiting = guarded("slot return", () => launches.awaitingReturn()) ?? [];
     const ids = new Set(awaiting.map(({ launch }) => launch.launchId));
-    for (const id of lastRefusal.keys()) if (!ids.has(id)) lastRefusal.delete(id);
+    for (const id of refusals.keys()) if (!ids.has(id)) refusals.delete(id);
     for (const { launch, leaseKey } of awaiting) {
       if (returning.has(launch.launchId)) continue;
+      const refused = refusals.get(launch.launchId);
+      if (refused && now() < refused.retryAt) continue;
       returning.add(launch.launchId);
       void slots.returnResumed(launch.slotId!, leaseKey, historyResumeOwnerKey(launch.launchId))
         .then((result) => guarded("slot return", () => {
           if (stopped) return;
           if (result.outcome === "released" || result.outcome === "notHeld") {
             launches.release(launch.launchId, now());
-            lastRefusal.delete(launch.launchId);
+            refusals.delete(launch.launchId);
           } else if (result.outcome === "kept") {
             if (launches.keep(launch.launchId, result.reason, now())) options.onSlotChanged?.();
-            lastRefusal.delete(launch.launchId);
-          } else if (lastRefusal.get(launch.launchId) !== result.reason) {
-            lastRefusal.set(launch.launchId, result.reason);
-            console.warn(`[history] slot ${launch.slotId} of resume launch ${launch.launchId} is not handed back yet: ${result.reason}`);
+            refusals.delete(launch.launchId);
+          } else {
+            const previous = refusals.get(launch.launchId);
+            const count = (previous?.count ?? 0) + 1;
+            const wait = Math.min(options.tickMs * 2 ** count, maxBackoff);
+            refusals.set(launch.launchId, { reason: result.reason, count, retryAt: now() + wait });
+            if (previous?.reason !== result.reason) {
+              console.warn(`[history] slot ${launch.slotId} of resume launch ${launch.launchId} is not handed back yet: ${result.reason}`);
+            }
           }
         }))
         .catch((error: unknown) => console.error(`[history] resume launch slot return failed: ${String(error)}`))
@@ -465,7 +478,7 @@ export function trackHistoryResumeLaunches(
     returnEnded();
   });
   // The tick also catches a slot change whose notice never arrived, such as one made while the
-  // daemon was down, and retries a hand-back that a passing reason refused.
+  // daemon was down, and retries a hand-back that a passing reason refused once its backoff ends.
   const timer = setInterval(() => {
     changed(guarded("expiry", () => launches.expire(now(), options.graceMs)));
     releaseReturned();
