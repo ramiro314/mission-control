@@ -449,6 +449,17 @@ test("reviewFollowupPrs ignores an adopted row that is not this session's open P
   assert.equal(reviewFollowupPrs(detached(), [adoptedRow(), adoptedRow()]).length, 1, "one entry per key");
 });
 
+test("reviewFollowupPrs does not offer a card PR twice when the card has no Inspector summary yet", () => {
+  // The card falls back to `#7` until its registry projection sees the adoption; the route,
+  // read from the database, already names the same pull request `owner/repo#7`.
+  const unqualified = mkSession({ inspector: null });
+  assert.equal(followupPrs(unqualified)[0]?.prKey, "#7");
+  const sameUrl = adoptedRow({ key: "owner/repo#7", url: "https://github.com/owner/repo/pull/7", number: 7 });
+  assert.deepEqual(reviewFollowupPrs(unqualified, [sameUrl]), followupPrs(unqualified));
+  const otherCase = adoptedRow({ key: "Owner/Repo#7", url: "https://github.com/Owner/Repo/pull/7", number: 7 });
+  assert.deepEqual(reviewFollowupPrs(unqualified, [otherCase]), followupPrs(unqualified), "GitHub names are case-insensitive");
+});
+
 test("an adopted-only PR with unresolved findings asks for them, and with none it is left alone", () => {
   const session = detached();
   const [pr] = reviewFollowupPrs(session, [adoptedRow()]);

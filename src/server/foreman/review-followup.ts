@@ -334,14 +334,17 @@ export function reviewFollowupPrs(
   adopted: readonly AdoptedInspection[],
 ): FollowupPr[] {
   const out = followupPrs(session);
-  const keys = new Set(out.map((pr) => pr.prKey));
+  // A card without an Inspector summary keys its PR `#123`, while the adopted row says
+  // `owner/repo#123`, so the URL is the identity. GitHub names are case-insensitive.
+  const seen = new Set(out.map((pr) => pr.url.toLowerCase()));
   for (const { row, inspector } of adopted) {
     // `state` is checked here too: an older daemon ignores `?state=open` and answers every row.
     if (row.state !== "open") continue;
     if (row.sessionId !== session.id || row.repoRoot !== session.repoRoot) continue;
     if (row.headRefName === null || row.headRefName !== session.gitBranch) continue;
-    if (keys.has(row.key)) continue;
-    keys.add(row.key);
+    const url = row.url.toLowerCase();
+    if (seen.has(url)) continue;
+    seen.add(url);
     out.push({
       prKey: row.key,
       url: row.url,
