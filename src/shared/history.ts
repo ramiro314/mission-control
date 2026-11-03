@@ -304,7 +304,7 @@ export interface HistoryHookRun {
   runs: number;
   totalMs: number;
   maxMs: number;
-  /** Runs that recorded an error or were cancelled. */
+  /** Runs that recorded an error or were cancelled. Shown as "failed". */
   failures: number;
 }
 

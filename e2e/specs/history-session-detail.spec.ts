@@ -257,6 +257,7 @@ test("Launch context renders every recorded section, the instruction files as lo
       { type: "system", subtype: "stop_hook_summary", hookCount: 1, hookInfos: [{ command: "notify.sh", durationMs: 700 }], hookErrors: [] },
       { type: "attachment", attachment: { type: "hook_cancelled", hookName: "Stop", hookEvent: "Stop", command: "notify.sh", durationMs: 2_000, timedOut: true } },
       { type: "system", subtype: "stop_hook_summary", hookCount: 1, hookInfos: [{ command: "lint.sh", durationMs: 250 }], hookErrors: [] },
+      { type: "system", subtype: "stop_hook_summary", hookCount: 1, hookInfos: [{ command: "lint.sh", durationMs: 100 }], hookErrors: ["exit code 1"] },
     ],
   });
   const bare = writeConversation(daemon, { cwd: "/projects/beta", at: "2026-10-29T12:00:00.000Z", title: "Session with nothing recorded", pairs: 1 });
@@ -309,12 +310,12 @@ test("Launch context renders every recorded section, the instruction files as lo
   await mcp.getByText("2 tools", { exact: true }).click();
   await expect(mcp.getByRole("list", { name: "MCP tools" })).toHaveText(/mcp__docs__search\s*mcp__docs__read/);
 
-  // Hooks: one row per event and command, with runs, cancellations and durations.
+  // Hooks: one row per event and command, with runs, failures (cancelled or errored) and durations.
   const hooks = section("Hooks");
   const notify = hooks.getByRole("row").filter({ hasText: "notify.sh" });
-  await expect(notify.getByRole("cell")).toHaveText(["Stop", "notify.sh", "3 (1 cancelled)", "3s", "2s"]);
+  await expect(notify.getByRole("cell")).toHaveText(["Stop", "notify.sh", "3 (1 failed)", "3s", "2s"]);
   const lint = hooks.getByRole("row").filter({ hasText: "lint.sh" });
-  await expect(lint.getByRole("cell")).toHaveText(["Stop", "lint.sh", "1", "250 ms", "250 ms"]);
+  await expect(lint.getByRole("cell")).toHaveText(["Stop", "lint.sh", "2 (1 failed)", "350 ms", "250 ms"]);
   await capture(dashboard, "launch-context");
   await hooks.scrollIntoViewIfNeeded();
   await capture(dashboard, "launch-context-mcp-hooks");

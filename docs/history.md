@@ -94,10 +94,14 @@ History has not indexed says so.
     snapshot's tool list: each server's latest status (connected, pending, needs
     authentication, failed), the instructions it sent, and the MCP tools offered.
   - **Environment.** Working directory, branch, git status at launch, worktree and repository
-    flags, additional directories, platform, model, effort and permission mode. The account
+    flags, additional directories, platform, model, effort and permission mode, all from the
+    session's own records: a subagent's records and attachments never set them. The account
     email Claude Code records beside the git status is not served.
   - **Hooks** that ran (`stop_hook_summary`, `hook_cancelled`), grouped by event and command
-    with their run count, total and longest duration, and how many were cancelled.
+    with their run count, total and longest duration, and how many failed. A failed run is a
+    cancelled one, or one whose summary recorded `hookErrors`: a summary of one hook charges
+    its errors to that hook, and a summary of several charges only a hook whose command an
+    error names.
 - **Transcript gone.** The header stays, with the **Transcript gone** badge, and both tabs say
   the transcript was removed by Claude Code's retention.
 - **Live.** A session the Registry is running carries a **Live** badge in the list and in its

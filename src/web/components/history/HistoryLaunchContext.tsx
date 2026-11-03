@@ -215,7 +215,7 @@ function Hooks({ hooks }: { hooks: HistoryHookRun[] | null }): React.JSX.Element
           <tr key={`${hook.event}:${hook.command}`}>
             <td>{hook.event}</td>
             <td className="mono history-launch-command">{hook.command}</td>
-            <td>{hook.runs}{hook.failures > 0 ? ` (${hook.failures} cancelled)` : ""}</td>
+            <td>{hook.runs}{hook.failures > 0 ? ` (${hook.failures} failed)` : ""}</td>
             <td>{ms(hook.totalMs)}</td>
             <td>{ms(hook.maxMs)}</td>
           </tr>

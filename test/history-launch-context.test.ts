@@ -203,6 +203,9 @@ test("invoked skills count as used, removed tools drop out, the newest server st
     // A subagent's records come first, carrying its own place, mode, model and effort.
     { ...sidechain, type: "user", message: { role: "user", content: "subtask" } },
     { ...sidechain, type: "assistant", effort: "low", message: { role: "assistant", model: "claude-haiku-5-5", content: [{ type: "text", text: "done" }] } },
+    { ...sidechain, type: "attachment", attachment: { type: "environment", snapshot: { workingDirectory: "/work/agent", isWorktree: true, platform: "darwin" } } },
+    { ...sidechain, type: "attachment", attachment: { type: "model", identity: { modelId: "claude-haiku-5-5" } } },
+    { ...sidechain, type: "attachment", attachment: { type: "session_context", context: { gitStatus: "the subagent's status" } } },
     { ...base, type: "user", permissionMode: "plan", message: { role: "user", content: "go" } },
     { ...base, type: "assistant", effort: "xhigh", message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }] } },
     attachment({ type: "invoked_skills", skills: [{ name: "mission-html-plans", path: "userSettings:mission-html-plans", content: "…" }] }),
@@ -229,6 +232,29 @@ test("invoked skills count as used, removed tools drop out, the newest server st
   assert.equal(context.environment.permissionMode, "plan");
   assert.equal(context.environment.model, "claude-opus-5-5");
   assert.equal(context.environment.effort, "xhigh");
+  assert.equal(context.environment.isWorktree, null, "nor its environment attachment");
+  assert.equal(context.environment.platform, null);
+  assert.equal(context.environment.gitStatus, null, "nor its git status");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a hook run whose summary recorded errors counts as failed, charged only to the hook it names", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-history-launch-hooks-"));
+  const summary = (hookInfos: { command: string; durationMs: number }[], hookErrors: unknown[]) =>
+    ({ ...base, type: "system", subtype: "stop_hook_summary", hookCount: hookInfos.length, hookInfos, hookErrors });
+  const context = await readClaudeLaunchContext(write(dir, ID, [
+    summary([{ command: "lint.sh", durationMs: 100 }], []),
+    // One hook in the summary owns its errors, whatever they say.
+    summary([{ command: "lint.sh", durationMs: 200 }], ["exit code 1"]),
+    // Of several, only the hook an error names is charged.
+    summary([{ command: "lint.sh", durationMs: 10 }, { command: "notify.sh", durationMs: 20 }], [{ message: "notify.sh: exit code 2" }]),
+    // An error naming neither charges neither.
+    summary([{ command: "lint.sh", durationMs: 10 }, { command: "notify.sh", durationMs: 20 }], ["something failed"]),
+  ]));
+  assert.deepEqual(context.hooks, [
+    { event: "Stop", command: "lint.sh", runs: 4, totalMs: 320, maxMs: 200, failures: 1 },
+    { event: "Stop", command: "notify.sh", runs: 2, totalMs: 40, maxMs: 20, failures: 1 },
+  ]);
   rmSync(dir, { recursive: true, force: true });
 });
 

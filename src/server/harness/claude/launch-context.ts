@@ -92,7 +92,8 @@ class LaunchContextReader {
   private firstModel: string | null = null;
 
   fold(rec: Rec): void {
-    if (rec.isSidechain !== true) {
+    const sidechain = rec.isSidechain === true;
+    if (!sidechain) {
       this.firstCwd ??= str(rec.cwd);
       this.env.branch ??= str(rec.gitBranch);
       // A `permission-mode` record, or the field a user record carries beside its prompt.
@@ -101,14 +102,20 @@ class LaunchContextReader {
     switch (rec.type) {
       case "attachment": {
         const attachment = record(rec.attachment);
-        if (attachment) this.attachment(attachment);
+        if (attachment) this.attachment(attachment, sidechain);
         return;
       }
       case "system":
         if (rec.subtype === "stop_hook_summary" && Array.isArray(rec.hookInfos)) {
+          // The errors are the summary's, not a hook's. One hook in the summary owns them; of
+          // several, only a hook whose command an error names does, so none is blamed for
+          // another's failure.
+          const errors = Array.isArray(rec.hookErrors) && rec.hookErrors.length > 0 ? JSON.stringify(rec.hookErrors) : null;
           for (const info of rec.hookInfos) {
             const command = str(record(info)?.command);
-            if (command) this.hook(str(rec.hookEvent) ?? "Stop", command, record(info)?.durationMs, false);
+            if (!command) continue;
+            const failed = errors !== null && (rec.hookInfos.length === 1 || errors.includes(command));
+            this.hook(str(rec.hookEvent) ?? "Stop", command, record(info)?.durationMs, failed);
           }
         }
         return;
@@ -127,7 +134,7 @@ class LaunchContextReader {
     }
   }
 
-  private attachment(a: Rec): void {
+  private attachment(a: Rec, sidechain: boolean): void {
     switch (a.type) {
       case "instructions": {
         if (!Array.isArray(a.files)) return;
@@ -174,7 +181,8 @@ class LaunchContextReader {
         return;
       }
       case "environment": {
-        const snapshot = record(a.snapshot);
+        // A subagent's own environment, model and git status are not the session's.
+        const snapshot = sidechain ? null : record(a.snapshot);
         if (!snapshot) return;
         this.env.cwd ??= str(snapshot.workingDirectory);
         this.env.isWorktree ??= typeof snapshot.isWorktree === "boolean" ? snapshot.isWorktree : null;
@@ -188,10 +196,12 @@ class LaunchContextReader {
         return;
       }
       case "session_context":
+        if (sidechain) return;
         // Only the git status: the same record carries the account's email, which is not launch context.
         this.env.gitStatus ??= str(record(a.context)?.gitStatus);
         return;
       case "model":
+        if (sidechain) return;
         this.env.model ??= str(record(a.identity)?.modelId);
         return;
       case "hook_cancelled": {
@@ -245,14 +255,14 @@ class LaunchContextReader {
     });
   }
 
-  private hook(event: string, command: string, durationMs: unknown, cancelled: boolean): void {
+  private hook(event: string, command: string, durationMs: unknown, failed: boolean): void {
     const ms = typeof durationMs === "number" && Number.isFinite(durationMs) ? durationMs : 0;
     const key = `${event}\u0000${command}`;
     const run = this.hooks.get(key) ?? { event, command, runs: 0, totalMs: 0, maxMs: 0, failures: 0 };
     run.runs += 1;
     run.totalMs += ms;
     run.maxMs = Math.max(run.maxMs, ms);
-    if (cancelled) run.failures += 1;
+    if (failed) run.failures += 1;
     this.hooks.set(key, run);
   }
 
