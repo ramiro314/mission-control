@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -196,6 +196,42 @@ test("a recorded system prompt with no standing block is recorded, with none app
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("invoked skills count as used, removed tools drop out, the newest server status wins, and a subagent sets no environment", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-history-launch-branches-"));
+  const sidechain = { ...base, isSidechain: true, cwd: "/work/agent", gitBranch: "agent-branch", permissionMode: "bypassPermissions" };
+  const context = await readClaudeLaunchContext(write(dir, ID, [
+    // A subagent's records come first, carrying its own place, mode, model and effort.
+    { ...sidechain, type: "user", message: { role: "user", content: "subtask" } },
+    { ...sidechain, type: "assistant", effort: "low", message: { role: "assistant", model: "claude-haiku-5-5", content: [{ type: "text", text: "done" }] } },
+    { ...base, type: "user", permissionMode: "plan", message: { role: "user", content: "go" } },
+    { ...base, type: "assistant", effort: "xhigh", message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }] } },
+    attachment({ type: "invoked_skills", skills: [{ name: "mission-html-plans", path: "userSettings:mission-html-plans", content: "…" }] }),
+    attachment({
+      type: "deferred_tools_delta",
+      addedNames: ["mcp__docs__search", "mcp__docs__read"],
+      removedNames: [],
+      pendingMcpServers: ["docs"],
+      needsAuthMcpServers: [],
+      failedMcpServers: [],
+    }),
+    attachment({ type: "deferred_tools_delta", addedNames: [], removedNames: ["mcp__docs__read"] }),
+    // Pending at launch, connected once its instructions arrived.
+    attachment({ type: "mcp_instructions_delta", addedNames: ["docs"], addedBlocks: ["Search first."], removedNames: [] }),
+  ]));
+
+  assert.deepEqual(context.skills.used, ["mission-html-plans"]);
+  assert.deepEqual(context.mcp, {
+    servers: [{ name: "docs", status: "connected", instructions: "Search first." }],
+    tools: ["mcp__docs__search"],
+  });
+  assert.equal(context.environment.cwd, "/work/app", "the subagent's cwd is not the session's");
+  assert.equal(context.environment.branch, "fix-login");
+  assert.equal(context.environment.permissionMode, "plan");
+  assert.equal(context.environment.model, "claude-opus-5-5");
+  assert.equal(context.environment.effort, "xhigh");
+  rmSync(dir, { recursive: true, force: true });
+});
+
 async function fixture() {
   openDb().exec("DELETE FROM history_sessions");
   const projects = mkdtempSync(join(tmpdir(), "mission-history-launch-projects-"));
@@ -237,6 +273,18 @@ test("the launch-context route serves the sections, the snapshot rather than tod
     `/api/history/sessions/codex/${ID}/launch-context`,
   ]) {
     assert.equal((await f.get(bad)).status, 404, bad);
+  }
+
+  // A transcript still there that cannot be read is a 500 naming why, never retention or an empty context.
+  if (process.getuid?.() !== 0) {
+    chmodSync(path, 0o000);
+    try {
+      const denied = await f.get(`/api/history/sessions/claude/${ID}/launch-context`);
+      assert.equal(denied.status, 500);
+      assert.match(((await denied.json()) as { error: string }).error, /EACCES/);
+    } finally {
+      chmodSync(path, 0o644);
+    }
   }
 
   // Removed but not yet walked, and then walked: a 410 either way, never an empty context.

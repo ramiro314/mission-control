@@ -34,7 +34,17 @@ function sessionId(): string {
 /** Writes one interactive conversation the way Claude Code lays it out. */
 function writeConversation(
   daemon: DaemonHandle,
-  shape: { cwd: string; at: string; title: string; pairs: number; pad?: number; launch?: Record<string, unknown>[] },
+  shape: {
+    cwd: string;
+    at: string;
+    title: string;
+    pairs: number;
+    pad?: number;
+    /** Attachment bodies, recorded after the title. */
+    launch?: Record<string, unknown>[];
+    /** Whole records, recorded after the conversation. */
+    records?: Record<string, unknown>[];
+  },
 ): { id: string; path: string } {
   const id = sessionId();
   const base = { sessionId: id, cwd: shape.cwd, entrypoint: "cli", version: "2.1.296", gitBranch: "fix-login-retry", isSidechain: false };
@@ -58,6 +68,7 @@ function writeConversation(
       },
     });
   }
+  for (const record of shape.records ?? []) lines.push({ ...base, timestamp: shape.at, ...record });
   lines.push({ ...base, timestamp: shape.at, type: "cost-state", totalCostUSD: 1.25, totalDuration: 65_000, startTime: start });
   const dir = join(daemon.home, ".claude", "projects", shape.cwd.replace(/[^a-zA-Z0-9]/g, "-"));
   mkdirSync(dir, { recursive: true });
@@ -200,7 +211,7 @@ test("a session opens from its row and from a deep link, pages its conversation,
   await capture(dashboard, "transcript-gone");
 });
 
-test("Launch context shows the instruction files the session loaded and says what was not recorded", async ({ dashboard, daemon }) => {
+test("Launch context renders every recorded section, the instruction files as loaded, and Not recorded for what is missing", async ({ dashboard, daemon }) => {
   // The session loaded one CLAUDE.md, and the file on disk has been rewritten since.
   const claudeMd = join(daemon.repo, "CLAUDE.md");
   writeFileSync(claudeMd, "# Demo repo\nRewritten after the session ran.\n");
@@ -218,11 +229,34 @@ test("Launch context shows the instruction files the session loaded and says wha
           { path: "/home/op/.claude/CLAUDE.md", type: "User", content: "# Global\nPrefer small diffs." },
         ],
       },
-      { type: "prompt_snapshot", systemPrompt: ["## Standing instructions for this repository\n\nNever push without asking."] },
+      {
+        type: "prompt_snapshot",
+        systemPrompt: ["Ask through the Mission Control channel.\n\n## Standing instructions for this repository\n\nNever push without asking."],
+      },
       { type: "skill_listing", names: ["tdd", "brief"], skillCount: 2, isInitial: true },
+      { type: "mcp_instructions_delta", addedNames: ["docs"], addedBlocks: ["Search the docs before answering."], removedNames: [] },
+      {
+        type: "deferred_tools_delta",
+        addedNames: ["mcp__docs__search", "mcp__docs__read"],
+        removedNames: [],
+        pendingMcpServers: ["claude.ai Gmail"],
+        needsAuthMcpServers: ["claude.ai Slack"],
+        failedMcpServers: ["broken-server"],
+      },
       { type: "environment", snapshot: { workingDirectory: daemon.repo, isWorktree: false, isGitRepo: true, additionalWorkingDirectories: [] } },
       { type: "session_context", context: { gitStatus: "Current branch: fix-login-retry\n(clean)" } },
       { type: "a_future_attachment", anything: true },
+    ],
+    records: [
+      {
+        type: "assistant",
+        uuid: "skill-call",
+        message: { id: "m-skill", role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: "toolu_skill", name: "Skill", input: { skill: "tdd" } }] },
+      },
+      { type: "system", subtype: "stop_hook_summary", hookCount: 1, hookInfos: [{ command: "notify.sh", durationMs: 400 }], hookErrors: [] },
+      { type: "system", subtype: "stop_hook_summary", hookCount: 1, hookInfos: [{ command: "notify.sh", durationMs: 700 }], hookErrors: [] },
+      { type: "attachment", attachment: { type: "hook_cancelled", hookName: "Stop", hookEvent: "Stop", command: "notify.sh", durationMs: 2_000, timedOut: true } },
+      { type: "system", subtype: "stop_hook_summary", hookCount: 1, hookInfos: [{ command: "lint.sh", durationMs: 250 }], hookErrors: [] },
     ],
   });
   const bare = writeConversation(daemon, { cwd: "/projects/beta", at: "2026-10-29T12:00:00.000Z", title: "Session with nothing recorded", pairs: 1 });
@@ -251,19 +285,53 @@ test("Launch context shows the instruction files the session loaded and says wha
   await expect(files.getByText(/Run only the focused test\./)).toBeVisible();
   await expect(files.getByText(/Rewritten after the session ran/)).toHaveCount(0);
 
+  // The standing block is split off the appended value it was joined into.
   await expect(section("Standing instructions")).toContainText("Never push without asking.");
-  await expect(section("Appended system prompt")).toContainText("None appended");
+  const appended = section("Appended system prompt");
+  await expect(appended).not.toContainText("Never push without asking.");
+  await appended.getByText("Ask through the Mission Control channel.").first().click();
+  await expect(appended.locator("pre")).toHaveText("Ask through the Mission Control channel.");
   await expect(section("Skills").getByRole("list", { name: "Skills available" })).toHaveText(/tdd\s*brief/);
-  await expect(section("Skills")).toContainText("None used");
+  await expect(section("Skills").getByRole("list", { name: "Skills used" })).toHaveText("tdd");
   await expect(section("Environment")).toContainText("Current branch: fix-login-retry");
-  // What the transcript never recorded says so, rather than reading as none.
-  await expect(section("MCP servers and tools").getByText("Not recorded", { exact: true })).toBeVisible();
-  await expect(section("Hooks").getByText("Not recorded", { exact: true })).toBeVisible();
+
+  // MCP: each server with its status, the instructions one sent, and the tools offered.
+  const mcp = section("MCP servers and tools");
+  const server = (name: string) => mcp.getByRole("list", { name: "MCP servers" }).getByRole("listitem").filter({ hasText: name });
+  await expect(server("docs")).toContainText("Connected");
+  await expect(server("claude.ai Slack")).toContainText("Needs authentication");
+  await expect(server("claude.ai Gmail")).toContainText("Pending");
+  await expect(server("broken-server")).toContainText("Failed");
+  await server("docs").getByText("Instructions", { exact: true }).click();
+  await expect(server("docs")).toContainText("Search the docs before answering.");
+  await mcp.getByText("2 tools", { exact: true }).click();
+  await expect(mcp.getByRole("list", { name: "MCP tools" })).toHaveText(/mcp__docs__search\s*mcp__docs__read/);
+
+  // Hooks: one row per event and command, with runs, cancellations and durations.
+  const hooks = section("Hooks");
+  const notify = hooks.getByRole("row").filter({ hasText: "notify.sh" });
+  await expect(notify.getByRole("cell")).toHaveText(["Stop", "notify.sh", "3 (1 cancelled)", "3s", "2s"]);
+  const lint = hooks.getByRole("row").filter({ hasText: "lint.sh" });
+  await expect(lint.getByRole("cell")).toHaveText(["Stop", "lint.sh", "1", "250 ms", "250 ms"]);
   await capture(dashboard, "launch-context");
+  await hooks.scrollIntoViewIfNeeded();
+  await capture(dashboard, "launch-context-mcp-hooks");
 
   // Back on the Conversation tab, its transcript is still the one already read.
   await detail.getByRole("tab", { name: "Conversation" }).click();
   await expect(detail.getByRole("tabpanel").getByText("Question 000", { exact: true })).toBeVisible();
+
+  // A read that fails says so, and Try again reads it.
+  const launchUrl = `**/api/history/sessions/claude/${bare.id}/launch-context`;
+  await dashboard.route(launchUrl, (route) => route.fulfill({ status: 500, json: { error: "could not read this transcript (EACCES)" } }));
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${bare.id}`);
+  await detail.getByRole("tab", { name: "Launch context" }).click();
+  await expect(panel.getByText("Could not read the launch context")).toBeVisible();
+  await expect(panel.getByText("could not read this transcript (EACCES)")).toBeVisible();
+  await expect(panel.getByRole("region")).toHaveCount(0);
+  await dashboard.unroute(launchUrl);
+  await panel.getByRole("button", { name: "Try again" }).click();
+  await expect(section("Instruction files")).toBeVisible();
 
   // A session that recorded no launch context at all: every section says Not recorded.
   await dashboard.goto(`${daemon.baseURL}/#/history/claude/${bare.id}`);
