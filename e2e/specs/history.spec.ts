@@ -96,7 +96,7 @@ async function capture(page: Page, name: string): Promise<void> {
  * one transcript the spec will delete, and enough filler for a second page. Then restarts the
  * daemon onto it, which is what a first run is.
  */
-async function seedAndRestart(daemon: DaemonHandle): Promise<{ id: string; path: string }> {
+async function seedAndRestart(daemon: DaemonHandle, filler = FILLER): Promise<{ id: string; path: string }> {
   // The newest row, and the one that carries every field a row shows.
   writeSession(daemon, {
     cwd: "/projects/alpha-service",
@@ -122,7 +122,7 @@ async function seedAndRestart(daemon: DaemonHandle): Promise<{ id: string; path:
   writeSession(daemon, { cwd: "/projects/alpha-service", at: "2026-10-31T10:00:00.000Z", entrypoint: "sdk-ts", tools: [], prompt: "Background one-shot run" });
   writeSession(daemon, { cwd: "/projects/alpha-service", at: "2026-10-31T11:00:00.000Z", entrypoint: "sdk-ts", tools: ["Read", "StructuredOutput"], prompt: "Background reviewer run" });
   const gone = writeSession(daemon, { cwd: "/projects/epsilon", at: "2026-10-28T10:00:00.000Z", prompt: "A transcript Claude Code will delete" });
-  for (let i = 0; i < FILLER; i++) {
+  for (let i = 0; i < filler; i++) {
     writeSession(daemon, {
       cwd: "/projects/filler",
       at: new Date(Date.UTC(2026, 9, 20, 12, 0, 0) - i * 60_000).toISOString(),
@@ -269,4 +269,44 @@ test("a Load more the daemon refuses says why, and keeps the rows and the button
   await expect(page.getByRole("listitem")).toHaveCount(50);
   await expect(page.getByRole("button", { name: "Load more" })).toBeEnabled();
   await capture(dashboard, "load-more-refused");
+});
+
+test.describe("a window paged past the route's 200-row cap", () => {
+  // A fast backfill, so 260 fixtures index in a moment; the indexing state the page re-reads
+  // under comes from the route rewrite below instead.
+  test.use({ daemonEnv: { MISSION_HISTORY_RECONCILE_MS: "300", MISSION_HISTORY_BATCH_SIZE: "100" } });
+
+  test("survives the indexing re-read with every row and its cursor", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon, 255);
+    await backfilled(daemon);
+    // Every read keeps reporting a backfill, so the page re-reads once a second throughout.
+    // Reads without a cursor are the re-reads, each the start of a rebuilt window.
+    let rereads = 0;
+    await dashboard.route("**/api/history/sessions**", async (route) => {
+      const response = await route.fetch();
+      if (!route.request().url().includes("cursor=")) rereads += 1;
+      const body = await response.json() as { progress: unknown };
+      body.progress = { indexing: true, indexed: 259, total: 262 };
+      await route.fulfill({ response, json: body });
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(50);
+    for (const depth of [100, 150, 200, 250]) {
+      await page.getByRole("button", { name: "Load more" }).click();
+      await expect(rows).toHaveCount(depth);
+    }
+    // Two full re-reads after the last page landed. Each one rebuilds the window from the top,
+    // and a rebuild capped at 200 rows would drop the last fifty and move the cursor back.
+    const after = rereads;
+    await expect.poll(() => rereads, { timeout: 10_000 }).toBeGreaterThanOrEqual(after + 2);
+    await expect(rows).toHaveCount(250);
+    // Five featured conversations sit above the filler, so the 250th row is filler 244.
+    await expect(page.getByText("Filler conversation 244", { exact: true })).toBeVisible();
+    await expect(page.getByText("Filler conversation 245", { exact: true })).toHaveCount(0);
+    // The cursor still continues below the window: the next page holds the last ten.
+    await page.getByRole("button", { name: "Load more" }).click();
+    await expect(rows).toHaveCount(260);
+  });
 });

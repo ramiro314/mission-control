@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HISTORY_PAGE_LIMITS, type HistoryProgress, type HistorySessionSummary } from "@shared/history.ts";
 import { api } from "../../lib/api.ts";
+import { appendHistoryRows, readHistoryWindow } from "./history-window.ts";
 
 /**
  * The History page's data, and the only place that talks to `/api/history/sessions`.
@@ -10,7 +11,7 @@ import { api } from "../../lib/api.ts";
  * 1. **A failed read is not an empty history.** The page says "could not ask" differently
  *    from "nothing recorded".
  * 2. **A refresh keeps the depth on screen.** It refetches as many rows as the operator has
- *    paged to, so a "Load more" is never silently undone.
+ *    paged to, a page at a time past the route's cap, so a "Load more" is never undone.
  *
  * While the catalog reports a backfill in progress, the window is refetched a second after each
  * answer lands, so sessions appear as they are indexed. That poll stops the moment indexing does. Live updates
@@ -33,19 +34,6 @@ export interface HistoryCatalog {
   moreError: string | null;
   loadMore: () => void;
   refresh: () => void;
-}
-
-function rowKey(row: HistorySessionSummary): string {
-  return `${row.agent}:${row.agentSessionId}`;
-}
-
-/** Append a continuation, dropping rows the window already holds. */
-export function appendHistoryRows(
-  prev: readonly HistorySessionSummary[],
-  incoming: readonly HistorySessionSummary[],
-): HistorySessionSummary[] {
-  const seen = new Set(prev.map(rowKey));
-  return [...prev, ...incoming.filter((row) => !seen.has(rowKey(row)))];
 }
 
 export function useHistoryCatalog(): HistoryCatalog {
@@ -71,8 +59,7 @@ export function useHistoryCatalog(): HistoryCatalog {
     moreAbort.current?.abort();
     moreAbort.current = null;
     setLoadingMore(false);
-    const limit = Math.min(HISTORY_PAGE_LIMITS.maxLimit, Math.max(HISTORY_PAGE_LIMITS.defaultLimit, depth.current));
-    void api.historySessions({ limit }, controller.signal).then((result) => {
+    void readHistoryWindow((query) => api.historySessions(query, controller.signal), depth.current).then((result) => {
       if (controller.signal.aborted) return;
       if (!result.ok) {
         setListError(result.error);
