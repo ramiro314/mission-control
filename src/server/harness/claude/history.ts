@@ -334,10 +334,14 @@ const SUBAGENT_ID = /^agent-(.+)\.jsonl$/;
 /** The bytes of a subagent transcript read for its label and start time. */
 const SUBAGENT_HEAD_BYTES = 64 * 1024;
 const SUBAGENT_PROMPT_CAP = 200;
-/** How Claude Code wraps the preview of an output it saved to a sidecar file. */
+/** How Claude Code wraps the preview of an output it saved to a sidecar file, and closes it. */
 const PERSISTED_OUTPUT = "<persisted-output>";
-/** A file name after `tool-results/` in a path a record prints: one segment, never a separator. */
-const SIDECAR_NAME = String.raw`tool-results/([^/\\\s"'<>]{1,255})`;
+const PERSISTED_OUTPUT_END = "</persisted-output>";
+/**
+ * The preview's "saved to" line, and the file name after `tool-results/` in the path it prints:
+ * one segment, never a separator.
+ */
+const SAVED_TO = /saved to:?[ \t]+\S*tool-results\/([^/\\\s"'<>]{1,255})/i;
 
 /** A tool result's content as text: a string, or its text blocks, with an image as a placeholder. */
 function resultText(content: unknown): string {
@@ -357,14 +361,17 @@ function resultText(content: unknown): string {
 
 /**
  * The sidecar file a result record names, or null. Claude Code replaces an output too large to
- * keep inline with a `<persisted-output>` preview that prints the file's path; a path into this
- * session's own `tool-results/` folder counts too. Only the last segment is taken, so the
- * record names a file and never a place.
+ * keep inline with a `<persisted-output>` preview whose "saved to" line prints the file's path.
+ * Only that line of that block names a file: a result that merely mentions a path into
+ * `tool-results/` (a `wc -l` on a saved output, an error naming one) is its own inline result.
+ * Only the path's last segment is taken, so the record names a file and never a place.
  */
-function sidecarName(text: string, agentSessionId: string): string | null {
-  const own = new RegExp(`${agentSessionId}/${SIDECAR_NAME}`, "i").exec(text);
-  const named = own ?? (text.includes(PERSISTED_OUTPUT) ? new RegExp(SIDECAR_NAME).exec(text) : null);
-  const name = named?.[1];
+function sidecarName(text: string): string | null {
+  const start = text.indexOf(PERSISTED_OUTPUT);
+  if (start === -1) return null;
+  const end = text.indexOf(PERSISTED_OUTPUT_END, start);
+  const block = text.slice(start + PERSISTED_OUTPUT.length, end === -1 ? undefined : end);
+  const name = SAVED_TO.exec(block)?.[1];
   return name && name !== "." && name !== ".." ? name : null;
 }
 
@@ -467,7 +474,7 @@ export function createClaudeHistory(projectsDir: string = CLAUDE_PROJECTS_DIR): 
       const found = await findToolResult(transcriptPath, toolUseId);
       if (!found) return null;
       const text = resultText(found.block.content);
-      const name = sidecarName(text, agentSessionId);
+      const name = sidecarName(text);
       return {
         isError: found.block.is_error === true,
         text,

@@ -136,6 +136,41 @@ test("a tool call's result is read inline, or from the sidecar file its own reco
   f.done();
 });
 
+test("a result that only mentions a sidecar path is its own inline result; only a preview's saved-to line names a file", async () => {
+  const f = await fixture();
+  const id = sessionId();
+  const saved = join(sessionDir(f.projects, id), "tool-results", "toolu_saved.txt");
+  const counted = `412 ${saved}`;
+  const missing = `cat: ${join(sessionDir(f.projects, id), "tool-results", "toolu_x.txt")}: No such file or directory`;
+  const noSavedTo = "<persisted-output>\nOutput too large. Preview mentions tool-results/toolu_saved.txt\n</persisted-output>";
+  writeSession(f.projects, id, [
+    toolUse(id, 1, "toolu_saved", { command: "npm test" }),
+    toolResult(id, 2, "toolu_saved", persisted(f.projects, id, "toolu_saved.txt")),
+    toolUse(id, 3, "toolu_count", { command: `wc -l ${saved}` }),
+    toolResult(id, 4, "toolu_count", counted),
+    toolUse(id, 5, "toolu_missing", { command: "cat toolu_x.txt" }),
+    toolResult(id, 6, "toolu_missing", missing, true),
+    toolUse(id, 7, "toolu_preview", { command: "npm test" }),
+    toolResult(id, 8, "toolu_preview", noSavedTo),
+  ]);
+  mkdirSync(join(sessionDir(f.projects, id), "tool-results"), { recursive: true });
+  writeFileSync(saved, "the whole npm test output");
+  await f.history.reconciler.trigger();
+
+  const read = async (toolUseId: string) => {
+    const res = await f.get(`/api/history/sessions/claude/${id}/tool-results/${toolUseId}`);
+    assert.equal(res.status, 200, toolUseId);
+    return await res.json() as HistoryToolResult;
+  };
+  assert.equal((await read("toolu_saved")).source, "sidecar", "the persisted output itself still reads its file");
+  for (const [toolUseId, text] of [["toolu_count", counted], ["toolu_missing", missing], ["toolu_preview", noSavedTo]] as const) {
+    const result = await read(toolUseId);
+    assert.equal(result.source, "inline", toolUseId);
+    assert.equal(result.text, text, `${toolUseId} keeps its own recorded result`);
+  }
+  f.done();
+});
+
 test("a result past the 1 MB cap is cut at the cap and says so, inline and from a sidecar; one at the cap is whole", async () => {
   const f = await fixture();
   const id = sessionId();
