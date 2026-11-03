@@ -12,12 +12,19 @@ sessions do not appear yet.
 
 - **Order.** All time, newest activity first, grouped by day, 50 rows a page with **Load
   more** for older ones.
-- **Conversations by default.** The list shows interactive, SDK and unclassified sessions.
-  One-shot and reviewer runs, which are most of what Mission Control's own background work
-  leaves behind, are listed only when the **Kind** filter asks for them.
-- **Title.** The session's custom title, else its AI title, else its first prompt.
+- **Conversations by default.** The list shows interactive, SDK and unclassified sessions,
+  and every session a Mission Control task ran, whatever its kind. Other one-shot and reviewer
+  runs, which are most of what Mission Control's own background work leaves behind, are listed
+  only when the **Kind** filter asks for them.
+- **Title.** The bound task's title, else the session's custom title, its AI title, then its
+  first prompt.
 - **Row.** Repository (or the raw cwd when no repository was resolved, with the full cwd on
-  hover), branch, kind, model, cost and duration.
+  hover), branch, kind, model, cost and duration, then, for a bound session, its task's status
+  and outcome, and its pull request (Mission Control's, else the last one the transcript
+  recorded).
+- **Cost.** The transcript's own `cost-state`, else the session's spend in Mission Control's
+  `usage_ledger`. A ledger that holds any unpriced row for the session shows no cost rather
+  than a subtotal.
 - **Transcript gone.** When Claude Code's retention (`cleanupPeriodDays`, 30 days by default)
   deletes a transcript, its row stays and carries a **Transcript gone** badge. Rows are never
   deleted.
@@ -40,13 +47,13 @@ sessions do not appear yet.
 
 ## Search and filters
 
-Every control lives in the page's URL (`#/history?q=&repo=&from=&to=&kind=&agent=`) and
+Every control lives in the page's URL (`#/history?q=&repo=&from=&to=&kind=&agent=&link=&outcome=&pr=`) and
 replaces the route as it changes, so a filtered list survives a reload and can be shared,
 and refining it leaves no trail of entries for Back. A value this build would refuse (an
 unknown kind, an impossible day) is dropped from the URL rather than sent.
 
 - **Search** waits for typing to settle, then matches a literal, case-folded substring against
-  each session's titles (custom, AI and first prompt), cwd, repository, branch and indexed user
+  each session's titles (custom, AI, first prompt and a bound task's title), cwd, repository, branch and indexed user
   prompts. It narrows the list without reordering it.
 - **What is indexed.** A conversation indexes every user prompt, up to 16,000 characters each.
   A one-shot or reviewer run indexes only its first prompt, capped at 500 characters, because
@@ -58,6 +65,11 @@ unknown kind, an impossible day) is dropped from the URL rather than sent.
 - **From** and **To** are local calendar days, both inclusive, bounding last activity.
 - **Kind** is Conversations by default; **All kinds** adds one-shot and reviewer runs, and a
   single kind narrows the list to it.
+- **Mission Control** is a session a task managed, or **External**: one no task ran.
+- **Outcome** is the bound task's status (`done`, `failed`, `cancelled`, or one still
+  running), so it lists only task-bound sessions.
+- **PR** is **With a PR** (Mission Control's, or one the transcript recorded), **PR merged**
+  (Mission Control recorded the merge), or **No PR**.
 - **Agent** appears only once a second harness has a history reader. Today only Claude has one,
   so it is hidden.
 - **Clear filters** drops every filter and keeps the search words.
@@ -71,7 +83,14 @@ this build does not know, or an id that is not a UUID, lands on the list; a well
 History has not indexed says so.
 
 - **Header.** Title, kind, repository, branch, working directory, model, start and last
-  activity, duration and cost, each shown when the transcript recorded it.
+  activity, duration and cost, each shown when the transcript recorded it. A bound session also
+  shows its **Task**, which opens the task where the dashboard shows it (a finished one in the
+  Sitrep) when the dashboard still holds it, and its outcome and pull request.
+- **Not indexed.** A task-bound session whose transcript was deleted before the catalog ever indexed
+  it still opens: the header is built from Mission Control's data alone (task title and kind,
+  outcome, pull request, repository, branch, ledger cost) with a **Not indexed** badge, no
+  tabs and no Resume, and says the transcript was removed before Mission Control indexed it.
+  The reconciler never writes a catalog row for such a session.
 - **Conversation.** The session's messages, rendered by the same component the live
   conversation panel uses (`ConversationMessages` in `TranscriptPanel.tsx`), read from the
   transcript on disk from the top. **Load more messages** reads the next window. It is
@@ -316,16 +335,33 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   other existing path resolves through Git to its main repository root; anything else has no
   repository, and the row shows its raw cwd.
 
+## Mission Control data
+
+What Mission Control knows about a session is joined when a row is served, never stored, so
+it augments a record without being part of it, and a session Mission Control never touched has
+a complete record without it. The session's agent session id joins, in `HistoryStore`:
+
+- `task_work_episode_bindings`, else the newest `historical_task_work_episode_bindings` row,
+  for the task, PR URL, merge time and branch, and that task's row in `tasks` (title, kind,
+  status, outcome, outcome URL, workflow, labels, repository). A binding joins only a session
+  of its task's own agent.
+- `session_agent_bindings`, for the Mission Control session that ran it. It records no agent, so
+  it never on its own makes a Not indexed record.
+- `usage_ledger` by note key, priced by `sessionCostsFor`, the same rule a card's cost uses, for
+  the cost fallback (`historyCost` in `src/shared/history.ts` decides it, for a row and for a
+  record the catalog never indexed).
+
 ## API
 
-`GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent` returns
+`GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent&link&outcome&pr` returns
 `{sessions, nextCursor, progress, facets}`: one page of matching sessions, newest activity
 first; the backfill's `{indexing, indexed, total}`; and `facets` - the agents with a reader,
 every resolved repository, and each reader's retention period. `from` and `to` are epoch
 milliseconds on last activity, `from` inclusive and `to` exclusive. `kind` is `all` or one
-kind; absent means conversations. It is loopback-only like the rest of `/api/*`, takes no path,
+kind; absent means conversations, which includes every task-bound session. `link` is `task`
+or `external`, `outcome` a task status, and `pr` is `any`, `merged` or `none`. It is loopback-only like the rest of `/api/*`, takes no path,
 and is not exposed as an MCP tool. A malformed cursor, an out-of-range limit, an unknown kind
-or agent, a query over 200 characters, or any parameter it does not know is refused with 400.
+or agent, an unknown link, outcome or PR value, a query over 200 characters, or any parameter it does not know is refused with 400.
 
 Every route is loopback-only like the rest of `/api/*`, takes no path except Resume's typed
 directory (absolute, resolved with `realpath`, and only ever the destination of a copied
@@ -334,8 +370,8 @@ path always comes from the catalog.
 
 | Route | Returns |
 |---|---|
-| `GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent` | The list, described above. |
-| `GET /api/history/sessions/:agent/:id` | `{session, subagents}`: the catalog row, and the subagent runs the session's own `subagents/` folder lists (empty once the transcript is gone). 404 for an agent with no reader, a non-UUID id, or an id the catalog does not know. |
+| `GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent&link&outcome&pr` | The list, described above. |
+| `GET /api/history/sessions/:agent/:id` | `{catalog, subagents}`: the catalog row exactly as the list serves it, with its live status and Mission Control's join, and the subagent runs the session's own `subagents/` folder lists (empty once the transcript is gone). With no catalog row, `{catalog: null, mission}`, when a task binding of that agent names the id: Mission Control's record alone, with the session's `agent`, `agentSessionId` and `liveSessionId`. 404 for an agent with no reader, a non-UUID id, or an id neither the catalog nor a task binding of that agent knows; a Mission Control session or a ledger row alone names nothing. |
 | `GET /api/history/sessions/:agent/:id/messages?cursor` | `{messages, nextCursor}`: a window of turns read forward from the byte offset `cursor` (the top when absent), through the same path-based window reads a live session uses. A window is at least 100 turns and 512 KB. 410 when the transcript file is gone (missing on disk, whether or not a walk has marked it yet); 500 naming the reason (`EACCES`, `ELOOP`, not a regular file) when it is there but cannot be read, so it is never shown as removed, empty or finished; 404 as above, or when the cataloged path does not resolve, through symlinks, under one of its harness's roots. A malformed cursor is refused with 400. |
 | `GET /api/history/sessions/:agent/:id/launch-context` | `{instructionFiles, systemPrompt, skills, mcp, environment, hooks}` (`HistoryLaunchContext`), parsed from the transcript on each request by the harness's `launchContext` reader. A section is `null` when the transcript holds no record of it. 404, 410 and 500 as for `messages`. |
 | `GET /api/history/sessions/:agent/:id/tool-results/:toolUseId` | `{toolUseId, source, isError, text, truncated}`: one tool call's result, `inline` from its transcript record or `sidecar` from the file that record names. 404 when no record holds a result for the id, or its sidecar is missing or not reachable; 410 when the transcript is gone. |
@@ -365,8 +401,10 @@ call carries its `tool_use` id, input is cut at 256 KB rather than 1,800 charact
 `compact_boundary` record and the summary after it are marked (`presentation.kind` `compaction`
 and `compaction_summary`). The live readers do none of this.
 
-Every row carries `liveSessionId`: the Registry session running that conversation now, joined
-when the row is served and never stored.
+Every row carries `liveSessionId`, the Registry session running that conversation now, and
+`mission`, what Mission Control knows about it (null when nothing), with `costSource` saying
+whether `costUsd` came from the transcript or the ledger. All three are joined when the row is
+served and never stored.
 
 ## Settings
 

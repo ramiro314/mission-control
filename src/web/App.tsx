@@ -1820,11 +1820,21 @@ export function App(): React.JSX.Element {
     },
     [layout, navigate, openTaskEditor],
   );
+  /**
+   * Where opening a task lands, or null when the dashboard does not hold it. `openTask` and
+   * `canOpenTask` both read this, so a control offered as openable is exactly one that opens.
+   */
+  const taskOpenTargetFor = useCallback(
+    (taskId: string): TaskOpenTarget | null => {
+      const task = tasks.find((candidate) => candidate.id === taskId);
+      return task ? taskOpenTarget(task, sessions) : null;
+    },
+    [tasks, sessions],
+  );
   const openTask = useCallback(
     (taskId: string): void => {
-      const task = tasks.find((candidate) => candidate.id === taskId);
-      if (!task) return;
-      const target = taskOpenTarget(task, sessions);
+      const target = taskOpenTargetFor(taskId);
+      if (!target) return;
       // The view the `wait` landing leaves: the fleet, Sitrep closed, selection untouched.
       setPendingOpen(target.kind === "wait"
         ? {
@@ -1836,8 +1846,10 @@ export function App(): React.JSX.Element {
         : null);
       landTask(taskId, target);
     },
-    [tasks, sessions, landTask, selectedId, modalOpen, route.page],
+    [taskOpenTargetFor, landTask, selectedId, modalOpen, route.page],
   );
+  /** Whether `openTask` lands anywhere; History names a task it cannot open without a link. */
+  const canOpenTask = useCallback((taskId: string): boolean => taskOpenTargetFor(taskId) !== null, [taskOpenTargetFor]);
   // The click on a task that had nowhere to land yet, completed once it does. Dropped instead
   // when the person has moved on or it waited too long, and when the task leaves flight for
   // the backlog (requeued) or disappears.
@@ -4282,7 +4294,15 @@ export function App(): React.JSX.Element {
             // Mounted only on its own route, like Scouts, so the catalog fetch never runs
             // while somebody is on another page.
             route.page === "history" ? (
-              <HistoryPage route={route} navigate={navigate} replace={replace} revision={historyRevision} onOpenSession={openSessionOnFleet} />
+              <HistoryPage
+                route={route}
+                navigate={navigate}
+                replace={replace}
+                revision={historyRevision}
+                onOpenSession={openSessionOnFleet}
+                onOpenTask={openTask}
+                canOpenTask={canOpenTask}
+              />
             ) : null
           }
           shipped={

@@ -30,6 +30,12 @@ import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 
+/** A detail that carries a catalog row, failing when the route answered with Mission Control's record alone. */
+function catalogDetail(detail: HistorySessionDetail | null): Extract<HistorySessionDetail, { subagents: unknown }> {
+  assert.ok(detail && detail.catalog !== null, "the detail carries a catalog row");
+  return detail as Extract<HistorySessionDetail, { subagents: unknown }>;
+}
+
 const LOOPBACK = { host: "127.0.0.1:7317" };
 let ordinal = 0;
 
@@ -395,9 +401,9 @@ test("the detail lists subagent runs from the session's own listing, and each pa
   symlinkSync(join(f.outside, "agent-feedface.jsonl"), join(subagents, "agent-feedface.jsonl"));
   await f.history.reconciler.trigger();
 
-  const detail = await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail;
+  const detail = catalogDetail(await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail);
   assert.deepEqual(detail.subagents.map((run) => run.agentId), ["0123abcd", "89abcdef"], "oldest first, listed files only");
-  assert.equal(detail.session.subagentCount, detail.subagents.length, "the row counts exactly the runs the detail lists");
+  assert.equal(detail.catalog.subagentCount, detail.subagents.length, "the row counts exactly the runs the detail lists");
   assert.deepEqual(
     { agentType: detail.subagents[0]!.agentType, description: detail.subagents[0]!.description, firstPrompt: detail.subagents[0]!.firstPrompt },
     { agentType: "Explore", description: "Find the retry loop", firstPrompt: "subagent question 0" },
@@ -423,7 +429,7 @@ test("the detail lists subagent runs from the session's own listing, and each pa
   writeLines(join(f.outside, "agent-0123abcd.jsonl"), [sub(0, "user", "secret")]);
   symlinkSync(f.outside, join(sessionDir(f.projects, linked), "subagents"));
   await f.history.reconciler.trigger();
-  const linkedDetail = await (await f.get(`/api/history/sessions/claude/${linked}`)).json() as HistorySessionDetail;
+  const linkedDetail = catalogDetail(await (await f.get(`/api/history/sessions/claude/${linked}`)).json() as HistorySessionDetail);
   assert.deepEqual(linkedDetail.subagents, []);
   assert.equal((await f.get(`/api/history/sessions/claude/${linked}/subagents/0123abcd/messages`)).status, 404);
   f.done();
@@ -445,8 +451,8 @@ test("paging a subagent run looks up its one file, without reading every run to 
   }
   await history.reconciler.trigger();
 
-  const detail = await history.detail("claude", id, () => null);
-  assert.equal(detail?.subagents.length, 3);
+  const detail = catalogDetail(await history.detail("claude", id, () => null));
+  assert.equal(detail.subagents.length, 3);
   assert.equal(labelled, 1, "the detail labels every run once");
   const page = await history.subagentMessages("claude", id, "89abcdef", {});
   assert.equal(page.ok && page.page.messages[0]?.text, "run 89abcdef");
@@ -468,9 +474,9 @@ test("a session with hundreds of subagent runs labels every one", async () => {
     writeFileSync(join(subagents, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "Explore", description: `look ${agentId}` }));
   }
   await f.history.reconciler.trigger();
-  const detail = await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail;
+  const detail = catalogDetail(await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail);
   assert.equal(detail.subagents.length, 300);
-  assert.equal(detail.session.subagentCount, 300);
+  assert.equal(detail.catalog.subagentCount, 300);
   for (const run of detail.subagents) {
     assert.equal(run.description, `look ${run.agentId}`, run.agentId);
     assert.equal(run.firstPrompt, `run ${run.agentId}`, run.agentId);
@@ -490,7 +496,7 @@ test("a gone transcript answers 410 for its results and runs, and lists no subag
 
   assert.equal((await f.get(`/api/history/sessions/claude/${id}/tool-results/toolu_ok`)).status, 410);
   assert.equal((await f.get(`/api/history/sessions/claude/${id}/subagents/0123abcd/messages`)).status, 410);
-  const detail = await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail;
+  const detail = catalogDetail(await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail);
   assert.deepEqual(detail.subagents, []);
   f.done();
 });

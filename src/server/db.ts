@@ -12345,37 +12345,56 @@ export function automationSpendSince(tsMs: number): AutomationRoleSpend[] {
  * row rather than as `undefined` arriving on the wire.
  */
 export function sessionCostFor(noteKey: string): SessionCost | null {
-  const rows = openDb()
+  return sessionCostsFor([noteKey]).get(noteKey) ?? null;
+}
+
+/**
+ * `sessionCostFor` for several note keys in one query, on the same rule; a key the ledger has
+ * never heard of is absent. Session History reads a page of rows' costs through it, so a list
+ * and a card can never price one session two ways.
+ */
+export function sessionCostsFor(noteKeys: readonly string[], d: DatabaseSync = openDb()): Map<string, SessionCost> {
+  const out = new Map<string, SessionCost>();
+  if (noteKeys.length === 0) return out;
+  const all = d
     .prepare(
-      `SELECT cost_basis, cost_known, cost_usd, input, output, reasoning_output,
+      `SELECT note_key, cost_basis, cost_known, cost_usd, input, output, reasoning_output,
               cache_read, cache_write, model_id, pricing_version, ts
-         FROM usage_ledger WHERE note_key = ? AND spend_kind = 'session'`,
+         FROM usage_ledger WHERE note_key IN (${noteKeys.map(() => "?").join(", ")}) AND spend_kind = 'session'`,
     )
-    .all(noteKey) as unknown as Array<{
-      cost_basis: string; cost_known: number; cost_usd: number; input: number; output: number;
+    .all(...noteKeys) as unknown as Array<{
+      note_key: string; cost_basis: string; cost_known: number; cost_usd: number; input: number; output: number;
       reasoning_output: number; cache_read: number; cache_write: number; model_id: string;
       pricing_version: string; ts: number;
     }>;
-  if (!rows.length) return null;
-  const bases = new Set(rows.map((r) => r.cost_basis));
-  const mixed = bases.size !== 1;
-  const rawBasis = mixed ? "unpriced" : rows[0]!.cost_basis;
-  const basis: CostBasis = rawBasis === "reported" || rawBasis === "api-equivalent"
-    ? rawBasis
-    : "unpriced";
-  const known = !mixed && rows.every((r) => r.cost_known === 1);
-  return {
-    costUsd: known ? rows.reduce((n, r) => n + r.cost_usd, 0) : null,
-    basis: known ? basis : "unpriced",
-    pricingModels: [...new Set(rows.map((r) => r.model_id).filter(Boolean))].sort(),
-    pricingVersions: [...new Set(rows.map((r) => r.pricing_version).filter(Boolean))].sort(),
-    input: rows.reduce((n, r) => n + r.input, 0),
-    output: rows.reduce((n, r) => n + r.output, 0),
-    reasoningOutput: rows.reduce((n, r) => n + r.reasoning_output, 0),
-    cacheRead: rows.reduce((n, r) => n + r.cache_read, 0),
-    cacheWrite: rows.reduce((n, r) => n + r.cache_write, 0),
-    updatedAt: Math.max(...rows.map((r) => r.ts)),
-  };
+  const byKey = new Map<string, typeof all>();
+  for (const row of all) {
+    const group = byKey.get(row.note_key);
+    if (group) group.push(row);
+    else byKey.set(row.note_key, [row]);
+  }
+  for (const [noteKey, rows] of byKey) {
+    const bases = new Set(rows.map((r) => r.cost_basis));
+    const mixed = bases.size !== 1;
+    const rawBasis = mixed ? "unpriced" : rows[0]!.cost_basis;
+    const basis: CostBasis = rawBasis === "reported" || rawBasis === "api-equivalent"
+      ? rawBasis
+      : "unpriced";
+    const known = !mixed && rows.every((r) => r.cost_known === 1);
+    out.set(noteKey, {
+      costUsd: known ? rows.reduce((n, r) => n + r.cost_usd, 0) : null,
+      basis: known ? basis : "unpriced",
+      pricingModels: [...new Set(rows.map((r) => r.model_id).filter(Boolean))].sort(),
+      pricingVersions: [...new Set(rows.map((r) => r.pricing_version).filter(Boolean))].sort(),
+      input: rows.reduce((n, r) => n + r.input, 0),
+      output: rows.reduce((n, r) => n + r.output, 0),
+      reasoningOutput: rows.reduce((n, r) => n + r.reasoning_output, 0),
+      cacheRead: rows.reduce((n, r) => n + r.cache_read, 0),
+      cacheWrite: rows.reduce((n, r) => n + r.cache_write, 0),
+      updatedAt: Math.max(...rows.map((r) => r.ts)),
+    });
+  }
+  return out;
 }
 
 /**

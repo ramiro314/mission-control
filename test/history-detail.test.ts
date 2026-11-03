@@ -73,11 +73,11 @@ test("detail returns the catalog row; a non-UUID id, an unknown id or an unknown
   const res = await f.get(`/api/history/sessions/claude/${id}`);
   assert.equal(res.status, 200);
   const detail = await res.json() as HistorySessionDetail;
-  assert.equal(detail.session.agentSessionId, id);
-  assert.equal(detail.session.cwd, "/work");
-  assert.equal(detail.session.branch, "main");
-  assert.equal(detail.session.transcriptState, "present");
-  assert.equal(detail.session.liveSessionId, null);
+  assert.equal(detail.catalog!.agentSessionId, id);
+  assert.equal(detail.catalog!.cwd, "/work");
+  assert.equal(detail.catalog!.branch, "main");
+  assert.equal(detail.catalog!.transcriptState, "present");
+  assert.equal(detail.catalog!.liveSessionId, null);
   assert.equal((await f.get(`/api/history/sessions/claude/${id.toUpperCase()}`)).status, 200, "a UUID's case does not matter");
 
   for (const path of [
@@ -129,8 +129,8 @@ test("a gone transcript keeps its detail, and its conversation answers 410", asy
   assert.equal((await f.get(`/api/history/sessions/claude/${id}/messages`)).status, 410);
   await f.history.reconciler.trigger();
   const detail = await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail;
-  assert.equal(detail.session.transcriptState, "gone");
-  assert.equal(detail.session.cwd, "/work", "the record survives its transcript");
+  assert.equal(detail.catalog!.transcriptState, "gone");
+  assert.equal(detail.catalog!.cwd, "/work", "the record survives its transcript");
   assert.equal((await f.get(`/api/history/sessions/claude/${id}/messages`)).status, 410);
   f.done();
 });
@@ -207,7 +207,7 @@ test("a session the Registry is running is reported live in the list and the det
   registry.registerSdkSession({ id: "sdk:history-live", agent: "claude", name: "running", cwd: "/work", agentSessionId: id });
 
   const detail = await (await f.get(`/api/history/sessions/claude/${id}`)).json() as HistorySessionDetail;
-  assert.equal(detail.session.liveSessionId, "sdk:history-live");
+  assert.equal(detail.catalog!.liveSessionId, "sdk:history-live");
   const page = await (await f.get("/api/history/sessions")).json() as HistoryPage;
   assert.equal(page.sessions.find((row) => row.agentSessionId === id)?.liveSessionId, "sdk:history-live");
   f.done();

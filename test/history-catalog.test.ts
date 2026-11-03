@@ -95,7 +95,10 @@ function clearCatalog(): void {
   openDb().exec("DELETE FROM history_sessions; DELETE FROM history_search_segments;");
 }
 
-const interactiveOnly = { kinds: ["interactive"], needle: null, repo: null, from: null, to: null, agent: null };
+const interactiveOnly = {
+  kinds: ["interactive"], taskBoundIsConversation: false, needle: null, repo: null, from: null, to: null, agent: null,
+  link: null, outcome: null, pr: null,
+};
 const NO_FACETS = { agents: [], repositories: [], retention: [] };
 
 test("Codex and Pi declare a null history slot; Claude has the reader", () => {

@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   HISTORY_KIND_LABELS,
+  historyCost,
   historyResumeOffered,
   historyTitle,
+  type HistoryMissionTask,
+  type HistorySessionDetail,
   type HistorySessionSummary,
   type HistorySubagent,
 } from "@shared/history.ts";
@@ -16,6 +19,7 @@ import { agentAccentStyle } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { ConversationMessages } from "../TranscriptPanel.tsx";
 import { HistoryLaunchContextView } from "./HistoryLaunchContext.tsx";
+import { HistoryMissionBits } from "./HistoryMissionBits.tsx";
 import { HistoryResumeDialog } from "./HistoryResumeDialog.tsx";
 import { HistorySubagentRuns } from "./HistorySubagentRuns.tsx";
 import { HistoryToolCalls } from "./HistoryToolCalls.tsx";
@@ -34,13 +38,21 @@ import { useHistoryConversation } from "./useHistoryConversation.ts";
 const RETENTION_MESSAGE =
   "This conversation was removed by Claude Code's retention: it deletes transcripts older than its cleanupPeriodDays setting. History keeps the record above.";
 
+/** A bound session the catalog never indexed: Mission Control's record is all there is. */
+const UNINDEXED_MESSAGE =
+  "This session's transcript was removed before Mission Control indexed it. The record above is what Mission Control kept: its task, outcome, pull request and cost.";
+
+/** The same, while the session is still running: its transcript is there, just not indexed yet. */
+const NOT_YET_INDEXED_MESSAGE =
+  "This session is running, and History has not indexed its transcript yet. Its conversation appears here once it has.";
+
 function stamp(at: number | null): string | null {
   return at === null ? null : new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 type DetailState =
   | { state: "loading" }
-  | { state: "ready"; session: HistorySessionSummary; subagents: HistorySubagent[] }
+  | { state: "ready"; detail: HistorySessionDetail }
   | { state: "missing" }
   | { state: "error"; error: string };
 
@@ -54,30 +66,62 @@ function MetaItem({ label, children }: { label: string; children: React.ReactNod
   );
 }
 
-function HistorySessionHeader({
-  session,
-  onOpenSession,
+/** The task that ran a session, opening it where the dashboard shows it when it holds it. */
+function TaskLink({
+  task,
+  onOpenTask,
+  canOpenTask,
 }: {
-  session: HistorySessionSummary;
-  onOpenSession: (sessionId: string) => void;
+  task: HistoryMissionTask;
+  onOpenTask: (taskId: string) => void;
+  canOpenTask: (taskId: string) => boolean;
 }): React.JSX.Element {
-  const gone = session.transcriptState === "gone";
-  const live = session.liveSessionId;
+  if (!canOpenTask(task.id)) return <span>{task.title}</span>;
+  return (
+    <Tooltip label="Open the task that ran this session">
+      <button type="button" className="history-task-link" onClick={() => onOpenTask(task.id)}>{task.title}</button>
+    </Tooltip>
+  );
+}
+
+function HistorySessionHeader({
+  detail,
+  onOpenSession,
+  onOpenTask,
+  canOpenTask,
+}: {
+  detail: HistorySessionDetail;
+  onOpenSession: (sessionId: string) => void;
+  onOpenTask: (taskId: string) => void;
+  canOpenTask: (taskId: string) => boolean;
+}): React.JSX.Element {
+  // A catalog row already carries Mission Control's join and the cost fallback; a record the
+  // catalog never indexed is Mission Control's alone, read through the same shared rules.
+  const catalog = detail.catalog;
+  const mission = catalog ? catalog.mission : detail.mission;
+  const live = catalog ? catalog.liveSessionId : detail.mission.liveSessionId;
+  const gone = catalog?.transcriptState === "gone";
+  const title = historyTitle(catalog ?? { customTitle: null, aiTitle: null, firstPrompt: null, mission });
+  const kind = catalog ? HISTORY_KIND_LABELS[catalog.kind] ?? catalog.kind : null;
+  const repoRoot = catalog ? catalog.repoRoot : detail.mission.repoRoot;
+  const branch = catalog ? catalog.branch : detail.mission.branch;
+  const cost = catalog ? catalog.costUsd : historyCost(null, detail.mission).costUsd;
   const [resuming, setResuming] = useState(false);
   return (
     <header className="history-detail-head">
       <div className="history-detail-title">
-        <h2>{historyTitle(session)}</h2>
-        <span className="history-badge">{HISTORY_KIND_LABELS[session.kind] ?? session.kind}</span>
+        <h2>{title}</h2>
+        {kind ? <span className="history-badge">{kind}</span> : null}
         {live ? <span className="history-badge history-badge-live">Live</span> : null}
         {gone ? <span className="history-badge history-badge-gone">Transcript gone</span> : null}
+        {catalog ? null : <span className="history-badge history-badge-gone">Not indexed</span>}
         {live ? (
           <Tooltip label="This session is running now: open its live card on the Fleet">
             <button type="button" className="btn history-detail-action" onClick={() => onOpenSession(live)}>
               Open in Fleet
             </button>
           </Tooltip>
-        ) : historyResumeOffered(session) ? (
+        ) : catalog && historyResumeOffered(catalog) ? (
           <Tooltip label="Reopen this conversation in a new terminal, in its original directory">
             <button type="button" className="btn history-detail-action" onClick={() => setResuming(true)}>
               Resume
@@ -85,19 +129,55 @@ function HistorySessionHeader({
           </Tooltip>
         ) : null}
       </div>
-      {resuming ? <HistoryResumeDialog session={session} onClose={() => setResuming(false)} /> : null}
+      {resuming && catalog ? <HistoryResumeDialog session={catalog} onClose={() => setResuming(false)} /> : null}
       <dl className="history-meta">
-        <MetaItem label="Repository">{session.repoRoot ? <span className="mono">{session.repoRoot}</span> : null}</MetaItem>
-        <MetaItem label="Branch">{session.branch ? <span className="mono">{session.branch}</span> : null}</MetaItem>
-        <MetaItem label="Working directory">{session.cwd ? <span className="mono">{session.cwd}</span> : null}</MetaItem>
-        <MetaItem label="Kind">{HISTORY_KIND_LABELS[session.kind] ?? session.kind}</MetaItem>
-        <MetaItem label="Model">{session.model ? <span className="mono">{session.model}</span> : null}</MetaItem>
-        <MetaItem label="Started">{stamp(session.startedAt)}</MetaItem>
-        <MetaItem label="Last activity">{stamp(session.lastActivityAt)}</MetaItem>
-        <MetaItem label="Duration">{session.durationMs ? duration(session.durationMs) : null}</MetaItem>
-        <MetaItem label="Cost">{session.costUsd !== null ? fmtUsd(session.costUsd) : null}</MetaItem>
+        <MetaItem label="Task">
+          {mission?.task ? <TaskLink task={mission.task} onOpenTask={onOpenTask} canOpenTask={canOpenTask} /> : null}
+        </MetaItem>
+        <MetaItem label="Outcome">
+          {mission?.task || catalog?.prUrls.length || mission?.prUrl ? (
+            <span className="history-meta-mission">
+              <HistoryMissionBits row={{ mission, prUrls: catalog?.prUrls ?? [] }} />
+            </span>
+          ) : null}
+        </MetaItem>
+        <MetaItem label="Repository">{repoRoot ? <span className="mono">{repoRoot}</span> : null}</MetaItem>
+        <MetaItem label="Branch">{branch ? <span className="mono">{branch}</span> : null}</MetaItem>
+        <MetaItem label="Working directory">{catalog?.cwd ? <span className="mono">{catalog.cwd}</span> : null}</MetaItem>
+        <MetaItem label="Kind">{kind}</MetaItem>
+        <MetaItem label="Task kind">{mission?.task?.kind || null}</MetaItem>
+        <MetaItem label="Model">{catalog?.model ? <span className="mono">{catalog.model}</span> : null}</MetaItem>
+        <MetaItem label="Started">{catalog ? stamp(catalog.startedAt) : null}</MetaItem>
+        <MetaItem label="Last activity">{catalog ? stamp(catalog.lastActivityAt) : null}</MetaItem>
+        <MetaItem label="Duration">{catalog?.durationMs ? duration(catalog.durationMs) : null}</MetaItem>
+        <MetaItem label="Cost">{cost !== null ? fmtUsd(cost) : null}</MetaItem>
       </dl>
     </header>
+  );
+}
+
+/**
+ * A bound session the catalog has no row for: Mission Control's header and why there is no
+ * conversation, with no tabs and no Resume. Exported for its render test.
+ */
+export function HistoryMissionOnlyRecord({
+  detail,
+  onOpenSession,
+  onOpenTask,
+  canOpenTask,
+}: {
+  detail: Extract<HistorySessionDetail, { catalog: null }>;
+  onOpenSession: (sessionId: string) => void;
+  onOpenTask: (taskId: string) => void;
+  canOpenTask: (taskId: string) => boolean;
+}): React.JSX.Element {
+  return (
+    <>
+      <HistorySessionHeader detail={detail} onOpenSession={onOpenSession} onOpenTask={onOpenTask} canOpenTask={canOpenTask} />
+      <p className="history-gone" role="note">
+        {detail.mission.liveSessionId ? NOT_YET_INDEXED_MESSAGE : UNINDEXED_MESSAGE}
+      </p>
+    </>
   );
 }
 
@@ -241,11 +321,15 @@ export function HistorySessionView({
   id,
   onBack,
   onOpenSession,
+  onOpenTask,
+  canOpenTask,
 }: {
   agent: AgentType;
   id: string;
   onBack: () => void;
   onOpenSession: (sessionId: string) => void;
+  onOpenTask: (taskId: string) => void;
+  canOpenTask: (taskId: string) => boolean;
 }): React.JSX.Element {
   const [detail, setDetail] = useState<DetailState>({ state: "loading" });
   const [attempt, setAttempt] = useState(0);
@@ -255,7 +339,7 @@ export function HistorySessionView({
     setDetail({ state: "loading" });
     void api.historySession(agent, id, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
-      if (result.ok) setDetail({ state: "ready", session: result.value.session, subagents: result.value.subagents });
+      if (result.ok) setDetail({ state: "ready", detail: result.value });
       else if (result.status === 404) setDetail({ state: "missing" });
       else setDetail({ state: "error", error: result.error });
     });
@@ -272,7 +356,9 @@ export function HistorySessionView({
       ) : detail.state === "missing" ? (
         <div className="history-empty">
           <p className="empty-title">This session is not in History</p>
-          <p className="empty-sub">No session with this id has been indexed from this machine's transcripts.</p>
+          <p className="empty-sub">
+            No session with this id has been indexed from this machine's transcripts, and no Mission Control task ran it.
+          </p>
         </div>
       ) : detail.state === "error" ? (
         <div className="history-empty" role="alert">
@@ -282,10 +368,22 @@ export function HistorySessionView({
             <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>Try again</button>
           </Tooltip>
         </div>
+      ) : detail.detail.catalog === null ? (
+        <HistoryMissionOnlyRecord
+          detail={detail.detail}
+          onOpenSession={onOpenSession}
+          onOpenTask={onOpenTask}
+          canOpenTask={canOpenTask}
+        />
       ) : (
         <>
-          <HistorySessionHeader session={detail.session} onOpenSession={onOpenSession} />
-          <HistorySessionTabs session={detail.session} subagents={detail.subagents} />
+          <HistorySessionHeader
+            detail={detail.detail}
+            onOpenSession={onOpenSession}
+            onOpenTask={onOpenTask}
+            canOpenTask={canOpenTask}
+          />
+          <HistorySessionTabs session={detail.detail.catalog} subagents={detail.detail.subagents} />
         </>
       )}
     </main>

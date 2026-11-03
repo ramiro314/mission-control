@@ -189,11 +189,16 @@ export class HistoryService {
     const page = this.store.page({
       filter: {
         kinds: historyFilterKinds(query.kind),
+        // The default list is conversations, and a session a task ran is one whatever its kind.
+        taskBoundIsConversation: query.kind === undefined,
         needle: historySearchNeedle(query.q),
         repo: query.repo ?? null,
         from: query.from ?? null,
         to: query.to ?? null,
         agent: query.agent ?? null,
+        link: query.link ?? null,
+        outcome: query.outcome ?? null,
+        pr: query.pr ?? null,
       },
       cursor: query.cursor ? decodeHistoryCursor(query.cursor) : null,
       limit: query.limit ?? HISTORY_PAGE_LIMITS.defaultLimit,
@@ -211,19 +216,33 @@ export class HistoryService {
   }
 
   /**
-   * One session's row, live status and subagent runs, or null when History does not know it.
-   * The subagents are listed only while the transcript is there and readable.
+   * One session's row, live status, subagent runs and what Mission Control knows about it.
+   * The subagents are listed only while the transcript is there and readable. With no catalog
+   * row, a record built from Mission Control's data alone when a task binding of this agent
+   * names the id: its transcript was deleted before it was ever indexed. Null only when neither
+   * knows it. Nothing is written for such a record.
    */
   async detail(agent: string, id: string, live: HistoryLiveLookup): Promise<HistorySessionDetail | null> {
-    const found = this.find(agent, id);
-    if (!found) return null;
-    const { summary } = found.entry;
-    const resolved = await this.transcript(agent, id);
-    const subagents = resolved.ok
-      ? (await found.reader.spec.subagents(resolved.path, summary.agentSessionId))
-        .map(({ path: _path, folder: _folder, ...run }) => run)
-      : [];
-    return { session: { ...summary, liveSessionId: live(summary.agent, summary.agentSessionId) }, subagents };
+    const reader = this.readerFor(agent, id);
+    if (!reader) return null;
+    const agentSessionId = id.toLowerCase();
+    const entry = this.store.entry(reader.agent, agentSessionId);
+    const liveSessionId = live(reader.agent, agentSessionId);
+    if (entry) {
+      const resolved = await this.transcript(agent, id);
+      const subagents = resolved.ok
+        ? (await reader.spec.subagents(resolved.path, agentSessionId)).map(({ path: _path, folder: _folder, ...run }) => run)
+        : [];
+      return { catalog: this.store.withMissions([{ ...entry.summary, liveSessionId }])[0]!, subagents };
+    }
+    const mission = this.store.missions(reader.agent, [agentSessionId]).get(agentSessionId) ?? null;
+    // Only a task binding names a session the catalog never saw, because only it records the
+    // agent (through its task). `session_agent_bindings` records none, and every Codex or Pi
+    // session Mission Control ran has a row there, so it would put another agent's session in
+    // Claude's History as removed. A ledger row's note key is not always an agent session id.
+    const task = mission?.task;
+    if (!mission || !task) return null;
+    return { catalog: null, mission: { ...mission, task, agent: reader.agent, agentSessionId, liveSessionId } };
   }
 
   /**
@@ -380,10 +399,15 @@ export class HistoryService {
     return { ok: true, reader, entry, path: real };
   }
 
+  /** The reader for a request's agent and id, or null for anything History cannot address. */
+  private readerFor(agent: string, id: string): HistoryReader | null {
+    if (!(AGENT_TYPES as readonly string[]).includes(agent) || !isHistorySessionId(id)) return null;
+    return this.readers.find((candidate) => candidate.agent === agent) ?? null;
+  }
+
   /** The reader and the row for a request's agent and id, or null for anything History cannot address. */
   private find(agent: string, id: string) {
-    if (!(AGENT_TYPES as readonly string[]).includes(agent) || !isHistorySessionId(id)) return null;
-    const reader = this.readers.find((candidate) => candidate.agent === agent);
+    const reader = this.readerFor(agent, id);
     if (!reader) return null;
     const entry = this.store.entry(reader.agent, id.toLowerCase());
     return entry ? { reader, entry } : null;

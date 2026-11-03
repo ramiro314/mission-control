@@ -2,9 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   HISTORY_KIND_LABELS,
   HISTORY_KINDS,
+  HISTORY_LINK_FILTERS,
+  HISTORY_LINK_LABELS,
+  HISTORY_OUTCOME_FILTERS,
+  HISTORY_PR_FILTERS,
+  HISTORY_PR_LABELS,
   HISTORY_SEARCH_LIMITS,
   historyTitle,
   type HistoryKindFilter,
+  type HistoryLinkFilter,
+  type HistoryOutcomeFilter,
+  type HistoryPrFilter,
   type HistoryProgress,
   type HistoryRetention,
   type HistorySessionSummary,
@@ -15,6 +23,7 @@ import { fmtUsd } from "@shared/cost.ts";
 import { duration, repoLeaf, shortenCwd } from "../../lib/format.ts";
 import { missionRouteHash, type HistoryFilters, type MissionRoute } from "../../workflows/useWorkflowRoute.ts";
 import { Tooltip } from "../Tooltip.tsx";
+import { HistoryMissionBits } from "./HistoryMissionBits.tsx";
 import { HistorySessionView } from "./HistorySessionView.tsx";
 import { useHistoryCatalog } from "./useHistoryCatalog.ts";
 
@@ -92,6 +101,7 @@ function HistoryRow({ row, filters }: { row: HistorySessionSummary; filters: His
         {row.model ? <span className="mono">{row.model}</span> : null}
         {row.costUsd !== null ? <span className="mono">{fmtUsd(row.costUsd)}</span> : null}
         {row.durationMs ? <span className="mono">{duration(row.durationMs)}</span> : null}
+        <HistoryMissionBits row={row} />
       </div>
     </li>
   );
@@ -103,6 +113,8 @@ export function HistoryPage({
   replace,
   revision,
   onOpenSession,
+  onOpenTask,
+  canOpenTask,
 }: {
   route: Extract<MissionRoute, { page: "history" }>;
   navigate: (route: MissionRoute) => boolean;
@@ -110,6 +122,10 @@ export function HistoryPage({
   /** `historyRevision` from the event stream: bumps per changing reconcile pass and per reconnect. */
   revision: number;
   onOpenSession: (sessionId: string) => void;
+  /** Open a task where the dashboard shows it. */
+  onOpenTask: (taskId: string) => void;
+  /** Whether the dashboard holds a task to open; one it does not is named without a link. */
+  canOpenTask: (taskId: string) => boolean;
 }): React.JSX.Element {
   const filters = route.filters;
   const catalog = useHistoryCatalog(filters, revision);
@@ -136,7 +152,8 @@ export function HistoryPage({
     return () => clearTimeout(timer);
   }, [draftQuery, routeQuery, filters, setFilters]);
 
-  const narrowed = !!(filters?.repo || filters?.from || filters?.to || filters?.kind || filters?.agent);
+  const narrowed = !!(filters?.repo || filters?.from || filters?.to || filters?.kind || filters?.agent
+    || filters?.link || filters?.outcome || filters?.pr);
   const searching = routeQuery !== "" || narrowed;
   // The route may name a repository the catalog no longer lists; it stays selectable so the
   // select never shows a value it has no option for.
@@ -165,6 +182,8 @@ export function HistoryPage({
         id={route.session.id}
         onBack={() => navigate({ page: "history", ...(filters ? { filters } : {}) })}
         onOpenSession={onOpenSession}
+        onOpenTask={onOpenTask}
+        canOpenTask={canOpenTask}
       />
     );
   }
@@ -248,6 +267,51 @@ export function HistoryPage({
               <option value="">Conversations</option>
               <option value="all">All kinds</option>
               {HISTORY_KINDS.map((kind) => <option key={kind} value={kind}>{HISTORY_KIND_LABELS[kind] ?? kind}</option>)}
+            </select>
+          </Tooltip>
+        </label>
+        <label className="history-filter">
+          <span className="history-filter-label">Mission Control</span>
+          <Tooltip label="Show sessions a Mission Control task ran, or only the ones it did not">
+            <select
+              className="history-filter-select"
+              aria-label="Mission Control link"
+              value={filters?.link ?? ""}
+              onChange={(event) =>
+                setFilters({ ...filters, link: (event.target.value || undefined) as HistoryLinkFilter | undefined })}
+            >
+              <option value="">Any session</option>
+              {HISTORY_LINK_FILTERS.map((link) => <option key={link} value={link}>{HISTORY_LINK_LABELS[link]}</option>)}
+            </select>
+          </Tooltip>
+        </label>
+        <label className="history-filter">
+          <span className="history-filter-label">Outcome</span>
+          <Tooltip label="Show sessions whose task ended this way">
+            <select
+              className="history-filter-select"
+              aria-label="Task outcome"
+              value={filters?.outcome ?? ""}
+              onChange={(event) =>
+                setFilters({ ...filters, outcome: (event.target.value || undefined) as HistoryOutcomeFilter | undefined })}
+            >
+              <option value="">Any outcome</option>
+              {HISTORY_OUTCOME_FILTERS.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </Tooltip>
+        </label>
+        <label className="history-filter">
+          <span className="history-filter-label">PR</span>
+          <Tooltip label="Show sessions with a pull request, a merged one, or none">
+            <select
+              className="history-filter-select"
+              aria-label="Pull request"
+              value={filters?.pr ?? ""}
+              onChange={(event) =>
+                setFilters({ ...filters, pr: (event.target.value || undefined) as HistoryPrFilter | undefined })}
+            >
+              <option value="">Any</option>
+              {HISTORY_PR_FILTERS.map((pr) => <option key={pr} value={pr}>{HISTORY_PR_LABELS[pr]}</option>)}
             </select>
           </Tooltip>
         </label>
