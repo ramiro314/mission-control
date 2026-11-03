@@ -21,6 +21,8 @@ const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { TerminalLaunchError } = await import("../src/server/terminal/launch-error.ts");
+const { managedResumeRoot, recheckManagedResumes, revokeUnclaimedResumes } = await import("../src/server/harness/resume.ts");
+const { beginResumeLaunch, claimResumeLease, createResumeLease } = await import("../src/server/terminal/resume-lease.ts");
 import type { HistoryResumeOptions } from "../src/shared/history.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { HistoryResumeLauncher, HistoryResumeSession } from "../src/server/history/resume.ts";
@@ -475,8 +477,28 @@ test("refusals are explicit, and none of them claims the session", async () => {
   }
 });
 
+test("revoking a cancelled launch's environment revokes only its own unclaimed leases", () => {
+  const root = managedResumeRoot();
+  const lease = (conversation: string, owner: string) => {
+    const created = createResumeLease(root, conversation, new Set(), owner);
+    beginResumeLaunch(created);
+    return created;
+  };
+  const mine = lease("claude:revoke-mine", "history-resume:mine");
+  const claimed = lease("claude:revoke-claimed", "history-resume:claimed");
+  assert.equal(claimResumeLease(claimed, process.pid, Date.now()), true);
+  const other = lease("claude:revoke-other", "history-resume:other");
+  const state = (id: string) => recheckManagedResumes().find((status) => status.lease.id === id)?.state;
+
+  assert.equal(revokeUnclaimedResumes("history-resume:mine"), 1);
+  assert.equal(state(mine.id), "revoked");
+  assert.equal(state(other.id), "pending", "another launch's environment is untouched");
+  assert.equal(revokeUnclaimedResumes("history-resume:claimed"), 0, "a terminal that claimed its environment keeps it");
+  assert.equal(state(claimed.id), "claimed");
+});
+
 test("Cancel pending resume through the route closes the launch and its environment, and Resume runs again", async () => {
-  const { launcher, abandoned } = fakeLauncher();
+  const { launcher, abandoned, prepared } = fakeLauncher();
   const f = await fixture(launcher);
   try {
     const id = sessionId();
@@ -498,6 +520,7 @@ test("Cancel pending resume through the route closes the launch and its environm
     assert.equal(cancelled.status, 200);
     assert.equal(((await cancelled.json()) as { launch: { state: string } }).launch.state, "released");
     assert.deepEqual(abandoned, [`history-resume:${launch.launchId}`], "the prepared environment is revoked with it");
+    assert.equal(abandoned[0], prepared[0]!.id, "revoked under the same owner it was prepared under");
     assert.equal((await f.post(`/api/history/sessions/claude/${id}/resume/cancel`, { launchId: launch.launchId })).status, 409);
     assert.equal((await f.resume(id)).status, 200);
   } finally {

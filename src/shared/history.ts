@@ -330,6 +330,16 @@ export const HistoryResumeBodySchema = z
   .strict();
 export type HistoryResumeBody = z.infer<typeof HistoryResumeBodySchema>;
 
+/**
+ * Whether Cancel pending resume can close a launch: it is still `pending` and holds no worktree
+ * slot. A launch with a slot closes when that slot is Returned, so the pool never resets it
+ * under an agent that may still appear. The store refuses on this rule and the dialog offers
+ * Cancel on it.
+ */
+export function historyResumeCancellable(launch: Pick<HistoryResumeLaunch, "state" | "slotId">): boolean {
+  return launch.state === "pending" && launch.slotId === null;
+}
+
 /** `POST /api/history/sessions/:agent/:id/resume/cancel`: close a pending launch with no slot. */
 export const HistoryResumeCancelSchema = z
   .object({ launchId: z.string().uuid() })

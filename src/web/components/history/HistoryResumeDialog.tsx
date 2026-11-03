@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import type {
-  HistoryResumeDirectoryState,
-  HistoryResumeLaunch,
-  HistoryResumeOptions,
-  HistoryResumeRefusal,
-  HistorySessionSummary,
+import {
+  historyResumeCancellable,
+  type HistoryResumeDirectoryState,
+  type HistoryResumeLaunch,
+  type HistoryResumeOptions,
+  type HistoryResumeRefusal,
+  type HistorySessionSummary,
 } from "@shared/history.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type { TerminalTargetView } from "@shared/terminal.ts";
@@ -36,10 +37,6 @@ type View =
   | { state: "error"; error: string }
   | { state: "ready"; options: HistoryResumeOptions };
 
-/** A launch Cancel pending resume can close: pending, and holding no worktree slot. */
-function cancellable(launch: HistoryResumeLaunch | null | undefined): launch is HistoryResumeLaunch {
-  return Boolean(launch && launch.state === "pending" && launch.slotId === null);
-}
 
 export function HistoryResumeDialog({
   session,
@@ -148,7 +145,7 @@ export function HistoryResumeDialog({
         {cancelled ? <p className="history-resume-note" role="status">The pending resume was cancelled.</p> : null}
         {refusal && !started ? <p className="history-resume-error" role="alert">{refusal.error}</p> : null}
 
-        {cancellable(pending) && (started || refusal?.code === "open_launch" || refusal?.code === "launch_unknown") ? (
+        {pending && historyResumeCancellable(pending) && (started || refusal?.code === "open_launch" || refusal?.code === "launch_unknown") ? (
           <Tooltip label="Close this launch now, so the conversation can be resumed again. A terminal that already opened is not closed.">
             <button type="button" className="btn" onClick={() => void cancel(pending)} disabled={busy}>
               Cancel pending resume

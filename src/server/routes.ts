@@ -295,10 +295,11 @@ import { runRetro } from "./retro.ts";
 import { startShapeTicketsFollowup } from "./shape-tickets-followup.ts";
 import { setAffectedTestsCommand, startTestingSetup } from "./testing-setup.ts";
 import { harnessFor, sessionMessages } from "./harness/index.ts";
-import { prepareTerminalResume, recheckManagedResumes, resumeConversation, type PreparedResume } from "./harness/resume.ts";
+import { prepareTerminalResume, recheckManagedResumes, resumeConversation, revokeUnclaimedResumes,
+  type PreparedResume } from "./harness/resume.ts";
 import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
-import { resumeLeaseDiagnostic, revokeResumeLease } from "./terminal/resume-lease.ts";
+import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
@@ -4054,11 +4055,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     hostUnavailable: (backend) => agentHostUnavailable(backend, configuredTerminalTargetDeps),
     prepare: (session) => prepareTerminalResume(session, { managed: false, requiredTools: [], extraDirs: [] }),
     launch: (backend, input) => launchManagedAgentTerminal(backend, input, terminalLauncher),
-    abandon: (owner) => {
-      for (const status of recheckManagedResumes()) {
-        if (status.lease.sourceSessionId === owner && status.state === "pending") revokeResumeLease(status.lease);
-      }
-    },
+    abandon: (owner) => { revokeUnclaimedResumes(owner); },
   };
   app.get("/api/history/sessions/:agent/:id/resume-options", async (c) => {
     if (!history) return c.json({ error: "session history unavailable" }, 503);

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { HistoryResumeLaunch } from "@shared/history.ts";
+import { historyResumeCancellable, type HistoryResumeLaunch } from "@shared/history.ts";
 import type { AgentType, ServerEvent, Session } from "@shared/types.ts";
 import { openDb } from "../db.ts";
 
@@ -167,8 +167,10 @@ export class HistoryResumeLaunches {
   cancel(launchId: string, now: number): HistoryResumeCancelResult {
     const launch = this.get(launchId);
     if (!launch) return { ok: false, reason: "not_found" };
-    if (launch.slotId !== null) return { ok: false, reason: "has_slot", launch };
-    if (launch.state !== "pending" || !this.transition(launchId, ["pending"], "released", now)) {
+    if (!historyResumeCancellable(launch)) {
+      return { ok: false, reason: launch.slotId !== null ? "has_slot" : "not_pending", launch };
+    }
+    if (!this.transition(launchId, ["pending"], "released", now)) {
       return { ok: false, reason: "not_pending", launch: this.get(launchId) ?? launch };
     }
     return { ok: true, launch: this.get(launchId)! };

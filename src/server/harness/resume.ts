@@ -42,6 +42,21 @@ export function recheckManagedResumes() {
   return reconcileResumeLeases(managedResumeRoot(), Date.now(), preparing);
 }
 
+/**
+ * Revoke the managed resumes prepared for `sourceSessionId` - the `session.id` that
+ * `prepareTerminalResume` records each lease under - that no terminal has claimed yet, so a
+ * window opening late finds nothing to start. A claimed one is left alone: its agent is
+ * already running. Returns how many were revoked.
+ */
+export function revokeUnclaimedResumes(sourceSessionId: string): number {
+  let revoked = 0;
+  for (const status of recheckManagedResumes()) {
+    if (status.lease.sourceSessionId !== sourceSessionId || status.state !== "pending") continue;
+    if (revokeResumeLease(status.lease)) revoked += 1;
+  }
+  return revoked;
+}
+
 export function resumeConversation(session: Pick<Session, "agent" | "agentSessionId">): string {
   return `${session.agent}:${session.agentSessionId}`;
 }

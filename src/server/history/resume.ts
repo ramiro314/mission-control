@@ -38,17 +38,20 @@ export type HistoryResumeSession = Pick<Session, "id" | "agent" | "agentSessionI
 export interface HistoryResumeLauncher {
   /** Why `backend` cannot host an agent, or null when it can. */
   hostUnavailable(backend: TerminalBackendId): string | null;
-  /** Provision the launch: argv, disposable home and wrapper. Throws when it cannot. */
+  /**
+   * Provision the launch: argv, disposable home and wrapper, recorded under `session.id`,
+   * which a History Resume sets to `historyResumeOwner(launchId)`. Throws when it cannot.
+   */
   prepare(session: HistoryResumeSession): Promise<PreparedResume>;
   launch(backend: TerminalBackendId, input: ManagedResumeLaunch): Promise<TerminalLaunchOutcome>;
   /**
-   * Revoke the prepared environment of a cancelled launch, when no terminal has claimed it
-   * yet, so a window that opens late finds nothing to start. `owner` is `historyResumeOwner`.
+   * Revoke what `prepare` provisioned under `owner` (the `session.id` it was given), when no
+   * terminal has claimed it yet, so a window that opens late finds nothing to start.
    */
   abandon(owner: string): void;
 }
 
-/** The owner a launch's prepared environment is recorded under. */
+/** The `session.id` a launch's environment is prepared, and later revoked, under. */
 export function historyResumeOwner(launchId: string): string {
   return `history-resume:${launchId}`;
 }
