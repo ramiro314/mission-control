@@ -408,6 +408,11 @@ export interface HistoryResumeLaunch {
   cwd: string;
   /** The worktree slot the launch holds, or null for a directory outside the pool. */
   slotId: string | null;
+  /**
+   * The transcript copy a typed-directory Resume wrote or reused, or null. Recorded only once
+   * the copy exists, so a path here is always a History copy and never canonical.
+   */
+  copyPath: string | null;
   launchedAt: number;
   /** The Mission Control session the launch bound to, once discovery registered it. */
   mcSessionId: string | null;
@@ -435,6 +440,8 @@ export const HISTORY_RESUME_REFUSALS = [
   "launch_not_found",
   "launch_not_pending",
   "launch_has_slot",
+  "directory_relative",
+  "copy_exists",
   "slot_reused",
   "slot_unavailable",
   "slot_not_offered",
@@ -467,14 +474,6 @@ export interface HistoryResumeSlot {
   head: string | null;
 }
 
-/**
- * The directories a Resume falls back on: every original state but these two is a target of
- * its own, so the picker opens only for a directory that is gone or reused.
- */
-export function historyResumeNeedsPicker(state: HistoryResumeDirectoryState): boolean {
-  return state === "missing" || state === "slot_reused";
-}
-
 /** `GET /api/history/sessions/:agent/:id/resume-options`. */
 export interface HistoryResumeOptions {
   original: {
@@ -485,27 +484,32 @@ export interface HistoryResumeOptions {
     state: HistoryResumeDirectoryState;
     /** The pool slot the directory is, when it is one (`pool_slot` or `slot_reused`). */
     slot: HistoryResumeSlot | null;
+    /** Why a Resume in this directory would be refused, or null when it is usable. */
+    refusal: HistoryResumeRefusal | null;
   };
-  /**
-   * The picker: idle, clean slots of the session's repository, offered when the original
-   * directory is gone or reused. Empty otherwise, and for a session with no resolvable
-   * repository.
-   */
-  slots: HistoryResumeSlot[];
   /** The session's open (`pending` or `expired`) launch, if any. */
   openLaunch: HistoryResumeLaunch | null;
-  /** Why Resume would be refused right now, or null when it would launch. */
+  /** Why no Resume can run right now, whatever the target, or null. */
   refusal: HistoryResumeRefusal | null;
+  /**
+   * The other targets the dialog offers when the original directory cannot be used (gone,
+   * reused or unrecorded) and nothing else refuses: idle, clean slots of the session's
+   * repository (none for a session with no resolvable repository), and a typed directory when
+   * the agent can fork. Null when the original is usable or a refusal blocks every target.
+   */
+  picker: { directory: boolean; slots: HistoryResumeSlot[] } | null;
 }
 
 /**
- * Where a Resume runs: the original directory (leased as a slot when it is an idle one), or a
- * slot the picker offered. A typed directory joins this union later, so a body naming one is
- * refused until then.
+ * Where a Resume runs: the original directory (leased as a slot when it is an idle one), a
+ * slot the picker offered, or a directory the operator typed. A typed path must be absolute;
+ * the daemon refuses a relative one with `directory_relative`, so the dialog can say why, and
+ * resolves the rest once through symlinks.
  */
 export const HistoryResumeTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("original") }).strict(),
   z.object({ kind: z.literal("slot"), slotId: z.string().min(1).max(200) }).strict(),
+  z.object({ kind: z.literal("directory"), path: z.string().min(1).max(4096) }).strict(),
 ]);
 export type HistoryResumeTarget = z.infer<typeof HistoryResumeTargetSchema>;
 

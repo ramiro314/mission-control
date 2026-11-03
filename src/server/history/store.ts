@@ -218,8 +218,21 @@ export class HistoryStore {
   }
 
   /**
+   * Every transcript path a History Resume recorded as its copy, for one agent. None of them is
+   * ever a row's canonical file, whatever the scan order.
+   */
+  copyPaths(agent: AgentType): Set<string> {
+    return new Set((this.db
+      .prepare("SELECT copy_path FROM history_resume_launches WHERE agent = ? AND copy_path IS NOT NULL")
+      .all(agent) as unknown as { copy_path: string }[]).map((row) => row.copy_path));
+  }
+
+  /**
    * Write one batch in ONE short transaction. A row that was gone and whose file is back
-   * becomes present again; `resumed_from` is never touched here.
+   * becomes present again. `resumed_from` comes from the launch record a History fork wrote
+   * before its agent started (the fork's minted id is that launch's expected id), so it is
+   * known from the row's first write and never inferred from the transcript, which carries no
+   * fork marker. Once set it is kept.
    */
   upsertBatch(rows: readonly HistoryUpsert[], indexedAt: number): void {
     if (rows.length === 0) return;
@@ -229,8 +242,11 @@ export class HistoryStore {
         transcript_state, gone_at, cwd, repo_root, branch, entrypoint, version, kind,
         custom_title, ai_title, first_prompt, started_at, last_activity_at, duration_ms,
         model, cost_usd, input_tokens, output_tokens, lines_added, lines_removed,
-        pr_urls, continued_in, subagent_count, indexed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'present', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        pr_urls, continued_in, subagent_count, indexed_at, resumed_from
+      ) VALUES (?, ?, ?, ?, ?, ?, 'present', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        (SELECT l.source_session_id FROM history_resume_launches l
+          WHERE l.agent = ?1 AND l.expected_agent_session_id = ?2 AND l.source_session_id <> l.expected_agent_session_id
+          ORDER BY l.launched_at LIMIT 1))
       ON CONFLICT (agent, agent_session_id) DO UPDATE SET
         transcript_path = excluded.transcript_path,
         fingerprint = excluded.fingerprint,
@@ -259,7 +275,8 @@ export class HistoryStore {
         pr_urls = excluded.pr_urls,
         continued_in = excluded.continued_in,
         subagent_count = excluded.subagent_count,
-        indexed_at = excluded.indexed_at
+        indexed_at = excluded.indexed_at,
+        resumed_from = COALESCE(history_sessions.resumed_from, excluded.resumed_from)
     `);
     const fields = this.db.prepare(
       `INSERT INTO history_search_segments (agent, agent_session_id, ordinal, text_fold) VALUES (?, ?, 0, ?)

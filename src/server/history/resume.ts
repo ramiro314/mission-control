@@ -1,12 +1,17 @@
-import { realpath, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, open, realpath, stat, unlink } from "node:fs/promises";
+import { dirname, isAbsolute } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { createReadStream } from "node:fs";
 import {
-  historyResumeNeedsPicker,
   isHistoryConversationKind,
   type HistoryResumeBody,
   type HistoryResumeCheckout,
+  type HistoryResumeDirectoryState,
   type HistoryResumeLaunch,
   type HistoryResumeOptions,
   type HistoryResumeRefusal,
+  type HistoryResumeTarget,
   type HistoryResumeRefusalCode,
   type HistoryResumeSlot,
   type HistorySessionSummary,
@@ -33,14 +38,24 @@ import type { HistoryStore } from "./store.ts";
  * terminal, with no task context and no Mission Control tools. Discovery then registers the
  * agent like any other terminal session, which makes the row Live.
  *
- * Targets are the original directory and worktree pool slots. A pool slot is never idle on a
- * branch, so an original directory that is a slot is a slot target on that same slot: leased
- * and its recorded branch checked out when it is idle, and counted as reused when it is not.
- * A directory gone or reused opens the picker, which offers idle slots of the same repository.
+ * Three targets: the original directory, a worktree pool slot, and a directory the operator
+ * typed. A pool slot is never idle on a branch, so an original directory that is a slot is a
+ * slot target on that same slot: leased and its recorded branch checked out when it is idle,
+ * and counted as reused when it is not. When the original cannot be used, the picker offers
+ * idle slots of the same repository and a typed directory.
+ *
+ * A typed directory runs a FORK. The transcript is copied into that directory's project folder
+ * as an exclusive create, never over an existing file, and the agent starts with a fork id
+ * Mission Control minted, so the fork's identity is known before launch and the original is
+ * never touched. That copy is History's only write into the agent's store, and an unofficial
+ * workaround that may break with an agent format change.
  */
 
 /** The fields of a session a managed terminal resume is prepared from. */
-export type HistoryResumeSession = Pick<Session, "id" | "agent" | "agentSessionId" | "permissionMode" | "cwd" | "runtime">;
+export type HistoryResumeSession = Pick<Session, "id" | "agent" | "agentSessionId" | "permissionMode" | "cwd" | "runtime"> & {
+  /** Set for a fork: the id Mission Control minted for it, which the agent starts under. */
+  forkSessionId?: string | null;
+};
 
 /** The terminal half of a Resume, supplied by the routes so this file never opens a window itself. */
 export interface HistoryResumeLauncher {
@@ -77,7 +92,23 @@ export type HistoryResumeOptionsRead =
 
 export type HistoryResumeOutcome =
   | { ok: true; status: 200; launch: HistoryResumeLaunch; label: string; checkout: HistoryResumeCheckout | null }
-  | { ok: false; status: 404 | 409 | 410 | 504; refusal: HistoryResumeRefusal; launch?: HistoryResumeLaunch };
+  | { ok: false; status: 400 | 404 | 409 | 410 | 504; refusal: HistoryResumeRefusal; launch?: HistoryResumeLaunch };
+
+/**
+ * A target resolved once, through symlinks: that one `cwd` is the copy folder's encoding, the
+ * launch row's directory, the terminal's working directory and the binding key. A fork also
+ * carries where its transcript copy goes and the id minted for it.
+ */
+interface ResolvedTarget {
+  cwd: string;
+  fork: { copyPath: string; forkSessionId: string } | null;
+  /** The slot a slot target leases; the lease decides, after the claim, whether it is still idle. */
+  slot: HistoryResumeSlot | null;
+}
+
+type Original = Omit<HistoryResumeOptions["original"], "refusal">;
+
+type TargetRead = { ok: true; target: ResolvedTarget } | { ok: false; refusal: HistoryResumeRefusal };
 
 export type HistoryResumeCancelOutcome =
   | { ok: true; launch: HistoryResumeLaunch }
@@ -90,16 +121,69 @@ function refusal(code: HistoryResumeRefusalCode, error: string): HistoryResumeRe
 }
 
 /** The status a refusal answers with. */
-function refusalStatus(code: HistoryResumeRefusalCode): 409 | 410 | 504 {
+function refusalStatus(code: HistoryResumeRefusalCode): 400 | 409 | 410 | 504 {
+  if (code === "directory_relative") return 400;
   if (code === "transcript_gone") return 410;
   if (code === "launch_unknown") return 504;
   return 409;
 }
 
-type Original = HistoryResumeOptions["original"];
+function isErrno(error: unknown, code: string): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === code;
+}
 
-/** Where a launch runs, resolved: a directory outside the pool, or a slot to lease. */
-type Target = { cwd: string; slot: HistoryResumeSlot | null };
+function copyExistsRefusal(copyPath: string): HistoryResumeRefusal {
+  return refusal(
+    "copy_exists",
+    `${copyPath} already exists and is not a copy History made of this conversation, so nothing was written. Choose another directory.`,
+  );
+}
+
+function copyChangedRefusal(copyPath: string): HistoryResumeRefusal {
+  return refusal(
+    "copy_exists",
+    `${copyPath} was copied by History, but something has written to it since (a resume run in that directory), so it is no longer a copy of this conversation. Nothing was written. Choose another directory.`,
+  );
+}
+
+/** What already lies at a fork's copy destination. */
+type ExistingCopy = "absent" | "copy" | "changed" | "foreign";
+
+/**
+ * Whether every byte of `copyPath` is the start of `sourcePath`. The source only ever grows
+ * by appending, so a recorded copy that is still a prefix of it is one nothing has written to
+ * since it was made (a fork leaves its source untouched); one that is not was resumed in place.
+ */
+async function isPrefixOf(copyPath: string, sourcePath: string): Promise<boolean> {
+  const copy = await open(copyPath, "r");
+  try {
+    const source = await open(sourcePath, "r");
+    try {
+      const size = (await copy.stat()).size;
+      if (size > (await source.stat()).size) return false;
+      const left = Buffer.alloc(64 * 1024);
+      const right = Buffer.alloc(64 * 1024);
+      for (let at = 0; at < size;) {
+        const length = Math.min(left.length, size - at);
+        const [a, b] = await Promise.all([copy.read(left, 0, length, at), source.read(right, 0, length, at)]);
+        if (a.bytesRead !== length || b.bytesRead !== length) return false;
+        if (!left.subarray(0, length).equals(right.subarray(0, length))) return false;
+        at += length;
+      }
+      return true;
+    } finally {
+      await source.close();
+    }
+  } finally {
+    await copy.close();
+  }
+}
+
+function existingRefusal(existing: ExistingCopy, copyPath: string): HistoryResumeRefusal | null {
+  if (existing === "foreign") return copyExistsRefusal(copyPath);
+  if (existing === "changed") return copyChangedRefusal(copyPath);
+  return null;
+}
 
 function openLaunchRefusal(launch: HistoryResumeLaunch): HistoryResumeRefusal {
   const close = launch.slotId === null ? "" : " It holds that worktree slot: Return the slot from its card to close it.";
@@ -128,11 +212,19 @@ export class HistoryResume {
     const summary = { ...found.entry.summary, liveSessionId: live(found.entry.summary.agent, found.entry.summary.agentSessionId) };
     const observed = new SlotObservation(slots);
     const original = await this.original(summary.cwd, observed);
-    const picker = historyResumeNeedsPicker(original.state) ? await this.picker(summary, observed) : [];
     const openLaunch = this.deps.launches.open(summary.agent, summary.agentSessionId);
+    const refused = this.sessionRefusal(summary, openLaunch);
+    const originalRefusal = directoryRefusal(summary.cwd, original.state);
     return {
       ok: true,
-      options: { original, slots: picker, openLaunch, refusal: this.refusal(summary, original, openLaunch, picker.length > 0) },
+      options: {
+        original: { ...original, refusal: originalRefusal },
+        openLaunch,
+        refusal: refused,
+        picker: refused || !originalRefusal
+          ? null
+          : { directory: canFork(summary.agent), slots: await this.picker(summary, observed) },
+      },
     };
   }
 
@@ -154,25 +246,24 @@ export class HistoryResume {
     if (!found) return { ok: false, status: 404, refusal: refusal("not_resumable", NOT_FOUND) };
     const { reader, entry } = found;
     const summary = { ...entry.summary, liveSessionId: live(entry.summary.agent, entry.summary.agentSessionId) };
-    // The target, resolved once: the launch row, the binding and the terminal all use this
-    // value, never the spelling the transcript recorded.
-    const observed = new SlotObservation(slots);
-    const original = await this.original(summary.cwd, observed);
-    const openLaunch = this.deps.launches.open(summary.agent, summary.agentSessionId);
-    const resolved = await this.target(summary, original, body, observed, openLaunch);
+    const refused = this.sessionRefusal(summary, this.deps.launches.open(summary.agent, summary.agentSessionId));
+    if (refused) return this.refuse(refused, summary);
+    // The target, resolved once: the copy, the launch row, the binding and the terminal all
+    // use this value, never the spelling the transcript recorded or the operator typed.
+    const resolved = await this.target(body.target, summary, reader, entry.transcriptPath, new SlotObservation(slots));
     if (!resolved.ok) return this.refuse(resolved.refusal, summary);
+    const { cwd, fork, slot } = resolved.target;
     const hostRefusal = launcher.hostUnavailable(body.backend);
     if (hostRefusal) return this.refuse(refusal("host_unavailable", hostRefusal), summary);
-    const { target } = resolved;
-    const { cwd } = target;
 
     const claimed = this.deps.launches.claim(
       {
         agent: summary.agent,
         sourceSessionId: summary.agentSessionId,
-        expectedAgentSessionId: summary.agentSessionId,
+        // A fork is discovered under the id minted for it; `resumed_from` reads this row.
+        expectedAgentSessionId: fork?.forkSessionId ?? summary.agentSessionId,
         cwd,
-        slotId: target.slot?.slotId ?? null,
+        slotId: slot?.slotId ?? null,
       },
       this.now(),
     );
@@ -190,20 +281,29 @@ export class HistoryResume {
     };
 
     let checkout: HistoryResumeCheckout | null = null;
-    if (target.slot && slots) {
+    if (slot && slots) {
       const owner = { kind: "manual" as const, key: historyResumeOwnerKey(launch.launchId) };
-      const taken = await slots.lease(target.slot.slotId, owner, summary.branch).catch((error: unknown) => ({
+      const taken = await slots.lease(slot.slotId, owner, summary.branch).catch((error: unknown) => ({
         outcome: "outcomeUnknown" as const,
         reason: error instanceof Error ? error.message : String(error),
       }));
       if (taken.outcome !== "leased") {
         // Nothing was granted: a refused lease left the slot as it was, and one whose outcome
-        // is unknown quarantined it under this launch's owner, which its card Returns.
-        return failed(`Slot ${target.slot.ordinal} could not be leased: ${taken.reason}`, "slot_unavailable");
+        // is unknown quarantined it, which its card Returns.
+        return failed(`Slot ${slot.ordinal} could not be leased: ${taken.reason}`, "slot_unavailable");
       }
       lease = taken.lease;
       checkout = taken.checkout;
       this.deps.launches.attachLease(launch.launchId, lease.leaseId, this.now());
+      launch = this.deps.launches.get(launch.launchId) ?? launch;
+    }
+
+    if (fork) {
+      const copied = await this.copy(launch, entry.transcriptPath, fork.copyPath);
+      if (!copied.ok) {
+        this.deps.launches.release(launch.launchId, this.now());
+        return { ok: false, status: 409, refusal: copied.refusal, launch: this.deps.launches.get(launch.launchId) ?? launch };
+      }
       launch = this.deps.launches.get(launch.launchId) ?? launch;
     }
 
@@ -219,6 +319,7 @@ export class HistoryResume {
         permissionMode,
         cwd,
         runtime: "terminal",
+        forkSessionId: fork?.forkSessionId ?? null,
       });
     } catch (error) {
       return await failed(error instanceof Error ? error.message : String(error));
@@ -308,16 +409,8 @@ export class HistoryResume {
     return { ok: false, status: refusalStatus(found.code), refusal: found, ...(launch ? { launch } : {}) };
   }
 
-  /**
-   * The first refusal that applies, in the order the page reads them, or null. `offered` is
-   * whether the picker has a slot to offer when the original directory is gone or reused.
-   */
-  private refusal(
-    summary: HistorySessionSummary,
-    original: Original,
-    openLaunch: HistoryResumeLaunch | null,
-    offered: boolean,
-  ): HistoryResumeRefusal | null {
+  /** The first refusal that blocks every target, in the order the page reads them, or null. */
+  private sessionRefusal(summary: HistorySessionSummary, openLaunch: HistoryResumeLaunch | null): HistoryResumeRefusal | null {
     if (!isHistoryConversationKind(summary.kind)) {
       return refusal("not_conversation", "Background runs (one-shot and reviewer) are readable here but cannot be resumed.");
     }
@@ -331,58 +424,130 @@ export class HistoryResume {
       return refusal("not_resumable", `${summary.agent} cannot reopen a conversation in a terminal.`);
     }
     if (openLaunch) return openLaunchRefusal(openLaunch);
-    if (original.state === "unrecorded") return refusal("no_directory", "This transcript recorded no working directory to resume in.");
-    if (offered) return null;
-    const noSlot = summary.repoRoot === null
-      ? "no repository could be resolved for it, so there is no slot to offer"
-      : "no idle, clean slot of its repository is free";
-    if (original.state === "missing") {
-      return refusal("directory_missing", `The original directory ${summary.cwd} no longer exists, and ${noSlot}.`);
-    }
-    if (original.state === "slot_reused") {
-      return refusal(
-        "slot_reused",
-        `The original directory ${summary.cwd} is a worktree slot that is in use or not idle, and ${noSlot}.`,
-      );
-    }
     return null;
   }
 
-  /**
-   * The body's target, resolved, or the refusal it meets. Every check here reads state and
-   * touches nothing; whether a slot is still idle is decided by its lease, after the claim.
-   */
+  /** The target a request names, resolved once, or why it cannot be used. Touches nothing. */
   private async target(
+    target: HistoryResumeTarget,
     summary: HistorySessionSummary,
-    original: Original,
-    body: HistoryResumeBody,
+    reader: HistoryReader,
+    transcriptPath: string,
     observed: SlotObservation,
-    openLaunch: HistoryResumeLaunch | null,
-  ): Promise<{ ok: true; target: Target } | { ok: false; refusal: HistoryResumeRefusal }> {
-    const general = this.refusal(summary, original, openLaunch, true);
-    if (general) return { ok: false, refusal: general };
-    if (body.target.kind === "original") {
-      if (original.state === "usable") return { ok: true, target: { cwd: original.resolved!, slot: null } };
+  ): Promise<TargetRead> {
+    if (target.kind === "original") {
+      const original = await this.original(summary.cwd, observed);
       // The original's own slot, whatever it was observed as: its lease decides whether it is
       // still idle, after the claim, so one taken meanwhile is refused and the claim released.
-      if (original.slot) return { ok: true, target: { cwd: await canonical(original.slot.path), slot: original.slot } };
+      if (original.slot) return { ok: true, target: { cwd: await canonical(original.slot.path), fork: null, slot: original.slot } };
+      const refused = directoryRefusal(summary.cwd, original.state);
+      return refused ? { ok: false, refusal: refused } : { ok: true, target: { cwd: original.resolved!, fork: null, slot: null } };
+    }
+    if (target.kind === "slot") {
+      const original = await this.original(summary.cwd, observed);
+      const offered = original.slot?.slotId === target.slotId
+        ? original.slot
+        : directoryRefusal(summary.cwd, original.state)
+          ? (await this.picker(summary, observed, true)).find((slot) => slot.slotId === target.slotId) ?? null
+          : null;
+      if (!offered) {
+        return { ok: false, refusal: refusal("slot_not_offered", "That slot is not one this Resume offers: it belongs to another repository, or is gone.") };
+      }
+      return { ok: true, target: { cwd: await canonical(offered.path), fork: null, slot: offered } };
+    }
+    if (!canFork(summary.agent)) {
+      return { ok: false, refusal: refusal("not_resumable", `${summary.agent} cannot fork a conversation into another directory.`) };
+    }
+    if (!isAbsolute(target.path)) {
+      return { ok: false, refusal: refusal("directory_relative", `${target.path} is a relative path: type the directory's absolute path.`) };
+    }
+    const typed = await this.resolveDirectory(target.path);
+    if (typed.state === "missing") {
+      return { ok: false, refusal: refusal("directory_missing", `The directory ${target.path} does not exist.`) };
+    }
+    if (typed.state === "pool_slot") {
       return {
         ok: false,
-        refusal: original.state === "missing"
-          ? refusal("directory_missing", `The original directory ${summary.cwd} no longer exists: choose a slot instead.`)
-          : refusal("slot_reused", `The original directory ${summary.cwd} is in a worktree pool but is no slot this Resume can lease: choose a slot instead.`),
+        refusal: refusal("pool_slot", `${target.path} is inside a worktree pool, which another task may be using: choose one of the offered slots instead.`),
       };
     }
-    const { slotId } = body.target;
-    const offered = original.slot?.slotId === slotId
-      ? original.slot
-      : historyResumeNeedsPicker(original.state)
-        ? (await this.picker(summary, observed, true)).find((slot) => slot.slotId === slotId) ?? null
-        : null;
-    if (!offered) {
-      return { ok: false, refusal: refusal("slot_not_offered", "That slot is not one this Resume offers: it belongs to another repository, or is gone.") };
+    const copyPath = reader.spec.copyDestination(typed.resolved, summary.agentSessionId);
+    // Advisory, so a refusal costs no launch row; the exclusive create after the claim decides.
+    // A check that cannot read its files leaves the decision, and the error, to the copy.
+    const existing = await this.existing(summary.agent, summary.agentSessionId, transcriptPath, copyPath).catch((): ExistingCopy => "absent");
+    const refused = existingRefusal(existing, copyPath);
+    if (refused) return { ok: false, refusal: refused };
+    return { ok: true, target: { cwd: typed.resolved, fork: { copyPath, forkSessionId: randomUUID() }, slot: null } };
+  }
+
+  /**
+   * What lies at `copyPath`: nothing; a History copy of this session nothing has written to
+   * since (`copy`); a recorded copy something resumed in place (`changed`); or any other file,
+   * the canonical transcript included (`foreign`). A path alone never makes a file reusable.
+   */
+  private async existing(
+    agent: HistorySessionSummary["agent"],
+    sourceSessionId: string,
+    sourcePath: string,
+    copyPath: string,
+  ): Promise<ExistingCopy> {
+    try {
+      await lstat(copyPath);
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) return "absent";
+      throw error;
     }
-    return { ok: true, target: { cwd: await canonical(offered.path), slot: offered } };
+    if (!this.deps.launches.isCopyOf(agent, sourceSessionId, copyPath)) return "foreign";
+    return (await isPrefixOf(copyPath, sourcePath)) ? "copy" : "changed";
+  }
+
+  /**
+   * Put the transcript at `copyPath` for a fork, and record it on the launch. An existing
+   * History copy of this session that is still a prefix of the source is reused as it stands,
+   * with no write: a fork never changes its source. A recorded copy something has written to
+   * since, and anything else at that path, the canonical transcript included, refuse with
+   * nothing written: the copy is an exclusive create (`O_EXCL`), so it never writes over a
+   * file, whoever made it.
+   */
+  private async copy(
+    launch: HistoryResumeLaunch,
+    source: string,
+    copyPath: string,
+  ): Promise<{ ok: true } | { ok: false; refusal: HistoryResumeRefusal }> {
+    try {
+      const existing = await this.existing(launch.agent, launch.sourceSessionId, source, copyPath);
+      const refused = existingRefusal(existing, copyPath);
+      if (refused) return { ok: false, refusal: refused };
+      if (existing === "copy") {
+        this.deps.launches.recordCopy(launch.launchId, copyPath, this.now());
+        return { ok: true };
+      }
+      await mkdir(dirname(copyPath), { recursive: true });
+      let created = false;
+      try {
+        const handle = await open(copyPath, "wx", 0o600);
+        created = true;
+        await pipeline(createReadStream(source), handle.createWriteStream());
+      } catch (error) {
+        if (!created && isErrno(error, "EEXIST")) {
+          // Lost to a file that appeared since the check: reuse it only if it is our own
+          // untouched copy.
+          const raced = await this.existing(launch.agent, launch.sourceSessionId, source, copyPath);
+          if (raced === "copy") {
+            this.deps.launches.recordCopy(launch.launchId, copyPath, this.now());
+            return { ok: true };
+          }
+          return { ok: false, refusal: existingRefusal(raced, copyPath) ?? copyExistsRefusal(copyPath) };
+        }
+        // A partial copy this request created is removed, so it never blocks the next Resume.
+        if (created) await unlink(copyPath).catch(() => {});
+        throw error;
+      }
+    } catch (error) {
+      return { ok: false, refusal: refusal("launch_failed", `Could not copy the transcript to ${copyPath}: ${error instanceof Error ? error.message : String(error)}`) };
+    }
+    this.deps.launches.recordCopy(launch.launchId, copyPath, this.now());
+    return { ok: true };
   }
 
   /**
@@ -399,23 +564,49 @@ export class HistoryResume {
     return slots;
   }
 
-  /** The recorded directory, resolved once through symlinks, and whether Resume can use it. */
+  /**
+   * The recorded directory, resolved once through symlinks, and whether Resume can use it. A
+   * pool directory is a slot target on its own slot when that slot is idle; held by another
+   * owner, or not provably idle, it counts as reused.
+   */
   private async original(cwd: string | null, observed: SlotObservation): Promise<Original> {
     if (!cwd) return { cwd, resolved: null, state: "unrecorded", slot: null };
+    const directory = await this.resolveDirectory(cwd);
+    if (directory.state !== "pool_slot") return { cwd, ...directory, slot: null };
+    const slot = (await observed.slots()).find((entry) => isInside(entry.canonicalPath, directory.resolved)) ?? null;
+    return { cwd, resolved: directory.resolved, state: slot?.idle ? "pool_slot" : "slot_reused", slot: slot?.slot ?? null };
+  }
+
+  /** A directory resolved once through symlinks, and whether it exists outside every worktree pool. */
+  private async resolveDirectory(path: string): Promise<
+    { resolved: null; state: "missing" } | { resolved: string; state: "usable" | "pool_slot" }
+  > {
     let resolved: string;
     try {
-      resolved = await realpath(cwd);
-      if (!(await stat(resolved)).isDirectory()) return { cwd, resolved: null, state: "missing", slot: null };
+      resolved = await realpath(path);
+      if (!(await stat(resolved)).isDirectory()) return { resolved: null, state: "missing" };
     } catch {
-      return { cwd, resolved: null, state: "missing", slot: null };
+      return { resolved: null, state: "missing" };
     }
     const pools = await Promise.all(this.deps.store.worktreePools().map(({ poolPath }) => canonical(poolPath)));
-    if (!pools.some((pool) => isInside(pool, resolved))) return { cwd, resolved, state: "usable", slot: null };
-    // A pool directory is a slot target on its own slot when that slot is idle. Held by another
-    // owner, or not provably idle, it counts as reused.
-    const slot = (await observed.slots()).find((entry) => isInside(entry.canonicalPath, resolved)) ?? null;
-    return { cwd, resolved, state: slot?.idle ? "pool_slot" : "slot_reused", slot: slot?.slot ?? null };
+    if (pools.some((pool) => isInside(pool, resolved))) return { resolved, state: "pool_slot" };
+    return { resolved, state: "usable" };
   }
+}
+
+/** Whether this agent's CLI can start a fork under an id Mission Control mints. */
+function canFork(agent: HistorySessionSummary["agent"]): boolean {
+  return typeof resumeFor(agent)?.forkArgv === "function";
+}
+
+/** Why the original directory cannot be resumed in, or null when it can (an idle slot can). */
+function directoryRefusal(cwd: string | null, state: HistoryResumeDirectoryState): HistoryResumeRefusal | null {
+  if (state === "unrecorded") return refusal("no_directory", "This transcript recorded no working directory to resume in.");
+  if (state === "missing") return refusal("directory_missing", `The original directory ${cwd} no longer exists.`);
+  if (state === "slot_reused") {
+    return refusal("slot_reused", `The original directory ${cwd} is a worktree slot that is in use or not idle.`);
+  }
+  return null;
 }
 
 /** One observation of the pool per request, read only when something asks for it. */

@@ -133,18 +133,19 @@ slot. It is prepared from
 the catalog row alone: no task context and no Mission Control tools. Discovery then registers
 the agent like any other terminal session, which turns the row **Live**.
 
-- **Directory.** The original directory is a target when it still exists outside every
+- **Original directory.** The default target, when it still exists and lies outside every
   worktree pool. It is resolved once through symlinks, and that value is the launch's
   directory, the terminal's working directory and the binding key.
 - **Original slot.** An idle slot never keeps a branch, so an original directory inside a pool
   is a slot target on its own slot. When that slot is idle, the Resume leases it and checks out
   the recorded branch (below). When another owner holds it, or it is not idle for any other
   reason, it counts as reused.
-- **Picker.** When the original directory is gone or reused, the dialog offers the idle, clean
-  slots of the session's repository: the slots acquisition's own idle rule would hand out,
-  read from one inventory observation. A session with no resolvable repository is offered
-  none, and is refused. A slot of another repository, or one never offered, is refused with
-  `slot_not_offered`. The terminal opens in the slot's root.
+- **Picker.** When the original directory is gone, reused or never recorded, the dialog offers
+  the idle, clean slots of the session's repository (the slots acquisition's own idle rule
+  would hand out, read from one inventory observation) and, as another choice, a directory to
+  type (below). A session with no resolvable repository is offered no slot. A slot of another
+  repository, or one never offered, is refused with `slot_not_offered`. The terminal opens in
+  the slot's root.
 - **Slot target.** The worktree manager's `leaseForResume` leases the slot to the manual owner
   `history-resume-<launchId>`, which the slot card names "Resumed History session". It leases
   only an idle, detached slot, exactly as Open terminal's lease does, so a slot attached to a
@@ -174,6 +175,30 @@ the agent like any other terminal session, which turns the row **Live**.
   daemon made with no lease recorded is judged by that owner alone, since no lease can still be
   in flight after a restart: if no slot carries its owner, it is released. Cancel pending resume
   never closes a launch with a slot.
+- **Another directory.** When the original directory cannot be used, the dialog also offers a
+  **Resume in another directory** field (the only choice when no slot is offered), and lists
+  the terminals once a path is typed. The path must be absolute; a relative one is refused and
+  the field stays up. It must be an existing directory outside every worktree pool (a pool
+  directory is refused: choose an offered slot instead), and it is
+  resolved once with `realpath`: that value is the project folder the copy goes into, the
+  launch's directory, the terminal's working directory and the binding key, because Claude
+  encodes the directory it actually runs in.
+- **A fork from a copy.** For another directory, the transcript is copied into that
+  directory's Claude project folder (`~/.claude/projects/<encoded directory>/<sessionId>.jsonl`)
+  and the agent starts with `claude --resume <id> --fork-session --session-id <new>`, where
+  `<new>` is an id Mission Control minted before launch. The fork is a new session that appears
+  in History on its own, with `resumed_from` naming the original; the original transcript is
+  never touched. **This copy is an unofficial workaround:** it is History's only write into
+  Claude Code's store, it relies on Claude Code finding a session by its file in the project
+  folder, and it may break with a Claude Code format change.
+- **The copy never overwrites.** Project folder names are a lossy encoding, so two directories
+  can share one folder, including the original's. The copy is an exclusive create (`O_EXCL`).
+  A file already there that an earlier Resume recorded as its copy of this session is reused as
+  it stands, with no write, while it is still a byte prefix of the original transcript: a fork
+  never changes its source, and the original only grows by appending. A recorded copy that
+  something has written to since (Claude's own resume run in that directory) is no longer this
+  conversation and refuses, as does any other file of that name, the original transcript
+  included. Nothing is written in either case.
 - **One open launch per session.** Every Resume first writes one row to
   `history_resume_launches`, before it prepares or opens anything. A partial unique index on
   the session over the `pending` and `expired` states makes that insert the claim: of two
@@ -194,9 +219,11 @@ the agent like any other terminal session, which turns the row **Live**.
   `expired`.
 - **Refusals** are explicit, each with a code and a sentence: a background run, a gone
   transcript, a live session, an open launch (naming its directory), no recorded directory, a
-  missing directory or a reused slot with no slot to offer instead, a slot never offered, a slot
-  no longer idle, a harness that cannot resume, a terminal that cannot host an agent, a launch
-  that failed, or a launch Cancel pending resume closed while it was still starting.
+  missing directory, a reused slot, a pool directory typed as a directory, a relative typed
+  path, a file in the destination project folder that is not History's copy of this session, a
+  slot never offered, a slot no longer idle, a harness that cannot resume, a terminal that
+  cannot host an agent, a launch that failed, or a launch Cancel pending resume closed while it
+  was still starting.
 
 ## Session kinds
 
@@ -246,6 +273,14 @@ code. Kinds are persisted (`HISTORY_KINDS` in `src/shared/history.ts`) and appen
   walked every root of its harness without seeing the file. A root, project folder or file
   that exists but could not be read (permissions, I/O) makes the walk incomplete, and an
   incomplete walk decides nothing; only one that is not there at all counts as empty.
+- **One row per session id.** A Resume into another directory leaves two files with one
+  session id. A file a launch recorded as its copy (`history_resume_launches.copy_path`) is
+  never canonical; of the rest, the file in the project folder that encodes the session's first
+  recorded cwd wins, then the earliest first record, ties broken by path, so a rebuilt catalog
+  picks the same file whatever order it scans in. A copy never creates a second row. When the
+  canonical file disappears the row is marked gone, never repointed at a recorded copy. A file
+  nothing recorded as a copy competes like any other, so a transcript moved with its project
+  folder is followed, as a rebuilt catalog would choose it.
 - **Change event.** A pass that wrote or marked any row publishes one `history_changed` server
   event, however many rows and batches it covered; a pass that changed nothing publishes none.
   The event carries no data. See [the event stream](event-stream.md).
@@ -270,8 +305,9 @@ kind; absent means conversations. It is loopback-only like the rest of `/api/*`,
 and is not exposed as an MCP tool. A malformed cursor, an out-of-range limit, an unknown kind
 or agent, a query over 200 characters, or any parameter it does not know is refused with 400.
 
-Every route is loopback-only like the rest of `/api/*`, takes no path, and is not exposed as an
-MCP tool. A session is addressed as `:agent/:id`, where `:id` must be a UUID; its transcript
+Every route is loopback-only like the rest of `/api/*`, takes no path except Resume's typed
+directory (absolute, resolved with `realpath`, and only ever the destination of a copied
+transcript), and is not exposed as an MCP tool. A session is addressed as `:agent/:id`, where `:id` must be a UUID; its transcript
 path always comes from the catalog.
 
 | Route | Returns |
@@ -282,8 +318,8 @@ path always comes from the catalog.
 | `GET /api/history/sessions/:agent/:id/launch-context` | `{instructionFiles, systemPrompt, skills, mcp, environment, hooks}` (`HistoryLaunchContext`), parsed from the transcript on each request by the harness's `launchContext` reader. A section is `null` when the transcript holds no record of it. 404, 410 and 500 as for `messages`. |
 | `GET /api/history/sessions/:agent/:id/tool-results/:toolUseId` | `{toolUseId, source, isError, text, truncated}`: one tool call's result, `inline` from its transcript record or `sidecar` from the file that record names. 404 when no record holds a result for the id, or its sidecar is missing or not reachable; 410 when the transcript is gone. |
 | `GET /api/history/sessions/:agent/:id/subagents/:agentId/messages?cursor` | `{messages, nextCursor}`: a window of one subagent run's transcript, paged like `messages`. 404 when the run is not in the session's own listing; 410 when the session's transcript is gone. |
-| `GET /api/history/sessions/:agent/:id/resume-options` | `{original: {cwd, resolved, state, slot}, slots, openLaunch, refusal}`: the original directory as recorded, resolved through symlinks, its state (`usable`, `missing`, `pool_slot`, `unrecorded`, `slot_reused`) and the slot it is, if any; the picker's idle slots (`{slotId, ordinal, path, head}`) when it is `missing` or `slot_reused`; the session's open launch; and the refusal a Resume would meet now, or null. 404 as above. |
-| `POST /api/history/sessions/:agent/:id/resume` | Body `{backend, target}` (`HistoryResumeBodySchema`), where `target` is `{kind: "original"}` or `{kind: "slot", slotId}`. `{ok: true, launch, label, checkout}` once the terminal opened; `checkout` is what a slot target checked out (`{state: "branch" \| "missing" \| "elsewhere", branch, path?}`), or null outside the pool. A refusal is `{ok: false, code, error, launch?}`: 409 for most, 410 for a gone transcript, 504 when the terminal's outcome is unknown and the launch stays open, 400 for a body the schema refuses. |
+| `GET /api/history/sessions/:agent/:id/resume-options` | `{original: {cwd, resolved, state, slot, refusal}, openLaunch, refusal, picker}`: the original directory as recorded, resolved through symlinks, its state (`usable`, `missing`, `pool_slot`, `unrecorded`, `slot_reused`), the slot it is, if any, and why a Resume there would be refused; the session's open launch; the refusal that blocks every target now, or null; and `picker`, `{directory, slots}` when the original cannot be used and nothing else refuses, else null. `directory` is whether the harness can fork; `slots` are the idle slots of the session's repository (`{slotId, ordinal, path, head}`). 404 as above. |
+| `POST /api/history/sessions/:agent/:id/resume` | Body `{backend, target}` (`HistoryResumeBodySchema`), where `target` is `{kind: "original"}`, `{kind: "slot", slotId}` or `{kind: "directory", path}`. `{ok: true, launch, label, checkout}` once the terminal opened; a fork's `launch` carries the minted id as `expectedAgentSessionId` and the transcript copy as `copyPath`; `checkout` is what a slot target checked out (`{state: "branch" \| "missing" \| "elsewhere", branch, path?}`), or null outside the pool. A refusal is `{ok: false, code, error, launch?}`: 409 for most, 410 for a gone transcript, 504 when the terminal's outcome is unknown and the launch stays open, 400 for a relative typed path (`directory_relative`) or a body the schema refuses. |
 | `POST /api/history/sessions/:agent/:id/resume/cancel` | Body `{launchId}`. Cancel pending resume: `{ok: true, launch}` with the launch released. A refusal is `{ok: false, code, error, launch?}`: 404 `launch_not_found` for a launch of another session; 409 `launch_not_pending` or `launch_has_slot` for a launch that is no longer pending or holds a worktree slot. |
 
 Neither `:toolUseId` nor `:agentId` ever becomes part of a path on its own:
