@@ -318,7 +318,10 @@ closes in [three ways](#how-a-finding-gets-closed) and only one of them is a pus
 it. The ledger records the outcome, not which route produced it. A PR that has since closed reads `merged` or
 `closed` and is dimmed: it left the sweep for good, so it is history rather than a queue. A
 closed PR that *was* reviewed keeps its findings, because what the GitHub Inspector said about
-something that landed is the more useful fact.
+something that landed is the more useful fact. Its count reads as left behind, `3 unresolved at
+merge` or `3 unresolved at close`, rather than `3 findings`, since nothing will review them
+again. `merged` follows GitHub's own state as of the last poll, so a PR you merged by hand reads
+`merged` too, not only one YOLO mode merged.
 
 The count strip above the table tallies those same states and filters to one when you click
 it - on a ledger that is mostly landed work, *with findings* is how you get to the two rows
@@ -394,7 +397,11 @@ has no control.
 The modal names the pull request with a link to it, says whether it is open, merged or closed,
 and counts its review rounds. When the last review was not live and no finding on the pull
 request ever reached GitHub, it says so: "Dry run: nothing on this pull request was posted". It
-says nothing about posture for a row from a build that did not record it.
+says nothing about posture for a row from a build that did not record it. On a pull request that
+merged or closed with findings still unresolved, one line says so: "This pull request merged with
+3 findings unresolved. They are kept as a record and will not be reviewed again." The findings
+stay on the ledger as the record of what the GitHub Inspector said, and each keeps its own Posted
+label.
 
 The table is the one the [Completion tab](workflows.md) uses. Each finding shows its severity,
 title, location, round and status, and a **Posted** column that reads
