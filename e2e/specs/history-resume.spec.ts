@@ -8,6 +8,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { launchedCommand } from "../fixtures/isolated-launch.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { recordsIn } from "../fixtures/records.ts";
 
 /**
@@ -15,7 +16,9 @@ import { recordsIn } from "../fixtures/records.ts";
  * dialog that reads `resume-options`, the terminal it opens, and the pending launch that blocks
  * a second Resume until Cancel pending resume closes it. Then the slot target: an original
  * directory that is a worktree slot another owner holds opens the picker, the chosen slot is
- * leased and named on its card, and Returning it there releases the launch.
+ * leased and named on its card, and Returning it there releases the launch. Last, what a slot
+ * card says once a resumed session ends: kept with its reason when dirty, back in the pool when
+ * clean, and held when its agent never appeared.
  *
  * The terminal is the suite's fake cmux (`CMUX_BIN`, see fake-agents.ts), which records the
  * `new-workspace` it was asked for and runs nothing, so the command a person's terminal would
@@ -395,4 +398,86 @@ test("an original slot another owner holds opens the picker; the chosen slot is 
     "The branch feature/never-pushed was not found here or on origin, so the slot stays detached where it was: the code may not match the conversation.",
   );
   await capture(dashboard, "11-missing-branch");
+});
+
+test("a resumed session that ends with uncommitted changes keeps its slot and says why; a clean one returns it; one never seen is held", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Three idle slots of the fixture repository, each the original directory of one conversation.
+  // All three are held before any is returned, or the pool would hand out the same one again.
+  const leases: { path: string; leaseId: string }[] = [];
+  for (const label of ["dirty", "clean", "unseen"]) {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    leases.push(await response.json() as { path: string; leaseId: string });
+  }
+  for (const lease of leases) {
+    expect((await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } })).ok()).toBe(true);
+  }
+  const [dirtyPath, cleanPath, unseenPath] = leases.map((lease) => lease.path) as [string, string, string];
+  const dirty = writeSession(daemon, { cwd: dirtyPath, title: "Leave the parser half done", at: "2026-10-31T11:00:00.000Z" });
+  const clean = writeSession(daemon, { cwd: cleanPath, title: "Read the parser through", at: "2026-10-31T12:00:00.000Z" });
+  const unseen = writeSession(daemon, { cwd: unseenPath, title: "Never came back", at: "2026-10-31T13:00:00.000Z" });
+  for (const id of [dirty, clean, unseen]) await indexed(daemon, id);
+
+  // Each Resume leases its own original slot, through the dialog.
+  const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
+  for (const [id, path] of [[dirty, dirtyPath], [clean, cleanPath], [unseen, unseenPath]] as const) {
+    await dashboard.goto(`${daemon.baseURL}/#/history/claude/${id}`);
+    await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
+    await dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "cmux" }).click();
+    await expect(dialog.getByRole("status")).toContainText(`Started in cmux, in ${path}`);
+    await dialog.locator(".modal-foot").getByRole("button", { name: "Close", exact: true }).click();
+  }
+  await expect.poll(() => workspaces(daemon).length, { timeout: 15_000 }).toBe(3);
+
+  // The fake cmux runs nothing, so no agent can appear in a slot here. Two of the resumed
+  // agents are recorded as discovered (bound) while the daemon is down, the first having left
+  // an uncommitted file behind, and the restart's startup twin finds both sessions ended. The
+  // third never appeared.
+  writeFileSync(join(dirtyPath, "half-done.txt"), "work in progress\n");
+  await daemon.crash();
+  withDaemonDb(daemon, (db) => {
+    const bind = db.prepare(
+      "UPDATE history_resume_launches SET state = 'bound', mc_session_id = ? WHERE source_session_id = ? AND state = 'pending'",
+    );
+    for (const id of [dirty, clean]) expect(Number(bind.run(`term:${id}`, id).changes)).toBe(1);
+  });
+  await daemon.restart();
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const card = (path: string) => pool.getByRole("article").filter({ hasText: path });
+
+  await expect(card(dirtyPath).getByText("Kept: uncommitted changes from a resumed session")).toBeVisible({ timeout: 30_000 });
+  await expect(card(dirtyPath).getByText("leased", { exact: true })).toBeVisible();
+  await expect(card(dirtyPath).getByRole("button", { name: "Return", exact: true })).toBeVisible();
+
+  await expect(card(cleanPath).getByText("available", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(card(cleanPath).getByText(/Resumed History session|Kept:/)).toHaveCount(0);
+
+  await expect(card(unseenPath).getByText("Held for a resumed session that has not appeared")).toBeVisible();
+  await expect(card(unseenPath).getByText("leased", { exact: true })).toBeVisible();
+  await expect(card(unseenPath).getByRole("button", { name: "Return", exact: true })).toBeVisible();
+  await card(dirtyPath).scrollIntoViewIfNeeded();
+  await capture(dashboard, "12-ended-slots");
+  expect(existsSync(join(dirtyPath, "half-done.txt"))).toBe(true);
+
+  // The session whose agent never appeared cannot be resumed again while its slot is held.
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${unseen}`);
+  await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText(`This conversation is already being resumed in ${unseenPath}`);
+  await expect(dialog.getByRole("alert")).toContainText("Return the slot from its card to close it.");
+  await dialog.locator(".modal-foot").getByRole("button", { name: "Close", exact: true }).click();
+
+  // The clean one can: its slot is back in the pool, and its launch is closed.
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${clean}`);
+  await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await expect(dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "cmux" })).toBeEnabled();
 });

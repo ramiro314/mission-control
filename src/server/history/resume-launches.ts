@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { historyResumeCancellable, type HistoryResumeLaunch } from "@shared/history.ts";
+import { historyResumeCancellable, type HistoryResumeKeptReason, type HistoryResumeLaunch } from "@shared/history.ts";
 import type { AgentType, ServerEvent, Session } from "@shared/types.ts";
 import { openDb } from "../db.ts";
 import { historyResumeOwnerKey } from "../worktrees/owners.ts";
@@ -41,6 +41,20 @@ export type HistoryResumeCancelResult =
 /** Whether a slot is still held by a launch's lease, or by its owner key. See `HistoryResumeSlots.holds`. */
 export type HistoryResumeSlotHolds = (slotId: string, leaseKey: string | null, ownerKey: string) => boolean;
 
+/** What handing an ended launch's slot back did. See `WorktreeManager.returnResumed`. */
+export type HistoryResumeSlotReturn =
+  | { outcome: "released" }
+  | { outcome: "notHeld" }
+  | { outcome: "kept"; reason: HistoryResumeKeptReason }
+  | { outcome: "refused"; reason: string }
+  | { outcome: "outcomeUnknown"; reason: string };
+
+/** The worktree pool as the tracker uses it: who holds a slot, and the hand-back once a session ends. */
+export interface HistoryResumeSlotPool {
+  holds: HistoryResumeSlotHolds;
+  returnResumed(slotId: string, leaseKey: string | null, ownerKey: string): Promise<HistoryResumeSlotReturn>;
+}
+
 interface Row {
   launch_id: string;
   agent: string;
@@ -53,6 +67,7 @@ interface Row {
   launched_at: number;
   mc_session_id: string | null;
   state: string;
+  kept_reason: string | null;
 }
 
 function toLaunch(row: Row): HistoryResumeLaunch {
@@ -67,6 +82,7 @@ function toLaunch(row: Row): HistoryResumeLaunch {
     launchedAt: row.launched_at,
     mcSessionId: row.mc_session_id,
     state: row.state,
+    keptReason: row.kept_reason,
   };
 }
 
@@ -181,6 +197,31 @@ export class HistoryResumeLaunches {
     return this.transition(launchId, ["pending", "expired", "ended"], "released", now);
   }
 
+  /**
+   * Ended launches whose slot is still to be handed back: every `ended` launch with a slot and
+   * no kept reason, oldest first, with the lease it recorded.
+   */
+  awaitingReturn(): { launch: HistoryResumeLaunch; leaseKey: string | null }[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM history_resume_launches
+        WHERE state = 'ended' AND slot_id IS NOT NULL AND kept_reason IS NULL
+        ORDER BY launched_at, launch_id`,
+    ).all() as unknown as Row[];
+    return rows.map((row) => ({ launch: toLaunch(row), leaseKey: row.lease_key }));
+  }
+
+  /**
+   * An ended launch's slot was not clean, so it stays leased until the operator Returns it,
+   * and the slot card says why. False when the launch is no longer `ended`.
+   */
+  keep(launchId: string, reason: HistoryResumeKeptReason, now: number): boolean {
+    const result = this.db.prepare(
+      `UPDATE history_resume_launches SET kept_reason = ?, updated_at = ?
+        WHERE launch_id = ? AND state = 'ended'`,
+    ).run(reason, now, launchId);
+    return Number(result.changes) > 0;
+  }
+
   /** Record the lease a slot launch took, once the slot is leased. */
   attachLease(launchId: string, leaseKey: string, now: number): boolean {
     const result = this.db.prepare(
@@ -261,7 +302,8 @@ export class HistoryResumeLaunches {
 
   /**
    * The bound launch's session left the Registry: the launch is `ended`. A launch with a slot
-   * then waits for that slot's release; one without has nothing left to hold.
+   * then waits for its slot to be handed back (`awaitingReturn`); one without has nothing left
+   * to hold.
    */
   sessionRemoved(mcSessionId: string, now: number): HistoryResumeLaunch[] {
     const rows = this.db.prepare(
@@ -331,6 +373,9 @@ export class HistoryResumeLaunches {
   }
 }
 
+/** The longest a refused slot hand-back waits before it is tried again. */
+export const RESUME_RETURN_BACKOFF_MAX_MS = 10 * 60_000;
+
 /** What the tracker needs from the Registry. */
 export interface HistoryResumeRegistry {
   subscribe(fn: (event: ServerEvent) => void): () => void;
@@ -340,9 +385,11 @@ export interface HistoryResumeRegistry {
 
 /**
  * Keep launch records in step with the Registry: bind a launch when discovery registers its
- * agent, end it when that session leaves, release it when its slot's lease is gone, run the
- * startup twin after the first sweep, and close unbound launches past their grace window on
- * every tick. Returns the stop function.
+ * agent, end it when that session leaves and hand its slot back when the slot is clean (or keep
+ * it leased, saying why), release it when its slot's lease is gone, run the startup twin after
+ * the first sweep, and close unbound launches past their grace window on every tick. Only a
+ * launch that was `bound` ever reaches `ended`, so only a bound launch is released this way.
+ * Returns the stop function.
  */
 export function trackHistoryResumeLaunches(
   launches: HistoryResumeLaunches,
@@ -351,39 +398,95 @@ export function trackHistoryResumeLaunches(
     graceMs: number;
     tickMs: number;
     now?: () => number;
-    /** The worktree manager's answer to whether a slot still holds a launch; none means no pool. */
-    slotHolds?: HistoryResumeSlotHolds | null;
+    /** The worktree pool a slot launch holds; none means no pool. */
+    slots?: HistoryResumeSlotPool | null;
+    /**
+     * A launch holding a slot changed what its slot card says: it expired, a late agent bound
+     * it, or its slot was kept. The daemon republishes the worktree inventory on it.
+     */
+    onSlotChanged?: () => void;
   },
 ): () => void {
   const now = options.now ?? Date.now;
   const startedAt = now();
-  const guarded = (what: string, fn: () => void) => {
+  const guarded = <T>(what: string, fn: () => T): T | undefined => {
     try {
-      fn();
+      return fn();
     } catch (error) {
       console.error(`[history] resume launch ${what} failed: ${String(error)}`);
+      return undefined;
     }
   };
-  const holds = options.slotHolds ?? null;
+  const slots = options.slots ?? null;
+  const changed = (launched: readonly HistoryResumeLaunch[] | undefined) => {
+    if (launched?.some((launch) => launch.slotId !== null)) options.onSlotChanged?.();
+  };
   const releaseReturned = () => {
-    if (holds) guarded("slot release", () => launches.slotsReturned(now(), startedAt, holds));
+    if (slots) guarded("slot release", () => launches.slotsReturned(now(), startedAt, slots.holds));
+  };
+  // A hand-back in flight is never started twice. One refused for a passing reason, such as a
+  // process still inside the slot or an origin that cannot be fetched, is retried with a backoff
+  // that doubles per refusal up to `RESUME_RETURN_BACKOFF_MAX_MS`, so a lasting refusal never
+  // fetches on every tick. Each new reason is logged once.
+  const returning = new Set<string>();
+  const refusals = new Map<string, { reason: string; count: number; retryAt: number }>();
+  const maxBackoff = Math.max(options.tickMs, RESUME_RETURN_BACKOFF_MAX_MS);
+  let stopped = false;
+  const returnEnded = () => {
+    if (!slots || stopped) return;
+    const awaiting = guarded("slot return", () => launches.awaitingReturn()) ?? [];
+    const ids = new Set(awaiting.map(({ launch }) => launch.launchId));
+    for (const id of refusals.keys()) if (!ids.has(id)) refusals.delete(id);
+    for (const { launch, leaseKey } of awaiting) {
+      if (returning.has(launch.launchId)) continue;
+      const refused = refusals.get(launch.launchId);
+      if (refused && now() < refused.retryAt) continue;
+      returning.add(launch.launchId);
+      void slots.returnResumed(launch.slotId!, leaseKey, historyResumeOwnerKey(launch.launchId))
+        .then((result) => guarded("slot return", () => {
+          if (stopped) return;
+          if (result.outcome === "released" || result.outcome === "notHeld") {
+            launches.release(launch.launchId, now());
+            refusals.delete(launch.launchId);
+          } else if (result.outcome === "kept") {
+            if (launches.keep(launch.launchId, result.reason, now())) options.onSlotChanged?.();
+            refusals.delete(launch.launchId);
+          } else {
+            const previous = refusals.get(launch.launchId);
+            const count = (previous?.count ?? 0) + 1;
+            const wait = Math.min(options.tickMs * 2 ** count, maxBackoff);
+            refusals.set(launch.launchId, { reason: result.reason, count, retryAt: now() + wait });
+            if (previous?.reason !== result.reason) {
+              console.warn(`[history] slot ${launch.slotId} of resume launch ${launch.launchId} is not handed back yet: ${result.reason}`);
+            }
+          }
+        }))
+        .catch((error: unknown) => console.error(`[history] resume launch slot return failed: ${String(error)}`))
+        .finally(() => returning.delete(launch.launchId));
+    }
   };
   const unsubscribe = registry.subscribe((event) => {
-    if (event.type === "session_upsert") guarded("binding", () => launches.bind(event.session, now()));
-    else if (event.type === "session_remove") guarded("end", () => launches.sessionRemoved(event.id, now()));
+    if (event.type === "session_upsert") changed(guarded("binding", () => launches.bind(event.session, now())));
+    else if (event.type === "session_remove") {
+      if (guarded("end", () => launches.sessionRemoved(event.id, now()))?.length) returnEnded();
+    }
     // A slot Returned from its card releases the launch that held it.
     else if (event.type === "worktrees_changed") releaseReturned();
   });
-  const unobserved = registry.onSessionsObserved(() =>
-    guarded("startup check", () => launches.startup(registry.liveSessions(), now(), startedAt)));
+  const unobserved = registry.onSessionsObserved(() => {
+    changed(guarded("startup check", () => launches.startup(registry.liveSessions(), now(), startedAt)));
+    returnEnded();
+  });
   // The tick also catches a slot change whose notice never arrived, such as one made while the
-  // daemon was down.
+  // daemon was down, and retries a hand-back that a passing reason refused once its backoff ends.
   const timer = setInterval(() => {
-    guarded("expiry", () => launches.expire(now(), options.graceMs));
+    changed(guarded("expiry", () => launches.expire(now(), options.graceMs)));
     releaseReturned();
+    returnEnded();
   }, options.tickMs);
   timer.unref?.();
   return () => {
+    stopped = true;
     unsubscribe();
     unobserved();
     clearInterval(timer);

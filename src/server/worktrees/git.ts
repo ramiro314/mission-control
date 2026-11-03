@@ -82,6 +82,11 @@ export interface WorktreeGit {
   /** `branch` is a bare name that `isCheckoutBranchName` accepted. Reads refs only; never fetches. */
   branchTips(identity: WorktreeRepositoryIdentity, branch: string): Promise<GitResult<BranchTips>>;
   checkoutBranch(path: string, branch: string, mode: BranchCheckoutMode): Promise<GitResult<void>>;
+  /**
+   * Whether `HEAD` holds a commit that no branch, tag or remote-tracking ref holds: work a
+   * reset would leave only in the reflog.
+   */
+  unbranchedCommits(path: string): Promise<GitResult<boolean>>;
 }
 
 /**
@@ -519,5 +524,15 @@ export class NativeWorktreeGit implements WorktreeGit {
     const result = await this.execute("git", ["-C", path, ...args], { timeoutMs: 60_000 });
     if (commandFailed(result)) return failure(`git checkout (${mode})`, result);
     return { ok: true, value: undefined };
+  }
+
+  async unbranchedCommits(path: string): Promise<GitResult<boolean>> {
+    // One commit is enough to answer, so the walk stops at the first.
+    return this.observe(
+      ["-C", path, "rev-list", "--max-count=1", "HEAD", "--not", "--branches", "--tags", "--remotes"],
+      15_000,
+      (result): GitResult<boolean> =>
+        commandFailed(result) ? failure("git rev-list HEAD --not --branches --tags --remotes", result) : { ok: true, value: result.stdout.trim() !== "" },
+    );
   }
 }

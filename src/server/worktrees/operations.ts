@@ -167,6 +167,11 @@ export interface WorktreeOperationsDeps {
   unownedTrees: UnownedTreeDiscards;
   /** What deleting a folder loses, for Forget's preview. */
   describeTree: typeof describeTreeDiscard;
+  /**
+   * What a slot card says of the History Resume a manual owner key names (why a slot it kept is
+   * still leased, or that its agent has not appeared), or null to name it plainly.
+   */
+  historyResumeLabel: (ownerKey: string) => string | null;
 }
 
 interface Observation {
@@ -335,6 +340,7 @@ function taskIdentity(key: string): { id: string; position: number } | null {
 function ownerView(
   status: NativeSlotStatus,
   task: WorktreeTaskOwner,
+  historyResumeLabel: (ownerKey: string) => string | null,
   isWarmOperation: (key: string) => boolean = () => false,
 ): WorktreeOwnerView | null {
   const kind = status.slot.activeOwnerKind;
@@ -352,7 +358,7 @@ function ownerView(
       ? `Check ${key}`
       : kind === "warm"
         ? isWarmOperation(key) ? "Warming this slot ahead of time" : "Seeding another slot's dependencies"
-        : manualLabel(key),
+        : manualLabel(key, historyResumeLabel),
   };
 }
 
@@ -360,9 +366,9 @@ function ownerView(
  * A manual lease Open terminal or a History Resume took, one named by `make session --label`,
  * or by its key alone.
  */
-function manualLabel(key: string): string {
+function manualLabel(key: string, historyResumeLabel: (ownerKey: string) => string | null): string {
   if (isTerminalOwnerKey(key)) return "Terminal from Settings";
-  if (isHistoryResumeOwnerKey(key)) return "Resumed History session";
+  if (isHistoryResumeOwnerKey(key)) return historyResumeLabel(key) ?? "Resumed History session";
   const separator = key.indexOf(":");
   const label = separator === -1 ? "" : key.slice(separator + 1);
   return label ? `Manual lease ${key.slice(0, 8)}: ${label}` : `Manual lease ${key.slice(0, 8)}`;
@@ -576,6 +582,7 @@ export class WorktreeOperationsService {
       staleLeases: () => new Map(),
       discardedWork: worktreeDiscardedWork,
       describeTree: describeTreeDiscard,
+      historyResumeLabel: () => null,
       unownedTrees: {
         describe: async () => null,
         discard: async () => "unowned trees are unavailable",
@@ -667,7 +674,7 @@ export class WorktreeOperationsService {
       const slots = pool.slots
         .slice(0, WORKTREE_INVENTORY_LIMITS.slotsPerRepository)
         .map((entry) => {
-          const owner = ownerView(entry, this.deps.tasks, (key) => this.operations.has(key));
+          const owner = ownerView(entry, this.deps.tasks, this.deps.historyResumeLabel, (key) => this.operations.has(key));
           const processes = entry.occupancy.status === "known"
             ? { state: "known" as const, count: entry.occupancy.occupants.length, reason: null }
             : { state: "unknown" as const, count: null, reason: compact(entry.occupancy.reason) };
@@ -1127,7 +1134,7 @@ export class WorktreeOperationsService {
     consequences: string[],
   ): Promise<void> {
     const { pool, slot } = target;
-    const owner = ownerView(slot, this.deps.tasks);
+    const owner = ownerView(slot, this.deps.tasks, this.deps.historyResumeLabel);
     affected.push({
       provider: "mission",
       id: slot.slot.id,

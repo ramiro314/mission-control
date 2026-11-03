@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { historyResumeCheckoutWarning, type HistoryResumeCheckout } from "../src/shared/history.ts";
@@ -193,5 +193,128 @@ test("registrations carry the branch checked out in them, and recorded names tha
   for (const name of ["main", "feature/x", "ramiro314/session-history-resume"]) assert.equal(isCheckoutBranchName(name), true, name);
   for (const name of [null, "", "HEAD", "-b", "a..b", "a b", "a~1", "x.lock", "/a", "a/", "a@{1}"]) {
     assert.equal(isCheckoutBranchName(name), false, String(name));
+  }
+});
+
+// ---- returnResumed: the hand-back once a resumed session ends ----
+
+/** A commit made in `dir` on whatever it has checked out, returning its sha. */
+function commitHere(dir: string, name: string): string {
+  writeFileSync(join(dir, `${name}.txt`), `${name}\n`);
+  gitIn(dir, "add", "-A");
+  gitIn(dir, "commit", "-qm", name);
+  return gitIn(dir, "rev-parse", "HEAD");
+}
+
+test("a detached HEAD with a new commit and a clean tree is kept, and the commit is still at HEAD", async () => {
+  const s = await idleSlot("mission-resume-return-unbranched-");
+  gitIn(s.clone, "checkout", "-q", "main");
+  const lease = leased(await s.m.leaseForResume(s.slotId, OWNER, "main"));
+  assert.equal(symbolicHead(s.path), null, "main is held by the clone, so the slot is detached at its tip");
+  const work = commitHere(s.path, "detached-work");
+
+  assert.deepEqual(await s.m.returnResumed(s.slotId, lease.leaseId, OWNER), { outcome: "kept", reason: "unbranched_commits" });
+  assert.equal(gitIn(s.path, "rev-parse", "HEAD"), work, "nothing reset the commit away");
+  const slot = s.m.store.slot(s.slotId)!;
+  assert.deepEqual([slot.state, slot.activeLeaseId], ["leased", lease.leaseId]);
+});
+
+test("a detached HEAD with no new commits is handed back to the pool", async () => {
+  const s = await idleSlot("mission-resume-return-detached-clean-");
+  gitIn(s.clone, "checkout", "-q", "main");
+  const lease = leased(await s.m.leaseForResume(s.slotId, OWNER, "main"));
+  assert.equal(symbolicHead(s.path), null);
+
+  assert.deepEqual(await s.m.returnResumed(s.slotId, lease.leaseId, OWNER), { outcome: "released" });
+  const slot = s.m.store.slot(s.slotId)!;
+  assert.deepEqual([slot.state, slot.activeLeaseId], ["available", null]);
+  assert.equal(s.m.holds(s.slotId, lease.leaseId, OWNER), false);
+});
+
+test("commits on an attached branch do not block the hand-back: the branch holds them", async () => {
+  const s = await idleSlot("mission-resume-return-attached-");
+  commitOn(s.clone, "feature/resumed");
+  const lease = leased(await s.m.leaseForResume(s.slotId, OWNER, "feature/resumed"));
+  assert.equal(symbolicHead(s.path), "refs/heads/feature/resumed");
+  const work = commitHere(s.path, "branch-work");
+
+  assert.deepEqual(await s.m.returnResumed(s.slotId, lease.leaseId, OWNER), { outcome: "released" });
+  assert.equal(s.m.store.slot(s.slotId)!.state, "available");
+  assert.equal(symbolicHead(s.path), null, "the return reset the slot detached");
+  assert.equal(gitIn(s.clone, "rev-parse", "refs/heads/feature/resumed"), work, "the branch still holds the work");
+});
+
+test("uncommitted changes keep the slot leased, untouched", async () => {
+  const s = await idleSlot("mission-resume-return-dirty-");
+  const lease = leased(await s.m.leaseForResume(s.slotId, OWNER, null));
+  writeFileSync(join(s.path, "keep.txt"), "edited\n");
+  writeFileSync(join(s.path, "new.txt"), "untracked\n");
+
+  assert.deepEqual(await s.m.returnResumed(s.slotId, lease.leaseId, OWNER), { outcome: "kept", reason: "uncommitted" });
+  assert.equal(s.m.store.slot(s.slotId)!.state, "leased");
+  assert.equal(readFileSync(join(s.path, "keep.txt"), "utf8"), "edited\n");
+  assert.equal(existsSync(join(s.path, "new.txt")), true);
+});
+
+test("work that lands after the first check, before the reset, is still kept", async () => {
+  const s = await idleSlot("mission-resume-return-late-");
+  const lease = leased(await s.m.leaseForResume(s.slotId, OWNER, null));
+  const real = new NativeWorktreeGit();
+  // The fetch every return makes is where the edit lands: after the first read, before the second.
+  const racing = Object.assign(Object.create(real) as NativeWorktreeGit, {
+    fetchDefaultSha: async (...args: Parameters<NativeWorktreeGit["fetchDefaultSha"]>) => {
+      writeFileSync(join(s.path, "late.txt"), "late\n");
+      return real.fetchDefaultSha(...args);
+    },
+  });
+  const m = manager({ git: racing });
+
+  assert.deepEqual(await m.returnResumed(s.slotId, lease.leaseId, OWNER), { outcome: "kept", reason: "uncommitted" });
+  assert.equal(m.store.slot(s.slotId)!.state, "leased");
+  assert.equal(existsSync(join(s.path, "late.txt")), true);
+});
+
+test("a slot the launch no longer holds is not touched, found by its lease or by its owner", async () => {
+  const s = await idleSlot("mission-resume-return-not-held-");
+  assert.deepEqual(await s.m.returnResumed(s.slotId, null, OWNER), { outcome: "notHeld" });
+  const lease = leased(await s.m.leaseForResume(s.slotId, OWNER, null));
+  assert.deepEqual(await s.m.returnResumed(s.slotId, "another-lease", { kind: "manual", key: "someone-else" }), { outcome: "notHeld" });
+  assert.equal(s.m.store.slot(s.slotId)!.activeLeaseId, lease.leaseId);
+  // No lease recorded on the launch: its owner key finds it.
+  assert.deepEqual(await s.m.returnResumed(s.slotId, null, OWNER), { outcome: "released" });
+});
+
+test("a clean check that cannot be read never hands the slot back, on either read", async () => {
+  const cases = [
+    { name: "first-unknown", failOn: 1, outcomeUnknown: true, expected: "outcomeUnknown" },
+    { name: "first-refused", failOn: 1, outcomeUnknown: false, expected: "refused" },
+    // The second read runs inside the return, where any failure refuses the reset.
+    { name: "second-unknown", failOn: 2, outcomeUnknown: true, expected: "refused" },
+  ];
+  for (const { name, failOn, outcomeUnknown, expected } of cases) {
+    const s = await idleSlot(`mission-resume-return-unreadable-${name}-`);
+    gitIn(s.clone, "checkout", "-q", "main");
+    const lease = leased(await s.m.leaseForResume(s.slotId, OWNER, "main"));
+    const work = commitHere(s.path, "detached-work");
+    const real = new NativeWorktreeGit();
+    let reads = 0;
+    // The read fails as a git timeout would: a failed read must never be taken as clean.
+    const failing = Object.assign(Object.create(real) as NativeWorktreeGit, {
+      unbranchedCommits: async (path: string) => {
+        reads += 1;
+        if (reads === failOn) return { ok: false as const, reason: "git rev-list timed out", outcomeUnknown };
+        // A healthy first read says clean, so only the second read stands between the reset and the work.
+        return reads === 1 ? { ok: true as const, value: false } : real.unbranchedCommits(path);
+      },
+    });
+    const m = manager({ git: failing });
+
+    const result = await m.returnResumed(s.slotId, lease.leaseId, OWNER);
+    assert.deepEqual(result, { outcome: expected, reason: "git rev-list timed out" }, name);
+    assert.equal(reads, failOn, `${name}: no read after the failing one`);
+    const slot = m.store.slot(s.slotId)!;
+    assert.deepEqual([slot.state, slot.activeLeaseId], ["leased", lease.leaseId], `${name}: the lease stands`);
+    assert.equal(gitIn(s.path, "rev-parse", "HEAD"), work, `${name}: the commit is still at HEAD`);
+    assert.equal(symbolicHead(s.path), null, `${name}: still detached, never reset`);
   }
 });

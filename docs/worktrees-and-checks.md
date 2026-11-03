@@ -719,7 +719,11 @@ this order:
   still have opened a shell, so that lease stands and the error says to Return it.
   A History Resume leases a slot the same way, and on the same idle, detached terms, through
   `leaseForResume`, which then checks out the session's recorded branch. Its card shows a manual
-  lease labelled "Resumed History session", and Returning it releases the Resume's launch. See
+  lease labelled "Resumed History session", and Returning it releases the Resume's launch. When
+  the resumed session ends, `returnResumed` returns the slot by itself if it is clean; otherwise
+  the card says "Kept: uncommitted changes from a resumed session" or "Kept: commits on no branch
+  from a resumed session" until it is Returned. A Resume whose agent never appeared keeps its
+  slot, labelled "Held for a resumed session that has not appeared". See
   [Session History](history.md#resume).
 
   Each slot card ends in a **History** disclosure: what happened to the slot, newest first, 50
