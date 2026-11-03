@@ -423,6 +423,14 @@ flowchart TD
   `claude --resume <id> --fork-session`. The original is untouched; the fork gets its own id,
   and History records it as resumed from the original. This copy is History's only write into
   Claude's store, and it is an unofficial workaround that may break with a Claude format change.
+- **The copy never overwrites.** Project folder names are a lossy encoding, so two different
+  directories can share one folder, including the original's. The copy is therefore an
+  exclusive create (`O_EXCL`), never a write over an existing path:
+  - If `<sessionId>.jsonl` already exists in the destination folder and is a History copy of
+    this session (a `copy_path` on an earlier launch), it is reused as it stands, with no write.
+    `--fork-session` leaves a copy untouched, so it is still a faithful source.
+  - Any other existing file with that name, including the canonical transcript itself, refuses
+    the Resume, and nothing is written.
 - **Fork id known before launch.** Mission Control mints the fork's id itself and passes it
   with `--session-id <uuid>`, so the launch is `claude --resume <id> --fork-session --session-id
   <new>`. The id therefore never has to be recovered from a transcript, which carries no
@@ -446,6 +454,17 @@ flowchart TD
   says the slot is held for an agent that may still appear. The operator either waits, or
   Returns that slot, which closes the launch (`released`) so a new Resume can start. A fork
   launch counts too: its source is still the original session.
+  - **Enforced by the schema, not a check.** `migrate()` creates a partial unique index:
+    `CREATE UNIQUE INDEX ... ON history_resume_launches(source_session_id) WHERE state IN
+    ('pending','expired')`.
+  - **The insert is the claim.** Resume inserts the launch row first, in its own transaction,
+    before it leases a slot, copies a transcript or starts a terminal. Of two concurrent
+    requests (a double click, or two History tabs), the one that loses the insert gets the
+    refusal and has touched nothing.
+  - **Freeing the claim.** If a later step fails (the lease is refused, the copy is refused, or
+    the launcher refuses), the row moves to `released` and any lease taken is handed back, so a
+    failed attempt never blocks the next Resume. A launcher whose outcome is unknown keeps the
+    row and its lease, exactly as an `expired` launch does.
 - **Binding the discovered session.** When the Registry first holds a session whose
   `agentSessionId` equals a `pending` or `expired` launch's `expected_agent_session_id`, **and
   whose cwd, resolved through symlinks, is that launch's `cwd`**, the launch records the
@@ -468,8 +487,9 @@ flowchart TD
   release step. A `pending` launch with no live session becomes `expired` and keeps its lease,
   exactly as above. All of these matches use the same id-and-cwd key.
 - **Refusals** are explicit: the transcript is gone, the session is live, a `pending` or
-  `expired` launch of it already holds a directory, the directory does not exist, the slot is
-  no longer idle, or the agent host is unavailable.
+  `expired` launch of it already holds a directory, the directory does not exist, the
+  destination project folder already holds a file with that session id that is not a History
+  copy of it, the slot is no longer idle, or the agent host is unavailable.
 
 **To verify first.** The first implementation ticket runs a token-free probe on Claude Code
 2.1.296. It opens each session interactively without sending a prompt, in a scratch
@@ -545,6 +565,12 @@ Unit and integration tests in `test/`, run by file with the suite's loader:
 - Resume: eligibility, refusals, original-directory and reused-slot detection, branch checkout,
   copy and fork for a directory, release of a clean slot and retention of a dirty one, the
   startup twin.
+- Directory copy: a destination whose encoded folder collides with the original's refuses and
+  leaves the original byte-identical; an existing History copy of the session is reused with
+  no write; any other existing file of that name refuses; the copy is created exclusively.
+- One open launch: two concurrent `POST .../resume` requests for one session produce one launch
+  row and one refusal, and the loser leases no slot and starts no terminal; a failed later
+  step moves the row to `released`, so the next Resume succeeds.
 - Branch already checked out elsewhere: an idle pool slot holding the branch is offered first
   and leased as it stands; a branch held by another owner or outside the pool is checked out
   detached in the chosen slot, with the warning.
@@ -617,7 +643,8 @@ Definition of done as in `AGENTS.md`: typecheck, lint, build and smoke, and the 
 8. Resume opens an unmanaged terminal session in the original directory when it is usable, in an
    idle same-repository slot on the recorded branch, or in a chosen directory by copy and fork;
    it refuses with a reason otherwise. A branch already checked out in another worktree follows
-   the stated rule, and a fork's id is known before launch.
+   the stated rule, and a fork's id is known before launch. A directory copy never overwrites
+   an existing file, and concurrent Resumes of one session produce exactly one launch.
 9. A slot taken for Resume returns to the pool when the session ends clean and stays leased
    when dirty, including when the session ended while the daemon was down. The link is the
    launch record's `expected_agent_session_id` together with its `cwd`. A launch whose agent
@@ -699,7 +726,7 @@ The Plan Feasibility Judge asked for five clarifications. None changes a human d
 
 ### Review repairs (GitHub Inspector on #725)
 
-Four findings over two reviews, none of which changes a human decision above:
+Six findings over three reviews, none of which changes a human decision above:
 
 - An unbound launch past its grace window expires and keeps its lease instead of being
   released, and a late agent still binds (Resume).
@@ -708,6 +735,10 @@ Four findings over two reviews, none of which changes a human decision above:
   (Catalog).
 - A launch binds on its expected id together with its `cwd`, and a session with a `pending`
   or `expired` launch cannot be resumed again until that slot is Returned (Resume).
+- The directory copy is an exclusive create that reuses an existing History copy and refuses
+  any other existing file (Resume).
+- The one-open-launch rule is a partial unique index, and the insert claims the session before
+  any lease, copy or launch (Resume).
 
 ### Assumptions stated during the interview
 
