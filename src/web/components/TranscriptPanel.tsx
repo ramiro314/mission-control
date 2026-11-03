@@ -1657,7 +1657,9 @@ function CompactionMarker({ m }: { m: TranscriptMessage }): React.JSX.Element {
   }
   return (
     <details className="transcript-compaction-summary" data-turn-id={m.id}>
-      <summary>Summary carried past the compaction</summary>
+      <Tooltip label="Show the summary the agent kept of everything before this point">
+        <summary>Summary carried past the compaction</summary>
+      </Tooltip>
       <div className="transcript-compaction-summary-text">{m.text}</div>
     </details>
   );
