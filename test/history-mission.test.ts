@@ -313,7 +313,6 @@ test("a bound id with no catalog row returns the Mission Control-only record, wh
   const f = fixture();
   const indexed = sessionId();
   const removed = sessionId();
-  const ranOnly = sessionId();
   writeSession(f.projects, indexed, { kind: "interactive", prompt: "still here", at: "2026-10-20T10:00:00.000Z" });
   const taskId = bindTask(removed, {
     title: "Deleted before indexing",
@@ -324,7 +323,7 @@ test("a bound id with no catalog row returns the Mission Control-only record, wh
     mergedAt: 3,
   });
   ledger(removed, 4.5);
-  openDb().prepare("INSERT INTO session_agent_bindings (session_id, agent_session_id, updated_at) VALUES ('mc-only', ?, 1)").run(ranOnly);
+  openDb().prepare("INSERT INTO session_agent_bindings (session_id, agent_session_id, updated_at) VALUES ('mc-removed', ?, 1)").run(removed);
   await f.history.reconciler.trigger();
 
   const res = await f.get(`/api/history/sessions/claude/${removed}`);
@@ -343,9 +342,7 @@ test("a bound id with no catalog row returns the Mission Control-only record, wh
   assert.equal(detail.ledgerCostUsd, 4.5);
   assert.equal((await f.get(`/api/history/sessions/claude/${removed.toUpperCase()}`)).status, 200, "a UUID's case does not matter");
 
-  const sessionOnly = missionOnly(await (await f.get(`/api/history/sessions/claude/${ranOnly}`)).json() as HistorySessionDetail);
-  assert.equal(sessionOnly.task, null);
-  assert.equal(sessionOnly.missionSessionId, "mc-only");
+  assert.equal(detail.missionSessionId, "mc-removed", "beside a task binding, the Mission Control session is reported");
 
   // Nothing to read: the conversation of a record with no catalog row is unknown to History.
   assert.equal((await f.get(`/api/history/sessions/claude/${removed}/messages`)).status, 404);
@@ -373,18 +370,26 @@ test("a running session the catalog has not indexed yet returns the Mission Cont
   f.done();
 });
 
-test("an id neither the catalog nor Mission Control knows is a 404, and a ledger row alone names nothing", async () => {
+test("an id neither the catalog nor a task binding of its agent names is a 404, whatever else Mission Control holds", async () => {
   const f = fixture();
   const ledgerOnly = sessionId();
   const codexBound = sessionId();
+  const sessionOnly = sessionId();
   ledger(ledgerOnly, 1);
   bindTask(codexBound, { title: "A Codex task", agent: "codex" });
+  // Every session Mission Control ran has a session_agent_bindings row, and it records no
+  // agent: a Codex session's row must not put it in Claude's History as removed.
+  const ran = openDb().prepare("INSERT INTO session_agent_bindings (session_id, agent_session_id, updated_at) VALUES (?, ?, 1)");
+  ran.run("proc:codex-session", codexBound);
+  ran.run("proc:unknown-agent", sessionOnly);
   await f.history.reconciler.trigger();
   for (const path of [
     `/api/history/sessions/claude/${sessionId()}`,
     `/api/history/sessions/claude/${ledgerOnly}`,
-    // Bound, but to another agent's task.
+    // Bound, but to another agent's task, and run by Mission Control.
     `/api/history/sessions/claude/${codexBound}`,
+    // Run by Mission Control, with no task to say which agent it was.
+    `/api/history/sessions/claude/${sessionOnly}`,
     // Codex declares no history reader, so History does not address its sessions at all.
     `/api/history/sessions/codex/${codexBound}`,
     "/api/history/sessions/claude/not-a-uuid",

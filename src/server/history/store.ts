@@ -254,7 +254,9 @@ export class HistoryStore {
       .prepare(`WITH ${MISSION_TASK_CTE} SELECT * FROM mission_task WHERE agent = ? AND agent_session_id IN (${marks})`)
       .all(agent, ...ids) as unknown as MissionRow[];
     const byTask = new Map(tasks.map((row) => [row.agent_session_id, row]));
-    // `session_agent_bindings` records no agent, but its key is the agent's own UUID.
+    // `session_agent_bindings` records no agent. Its key is the agent's own UUID, so it is safe
+    // beside a catalog row or a task binding, which already say whose session this is, and is
+    // never on its own enough to name one (see `HistoryService.detail`).
     const sessions = this.db
       .prepare(
         `SELECT agent_session_id, session_id FROM session_agent_bindings

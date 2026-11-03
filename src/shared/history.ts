@@ -327,8 +327,12 @@ export type HistorySessionDetail =
   | { catalog: HistorySessionSummary }
   | { catalog: null; mission: HistoryMissionRecord };
 
-/** A session the catalog never indexed, as Mission Control alone knows it. */
+/**
+ * A session the catalog never indexed, as Mission Control alone knows it. Always task-bound:
+ * a task binding is the only Mission Control record that says which agent a session was.
+ */
 export interface HistoryMissionRecord extends HistoryMission {
+  task: HistoryMissionTask;
   agent: AgentType;
   agentSessionId: string;
   liveSessionId: string | null;

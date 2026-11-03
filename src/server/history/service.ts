@@ -116,9 +116,9 @@ export class HistoryService {
 
   /**
    * One session's row, live status and what Mission Control knows about it. With no catalog
-   * row, a record built from Mission Control's data alone when a task binding or a Mission
-   * Control session names the id: its transcript was deleted before it was ever indexed. Null
-   * only when neither knows it. Nothing is written for such a record.
+   * row, a record built from Mission Control's data alone when a task binding of this agent
+   * names the id: its transcript was deleted before it was ever indexed. Null only when neither
+   * knows it. Nothing is written for such a record.
    */
   detail(agent: string, id: string, live: HistoryLiveLookup): HistorySessionDetail | null {
     const reader = this.readerFor(agent, id);
@@ -128,9 +128,13 @@ export class HistoryService {
     const liveSessionId = live(reader.agent, agentSessionId);
     if (entry) return { catalog: this.store.withMissions([{ ...entry.summary, liveSessionId }])[0]! };
     const mission = this.store.missions(reader.agent, [agentSessionId]).get(agentSessionId) ?? null;
-    // A ledger row alone does not name a session: its note key is not always an agent session id.
-    if (!mission || (mission.task === null && mission.missionSessionId === null)) return null;
-    return { catalog: null, mission: { ...mission, agent: reader.agent, agentSessionId, liveSessionId } };
+    // Only a task binding names a session the catalog never saw, because only it records the
+    // agent (through its task). `session_agent_bindings` records none, and every Codex or Pi
+    // session Mission Control ran has a row there, so it would put another agent's session in
+    // Claude's History as removed. A ledger row's note key is not always an agent session id.
+    const task = mission?.task;
+    if (!mission || !task) return null;
+    return { catalog: null, mission: { ...mission, task, agent: reader.agent, agentSessionId, liveSessionId } };
   }
 
   /**

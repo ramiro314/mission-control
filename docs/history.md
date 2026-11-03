@@ -86,7 +86,7 @@ History has not indexed says so.
   activity, duration and cost, each shown when the transcript recorded it. A bound session also
   shows its **Task**, which opens the task where the dashboard shows it (a finished one in the
   Sitrep) when the dashboard still holds it, and its outcome and pull request.
-- **Not indexed.** A bound session whose transcript was deleted before the catalog ever indexed
+- **Not indexed.** A task-bound session whose transcript was deleted before the catalog ever indexed
   it still opens: the header is built from Mission Control's data alone (task title and kind,
   outcome, pull request, repository, branch, ledger cost) with a **Not indexed** badge, no
   tabs and no Resume, and says the transcript was removed before Mission Control indexed it.
@@ -196,7 +196,8 @@ a complete record without it. The session's agent session id joins, in `HistoryS
   for the task, PR URL, merge time and branch, and that task's row in `tasks` (title, kind,
   status, outcome, outcome URL, workflow, labels, repository). A binding joins only a session
   of its task's own agent.
-- `session_agent_bindings`, for the Mission Control session that ran it.
+- `session_agent_bindings`, for the Mission Control session that ran it. It records no agent, so
+  it never on its own makes a Not indexed record.
 - `usage_ledger` by note key, priced by `sessionCostsFor`, the same rule a card's cost uses, for
   the cost fallback (`historyCost` in `src/shared/history.ts` decides it, for a row and for a
   record the catalog never indexed).
@@ -220,7 +221,7 @@ path always comes from the catalog.
 | Route | Returns |
 |---|---|
 | `GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent&link&outcome&pr` | The list, described above. |
-| `GET /api/history/sessions/:agent/:id` | `{catalog}`: the catalog row exactly as the list serves it, with its live status and Mission Control's join. With no catalog row, `{catalog: null, mission}`, when a task binding or a Mission Control session names the id: Mission Control's record alone, with the session's `agent`, `agentSessionId` and `liveSessionId`. 404 for an agent with no reader, a non-UUID id, or an id neither the catalog nor Mission Control knows; a ledger row alone names nothing. |
+| `GET /api/history/sessions/:agent/:id` | `{catalog}`: the catalog row exactly as the list serves it, with its live status and Mission Control's join. With no catalog row, `{catalog: null, mission}`, when a task binding of that agent names the id: Mission Control's record alone, with the session's `agent`, `agentSessionId` and `liveSessionId`. 404 for an agent with no reader, a non-UUID id, or an id neither the catalog nor Mission Control knows; a ledger row alone names nothing. |
 | `GET /api/history/sessions/:agent/:id/messages?cursor` | `{messages, nextCursor}`: a window of turns read forward from the byte offset `cursor` (the top when absent), through the same path-based window reads a live session uses. A window is at least 100 turns and 512 KB. 410 when the transcript file is gone (missing on disk, whether or not a walk has marked it yet); 500 naming the reason (`EACCES`, `ELOOP`, not a regular file) when it is there but cannot be read, so it is never shown as removed, empty or finished; 404 as above, or when the cataloged path does not resolve, through symlinks, under one of its harness's roots. A malformed cursor is refused with 400. |
 | `GET /api/history/sessions/:agent/:id/launch-context` | `{instructionFiles, systemPrompt, skills, mcp, environment, hooks}` (`HistoryLaunchContext`), parsed from the transcript on each request by the harness's `launchContext` reader. A section is `null` when the transcript holds no record of it. 404, 410 and 500 as for `messages`. |
 
