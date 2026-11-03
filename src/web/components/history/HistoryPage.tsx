@@ -46,7 +46,9 @@ function HistoryRow({ row }: { row: HistorySessionSummary }): React.JSX.Element 
   return (
     <li className={`history-row${gone ? " is-gone" : ""}`}>
       <div className="history-row-head">
-        <a className="history-row-title" href={href}>{historyTitle(row)}</a>
+        <Tooltip label="Open this session: its header and its conversation">
+          <a className="history-row-title" href={href}>{historyTitle(row)}</a>
+        </Tooltip>
         <span className="history-badge">{HISTORY_KIND_LABELS[row.kind] ?? row.kind}</span>
         {row.liveSessionId ? <span className="history-badge history-badge-live">Live</span> : null}
         {gone ? <span className="history-badge history-badge-gone">Transcript gone</span> : null}

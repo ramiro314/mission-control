@@ -237,9 +237,11 @@ export function HistorySessionView({
         <>
           <HistorySessionHeader session={detail.session} onOpenSession={onOpenSession} />
           <div className="history-tabs" role="tablist" aria-label="Session view">
-            <button type="button" role="tab" aria-selected="true" className="history-tab is-active" id="history-tab-conversation">
-              Conversation
-            </button>
+            <Tooltip label="The session's messages, read from its transcript on disk">
+              <button type="button" role="tab" aria-selected="true" className="history-tab is-active" id="history-tab-conversation">
+                Conversation
+              </button>
+            </Tooltip>
           </div>
           <section role="tabpanel" aria-labelledby="history-tab-conversation" className="history-tabpanel">
             <HistoryConversation session={detail.session} />
