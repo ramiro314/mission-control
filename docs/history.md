@@ -28,7 +28,9 @@ sessions do not appear yet.
 - **Live.** An open page updates within seconds, without a reload, when a session starts or
   grows: its title, last activity and cost follow the transcript. The page does not poll for
   this. It re-reads the rows on screen when the daemon announces a change, and once each time
-  the dashboard's event stream reconnects.
+  the dashboard's event stream reconnects. A re-read keeps every row already loaded, so a new
+  session at the top never pushes the oldest one back behind **Load more**, and a change that
+  arrives while Load more is loading is applied once that page lands.
 
 ## Session kinds
 

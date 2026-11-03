@@ -280,3 +280,61 @@ test("without a watch event, the recurring scan still brings the session in", as
   }
   rmSync(projects, { recursive: true, force: true });
 });
+
+test("a pass that wrote rows and then failed still signals once, and keeps its counts", async () => {
+  openDb().exec("DELETE FROM history_sessions");
+  const projects = freshProjects();
+  const ids = [sessionId(), sessionId()];
+  for (const id of ids) writeSession(projects, id, opening(id, "/w", `prompt ${id}`));
+  const store = new HistoryStore();
+  const write = store.upsertBatch.bind(store);
+  let batches = 0;
+  store.upsertBatch = (rows, at) => {
+    batches += 1;
+    if (batches === 2) throw new Error("SQLITE_BUSY");
+    write(rows, at);
+  };
+  let signals = 0;
+  const reconciler = new HistoryReconciler({
+    store,
+    readers: [{ agent: "claude", spec: createClaudeHistory(projects) }],
+    batchSize: 1,
+    resolveRepository: () => null,
+    onChanged: () => { signals += 1; },
+  });
+  const pass = await reconciler.trigger();
+  assert.equal(pass.complete, false);
+  assert.equal(pass.indexed, 1, "the batch written before the failure is counted, not zeroed");
+  assert.equal(signals, 1, "the open page still hears about the row that was written");
+  assert.equal(store.index("claude").size, 1);
+  rmSync(projects, { recursive: true, force: true });
+});
+
+test("a root that did not exist when watching began is watched from the first pass after it appears", async () => {
+  openDb().exec("DELETE FROM history_sessions");
+  const parent = freshProjects();
+  const projects = join(parent, "projects");
+  const store = new HistoryStore();
+  const reconciler = new HistoryReconciler({
+    store,
+    readers: [{ agent: "claude", spec: createClaudeHistory(projects) }],
+    intervalMs: null,
+    watch: true,
+    resolveRepository: () => null,
+  });
+  try {
+    reconciler.start();
+    await until(() => reconciler.passCount === 1 && !reconciler.progress().indexing, 2_000, "the first pass over an absent root");
+    // Claude Code creates the root. The next pass (here triggered by hand, as the recurring
+    // scan would) is what can watch it; after that only the watcher brings new sessions in.
+    mkdirSync(projects);
+    await reconciler.trigger();
+    const id = sessionId();
+    writeSession(projects, id, opening(id, "/first", "the first session on this machine"));
+    await until(() => store.index("claude").has(id), 8_000, "the watcher on the late root");
+    assert.equal(reconciler.passCount, 3, "one pass from the watcher, none from a timer");
+  } finally {
+    reconciler.stop();
+  }
+  rmSync(parent, { recursive: true, force: true });
+});

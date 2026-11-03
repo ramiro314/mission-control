@@ -441,4 +441,55 @@ test.describe("an open History page with the recurring scan off", () => {
     expect(await dashboard.evaluate(() => (window as unknown as { historyMarker?: boolean }).historyMarker)).toBe(true);
     await capture(dashboard, "live-session-grown");
   });
+
+  test("a change announced while Load more is in flight is applied after it lands, and keeps its rows", async ({ dashboard, daemon }) => {
+    await seedAndRestart(daemon);
+    await backfilled(daemon);
+    // Hold the Load more answer until the test lets it go. Window reads pass straight through.
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let windowReads = 0;
+    await dashboard.route("**/api/history/sessions**", async (route) => {
+      if (route.request().url().includes("cursor=")) {
+        await released;
+        await route.fulfill({ response: await route.fetch() });
+        return;
+      }
+      windowReads += 1;
+      await route.fulfill({ response: await route.fetch() });
+    });
+    await dashboard.goto(`${daemon.baseURL}/#/history`);
+    const page = dashboard.getByRole("main", { name: "History" });
+    const rows = page.getByRole("listitem");
+    await expect(rows).toHaveCount(50);
+    await expect(page.getByRole("status")).toHaveText("");
+    const readsBefore = windowReads;
+    await page.getByRole("button", { name: "Load more" }).click();
+
+    // A session starts while the continuation is held. The daemon indexes it and announces it.
+    const started = writeSession(daemon, {
+      cwd: "/projects/live-service",
+      at: new Date().toISOString(),
+      prompt: "Started during Load more",
+    });
+    await expect.poll(async () => {
+      const res = await fetch(`${daemon.baseURL}/api/history/sessions?limit=1`);
+      const body = await res.json() as { sessions: { agentSessionId: string }[] };
+      return body.sessions[0]?.agentSessionId;
+    }, { timeout: 10_000 }).toBe(started.id);
+    // Time for `history_changed` to reach the page. Held, it must not start a re-read that
+    // would cancel the continuation.
+    await dashboard.waitForTimeout(1_500);
+    expect(windowReads).toBe(readsBefore);
+    await expect(page.getByText("Started during Load more")).toHaveCount(0);
+
+    // The continuation lands, then the held change is taken: every paged row stays, and the
+    // new session heads the list.
+    release();
+    const conversations = 5 + FILLER;
+    await expect(rows.first()).toContainText("Started during Load more", { timeout: 10_000 });
+    await expect(rows).toHaveCount(conversations + 1);
+    await expect(page.getByText(`Filler conversation ${String(FILLER - 1).padStart(2, "0")}`)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
+  });
 });

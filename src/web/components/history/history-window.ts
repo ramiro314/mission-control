@@ -1,4 +1,4 @@
-import { HISTORY_PAGE_LIMITS, type HistoryPage, type HistorySessionSummary } from "@shared/history.ts";
+import { HISTORY_PAGE_LIMITS, encodeHistoryCursor, type HistoryPage, type HistorySessionSummary } from "@shared/history.ts";
 
 /** What one page read returns: the page, or why it could not be read. */
 export type HistoryPageRead =
@@ -26,29 +26,46 @@ export function appendHistoryRows(
 }
 
 /**
- * Re-read the window from the top down to `depth` rows, a page at a time.
+ * Re-read the window from the top down to `depth` rows, a page at a time, and on down to
+ * `through`, the last row on screen, when sessions that started since push it further down.
  *
  * One request caps at `maxLimit` rows, so a window the operator paged past that must be read
  * in several. Replacing it with only its first page would drop every row below the cap and
- * move the cursor back. Progress is the first page's, the freshest view of the backfill.
+ * move the cursor back. Reading only `depth` rows would do the same on a smaller scale once a
+ * new session lands above them: the oldest row would fall off and Load more come back. The
+ * search for `through` reaches at most one capped page past the depth (a row whose kind
+ * changed can leave the list), and the window is cut right after it, with the cursor the
+ * route itself would give for that row. Progress is the first page's, the freshest view of
+ * the backfill.
  */
 export async function readHistoryWindow(
   read: (query: { cursor?: string; limit: number }) => Promise<HistoryPageRead>,
   depth: number,
+  through: HistorySessionSummary | null = null,
 ): Promise<{ ok: true; value: HistoryWindow } | { ok: false; error: string }> {
   const wanted = Math.max(HISTORY_PAGE_LIMITS.defaultLimit, depth);
+  const reach = wanted + HISTORY_PAGE_LIMITS.maxLimit;
+  const throughKey = through ? rowKey(through) : null;
+  const throughAt = (): number => (throughKey === null ? -1 : sessions.findIndex((row) => rowKey(row) === throughKey));
   const first = await read({ limit: Math.min(HISTORY_PAGE_LIMITS.maxLimit, wanted) });
   if (!first.ok) return first;
   let sessions = first.value.sessions;
   let nextCursor = first.value.nextCursor;
-  while (nextCursor && sessions.length < wanted) {
-    const page = await read({ cursor: nextCursor, limit: Math.min(HISTORY_PAGE_LIMITS.maxLimit, wanted - sessions.length) });
+  while (nextCursor && (sessions.length < wanted || (throughKey !== null && sessions.length < reach && throughAt() === -1))) {
+    const limit = Math.min(HISTORY_PAGE_LIMITS.maxLimit, (sessions.length < wanted ? wanted : reach) - sessions.length);
+    const page = await read({ cursor: nextCursor, limit });
     if (!page.ok) return page;
     const before = sessions.length;
     sessions = appendHistoryRows(sessions, page.value.sessions);
     nextCursor = page.value.nextCursor;
     // A page that added nothing cannot advance the window; stop rather than loop.
     if (sessions.length === before) break;
+  }
+  const keep = Math.max(wanted, throughAt() + 1);
+  if (keep < sessions.length) {
+    const last = sessions[keep - 1]!;
+    sessions = sessions.slice(0, keep);
+    nextCursor = encodeHistoryCursor({ lastActivityAt: last.lastActivityAt, agent: last.agent, agentSessionId: last.agentSessionId });
   }
   return { ok: true, value: { sessions, nextCursor, progress: first.value.progress } };
 }

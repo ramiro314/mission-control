@@ -11,7 +11,8 @@ import { appendHistoryRows, readHistoryWindow } from "./history-window.ts";
  * 1. **A failed read is not an empty history.** The page says "could not ask" differently
  *    from "nothing recorded".
  * 2. **A refresh keeps the depth on screen.** It refetches as many rows as the operator has
- *    paged to, a page at a time past the route's cap, so a "Load more" is never undone.
+ *    paged to, a page at a time past the route's cap, and on down to the last row on screen
+ *    when new sessions land above it, so a "Load more" is never undone.
  *
  * While the catalog reports a backfill in progress, the window is refetched a second after each
  * answer lands, so sessions appear as they are indexed. That poll stops the moment indexing does.
@@ -39,6 +40,9 @@ export interface HistoryCatalog {
 
 export function useHistoryCatalog(revision: number): HistoryCatalog {
   const [sessions, setSessions] = useState<HistorySessionSummary[]>([]);
+  /** The rows on screen as of the last render, so a refresh can keep down to the last of them. */
+  const onScreen = useRef(sessions);
+  onScreen.current = sessions;
   const [progress, setProgress] = useState<HistoryProgress | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [listState, setListState] = useState<HistoryListState>("first");
@@ -62,7 +66,11 @@ export function useHistoryCatalog(revision: number): HistoryCatalog {
     moreAbort.current?.abort();
     moreAbort.current = null;
     setLoadingMore(false);
-    void readHistoryWindow((query) => api.historySessions(query, controller.signal), depth.current).then((result) => {
+    void readHistoryWindow(
+      (query) => api.historySessions(query, controller.signal),
+      depth.current,
+      onScreen.current.at(-1) ?? null,
+    ).then((result) => {
       if (controller.signal.aborted) return;
       if (!result.ok) {
         if (!hasWindow.current) {
