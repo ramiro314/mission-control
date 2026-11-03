@@ -133,6 +133,7 @@ test("schedule provenance rides inside Session.task, and a change to it still em
     status: "running" as const,
     outcome: null,
     outcomeUrl: null,
+    agentSessionId: null,
     pipelineRun: null,
     scheduleId: null,
     scheduleOccurrenceId: null,

@@ -953,6 +953,7 @@ function mkMultiRepoSession(repoPrs: TaskRepoPrSummary[], over: Partial<Session>
     status: "running",
     outcome: null,
     outcomeUrl: null,
+    agentSessionId: null,
     pipelineRun: null,
     scheduleId: null,
     scheduleOccurrenceId: null,

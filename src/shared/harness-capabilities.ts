@@ -529,6 +529,16 @@ interface HarnessCapabilitiesBase {
    * justify a boolean nobody can set.
    */
   resumes: boolean;
+  /**
+   * Does History read this harness's sessions?
+   *
+   * The pure half of `Harness.history` (`src/server/harness/types.ts`), for the reason
+   * `resumes` is: the BROWSER asks it before linking a finished task to its session in
+   * History, and it cannot import a reader that walks a transcript store. ONE FACT IN TWO
+   * FILES with `HARNESSES[a].history !== null`: `task-agent-session.test.ts` fails until they
+   * agree, so a link cannot open a History page no reader serves.
+   */
+  readsHistory: boolean;
   permissionModes: PermissionModeSpec | null;
   skills: SkillsSpec | null;
   extensions: ExtensionsSpec | null;
@@ -596,6 +606,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // `claude --resume <id>`. Already shipping - this is the argv the embedded handoff
     // has spawned since the first driver landed.
     resumes: true,
+    readsHistory: true,
     // The SDK's account-shaped rows are mapped to safe resolved model ids by the
     // Claude harness probe. Modes and moving aliases never become persisted choices.
     discoversModels: true,
@@ -711,6 +722,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // non-null resume beside a terminal-only runtime demonstrates why this flag could not
     // stay on `SdkSpec`.
     resumes: true,
+    readsHistory: false,
     // `model/list` over `codex app-server`, behind `HARNESSES.codex.models.discover`.
     discoversModels: true,
     modelProviderSignIn:
@@ -861,6 +873,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // interactive PICKER rather than taking an id, and not `--fork`, which would branch the
     // conversation instead of continuing it - three neighbouring flags, one right answer.
     resumes: true,
+    readsHistory: false,
     // `get_available_models` over pi's RPC mode, behind `HARNESSES.pi.models.discover`.
     discoversModels: true,
     // Provider-NEUTRAL, because Pi's catalog is: it lists whatever provider the operator

@@ -37,6 +37,7 @@ function tourTask(overrides: Partial<Task> = {}): Task {
     homeName: null,
     terminalResourceId: null,
     sessionId: null,
+    agentSessionId: null,
     scheduleId: null,
     scheduleOccurrenceId: null,
     scheduledFor: null,

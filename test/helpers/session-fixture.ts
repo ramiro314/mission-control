@@ -168,6 +168,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     homeBackend: null,
     terminalResourceId: null,
     sessionId: null,
+    agentSessionId: null,
     // Not a scheduled task. Every fixture built here is ordinary work; the schedule
     // tests build their own provenance explicitly rather than inheriting it by default.
     scheduleId: null,
@@ -225,6 +226,7 @@ export function mkTaskSummary(over: Partial<TaskSummary> = {}): TaskSummary {
     status: "running",
     outcome: null,
     outcomeUrl: null,
+    agentSessionId: null,
     pipelineRun: null,
     scheduleId: null,
     scheduleOccurrenceId: null,

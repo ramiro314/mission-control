@@ -2520,6 +2520,13 @@ export interface Task {
    */
   sessionId: string | null;
   /**
+   * The agent's own id for the conversation that did this task's work, or null when no
+   * work episode was ever bound. Read on the daemon from the current binding, else the
+   * newest historical one, so it survives the session pointer above moving on. It is what
+   * links a finished task to its session in History (`#/history/<agent>/<id>`).
+   */
+  agentSessionId: string | null;
+  /**
    * The recurring mission that filed this task, or null. See `MissionSchedule`
    * (@shared/schedules.ts).
    *
@@ -2671,6 +2678,8 @@ export interface TaskSummary {
   status: TaskStatus;
   outcome: string | null;
   outcomeUrl: string | null;
+  /** `Task.agentSessionId`: this task's conversation, as History keys it. */
+  agentSessionId: string | null;
   /** The provider run this task owns, separate from process-owned `Session.pipeline`. */
   pipelineRun: PipelineRunLink | null;
   /** The durable authoring-to-shipment lifecycle this task owns, when commissioned. */

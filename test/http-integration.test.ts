@@ -485,6 +485,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     homeName: "harness-rename-taken-xyzzy",
     terminalResourceId: null,
     sessionId: null,
+    agentSessionId: null,
     scheduleId: null,
     scheduleOccurrenceId: null,
     scheduledFor: null,

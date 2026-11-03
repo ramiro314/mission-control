@@ -191,6 +191,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     homeName: "harness-x",
     terminalResourceId: "res-1",
     sessionId: null,
+    agentSessionId: null,
     scheduleId: null,
     scheduleOccurrenceId: null,
     scheduledFor: null,

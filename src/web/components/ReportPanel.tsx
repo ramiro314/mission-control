@@ -29,6 +29,7 @@ import {
 } from "../lib/backlog-copy.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { repoLeaf } from "../lib/format.ts";
+import { taskHistoryHref } from "../lib/open-task.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import {
   AgentDot,
@@ -563,7 +564,7 @@ export function ReportPanel({
               aria-current={t.id === focusTaskId ? "true" : undefined}
             >
               <div className="report-row-main">
-                <span className="report-name">{t.title}</span>
+                <RecentOutcomeTitle task={t} onOpen={onClose} />
                 <span className={`report-status status-${t.status}`}>{t.status}</span>
                 {t.outcome &&
                   (t.outcomeUrl ? (
@@ -725,6 +726,22 @@ export function ReportPanel({
         </Section>
       </div>
     </Overlay>
+  );
+}
+
+/**
+ * A finished task's title: a link to the session that did its work in History when it has
+ * one there (`taskHistoryHref`), otherwise plain text. Following it closes the Sitrep.
+ */
+function RecentOutcomeTitle({ task, onOpen }: { task: Task; onOpen: () => void }): React.JSX.Element {
+  const href = taskHistoryHref(task);
+  if (!href) return <span className="report-name">{task.title}</span>;
+  return (
+    <Tooltip label="Open this task's session in History">
+      <a className="report-name report-name-link" href={href} onClick={onOpen}>
+        {task.title}
+      </a>
+    </Tooltip>
   );
 }
 
