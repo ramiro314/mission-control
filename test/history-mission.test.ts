@@ -183,7 +183,7 @@ test("a bound session carries its task, outcome and PR; an unbound one is comple
 
   const detail = catalogOf(await (await f.get(`/api/history/sessions/claude/${bound}`)).json() as HistorySessionDetail);
   assert.deepEqual(detail, row, "the detail serves the row exactly as the list does");
-  assert.deepEqual(Object.keys(await (await f.get(`/api/history/sessions/claude/${bound}`)).json() as object), ["catalog"]);
+  assert.deepEqual(Object.keys(await (await f.get(`/api/history/sessions/claude/${bound}`)).json() as object), ["catalog", "subagents"]);
   const plainDetail = catalogOf(await (await f.get(`/api/history/sessions/claude/${unbound}`)).json() as HistorySessionDetail);
   assert.equal(plainDetail.mission, null);
   assert.equal(plainDetail.firstPrompt, "just chatting");

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, TASK_STATUSES, type AgentType, type TaskStatus, type TranscriptMessage } from "./types.ts";
 
 /**
@@ -319,12 +320,13 @@ export function isHistorySessionId(raw: string): boolean {
 
 /**
  * `GET /api/history/sessions/:agent/:id`: one session. The catalog row, which carries its live
- * status and what Mission Control knows about it, exactly as the list serves it. Or, when the
- * catalog has no row but Mission Control names the id (a transcript deleted before it was ever
- * indexed), Mission Control's record alone, with no conversation to read.
+ * status and what Mission Control knows about it, exactly as the list serves it, with the
+ * subagent runs its own folder lists (oldest first; empty once the transcript is gone). Or,
+ * when the catalog has no row but Mission Control names the id (a transcript deleted before it
+ * was ever indexed), Mission Control's record alone, with no conversation or runs to read.
  */
 export type HistorySessionDetail =
-  | { catalog: HistorySessionSummary }
+  | { catalog: HistorySessionSummary; subagents: HistorySubagent[] }
   | { catalog: null; mission: HistoryMissionRecord };
 
 /**
@@ -343,6 +345,64 @@ export interface HistoryMessagesPage {
   messages: TranscriptMessage[];
   /** Opaque; pass back as `cursor` for the next, later window. Null once the last turn is read. */
   nextCursor: string | null;
+}
+
+/**
+ * Where History cuts one tool call's serialized input. The live view cuts at 1,800 characters
+ * to keep its windows small; History reads one session at a time and shows the call in full
+ * up to this.
+ */
+export const HISTORY_TOOL_INPUT_CAP = 256 * 1024;
+
+/**
+ * Where History cuts one tool result's text, in UTF-8 bytes, inline or read from its sidecar
+ * file alike. The cut falls on a character boundary, so it can leave up to 3 bytes unused.
+ */
+export const HISTORY_TOOL_RESULT_CAP = 1024 * 1024;
+
+/**
+ * A tool call's id as `GET .../tool-results/:toolUseId` accepts it. Checked before anything is
+ * read, and never joined into a path: the result is found by this id in the parent transcript.
+ */
+const HISTORY_TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isHistoryToolUseId(raw: string): boolean {
+  return HISTORY_TOOL_USE_ID.test(raw);
+}
+
+/**
+ * A subagent run's id as `GET .../subagents/:agentId/messages` accepts it. It names a file only
+ * when that file is in the session's own `subagents/` listing.
+ */
+const HISTORY_SUBAGENT_ID = /^[0-9a-f]{8,64}$/;
+
+export function isHistorySubagentId(raw: string): boolean {
+  return HISTORY_SUBAGENT_ID.test(raw);
+}
+
+/** One subagent run a session started, as its detail lists it. */
+export interface HistorySubagent {
+  agentId: string;
+  /** The subagent's type (`Explore`, `general-purpose`), when its metadata records one. */
+  agentType: string | null;
+  /** What the parent asked for, when its metadata records a description. */
+  description: string | null;
+  /** The subagent's opening prompt, capped, as a fallback label. */
+  firstPrompt: string | null;
+  startedAt: number | null;
+}
+
+/**
+ * `GET /api/history/sessions/:agent/:id/tool-results/:toolUseId`: one tool call's result.
+ * `sidecar` when the transcript recorded a preview and named the file holding the whole output.
+ */
+export interface HistoryToolResult {
+  toolUseId: string;
+  source: "inline" | "sidecar";
+  isError: boolean;
+  text: string;
+  /** True when `text` was cut at `HISTORY_TOOL_RESULT_CAP`. */
+  truncated: boolean;
 }
 
 /** Turns per conversation window. */
@@ -451,4 +511,236 @@ export interface HistoryLaunchContext {
   mcp: HistoryMcp | null;
   environment: HistoryEnvironment;
   hooks: HistoryHookRun[] | null;
+}
+
+/**
+ * A History Resume's launch record, `history_resume_launches.state`. `pending` until the
+ * resumed agent is discovered (`bound`), `ended` when that session leaves, and `released`
+ * once nothing holds the launch open. `expired` is a launch WITH a worktree slot whose agent
+ * has not appeared within its grace window; it keeps the slot. `pending` and `expired` are
+ * the open states, and a session has at most one open launch. Persisted and read back as a
+ * string: append, never rename or reorder.
+ */
+export const HISTORY_RESUME_LAUNCH_STATES = ["pending", "expired", "bound", "ended", "released"] as const;
+export type HistoryResumeLaunchState = (typeof HISTORY_RESUME_LAUNCH_STATES)[number];
+
+/**
+ * Why an `ended` launch kept its slot leased instead of handing it back, in
+ * `history_resume_launches.kept_reason`: the slot had uncommitted changes, or `HEAD` held
+ * commits that no branch, tag or remote-tracking ref holds. Persisted: append, never rename or
+ * reorder.
+ */
+export const HISTORY_RESUME_KEPT_REASONS = ["uncommitted", "unbranched_commits"] as const;
+export type HistoryResumeKeptReason = (typeof HISTORY_RESUME_KEPT_REASONS)[number];
+
+/** One launch record as the routes serve it. */
+export interface HistoryResumeLaunch {
+  launchId: string;
+  agent: AgentType;
+  sourceSessionId: string;
+  /** The agent session id the launch waits for: the source's own id for a plain resume. */
+  expectedAgentSessionId: string;
+  /** The launch directory, resolved once through symlinks. */
+  cwd: string;
+  /** The worktree slot the launch holds, or null for a directory outside the pool. */
+  slotId: string | null;
+  /**
+   * The transcript copy a typed-directory Resume wrote or reused, or null. Recorded only once
+   * the copy exists, so a path here is always a History copy and never canonical.
+   */
+  copyPath: string | null;
+  launchedAt: number;
+  /** The Mission Control session the launch bound to, once discovery registered it. */
+  mcSessionId: string | null;
+  /** Read as a string, see `HISTORY_RESUME_LAUNCH_STATES`. */
+  state: string;
+  /** Why an `ended` launch kept its slot, see `HISTORY_RESUME_KEPT_REASONS`; null otherwise. */
+  keptReason: string | null;
+}
+
+/**
+ * Why a Resume cannot run, as a stable code beside the sentence the page shows. These reach
+ * the browser, so they are append-only like the states above.
+ */
+export const HISTORY_RESUME_REFUSALS = [
+  "not_conversation",
+  "transcript_gone",
+  "live",
+  "open_launch",
+  "no_directory",
+  "directory_missing",
+  "pool_slot",
+  "not_resumable",
+  "host_unavailable",
+  "launch_failed",
+  "launch_unknown",
+  "cancelled",
+  "launch_not_found",
+  "launch_not_pending",
+  "launch_has_slot",
+  "directory_relative",
+  "copy_exists",
+  "slot_reused",
+  "slot_unavailable",
+  "slot_not_offered",
+  "pool_unavailable",
+] as const;
+export type HistoryResumeRefusalCode = (typeof HISTORY_RESUME_REFUSALS)[number];
+
+export interface HistoryResumeRefusal {
+  code: HistoryResumeRefusalCode;
+  error: string;
+}
+
+/**
+ * Where the session was recorded running, and whether Resume can use it. `usable` is an
+ * existing directory outside every worktree pool; `pool_slot` is an idle pool slot, which the
+ * Resume leases and checks the recorded branch out in; `slot_reused` is a pool directory that
+ * another owner holds or that is otherwise not idle, so it counts as reused; `missing` no
+ * longer resolves to a directory; `unrecorded` means the transcript named no working
+ * directory. Append-only: the browser reads these.
+ */
+export const HISTORY_RESUME_DIRECTORY_STATES = ["usable", "missing", "pool_slot", "unrecorded", "slot_reused"] as const;
+export type HistoryResumeDirectoryState = (typeof HISTORY_RESUME_DIRECTORY_STATES)[number];
+
+/** A worktree pool slot a Resume can lease, as the dialog lists it. */
+export interface HistoryResumeSlot {
+  slotId: string;
+  /** The slot's number in its pool, as its card shows it. */
+  ordinal: number;
+  path: string;
+  /** The commit the slot was last observed at, or null when that could not be read. */
+  head: string | null;
+}
+
+/** `GET /api/history/sessions/:agent/:id/resume-options`. */
+export interface HistoryResumeOptions {
+  original: {
+    /** The first recorded working directory, as the transcript spelled it. */
+    cwd: string | null;
+    /** That directory resolved through symlinks, when it still resolves. */
+    resolved: string | null;
+    state: HistoryResumeDirectoryState;
+    /** The pool slot the directory is, when it is one (`pool_slot` or `slot_reused`). */
+    slot: HistoryResumeSlot | null;
+    /** Why a Resume in this directory would be refused, or null when it is usable. */
+    refusal: HistoryResumeRefusal | null;
+  };
+  /** The session's open (`pending` or `expired`) launch, if any. */
+  openLaunch: HistoryResumeLaunch | null;
+  /** Why no Resume can run right now, whatever the target, or null. */
+  refusal: HistoryResumeRefusal | null;
+  /**
+   * The other targets the dialog offers when the original directory cannot be used (gone,
+   * reused or unrecorded) and nothing else refuses: idle, clean slots of the session's
+   * repository (none for a session with no resolvable repository), and a typed directory when
+   * the agent can fork. Null when the original is usable or a refusal blocks every target.
+   */
+  picker: { directory: boolean; slots: HistoryResumeSlot[] } | null;
+}
+
+/**
+ * Where a Resume runs: the original directory (leased as a slot when it is an idle one), a
+ * slot the picker offered, or a directory the operator typed. A typed path must be absolute;
+ * the daemon refuses a relative one with `directory_relative`, so the dialog can say why, and
+ * resolves the rest once through symlinks.
+ */
+export const HistoryResumeTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("original") }).strict(),
+  z.object({ kind: z.literal("slot"), slotId: z.string().min(1).max(200) }).strict(),
+  z.object({ kind: z.literal("directory"), path: z.string().min(1).max(4096) }).strict(),
+]);
+export type HistoryResumeTarget = z.infer<typeof HistoryResumeTargetSchema>;
+
+/** `POST /api/history/sessions/:agent/:id/resume`. */
+export const HistoryResumeBodySchema = z
+  .object({
+    backend: z.enum(TERMINAL_BACKEND_IDS),
+    target: HistoryResumeTargetSchema,
+  })
+  .strict();
+export type HistoryResumeBody = z.infer<typeof HistoryResumeBodySchema>;
+
+/**
+ * Whether Cancel pending resume can close a launch: it is still `pending` and holds no worktree
+ * slot. A launch with a slot closes when that slot is Returned, so the pool never resets it
+ * under an agent that may still appear. The store refuses on this rule and the dialog offers
+ * Cancel on it.
+ */
+export function historyResumeCancellable(launch: Pick<HistoryResumeLaunch, "state" | "slotId">): boolean {
+  return launch.state === "pending" && launch.slotId === null;
+}
+
+/**
+ * What a slot card says of the History Resume that holds it: why a slot it kept after its
+ * session ended is still leased, that its agent has not appeared, or plainly whose it is.
+ */
+export function historyResumeSlotLabel(launch: Pick<HistoryResumeLaunch, "state" | "keptReason">): string {
+  if (launch.state === "expired") return "Held for a resumed session that has not appeared";
+  if (launch.state === "ended" && launch.keptReason === "uncommitted") {
+    return "Kept: uncommitted changes from a resumed session";
+  }
+  if (launch.state === "ended" && launch.keptReason === "unbranched_commits") {
+    return "Kept: commits on no branch from a resumed session";
+  }
+  return "Resumed History session";
+}
+
+/** `POST /api/history/sessions/:agent/:id/resume/cancel`: close a pending launch with no slot. */
+export const HistoryResumeCancelSchema = z
+  .object({ launchId: z.string().uuid() })
+  .strict();
+export type HistoryResumeCancel = z.infer<typeof HistoryResumeCancelSchema>;
+
+/**
+ * What a slot target checked out. `branch`: the recorded branch, attached. `missing`: no
+ * local or remote-tracking ref of it here, so the slot stays detached as it was; `branch` is
+ * null when the transcript recorded nothing the daemon would hand to Git as a branch name (it
+ * decides that, so this never re-judges it). `elsewhere`: another worktree (`path`) holds the
+ * branch, so its tip is checked out detached.
+ */
+export type HistoryResumeCheckout =
+  | { state: "branch"; branch: string }
+  | { state: "missing"; branch: string | null }
+  | { state: "elsewhere"; branch: string; path: string };
+
+/** The warning a slot's checkout carries, or null when the recorded branch is checked out. */
+export function historyResumeCheckoutWarning(checkout: HistoryResumeCheckout): string | null {
+  switch (checkout.state) {
+    case "branch":
+      return null;
+    case "missing":
+      return checkout.branch === null
+        ? "This conversation recorded no usable branch, so the slot stays detached where it was: the code may not match the conversation."
+        : `The branch ${checkout.branch} was not found here or on origin, so the slot stays detached where it was: the code may not match the conversation.`;
+    case "elsewhere":
+      return `The branch ${checkout.branch} is checked out in ${checkout.path}, so this slot has its tip detached: commits made here will not move the branch.`;
+  }
+}
+
+/** A launch that started, or whose terminal may have opened (`unknown`). */
+export interface HistoryResumeStarted {
+  ok: true;
+  launch: HistoryResumeLaunch;
+  /** The terminal backend that took it, for the confirmation the page shows. */
+  label: string;
+  /** What a slot target checked out, or null for a directory outside the pool. */
+  checkout: HistoryResumeCheckout | null;
+}
+
+/** A refused Resume, with the open launch it collided with when that is the reason. */
+export interface HistoryResumeRefused extends HistoryResumeRefusal {
+  ok: false;
+  launch?: HistoryResumeLaunch;
+}
+
+/**
+ * Whether a row offers Resume at all: a conversation whose transcript is on disk and which no
+ * Registry session is running. Live sessions offer Open in Fleet instead. A row that offers
+ * it can still be refused for its directory or an open launch; `resume-options` says why.
+ */
+export function historyResumeOffered(
+  row: Pick<HistorySessionSummary, "kind" | "transcriptState" | "liveSessionId">,
+): boolean {
+  return isHistoryConversationKind(row.kind) && row.transcriptState === "present" && row.liveSessionId === null;
 }

@@ -25,7 +25,7 @@ const { HistoryService } = await import("../src/server/history/service.ts");
 const { resolveHistoryRepository } = await import("../src/server/history/repository.ts");
 const { historyPromptSegments } = await import("../src/server/history/search.ts");
 const { poolContainingPath } = await import("../src/server/worktrees/path.ts");
-const { openDb, upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
+const { openDb, upgradeDatabaseToCurrentSchema, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 import type { HistoryPage } from "../src/shared/history.ts";
@@ -342,7 +342,7 @@ test("a database stamped 12 with cataloged rows gains search text through migrat
     upgradeDatabaseToCurrentSchema(stamped);
     const fingerprints = stamped.prepare("SELECT fingerprint FROM history_sessions ORDER BY agent_session_id").all() as { fingerprint: string }[];
     assert.deepEqual(fingerprints.map((row) => row.fingerprint), ["{}", "{}"], "every row is queued for a re-read");
-    assert.equal((stamped.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 13);
+    assert.equal((stamped.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, CURRENT_DATABASE_SCHEMA_VERSION);
     // A second open does not queue them again.
     stamped.exec(`UPDATE history_sessions SET fingerprint = '{"size":1,"mtimeMs":1,"ino":1}'`);
     upgradeDatabaseToCurrentSchema(stamped);

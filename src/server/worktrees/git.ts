@@ -20,6 +20,8 @@ import {
 export interface WorktreeRegistration {
   path: string;
   head: string | null;
+  /** The full ref checked out there (`refs/heads/<name>`), or null when none is. */
+  branch: string | null;
   bare: boolean;
   detached: boolean;
   locked: boolean;
@@ -53,6 +55,18 @@ export interface WorktreeInspection {
   detached: boolean;
 }
 
+/** Where a branch's tip is, in this clone: its local branch and origin's remote-tracking ref. */
+export interface BranchTips {
+  local: string | null;
+  remote: string | null;
+}
+
+/**
+ * How a History Resume checks a branch out in a slot: `attach` its local branch, `track` a new
+ * local branch from origin's, or `detach` at the local tip because another worktree holds it.
+ */
+export type BranchCheckoutMode = "attach" | "track" | "detach";
+
 export interface WorktreeGit {
   list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>>;
   inspect(path: string): Promise<GitResult<WorktreeInspection>>;
@@ -65,6 +79,24 @@ export interface WorktreeGit {
   remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean | "locked"): Promise<GitResult<void>>;
   unlock(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<void>>;
   repair(identity: WorktreeRepositoryIdentity, path?: string): Promise<GitResult<void>>;
+  /** `branch` is a bare name that `isCheckoutBranchName` accepted. Reads refs only; never fetches. */
+  branchTips(identity: WorktreeRepositoryIdentity, branch: string): Promise<GitResult<BranchTips>>;
+  checkoutBranch(path: string, branch: string, mode: BranchCheckoutMode): Promise<GitResult<void>>;
+  /**
+   * Whether `HEAD` holds a commit that no branch, tag or remote-tracking ref holds: work a
+   * reset would leave only in the reflog.
+   */
+  unbranchedCommits(path: string): Promise<GitResult<boolean>>;
+}
+
+/**
+ * Whether a recorded branch name can be handed to Git as one. A transcript records whatever
+ * Git printed, so this refuses anything that could read as an option or as a detached `HEAD`,
+ * and leaves the rest to `check-ref-format` through the reads that follow.
+ */
+export function isCheckoutBranchName(branch: string | null): branch is string {
+  return branch !== null && branch !== "" && branch !== "HEAD" && !branch.startsWith("-") &&
+    !/[\s~^:?*[\\]|\.\.|@\{|\/\/|^\/|\/$|\.lock$|\.$/.test(branch);
 }
 
 function failure(step: string, result: RunResult): GitResult<never> {
@@ -96,6 +128,7 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
       current = {
         path: line.slice("worktree ".length),
         head: null,
+        branch: null,
         bare: false,
         detached: false,
         locked: false,
@@ -105,6 +138,7 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
     }
     if (!current) continue;
     if (line.startsWith("HEAD ")) current.head = line.slice("HEAD ".length);
+    else if (line.startsWith("branch ")) current.branch = line.slice("branch ".length);
     else if (line === "bare") current.bare = true;
     else if (line === "detached") current.detached = true;
     else if (line === "locked" || line.startsWith("locked ")) current.locked = true;
@@ -459,5 +493,46 @@ export class NativeWorktreeGit implements WorktreeGit {
     );
     if (commandFailed(result)) return failure("git worktree repair", result);
     return { ok: true, value: undefined };
+  }
+
+  async branchTips(identity: WorktreeRepositoryIdentity, branch: string): Promise<GitResult<BranchTips>> {
+    const tip = (ref: string) => this.observe(
+      ["-C", identity.mainCheckoutRoot, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+      15_000,
+      (result): GitResult<string | null> => {
+        if (result.outcomeUnknown || result.overflowed) return failure(`git rev-parse ${ref}`, result);
+        if (result.code === 0 && /^[0-9a-f]{40}$/.test(result.stdout.trim())) return { ok: true, value: result.stdout.trim() };
+        // `--verify --quiet` answers a ref that does not exist with exit 1 and nothing printed.
+        if (result.code === 1 && result.stdout.trim() === "") return { ok: true, value: null };
+        return failure(`git rev-parse ${ref}`, result);
+      },
+    );
+    const [local, remote] = await Promise.all([tip(`refs/heads/${branch}`), tip(`refs/remotes/origin/${branch}`)]);
+    if (!local.ok) return local;
+    if (!remote.ok) return remote;
+    return { ok: true, value: { local: local.value, remote: remote.value } };
+  }
+
+  async checkoutBranch(path: string, branch: string, mode: BranchCheckoutMode): Promise<GitResult<void>> {
+    // `isCheckoutBranchName` refused a leading dash and every list ends in `--`, so the name is
+    // never read as an option or a path. Attaching takes the bare name, since a full ref detaches.
+    const args = mode === "attach"
+      ? ["checkout", "--quiet", branch, "--"]
+      : mode === "track"
+        ? ["checkout", "--quiet", "--track", "-b", branch, `refs/remotes/origin/${branch}`, "--"]
+        : ["checkout", "--quiet", "--detach", `refs/heads/${branch}`, "--"];
+    const result = await this.execute("git", ["-C", path, ...args], { timeoutMs: 60_000 });
+    if (commandFailed(result)) return failure(`git checkout (${mode})`, result);
+    return { ok: true, value: undefined };
+  }
+
+  async unbranchedCommits(path: string): Promise<GitResult<boolean>> {
+    // One commit is enough to answer, so the walk stops at the first.
+    return this.observe(
+      ["-C", path, "rev-list", "--max-count=1", "HEAD", "--not", "--branches", "--tags", "--remotes"],
+      15_000,
+      (result): GitResult<boolean> =>
+        commandFailed(result) ? failure("git rev-list HEAD --not --branches --tags --remotes", result) : { ok: true, value: result.stdout.trim() !== "" },
+    );
   }
 }

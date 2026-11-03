@@ -184,8 +184,14 @@ import type {
   HistoryLaunchContext,
   HistoryMessagesPage,
   HistoryPage,
+  HistoryResumeBody,
+  HistoryResumeLaunch,
+  HistoryResumeOptions,
+  HistoryResumeRefused,
+  HistoryResumeStarted,
   HistorySessionDetail,
   HistorySessionsQuery,
+  HistoryToolResult,
 } from "@shared/history.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
@@ -1688,6 +1694,30 @@ async function archiveJson<T>(path: string, signal?: AbortSignal): Promise<Archi
   }
 }
 
+/**
+ * A History Resume write. A refusal comes back as its code and sentence, with the launch it
+ * collided with when it carries one, so the dialog can offer Cancel pending resume.
+ */
+async function historyResumeWrite<T>(path: string, body: unknown): Promise<T | HistoryResumeRefused> {
+  try {
+    const res = await actionFetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<HistoryResumeRefused> & { error?: string };
+    if (res.ok) return data as T;
+    return {
+      ok: false,
+      code: data.code ?? "launch_failed",
+      error: data.error ?? `HTTP ${res.status}`,
+      ...(data.launch ? { launch: data.launch } : {}),
+    };
+  } catch (err) {
+    return { ok: false, code: "launch_failed", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** True when a rejected read was this page cancelling itself, not a failure worth showing. */
 export function isArchiveAbort(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
@@ -2280,6 +2310,27 @@ export const api = {
       signal,
     ),
 
+  /** What a Resume of this session would do now: its original directory, open launch and refusal. */
+  historyResumeOptions: (agent: string, id: string, signal?: AbortSignal) =>
+    archiveJson<HistoryResumeOptions>(
+      `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/resume-options`,
+      signal,
+    ),
+
+  /** Resume this session in a new terminal on `body.backend`. */
+  historyResume: (agent: string, id: string, body: HistoryResumeBody) =>
+    historyResumeWrite<HistoryResumeStarted>(
+      `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/resume`,
+      body,
+    ),
+
+  /** Cancel pending resume: close a pending launch that holds no worktree slot. */
+  historyResumeCancel: (agent: string, id: string, launchId: string) =>
+    historyResumeWrite<{ ok: true; launch: HistoryResumeLaunch }>(
+      `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/resume/cancel`,
+      { launchId },
+    ),
+
   /** One forward window of a History session's conversation; a 410 means its transcript is gone. */
   historyMessages: (agent: string, id: string, cursor: string | null, signal?: AbortSignal) =>
     archiveJson<HistoryMessagesPage>(
@@ -2292,6 +2343,21 @@ export const api = {
   historyLaunchContext: (agent: string, id: string, signal?: AbortSignal) =>
     archiveJson<HistoryLaunchContext>(
       `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/launch-context`,
+      signal,
+    ),
+
+  /** One tool call's result, read on demand; a 404 means none is available for it. */
+  historyToolResult: (agent: string, id: string, toolUseId: string, signal?: AbortSignal) =>
+    archiveJson<HistoryToolResult>(
+      `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/tool-results/${encodeURIComponent(toolUseId)}`,
+      signal,
+    ),
+
+  /** One forward window of a History session's subagent run. */
+  historySubagentMessages: (agent: string, id: string, agentId: string, cursor: string | null, signal?: AbortSignal) =>
+    archiveJson<HistoryMessagesPage>(
+      `/api/history/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/subagents/${encodeURIComponent(agentId)}/messages`
+        + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""),
       signal,
     ),
 

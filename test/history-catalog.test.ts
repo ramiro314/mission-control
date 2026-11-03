@@ -221,6 +221,8 @@ test("the walk yields top-level sessions only: subagent transcripts are counted,
   const id = sessionId();
   writeTranscript(projects, "-w", id, records(id, { cwd: "/w", entrypoint: "cli" }));
   mkdirSync(join(projects, "-w", id, "subagents"), { recursive: true });
+  writeFileSync(join(projects, "-w", id, "subagents", "agent-abc12345.jsonl"), "{}\n");
+  // Outside the subagent id format, so the detail cannot list it, and the count does not either.
   writeFileSync(join(projects, "-w", id, "subagents", "agent-abc123.jsonl"), "{}\n");
   writeFileSync(join(projects, "-w", "notes.txt"), "not a session");
   const reader = createClaudeHistory(projects);
@@ -342,6 +344,108 @@ test("two files with one session id: the canonical file does not depend on scan 
     await reconciler.trigger();
     assert.equal(store.index("claude").get(id)?.transcriptPath, original);
   }
+  rmSync(projects, { recursive: true, force: true });
+});
+
+/** Record `copyPath` as a History Resume's transcript copy of `id`, as a fork launch does. */
+function recordCopy(id: string, copyPath: string): void {
+  openDb().prepare(
+    `INSERT INTO history_resume_launches (launch_id, agent, source_session_id, expected_agent_session_id, cwd, copy_path,
+       launched_at, state, updated_at) VALUES (?, 'claude', ?, ?, '/copy', ?, 1, 'released', 1)`,
+  ).run(`launch-${copyPath}`, id, sessionId(), copyPath);
+}
+
+test("a rebuilt catalog that scans the History copy first still picks the original, and the copy makes no second row", async () => {
+  clearCatalog();
+  openDb().exec("DELETE FROM history_resume_launches");
+  const projects = freshProjects();
+  const id = sessionId();
+  const cwd = "/work/copied-from";
+  const original = writeTranscript(projects, claudeProjectDir(cwd, projects).slice(projects.length + 1), id, records(id, { cwd, entrypoint: "cli" }));
+  // The copy sorts first, starts earlier, and sits in a folder that is not its first cwd's, so
+  // only the recorded copy rule keeps it out: without it, the earliest-start rule would pick it.
+  const copy = writeTranscript(projects, "-aaa-typed", id, records(id, { cwd: "/elsewhere", entrypoint: "cli", at: "2026-10-01T10:00:00.000Z" }));
+  recordCopy(id, copy);
+  const reader = createClaudeHistory(projects);
+  for (const order of [false, true]) {
+    clearCatalog();
+    const store = new HistoryStore();
+    const reconciler = new HistoryReconciler({
+      store,
+      readers: [{ agent: "claude", spec: { ...reader, enumerate: async (root) => {
+        const files = await reader.enumerate(root);
+        return order ? files.reverse() : files;
+      } } }],
+      resolveRepository: () => null,
+    });
+    await reconciler.trigger();
+    assert.equal(store.index("claude").get(id)?.transcriptPath, original, "the original is canonical whatever the scan order");
+    assert.equal(openDb().prepare("SELECT COUNT(*) AS n FROM history_sessions WHERE agent_session_id = ?").get(id)!.n, 1);
+  }
+
+  // A recorded copy alone never creates a row, even when the original was never indexed.
+  clearCatalog();
+  rmSync(original);
+  const store = new HistoryStore();
+  await new HistoryReconciler({ store, readers: [{ agent: "claude", spec: reader }], resolveRepository: () => null }).trigger();
+  assert.equal(store.index("claude").get(id), undefined);
+  rmSync(projects, { recursive: true, force: true });
+  openDb().exec("DELETE FROM history_resume_launches");
+});
+
+test("a gone canonical file marks its row gone and is never repointed at a recorded copy", async () => {
+  clearCatalog();
+  openDb().exec("DELETE FROM history_resume_launches");
+  const projects = freshProjects();
+  const reader = createClaudeHistory(projects);
+  const store = new HistoryStore();
+  const reconciler = new HistoryReconciler({ store, readers: [{ agent: "claude", spec: reader }], resolveRepository: () => null, now: () => 5_000 });
+  const id = sessionId();
+  const cwd = "/work/gone-original";
+  const original = writeTranscript(projects, claudeProjectDir(cwd, projects).slice(projects.length + 1), id, records(id, { cwd, entrypoint: "cli" }));
+  const copy = writeTranscript(projects, "-typed", id, records(id, { cwd, entrypoint: "cli" }));
+  recordCopy(id, copy);
+  await reconciler.trigger();
+  assert.equal(store.index("claude").get(id)?.transcriptPath, original);
+
+  rmSync(original);
+  await reconciler.trigger();
+  const row = store.index("claude").get(id);
+  assert.equal(row?.transcriptState, "gone");
+  assert.equal(row?.transcriptPath, original, "and still names the original, not the copy");
+  // A later pass does not revive it through the copy either.
+  await reconciler.trigger();
+  assert.equal(store.index("claude").get(id)?.transcriptState, "gone");
+  rmSync(projects, { recursive: true, force: true });
+  openDb().exec("DELETE FROM history_resume_launches");
+});
+
+test("a transcript moved with its project folder is followed, as a rebuilt catalog would choose it", async () => {
+  clearCatalog();
+  openDb().exec("DELETE FROM history_resume_launches");
+  const projects = freshProjects();
+  const reader = createClaudeHistory(projects);
+  const id = sessionId();
+  const cwd = "/home/u/old-name";
+  const before = writeTranscript(projects, claudeProjectDir(cwd, projects).slice(projects.length + 1), id, records(id, { cwd, entrypoint: "cli" }));
+  const store = new HistoryStore();
+  const reconciler = new HistoryReconciler({ store, readers: [{ agent: "claude", spec: reader }], resolveRepository: () => null });
+  await reconciler.trigger();
+  assert.equal(store.index("claude").get(id)?.transcriptPath, before);
+
+  // The operator renamed the directory and moved its project folder to match. The records
+  // still say the old cwd; nothing recorded the new file as a History copy.
+  const after = writeTranscript(projects, "-home-u-new-name", id, records(id, { cwd, entrypoint: "cli" }));
+  rmSync(before);
+  await reconciler.trigger();
+  const followed = store.index("claude").get(id);
+  assert.equal(followed?.transcriptState, "present");
+  assert.equal(followed?.transcriptPath, after);
+
+  clearCatalog();
+  const rebuilt = new HistoryStore();
+  await new HistoryReconciler({ store: rebuilt, readers: [{ agent: "claude", spec: reader }], resolveRepository: () => null }).trigger();
+  assert.equal(rebuilt.index("claude").get(id)?.transcriptPath, after, "the incremental and the rebuilt catalog agree");
   rmSync(projects, { recursive: true, force: true });
 });
 

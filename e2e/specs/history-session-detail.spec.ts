@@ -205,6 +205,8 @@ test("a session opens from its row and from a deep link, pages its conversation,
   await dashboard.goto(`${daemon.baseURL}/#/history/claude/${gone.id}`);
   await expect(detail.getByRole("heading", { name: "A transcript Claude Code will delete", level: 2 })).toBeVisible();
   await expect(detail.getByText("Transcript gone")).toBeVisible();
+  // Nothing is left on disk to resume.
+  await expect(detail.getByRole("button", { name: "Resume", exact: true })).toHaveCount(0);
   await expect(detail.getByText("/projects/epsilon", { exact: true })).toBeVisible();
   await expect(detail.getByRole("note")).toHaveText(/removed by Claude Code's retention/);
   await expect(detail.getByText("Question 000", { exact: true })).toHaveCount(0);
@@ -401,6 +403,8 @@ test("a session the fake agent keeps running shows Live and opens in the Fleet",
   await expect(detail.getByText("Live", { exact: true })).toBeVisible();
   const open = detail.getByRole("button", { name: "Open in Fleet" });
   await expect(open).toBeVisible();
+  // A running conversation is opened where it runs, never resumed a second time beside it.
+  await expect(detail.getByRole("button", { name: "Resume", exact: true })).toHaveCount(0);
   await expect(detail.getByRole("tabpanel").getByRole("article").first()).toBeVisible();
   await capture(dashboard, "live");
   // The fake agent keeps running; the detail still read its transcript once and streams nothing.

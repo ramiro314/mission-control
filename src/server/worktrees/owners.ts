@@ -25,6 +25,22 @@ export function isTerminalOwnerKey(key: string): boolean {
   return key.startsWith(TERMINAL_OWNER_PREFIX);
 }
 
+const HISTORY_RESUME_OWNER_PREFIX = "history-resume-";
+
+/** The manual owner key of a slot a History Resume leased, named by its launch. */
+export function historyResumeOwnerKey(launchId: string): string {
+  return `${HISTORY_RESUME_OWNER_PREFIX}${launchId}`;
+}
+
+export function isHistoryResumeOwnerKey(key: string): boolean {
+  return key.startsWith(HISTORY_RESUME_OWNER_PREFIX);
+}
+
+/** The launch a History Resume owner key names, or null for any other key. */
+export function historyResumeLaunchId(key: string): string | null {
+  return isHistoryResumeOwnerKey(key) ? key.slice(HISTORY_RESUME_OWNER_PREFIX.length) || null : null;
+}
+
 /**
  * The durable domain half of native slot ownership. Slot rows decide allocation; these rows
  * decide whether task/check/manual work still exists and therefore whether a released slot
