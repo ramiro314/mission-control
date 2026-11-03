@@ -7180,12 +7180,6 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * A shape task with its derived `shapeTickets` recomputed; every other task unchanged.
-   *
-   * Derived on publish, like `automaticCleanup` is on load, so the field rides the ordinary
-   * `task_upsert` and needs no event of its own.
-   */
-  /**
    * Re-read a task's `agentSessionId` from its work episode bindings. Derived on read like
    * `extraRepos`, so a task an upsert carries forward from memory would otherwise keep the
    * value it had before its session was bound.
@@ -7206,6 +7200,12 @@ export class Registry extends EventEmitter {
     if (next.sessionId) this.resyncSessionTask(next.sessionId);
   }
 
+  /**
+   * A shape task with its derived `shapeTickets` recomputed; every other task unchanged.
+   *
+   * Derived on publish, like `automaticCleanup` is on load, so the field rides the ordinary
+   * `task_upsert` and needs no event of its own.
+   */
   private withShapeTickets(task: Task): Task {
     if (task.kind !== "shape") return task;
     return { ...task, shapeTickets: shapeTicketsSummary(task, this.taskLookup) };
