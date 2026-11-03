@@ -155,6 +155,11 @@ test("tool calls expand to their whole input and their result, compaction is mar
   const write = panel.getByRole("listitem").filter({ has: dashboard.getByRole("button", { name: "write notes.md" }) });
   await write.getByRole("button", { name: "write notes.md" }).click();
   await expect(write.getByRole("region", { name: "Input" })).toContainText(LONG_TAIL);
+  // The input box scrolls on its own; show its end, where the text past the live cap is.
+  const writeInput = write.getByRole("region", { name: "Input" }).locator("pre");
+  await writeInput.evaluate((pre) => { pre.scrollTop = pre.scrollHeight; });
+  await writeInput.scrollIntoViewIfNeeded();
+  await capture(dashboard, "tool-input-past-cap");
 
   // A sidecar no record names stays unreachable: the call shows its result as unavailable.
   const orphan = panel.getByRole("listitem").filter({ has: dashboard.getByRole("button", { name: "bash sleep" }) });
@@ -190,8 +195,12 @@ test("tool calls expand to their whole input and their result, compaction is mar
   await expect(run.getByRole("article").first()).toHaveAccessibleName(/^Delegated session from claude$/i);
   await expect(run.getByRole("article", { name: /^you$/i })).toHaveCount(0);
   await capture(dashboard, "subagent-run");
+  await run.getByRole("button", { name: "Load more subagent messages" }).scrollIntoViewIfNeeded();
+  await capture(dashboard, "subagent-load-more");
   await run.getByRole("button", { name: "Load more subagent messages" }).click();
   await expect(run.getByText(`Subagent question ${SUBAGENT_PAIRS - 1}`, { exact: true })).toBeVisible();
+  await run.getByText(`Subagent question ${SUBAGENT_PAIRS - 1}`, { exact: true }).scrollIntoViewIfNeeded();
+  await capture(dashboard, "subagent-paged");
   await expect(run.getByRole("button", { name: "Load more subagent messages" })).toHaveCount(0);
   await expect(run.getByRole("article")).toHaveCount(SUBAGENT_PAIRS * 2);
   // The parent conversation is still there, below the run.
