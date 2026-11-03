@@ -73,13 +73,68 @@ test("a replaced current binding falls back to the newest historical binding", (
   assert.equal(agentSessionOf("next"), AGENT_C);
 });
 
-test("the registry re-reads the agent session when a task is published or bound", () => {
+test("a published task carries what its bindings say, not the value it was upserted with", () => {
   const registry = new Registry();
   registry.upsertTask(mkTask({ id: "published", status: "running", agentSessionId: null }));
   bindTaskWorkEpisode(binding({ taskId: "published", episodeId: "p1", sessionId: "s-published", agentSessionId: AGENT_A, boundAt: 100 }));
   // An upsert carrying the stale in-memory value still publishes what the bindings say.
   registry.upsertTask({ ...registry.getTask("published")!, status: "done" });
   assert.equal(registry.getTask("published")?.agentSessionId, AGENT_A);
+});
+
+function episode(sessionId: string, agentSessionId: string) {
+  return {
+    episodeId: `episode-${sessionId}`,
+    sessionId,
+    agentSessionId,
+    branch: null,
+    prUrl: null,
+    prHeadSha: null,
+    mergedAt: null,
+    promptedAt: null,
+    awaitingAgentRebind: false,
+    rebindFromTranscriptPath: null,
+    startedAt: 100,
+    updatedAt: 100,
+  };
+}
+
+function upserts(registry: InstanceType<typeof Registry>, taskId: string): Array<string | null> {
+  const seen: Array<string | null> = [];
+  registry.subscribe((event) => {
+    if (event.type === "task_upsert" && event.task.id === taskId) seen.push(event.task.agentSessionId);
+  });
+  return seen;
+}
+
+test("binding a held task through the registry re-sends it with its agent session", () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "bound-live", status: "running", sessionId: "s-bound-live" }));
+  const seen = upserts(registry, "bound-live");
+  assert.equal(registry.bindTaskToWorkEpisode("bound-live", "s-bound-live", episode("s-bound-live", AGENT_B)), true);
+  // No upsert follows: the bind alone moves the held task and tells the dashboard.
+  assert.equal(registry.getTask("bound-live")?.agentSessionId, AGENT_B);
+  assert.deepEqual(seen, [AGENT_B]);
+});
+
+test("a reset that invalidates a finished task's binding re-sends it with what remains", () => {
+  const registry = new Registry();
+  upsertTask(mkTask({ id: "reset-live", status: "done", sessionId: "s-reset-live" }));
+  // Merged, so the registry's provenance cleanup keeps the archived row for a finished task.
+  bindTaskWorkEpisode({
+    ...binding({ taskId: "reset-live", episodeId: "old", sessionId: "s-reset-live", agentSessionId: AGENT_A, boundAt: 100 }),
+    mergedAt: 150,
+  });
+  bindTaskWorkEpisode(binding({ taskId: "reset-live", episodeId: "new", sessionId: "s-reset-live", agentSessionId: AGENT_C, boundAt: 200 }));
+  registry.upsertTask(getTask("reset-live")!);
+  assert.equal(registry.getTask("reset-live")?.agentSessionId, AGENT_C);
+  const seen = upserts(registry, "reset-live");
+  // The session's identity is reset, which deletes the task's current binding: the archived
+  // episode is what is left, and the held task follows it without a restart.
+  registry.resetWorkEpisode("s-reset-live");
+  assert.equal(getTask("reset-live")?.agentSessionId, AGENT_A);
+  assert.equal(registry.getTask("reset-live")?.agentSessionId, AGENT_A);
+  assert.deepEqual(seen, [AGENT_A]);
 });
 
 test("readsHistory and the server's history slot are one fact", () => {

@@ -4315,6 +4315,15 @@ export class Registry extends EventEmitter {
         });
       }
     }
+    // Invalidation deleted these tasks' current bindings, so `agentSessionId` now reads from
+    // a historical binding or from none. A task whose pointer had already moved on still
+    // changes, and is re-sent for that alone.
+    for (const taskId of invalidatedTaskIds) {
+      const task = updates.get(taskId) ?? this.tasks.get(taskId);
+      if (!task) continue;
+      const next = this.withAgentSession(task);
+      if (next !== task || updates.has(taskId)) updates.set(taskId, next);
+    }
     for (const task of updates.values()) {
       this.tasks.set(task.id, task);
       this.emitEvent({ type: "task_upsert", task });
@@ -4569,9 +4578,6 @@ export class Registry extends EventEmitter {
       );
     }
     this.publishEpisodeTaskChanges(rebinds, invalidatedTaskIds, episode.sessionId, now);
-    // The rebind rewrote the bound task's binding to the new agent session id.
-    const bound = taskWorkEpisodeForSession(episode.sessionId);
-    if (bound) this.refreshTaskAgentSession(bound.taskId);
     this.cleanupDependencyProvenance();
     return next;
   }
