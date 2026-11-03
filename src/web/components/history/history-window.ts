@@ -1,4 +1,38 @@
-import { HISTORY_PAGE_LIMITS, encodeHistoryCursor, type HistoryPage, type HistorySessionSummary } from "@shared/history.ts";
+import {
+  HISTORY_PAGE_LIMITS,
+  HISTORY_SEARCH_LIMITS,
+  encodeHistoryCursor,
+  type HistoryPage,
+  type HistorySessionSummary,
+  type HistorySessionsQuery,
+} from "@shared/history.ts";
+import type { HistoryFilters } from "../../workflows/useWorkflowRoute.ts";
+
+/** The list route's filter parameters: everything in a query but the page position. */
+export type HistoryFilterQuery = Omit<HistorySessionsQuery, "cursor" | "limit">;
+
+/** Local midnight at the start of a `YYYY-MM-DD` day, `days` later. */
+function localDay(day: string, days = 0): number {
+  const [year, month, date] = day.split("-").map(Number) as [number, number, number];
+  return Math.max(0, new Date(year, month - 1, date + days).getTime());
+}
+
+/**
+ * The route's filters as the list route takes them. The date range is the operator's local
+ * calendar days, both inclusive, so `to` becomes the next local midnight, which the route
+ * treats as exclusive. A search longer than the route accepts, from a pasted link, is cut to
+ * that length rather than sent to be refused.
+ */
+export function historyFilterQuery(filters: HistoryFilters | undefined): HistoryFilterQuery {
+  return {
+    ...(filters?.q?.trim() ? { q: filters.q.trim().slice(0, HISTORY_SEARCH_LIMITS.queryChars) } : {}),
+    ...(filters?.repo ? { repo: filters.repo } : {}),
+    ...(filters?.from ? { from: localDay(filters.from) } : {}),
+    ...(filters?.to ? { to: localDay(filters.to, 1) } : {}),
+    ...(filters?.kind ? { kind: filters.kind } : {}),
+    ...(filters?.agent ? { agent: filters.agent } : {}),
+  };
+}
 
 /** What one page read returns: the page, or why it could not be read. */
 export type HistoryPageRead =
@@ -10,6 +44,7 @@ export interface HistoryWindow {
   sessions: HistorySessionSummary[];
   nextCursor: string | null;
   progress: HistoryPage["progress"];
+  facets: HistoryPage["facets"];
 }
 
 function rowKey(row: HistorySessionSummary): string {
@@ -35,8 +70,8 @@ export function appendHistoryRows(
  * new session lands above them: the oldest row would fall off and Load more come back. The
  * search for `through` reaches at most one capped page past the depth (a row whose kind
  * changed can leave the list), and the window is cut right after it, with the cursor the
- * route itself would give for that row. Progress is the first page's, the freshest view of
- * the backfill.
+ * route itself would give for that row. Progress and facets are the first page's, the freshest
+ * view of both.
  */
 export async function readHistoryWindow(
   read: (query: { cursor?: string; limit: number }) => Promise<HistoryPageRead>,
@@ -67,5 +102,5 @@ export async function readHistoryWindow(
     sessions = sessions.slice(0, keep);
     nextCursor = encodeHistoryCursor({ lastActivityAt: last.lastActivityAt, agent: last.agent, agentSessionId: last.agentSessionId });
   }
-  return { ok: true, value: { sessions, nextCursor, progress: first.value.progress } };
+  return { ok: true, value: { sessions, nextCursor, progress: first.value.progress, facets: first.value.facets } };
 }

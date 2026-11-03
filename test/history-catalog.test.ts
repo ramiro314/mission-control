@@ -92,8 +92,11 @@ async function enumerateOne(projects: string, id: string): Promise<HistoryFile> 
 }
 
 function clearCatalog(): void {
-  openDb().exec("DELETE FROM history_sessions");
+  openDb().exec("DELETE FROM history_sessions; DELETE FROM history_search_segments;");
 }
+
+const interactiveOnly = { kinds: ["interactive"], needle: null, repo: null, from: null, to: null, agent: null };
+const NO_FACETS = { agents: [], repositories: [], retention: [] };
 
 test("Codex and Pi declare a null history slot; Claude has the reader", () => {
   assert.equal(HARNESSES.codex.history, null);
@@ -299,7 +302,7 @@ test("a removed transcript keeps its row, marked gone, only after a complete wal
   failWalk = false;
   const complete = await reconciler.trigger();
   assert.equal(complete.gone, 1);
-  const page = store.page({ kinds: ["interactive"], cursor: null, limit: 10, progress: reconciler.progress() });
+  const page = store.page({ filter: interactiveOnly, cursor: null, limit: 10, progress: reconciler.progress(), facets: NO_FACETS });
   const gone = page.sessions.find((row) => row.agentSessionId === removed);
   assert.equal(gone?.transcriptState, "gone");
   assert.equal(gone?.goneAt, 1_000);
@@ -437,7 +440,7 @@ test("a changed transcript is re-indexed, resuming from where its last parse sto
   assert.equal(previous.length, 2);
   assert.equal(previous[1]?.parsedBytes, firstParsed, "it resumes from the stored parse point");
 
-  const row = store.page({ kinds: ["interactive"], cursor: null, limit: 10, progress: reconciler.progress() }).sessions
+  const row = store.page({ filter: interactiveOnly, cursor: null, limit: 10, progress: reconciler.progress(), facets: NO_FACETS }).sessions
     .find((entry) => entry.agentSessionId === id);
   assert.equal(row?.aiTitle, "Appended later");
   assert.equal(row?.costUsd, 3.25);

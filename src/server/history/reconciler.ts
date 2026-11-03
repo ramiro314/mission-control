@@ -1,12 +1,13 @@
 import { watch, type FSWatcher } from "node:fs";
 import { setImmediate as yieldToLoop, setTimeout as sleep } from "node:timers/promises";
-import type { HistoryProgress } from "@shared/history.ts";
+import { isHistoryConversationKind, type HistoryProgress, type HistoryRetention } from "@shared/history.ts";
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 import { HARNESSES } from "../harness/index.ts";
 import type { HistoryFile, HistoryParse, HistorySpec } from "../harness/types.ts";
 import { unref } from "../util/timers.ts";
 import { resolveHistoryRepository } from "./repository.ts";
-import type { HistoryIndexEntry, HistoryStore, HistoryUpsert } from "./store.ts";
+import { historyFieldsSegment, historyPromptSegments } from "./search.ts";
+import type { HistoryIndexEntry, HistorySearchWrite, HistoryStore, HistoryUpsert } from "./store.ts";
 
 /**
  * Keeps the Session History catalog in step with the agents' transcript stores, on the Scout
@@ -18,6 +19,9 @@ import type { HistoryIndexEntry, HistoryStore, HistoryUpsert } from "./store.ts"
  *   short transaction, and followed by a yield to the event loop, so a first run over
  *   thousands of transcripts never holds the daemon or SQLite for long. Progress is exposed
  *   so the page can say "Indexing N of M sessions" while rows appear.
+ * - **Search text follows the kind.** A conversation indexes every user prompt; a background
+ *   run (one-shot, reviewer) only its capped first prompt, which is in its fields segment,
+ *   because its prompts are large generated diffs.
  * - **Gone follows a COMPLETE walk.** A row is marked gone only when a pass walked every root
  *   of its harness and did not see the file - never because a root could not be read or a
  *   pass was stopped. Rows are never deleted.
@@ -76,6 +80,18 @@ export function historyReaders(): HistoryReader[] {
     const spec = HARNESSES[agent].history;
     return spec ? [{ agent, spec }] : [];
   });
+}
+
+/** A row's search text: its fields, and its prompts when it is a conversation. */
+function searchWrite(parse: HistoryParse, repoRoot: string | null): HistorySearchWrite {
+  const conversation = isHistoryConversationKind(parse.summary.kind);
+  return {
+    fields: historyFieldsSegment({ ...parse.summary, repoRoot }),
+    prompts: conversation ? historyPromptSegments(parse.prompts) : [],
+    // A background run keeps no prompt segments, so one indexed while it still looked like a
+    // conversation loses them here.
+    resetPrompts: parse.fromStart || !conversation,
+  };
 }
 
 function sameFile(entry: HistoryIndexEntry | undefined, file: HistoryFile): boolean {
@@ -187,6 +203,19 @@ export class HistoryReconciler {
     return this.passes;
   }
 
+  /** The agents this reconciler reads, in `AGENT_TYPES` order. */
+  agents(): AgentType[] {
+    return this.readers.map((reader) => reader.agent);
+  }
+
+  /** Each reader's retention period, read from the agent's settings now. */
+  retention(): HistoryRetention[] {
+    return this.readers.flatMap(({ agent, spec }) => {
+      const retention = spec.retention();
+      return retention ? [{ agent, ...retention }] : [];
+    });
+  }
+
   /** Ask for a pass. Passes are serialized; triggers during one coalesce into one more. */
   trigger(): Promise<HistoryReconcilePass> {
     if (this.running) {
@@ -286,6 +315,8 @@ export class HistoryReconciler {
     this.passes += 1;
     this.installWatchers();
     const resolveRepository = this.repositoryResolver();
+    // Rows cataloged before their search text existed, including gone ones nothing will re-read.
+    if (this.passes === 1) this.store.seedFieldSegments();
 
     // Walk every reader first, so progress names the whole job before the first batch.
     const plans: { reader: HistoryReader; complete: boolean; seen: Set<string>; work: HistoryFile[];
@@ -381,6 +412,12 @@ export class HistoryReconciler {
               : null;
             try {
               parse = await spec.summarize(file, previous);
+              // A row that was a background run kept no prompts. Now that it reads as a
+              // conversation, its earlier prompts are needed too, so read it from the top.
+              if (parse && previous && !parse.fromStart
+                && !isHistoryConversationKind(previous.summary.kind) && isHistoryConversationKind(parse.summary.kind)) {
+                parse = await spec.summarize(file, null);
+              }
             } catch {
               // Vanished or unreadable mid-pass: not written, so the next pass tries again.
               result.failed += 1;
@@ -393,6 +430,7 @@ export class HistoryReconciler {
             continue;
           }
           plan.empty.delete(file.path);
+          const repoRoot = resolveRepository(parse.summary.cwd);
           rows.push({
             agent,
             agentSessionId: file.agentSessionId,
@@ -400,9 +438,10 @@ export class HistoryReconciler {
             fingerprint: file.fingerprint,
             parsedBytes: parse.parsedBytes,
             readerState: parse.state,
-            repoRoot: resolveRepository(parse.summary.cwd),
+            repoRoot,
             summary: parse.summary,
             fallbackActivityAt: file.fingerprint.mtimeMs,
+            search: searchWrite(parse, repoRoot),
           });
         }
         this.store.upsertBatch(rows, this.now());

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { relative, sep } from "node:path";
 import { WORKTREES_DIR } from "../config.ts";
 import { mainRepoRoot } from "../util/git.ts";
+import { poolContainingPath } from "../worktrees/path.ts";
 
 /**
  * Which repository a session's first cwd belonged to, resolved when its row is indexed and
@@ -28,9 +29,8 @@ function inside(root: string, path: string): string | null {
 
 export function resolveHistoryRepository(cwd: string | null, sources: HistoryRepositorySources): string | null {
   if (!cwd) return null;
-  for (const pool of sources.pools) {
-    if (inside(pool.poolPath, cwd) !== null) return pool.mainCheckoutRoot;
-  }
+  const pool = poolContainingPath(sources.pools, cwd);
+  if (pool) return pool.mainCheckoutRoot;
   const task = inside(sources.worktreesDir ?? WORKTREES_DIR, cwd);
   if (task !== null) {
     const repo = sources.taskRepoRoot(task.split(sep)[0]!);

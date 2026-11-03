@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readHistoryWindow, type HistoryPageRead } from "../src/web/components/history/history-window.ts";
-import { HISTORY_PAGE_LIMITS, encodeHistoryCursor, type HistorySessionSummary } from "../src/shared/history.ts";
+import { HISTORY_PAGE_LIMITS, HISTORY_SEARCH_LIMITS, encodeHistoryCursor, type HistorySessionSummary } from "../src/shared/history.ts";
 
 /** A catalog of `total` rows, served the way the route serves it: capped pages and a cursor. */
 function catalog(total: number): { read: (query: { cursor?: string; limit: number }) => Promise<HistoryPageRead>; asked: { cursor?: string; limit: number }[] } {
   const rows = Array.from({ length: total }, (_, i) => ({ agent: "claude", agentSessionId: `s-${String(i).padStart(4, "0")}` }) as HistorySessionSummary);
   const asked: { cursor?: string; limit: number }[] = [];
   const progress = { indexing: true, indexed: 1, total };
+  const facets = { agents: [], repositories: [], retention: [] };
   return {
     asked,
     read: async (query) => {
@@ -15,7 +16,7 @@ function catalog(total: number): { read: (query: { cursor?: string; limit: numbe
       assert.ok(query.limit <= HISTORY_PAGE_LIMITS.maxLimit, "no request exceeds the route's cap");
       const start = query.cursor ? Number(query.cursor) : 0;
       const end = Math.min(rows.length, start + query.limit);
-      return { ok: true, value: { sessions: rows.slice(start, end), nextCursor: end < rows.length ? String(end) : null, progress } };
+      return { ok: true, value: { sessions: rows.slice(start, end), nextCursor: end < rows.length ? String(end) : null, progress, facets } };
     },
   };
 }
@@ -85,7 +86,7 @@ function liveCatalog(total: number): {
       const last = rows[end - 1];
       return {
         ok: true,
-        value: { sessions: rows.slice(start, end), nextCursor: end < rows.length && last ? encodeHistoryCursor(last) : null, progress: { indexing: false, indexed: total, total } },
+        value: { sessions: rows.slice(start, end), nextCursor: end < rows.length && last ? encodeHistoryCursor(last) : null, progress: { indexing: false, indexed: total, total }, facets: { agents: [], repositories: [], retention: [] } },
       };
     },
   };
@@ -130,4 +131,20 @@ test("a last row that left the list stops the search one capped page past the de
   assert.equal(result.value.sessions.length, 50, "the window falls back to the depth");
   assert.deepEqual(live.asked, [{ limit: 50 }, { cursor: encodeHistoryCursor(live.rows[49]!), limit: HISTORY_PAGE_LIMITS.maxLimit }]);
   assert.equal(result.value.nextCursor, encodeHistoryCursor(live.rows[49]!));
+});
+
+test("the route's filters become the list query: local days, with an exclusive end", async () => {
+  const { historyFilterQuery } = await import("../src/web/components/history/history-window.ts");
+  assert.deepEqual(historyFilterQuery(undefined), {});
+  assert.deepEqual(historyFilterQuery({ q: "  words  ", repo: "/code/app", kind: "all", agent: "claude" }), {
+    q: "words", repo: "/code/app", kind: "all", agent: "claude",
+  });
+  const query = historyFilterQuery({ from: "2026-10-01", to: "2026-10-01" });
+  assert.equal(query.from, new Date(2026, 9, 1).getTime(), "from is local midnight that day");
+  assert.equal(query.to, new Date(2026, 9, 2).getTime(), "to is local midnight the day after, so the whole day is in");
+});
+
+test("a search longer than the route accepts is cut to its limit, not sent to be refused", async () => {
+  const { historyFilterQuery } = await import("../src/web/components/history/history-window.ts");
+  assert.equal(historyFilterQuery({ q: "x".repeat(250) }).q, "x".repeat(HISTORY_SEARCH_LIMITS.queryChars));
 });

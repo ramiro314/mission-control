@@ -24,5 +24,5 @@ test("the browser bumps a revision on the event AND on reconnect, and hands it t
   const onOpen = hook.slice(hook.indexOf("es.onopen"), hook.indexOf("es.onerror"));
   assert.match(onOpen, /setHistoryRevision\(\(n\) => n \+ 1\);/, "regaining the stream must re-read");
   assert.match(hook, /\n    historyRevision,\n/);
-  assert.match(app, /<HistoryPage revision=\{historyRevision\} \/>/);
+  assert.match(app, /<HistoryPage [^>]*revision=\{historyRevision\}[^>]*\/>/);
 });
