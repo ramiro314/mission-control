@@ -239,6 +239,7 @@ const BASE_TASK = {
   homeName: null,
   terminalResourceId: null,
   sessionId: null,
+  agentSessionId: null,
   scheduleId: null,
   scheduleOccurrenceId: null,
   scheduledFor: null,

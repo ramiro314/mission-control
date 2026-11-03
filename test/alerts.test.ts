@@ -331,6 +331,7 @@ test("Pipeline attention replaces idle and task outcome alerts for the same work
     status: "running",
     outcome: null,
     outcomeUrl: null,
+    agentSessionId: null,
     pipelineRun: null,
     scheduleId: null,
     scheduleOccurrenceId: null,

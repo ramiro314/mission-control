@@ -76,6 +76,7 @@ export function previewSession(now: number): Session {
       status: "running",
       outcome: null,
       outcomeUrl: null,
+      agentSessionId: null,
       pipelineRun: null,
       scheduleId: null,
       scheduleOccurrenceId: null,

@@ -12923,6 +12923,16 @@ select:not([multiple]) option:focus-visible {
 .report-name-btn:hover {
   color: var(--select);
 }
+/* A Recent outcomes title that opens its session in History. Same type as the plain name,
+   for the reason the backlog's button is: the hover colour is the affordance. */
+.report-name-link {
+  text-decoration: none;
+}
+.report-name-link:hover,
+.report-name-link:focus-visible {
+  color: var(--select);
+  text-decoration: underline;
+}
 .report-sub {
   font-size: 11.5px;
   color: var(--muted);

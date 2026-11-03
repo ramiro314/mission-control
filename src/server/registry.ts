@@ -253,6 +253,7 @@ import {
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
   taskAutomaticCleanupSummaries,
+  taskAgentSessionIds,
   taskSessionClosureForSession,
   getTaskSessionClosure,
   retireTaskSessionClosure,
@@ -4568,6 +4569,9 @@ export class Registry extends EventEmitter {
       );
     }
     this.publishEpisodeTaskChanges(rebinds, invalidatedTaskIds, episode.sessionId, now);
+    // The rebind rewrote the bound task's binding to the new agent session id.
+    const bound = taskWorkEpisodeForSession(episode.sessionId);
+    if (bound) this.refreshTaskAgentSession(bound.taskId);
     this.cleanupDependencyProvenance();
     return next;
   }
@@ -4899,6 +4903,7 @@ export class Registry extends EventEmitter {
     dbBindTaskWorkEpisode(binding);
     this.bindPendingTaskDependencies(taskId, binding, at);
     this.cleanupDependencyProvenance();
+    this.refreshTaskAgentSession(taskId);
     return true;
   }
 
@@ -7174,6 +7179,27 @@ export class Registry extends EventEmitter {
    * Derived on publish, like `automaticCleanup` is on load, so the field rides the ordinary
    * `task_upsert` and needs no event of its own.
    */
+  /**
+   * Re-read a task's `agentSessionId` from its work episode bindings. Derived on read like
+   * `extraRepos`, so a task an upsert carries forward from memory would otherwise keep the
+   * value it had before its session was bound.
+   */
+  private withAgentSession(task: Task): Task {
+    const agentSessionId = taskAgentSessionIds(task.id).get(task.id) ?? null;
+    return task.agentSessionId === agentSessionId ? task : { ...task, agentSessionId };
+  }
+
+  /** Re-send one in-memory task when its bindings now name a different agent session. */
+  private refreshTaskAgentSession(taskId: string): void {
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const next = this.withAgentSession(current);
+    if (next === current) return;
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+    if (next.sessionId) this.resyncSessionTask(next.sessionId);
+  }
+
   private withShapeTickets(task: Task): Task {
     if (task.kind !== "shape") return task;
     return { ...task, shapeTickets: shapeTicketsSummary(task, this.taskLookup) };
@@ -7271,7 +7297,7 @@ export class Registry extends EventEmitter {
   }
 
   private publishTask(published: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
-    const task = this.withProvisioning(this.withShapeTickets(published));
+    const task = this.withProvisioning(this.withShapeTickets(this.withAgentSession(published)));
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
@@ -7525,6 +7551,7 @@ export class Registry extends EventEmitter {
           status: t.status,
           outcome: t.outcome,
           outcomeUrl: t.outcomeUrl,
+          agentSessionId: t.agentSessionId,
           pipelineRun: t.pipelineRun,
           pipelineCommissionId: t.pipelineCommissionId ?? null,
           scheduleId: t.scheduleId,

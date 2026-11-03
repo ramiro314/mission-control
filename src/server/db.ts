@@ -5825,7 +5825,32 @@ function rowsToTasks(rows: TaskRow[]): Task[] {
   // every browser gets on connect. The map is almost always empty - only a task whose
   // automatic cleanup is mid-retry has a row that projects to anything.
   const cleanup = taskAutomaticCleanupSummaries(rows.map((r) => r.id));
-  return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? [], cleanup.get(r.id) ?? null));
+  const agentSessions = taskAgentSessionIds();
+  return rows.map((r) =>
+    rowToTask(r, byTask.get(r.id) ?? [], cleanup.get(r.id) ?? null, agentSessions.get(r.id) ?? null));
+}
+
+/**
+ * Each task's agent session id: its current work episode binding's, else the newest historical
+ * binding's when the current row was replaced. One read for every task, or for one when
+ * `taskId` is given, so a batch reader and `getTask` reach the same answer.
+ */
+export function taskAgentSessionIds(taskId: string | null = null): Map<string, string> {
+  const rows = openDb()
+    .prepare(
+      `SELECT task_id, agent_session_id FROM (
+         SELECT task_id, agent_session_id,
+                ROW_NUMBER() OVER (PARTITION BY task_id
+                                   ORDER BY current DESC, bound_at DESC, updated_at DESC, episode_id) AS rank
+           FROM (SELECT task_id, episode_id, agent_session_id, bound_at, updated_at, 1 AS current
+                   FROM task_work_episode_bindings WHERE ?1 IS NULL OR task_id = ?1
+                 UNION ALL
+                 SELECT task_id, episode_id, agent_session_id, bound_at, updated_at, 0 AS current
+                   FROM historical_task_work_episode_bindings WHERE ?1 IS NULL OR task_id = ?1)
+       ) WHERE rank = 1`,
+    )
+    .all(taskId) as unknown as Array<{ task_id: string; agent_session_id: string }>;
+  return new Map(rows.map((row) => [row.task_id, row.agent_session_id]));
 }
 
 const TerminalLaunchSchema = z.object({ resourceId: z.string().min(1), sessionId: z.string().min(1) });
@@ -6026,6 +6051,7 @@ function rowToTask(
   r: TaskRow,
   extraRepos: TaskRepoEntry[],
   automaticCleanup: TaskAutomaticCleanup | null = null,
+  agentSessionId: string | null = null,
 ): Task {
   return {
     id: r.id,
@@ -6096,6 +6122,7 @@ function rowToTask(
     terminalResourceId: r.terminal_resource_id,
     terminalLaunch: parseTerminalLaunch(r.terminal_launch),
     sessionId: r.session_id,
+    agentSessionId,
     scheduleId: r.schedule_id,
     scheduleOccurrenceId: r.schedule_occurrence_id,
     scheduledFor: r.scheduled_for,
@@ -6268,7 +6295,12 @@ export function getTask(id: string): Task | undefined {
     | TaskRow
     | undefined;
   if (!r) return undefined;
-  return rowToTask(r, taskReposFor(r.id), taskAutomaticCleanupSummaries([r.id]).get(r.id) ?? null);
+  return rowToTask(
+    r,
+    taskReposFor(r.id),
+    taskAutomaticCleanupSummaries([r.id]).get(r.id) ?? null,
+    taskAgentSessionIds(r.id).get(r.id) ?? null,
+  );
 }
 
 export function taskIdForSession(sessionId: string): string | null {

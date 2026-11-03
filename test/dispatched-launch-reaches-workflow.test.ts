@@ -90,6 +90,7 @@ function mkTask(): Task {
     homeName: null,
     terminalResourceId: null,
     sessionId: null,
+    agentSessionId: null,
     status: "running",
     outcome: null,
     outcomeUrl: null,

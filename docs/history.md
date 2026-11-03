@@ -351,6 +351,14 @@ a complete record without it. The session's agent session id joins, in `HistoryS
   the cost fallback (`historyCost` in `src/shared/history.ts` decides it, for a row and for a
   record the catalog never indexed).
 
+The way back in is the Sitrep: a Recent outcomes title links to `#/history/<agent>/<id>`, with
+the id from `Task.agentSessionId` (and `TaskSummary.agentSessionId` on a session card). The
+daemon reads it from the same two binding tables, per task: the current binding, else the
+newest historical one by `bound_at`. A task links only when its agent's
+`HarnessCapabilities.readsHistory` is true, the browser-readable half of the harness `history`
+slot. The link stays good after the transcript is gone, and for a session deleted before it was
+indexed, which opens on the Not indexed record above.
+
 ## API
 
 `GET /api/history/sessions?cursor&limit&q&repo&from&to&kind&agent&link&outcome&pr` returns

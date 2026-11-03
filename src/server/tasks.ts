@@ -3239,6 +3239,7 @@ export class TaskManager {
       homeBackend: null,
       terminalResourceId: null,
       sessionId: null,
+      agentSessionId: null,
       // Null for every human or external caller - the dispatch form, an MCP tool, a task
       // source sweep - none of which has an occurrence to point at. All three arrive
       // together or not at all, from the scheduler's internal producer above.
