@@ -143,6 +143,54 @@ test("the Ship log parses and serializes, and never falls through to the ensembl
   assert.deepEqual(parseMissionRoute("#/workflows/shipped"), { page: "library" });
 });
 
+test("History round-trips, and a path it does not know yet lands on the list", () => {
+  assert.deepEqual(parseMissionRoute("#/history"), { page: "history" });
+  assert.deepEqual(parseMissionRoute("#/history/"), { page: "history" });
+  assert.deepEqual(parseMissionRoute("#/history/claude/not-yet"), { page: "history" });
+  assert.equal(missionRouteHash({ page: "history" }), "#/history");
+});
+
+test("History filters survive the hash, and a value the API would refuse is dropped", () => {
+  const filters = {
+    q: "login retry", repo: "/code/app", from: "2026-10-01", to: "2026-10-31", kind: "all", agent: "claude",
+    link: "task", outcome: "done", pr: "merged",
+  } as const;
+  const hash = missionRouteHash({ page: "history", filters });
+  assert.equal(
+    hash,
+    "#/history?q=login+retry&repo=%2Fcode%2Fapp&from=2026-10-01&to=2026-10-31&kind=all&agent=claude&link=task&outcome=done&pr=merged",
+  );
+  assert.deepEqual(parseMissionRoute(hash), { page: "history", filters });
+  assert.deepEqual(parseMissionRoute("#/history?kind=one_shot"), { page: "history", filters: { kind: "one_shot" } });
+  assert.deepEqual(
+    parseMissionRoute("#/history?kind=everything&agent=gpt&from=2026-02-31&to=yesterday&cursor=abc&link=managed&outcome=shipped&pr=open"),
+    { page: "history" },
+    "an unknown kind, agent, link, outcome or PR value, an impossible day, and a parameter the page has no field for",
+  );
+  assert.equal(missionRouteHash({ page: "history", filters: { from: "not-a-day" } }), "#/history");
+});
+
+test("a History session deep link round-trips; a bad agent or id lands on the list", () => {
+  const id = "0b9c5c1e-6f0e-4d47-9a43-0f4e3c2b1a00";
+  const route = { page: "history" as const, session: { agent: "claude" as const, id } };
+  assert.deepEqual(parseMissionRoute(`#/history/claude/${id}`), route);
+  assert.equal(missionRouteHash(route), `#/history/claude/${id}`);
+  assert.deepEqual(parseMissionRoute(`#/history/nobody/${id}`), { page: "history" });
+  assert.deepEqual(parseMissionRoute("#/history/claude/..%2F..%2Fetc"), { page: "history" });
+  assert.deepEqual(parseMissionRoute(`#/history/claude/${id}/more`), { page: "history" });
+  assert.equal(missionRouteHash({ page: "history", session: { agent: "claude", id: "../x" } }), "#/history");
+});
+
+test("a History session carries the list's filters, so Back can return to them", () => {
+  const id = "0b9c5c1e-6f0e-4d47-9a43-0f4e3c2b1a00";
+  const filters = { q: "login retry", kind: "all" } as const;
+  const route = { page: "history" as const, session: { agent: "claude" as const, id }, filters };
+  const hash = missionRouteHash(route);
+  assert.equal(hash, `#/history/claude/${id}?q=login+retry&kind=all`);
+  assert.deepEqual(parseMissionRoute(hash), route);
+  assert.deepEqual(parseMissionRoute(`#/history/nobody/${id}?kind=all`), { page: "history", filters: { kind: "all" } });
+});
+
 // A well-formed archive key, in the portable `<producerId>~<archiveId>` shape the manifest,
 // the routes and SQLite all agree on. Both halves must be lowercase UUIDs or the router is
 // required to drop the key.
@@ -480,6 +528,7 @@ test("global overlays stay mounted on every page, and only one page body renders
     ensembles: "ensembles body",
     shipped: "shipped body",
     scouts: "scouts body",
+    history: "history body",
     settings: "settings body",
   };
   const pages = Object.keys(bodies) as MissionRoute["page"][];
@@ -492,6 +541,7 @@ test("global overlays stay mounted on every page, and only one page body renders
       ensembles: createElement("main", null, bodies.ensembles),
       shipped: createElement("main", null, bodies.shipped),
       scouts: createElement("main", null, bodies.scouts),
+      history: createElement("main", null, bodies.history),
       settings: createElement("main", null, bodies.settings),
       overlays: createElement("aside", null, "global overlays"),
     }));

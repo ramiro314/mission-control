@@ -9,7 +9,7 @@ import { readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { executableLocator, loginShellVariables } from "../executables/locator.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
-import { run } from "../util/exec.ts";
+import { describeCommandFailure, run } from "../util/exec.ts";
 import { scrubCheckEnv } from "../workflows/check-env.ts";
 import { TailRing } from "../workflows/check-spawn.ts";
 import type { GitResult } from "./git.ts";
@@ -182,7 +182,7 @@ export async function readTreeBlobs(cwd: string, sha: string): Promise<GitResult
   if (result.code !== 0 || result.outcomeUnknown || result.overflowed) {
     return {
       ok: false,
-      reason: `git ls-tree failed: ${result.stderr.trim() || `exit ${result.code}`}`,
+      reason: describeCommandFailure("git ls-tree", result),
       outcomeUnknown: result.outcomeUnknown,
     };
   }
@@ -567,7 +567,7 @@ async function runClaimStepsInner(
     const built = prepared.value;
     // Taken before the step runs: whatever it prints of these is removed before the failure
     // reaches the slot row, Settings or the agent's prompt.
-    const secrets = built.received.map((name) => ({ name, value: String(built.env[name] ?? "") }));
+    const secrets = claimSecrets(built);
     const clean = (text: string): string => redactClaimValues(text, secrets);
     // Recomputed after the environment, so the step gets only what is truly left.
     const remaining = deadline - input.now();
@@ -739,6 +739,11 @@ export function decodeClaimFailure(stored: string): ClaimFailureRecord {
 
 /** The shortest trailing piece of a value that counts as that value when a tail starts with it. */
 const MIN_REDACTED_FRAGMENT = 4;
+
+/** What `redactClaimValues` removes: every variable this environment handed its command. */
+export function claimSecrets(environment: ClaimEnvironment): Array<{ name: string; value: string }> {
+  return environment.received.map((name) => ({ name, value: String(environment.env[name] ?? "") }));
+}
 
 /**
  * Remove every value a step received from text that step produced. A step is free to print its

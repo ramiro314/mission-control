@@ -29,6 +29,7 @@ const BASE: ForemanConfig = {
   wrapup: "ask",
   trackReviewFeedback: true,
   trackCiFailures: true,
+  ciStrictness: "all",
   trackMergeConflicts: true,
   keepShipTasksMoving: true,
   shipRecoveryMinutes: 20,
@@ -473,6 +474,29 @@ test("the merge-conflict toggle sits after the CI toggle and renders its saved v
   const conflictsAt = off.indexOf("Keep sessions on track with merge conflicts");
   assert.ok(ciAt !== -1 && conflictsAt > ciAt, "beside the other follow-through toggles");
   assert.doesNotMatch(off.slice(0, conflictsAt).split("<input").pop() ?? "", /checked/);
+});
+
+test("Which failures count sits under the CI toggle, follows it, and explains Required", () => {
+  // Fork (ci-strictness).
+  const html = renderPopover(mkState());
+  const ciAt = html.indexOf("Keep sessions on track with CI");
+  const selectAt = html.indexOf('aria-label="Which failures count"');
+  assert.ok(ciAt !== -1 && selectAt > ciAt && selectAt < html.indexOf("Keep sessions on track with merge conflicts"));
+  const select = html.slice(selectAt, html.indexOf("</select>", selectAt));
+  assert.match(select, /<option value="all" selected="">All checks<\/option><option value="required">Required checks<\/option>/);
+  assert.doesNotMatch(select, /disabled/);
+  assert.match(html, /Required checks: only checks GitHub marks required on the PR count, read through\s+GitHub Inspector\. With none marked, or the Inspector off, every check counts\./);
+
+  const required = renderPopover(mkState({ ciStrictness: "required" }));
+  assert.match(required, /<option value="required" selected="">Required checks<\/option>/);
+
+  const ciOff = renderPopover(mkState({ trackCiFailures: false }));
+  assert.match(ciOff, /<select aria-label="Which failures count" disabled=""/);
+
+  // A daemon too old to know the key counts every check, so that is what the select shows.
+  const old = mkState();
+  delete (old.config as Partial<ForemanConfig>).ciStrictness;
+  assert.match(renderPopover(old), /<option value="all" selected="">All checks<\/option>/);
 });
 
 test("a daemon too old to know the follow-through keys still renders them as on", () => {

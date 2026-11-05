@@ -1,4 +1,5 @@
-import type { RunResult } from "../util/exec.ts";
+import { unansweredOutcome, type RunResult } from "../util/exec.ts";
+import type { ReadOptions } from "../process-inspection/contract.ts";
 import { processInspector } from "../process-inspection/index.ts";
 import { normTty } from "./tty.ts";
 import { allHarnesses, harnessFor } from "../harness/index.ts";
@@ -188,8 +189,13 @@ export function classifyAgent(command: string): AgentType | null {
  * whole-argv token scan.
  */
 export function isBackgroundAgent(command: string): boolean {
+  return backgroundAgentOf(command) !== null;
+}
+
+/** Whose background role a command is, by the same decision `isBackgroundAgent` documents. */
+export function backgroundAgentOf(command: string): AgentType | null {
   const found = harnessOf(command);
-  return found ? !isSession(found.harness, command) : false;
+  return found && !isSession(found.harness, command) ? found.harness.id : null;
 }
 
 /** The role check itself, against one harness's declared vocabulary. */
@@ -276,6 +282,8 @@ export function daemonOwnedPids(procs: Proc[], daemonPid: number = process.pid):
  */
 export function describeFailure(result: RunResult): string {
   if (result.overflowed) return "the process listing was too large to buffer";
+  const unanswered = unansweredOutcome(result);
+  if (unanswered) return `the process listing ${unanswered}`;
   if (result.outcomeUnknown) {
     return "the process listing was killed before it answered (timed out, or stopped from outside)";
   }
@@ -286,6 +294,8 @@ export interface ProcessSnapshot {
   processes: Proc[];
   /** Non-null when either system-wide ps read did not produce a complete answer. */
   unknownReason: string | null;
+  /** The listing was too large to buffer, which asking again cannot change. */
+  overflowed?: boolean;
   /** Non-zombie PIDs owned by the daemon's effective user, whose cwd it can inspect. */
   cwdScopePids: number[];
   /** Completed ps helpers that may appear in their own system-wide snapshot. */
@@ -296,8 +306,8 @@ export interface ProcessSnapshot {
  * The process snapshot plus the health of the two underlying reads. Discovery may use the
  * partial rows, but destructive worktree decisions must treat `unknownReason` as a refusal.
  */
-export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
-  const table = await processInspector().listProcesses();
+export async function listProcessesSnapshot(options?: ReadOptions): Promise<ProcessSnapshot> {
+  const table = await processInspector().listProcesses(options);
   const procs: Proc[] = [];
   const cwdScopePids: number[] = [];
   const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;
@@ -322,6 +332,7 @@ export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
       : effectiveUid === null
         ? "process listing failed: effective user identity is unavailable"
         : null,
+    overflowed: table.failure?.overflowed === true,
     cwdScopePids,
     completedCollectorPids: table.collectorPids,
   };

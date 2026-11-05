@@ -88,6 +88,15 @@ test("every observation argv puts --no-optional-locks before the subcommand, and
     await argvOf(async () => assert.deepEqual(await git.mergedInto(slot, base), { ok: true, value: true })),
     "mergedInto",
   );
+  // The reads a History resume makes before it checks a branch out.
+  assertObservation(
+    await argvOf(async () => assert.equal((await git.branchTips(identity, "main")).ok, true)),
+    "branchTips",
+  );
+  assertObservation(
+    await argvOf(async () => assert.equal((await git.unbranchedCommits(slot)).ok, true)),
+    "unbranchedCommits",
+  );
 
   // Without a cached origin/HEAD the default is found by the fallback probes, which are reads too.
   gitIn(clone, "remote", "set-head", "origin", "-d");

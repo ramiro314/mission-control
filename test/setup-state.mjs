@@ -21,10 +21,11 @@
 // module whose behavior we are trying to arrange. It writes environment, nothing else, and
 // never opens SQLite.
 
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { armLeakGuard } from "./leak-guard.mjs";
+import { armLeakGuard, listProcesses } from "./leak-guard.mjs";
+import { armTempGuard, openTempParent } from "./temp-guard.mjs";
 
 // `node --test` sets this in each test process it spawns, which is the scope wanted: the
 // runner's PARENT process gets `--import` too (it propagates through `execArgv`) and has no
@@ -33,6 +34,26 @@ import { armLeakGuard } from "./leak-guard.mjs";
 // child they spawn - `test/db-isolation.test.ts` does, to simulate a worker from the
 // outside - so "the runner set it" is the normal case rather than the only one.
 if (process.env.NODE_TEST_CONTEXT) {
+  // Read before anything below moves `TMPDIR`: these are the machine's temp roots, which the
+  // worker's own temp dir and every home inside it sit under.
+  const temp = resolve(tmpdir());
+
+  // The parent's entries before the process table, because a worker that starts between the two
+  // reads is then either absent from both or present in the table. The reverse order would show
+  // its directory without its process, and the sweep would delete a running worker's files.
+  const tempParent = openTempParent();
+  const processes = listProcesses();
+
+  // Tag the worker before its test file can spawn anything. See `leak-guard.mjs`. Armed before
+  // the temp guard because `exit` listeners run in registration order: a leaked process, such
+  // as a daemon writing `harness.db` under this worker's home, must be dead before that home is
+  // removed, or it can recreate files mid-delete and make the removal fail.
+  armLeakGuard(processes);
+
+  // See `temp-guard.mjs`. It owns the directory `root` sits in, so it removes `root` too. A test
+  // file that replaces `HARNESS_HOME` afterwards keeps its own directory.
+  armTempGuard(tempParent, processes);
+
   const root = mkdtempSync(join(tmpdir(), "mission-test-state-"));
 
   // A marker `db.ts` can trust for the life of this process, because the environment cannot
@@ -59,8 +80,7 @@ if (process.env.NODE_TEST_CONTEXT) {
   //
   // Captured at preload, these describe the machine as it was before any test module ran,
   // which is the only moment the answer is trustworthy.
-  const temp = resolve(tmpdir());
-  const tempRoots = new Set([temp]);
+  const tempRoots = new Set([temp, tempParent.base]);
   try {
     tempRoots.add(resolve(realpathSync(temp)));
   } catch {
@@ -142,24 +162,4 @@ if (process.env.NODE_TEST_CONTEXT) {
   // The desktop's `$TERMINAL` is the default-terminal emulator's second launcher, so a
   // developer's value would let a test reaching the real registry open a real window.
   delete process.env.TERMINAL;
-
-  // Tag the worker before its test file can spawn anything. See `leak-guard.mjs`. Armed before
-  // the cleanup below because `exit` listeners run in registration order: a leaked process,
-  // such as a daemon writing `harness.db` under this home, must be dead before the home is
-  // removed, or it can recreate files mid-delete and make `rmSync` throw, which skips every
-  // listener after it, the leak report included.
-  armLeakGuard();
-
-  // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
-  // free to replace that value, and cleanup that resolved the variable here would delete a
-  // fixture directory the test built instead of the one this file made.
-  //
-  // `exit` covers a normal finish and an uncaught throw, and by construction cannot cover a
-  // worker killed with SIGKILL - no handler runs there. What that leaks is one empty
-  // directory in the OS temp dir, which is the right place for it and is why this does not
-  // sweep for strays on startup: a `readdir` of the temp dir on each of 596 worker launches
-  // would cost more, every run, than the rare leak it tidies.
-  process.on("exit", () => {
-    rmSync(root, { recursive: true, force: true });
-  });
 }

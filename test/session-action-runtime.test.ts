@@ -29,6 +29,7 @@ import type {
 } from "../src/server/workflows/session-action-adapters.ts";
 import { mkMuxHandle, mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
 import type { CiCheckRun, CiObservation, WaitForCiMergeability, WaitForCiState } from "../src/shared/wait-for-ci.ts";
+import type { CiStrictness } from "../src/shared/ci-checks.ts";
 import { prCreationFixture } from "./helpers/pr-creation-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
@@ -41,7 +42,10 @@ const { SessionActionManager } = await import("../src/server/workflows/session-a
 const { WorkflowManager, sessionPrMergeability } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
-const { getForemanConfig } = await import("../src/server/foreman/config.ts");
+const { foremanPullRequestPacketPreferences, getForemanConfig, setForemanConfig } = await import(
+  "../src/server/foreman/config.ts"
+);
+const { workflowPullRequestCiContract } = await import("../src/server/workflows/agent-contract.ts");
 
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
 
@@ -162,6 +166,7 @@ interface HarnessOptions {
   /** Put a Wait for CI node, with this timeout, between the last action and End. */
   waitForCiMinutes?: number;
   trackMergeConflicts?: () => boolean;
+  ciStrictness?: () => CiStrictness;
 }
 
 async function harness(sessionId: string, options: HarnessOptions = {}) {
@@ -209,6 +214,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   const manager = new WorkflowManager(registry, store, {
     trackCiFailures: options.trackCiFailures,
     trackMergeConflicts: options.trackMergeConflicts,
+    ciStrictness: options.ciStrictness,
     ciObservation: (key) => key === "owner/repo#7" ? ci.observation : null,
     prMergeability: (key, session) =>
       key === "owner/repo#7" && session?.id === sessionId ? mergeability.value : null,
@@ -736,16 +742,40 @@ test("scripted skill and workflow sessions create PRs from the live draft policy
 });
 
 test("an unstored Foreman CI preference reaches PR packets as default-on", async () => {
+  // The daemon's own wiring, not a copy of it: `src/server/index.ts` spreads this helper.
   const h = await harness("ci-policy-default", {
     pullRequest: true,
-    trackCiFailures: () => getForemanConfig().trackCiFailures,
+    ...foremanPullRequestPacketPreferences(),
     deliveryMode: "preview",
   });
   try {
     const runId = await runToAction(h);
     await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
-    assert.match(h.store.listDeliveries(runId)[0]!.payload, /Workflow pull request CI follow-through/);
+    const payload = h.store.listDeliveries(runId)[0]!.payload;
+    assert.ok(payload.includes(workflowPullRequestCiContract("all")), "an unstored strictness is All checks");
   } finally {
+    await h.stop();
+  }
+});
+
+test("a saved Required checks reaches PR packets through the daemon's wiring", async () => {
+  // Fork (ci-strictness): the stored Foreman setting, read through the same helper the daemon
+  // spreads into `WorkflowManager`, so dropping its `ciStrictness` reader fails here.
+  assert.equal(getForemanConfig().ciStrictness, "all");
+  setForemanConfig({ ciStrictness: "required" });
+  const h = await harness("ci-strictness-wiring", {
+    pullRequest: true,
+    ...foremanPullRequestPacketPreferences(),
+    deliveryMode: "preview",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+    const payload = h.store.listDeliveries(runId)[0]!.payload;
+    assert.ok(payload.includes(workflowPullRequestCiContract("required")));
+    assert.ok(!payload.includes(workflowPullRequestCiContract("all")));
+  } finally {
+    setForemanConfig({ ciStrictness: "all" });
     await h.stop();
   }
 });
@@ -773,6 +803,68 @@ test("a prepared PR packet keeps its CI policy across setting changes and restar
     assert.equal(recovered[0]!.payloadSha256, original.payloadSha256);
     assert.equal(reads, 1, "restart re-read policy for an already prepared packet");
     assert.equal(h.injected.length, 0, "restart sent a preview packet");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a prepared PR packet keeps its CI strictness across setting changes and restart", async () => {
+  // Fork (ci-strictness): "Which failures count" is read once, with the CI preference, and the
+  // Required wording is then part of the recorded payload.
+  let strictness: CiStrictness = "required";
+  let reads = 0;
+  const h = await harness("ci-strictness-durable", {
+    pullRequest: true,
+    trackCiFailures: () => true,
+    ciStrictness: () => { reads++; return strictness; },
+    deliveryMode: "preview",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+    const original = h.store.listDeliveries(runId)[0]!;
+    assert.ok(original.payload.includes(workflowPullRequestCiContract("required")));
+    strictness = "all";
+    await h.manager.stop();
+    h.manager.start();
+    await h.manager.sweepSessionActions(SETTLED());
+    const recovered = h.store.listDeliveries(runId);
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0]!.payload, original.payload);
+    assert.equal(reads, 1, "restart re-read the strictness for an already prepared packet");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("retrying a refused PR delivery keeps its recorded CI strictness", async () => {
+  let strictness: CiStrictness = "required";
+  let reads = 0;
+  const options: HarnessOptions = {
+    pullRequest: true,
+    trackCiFailures: () => true,
+    ciStrictness: () => { reads++; return strictness; },
+    refuseInject: true,
+  };
+  const h = await harness("ci-strictness-retry", options);
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some((item) => item.state === "refused"), "no refused packet");
+    const original = h.store.listDeliveries(runId)[0]!;
+    assert.ok(original.payload.includes(workflowPullRequestCiContract("required")));
+    strictness = "all";
+    options.refuseInject = false;
+    const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+    const retried = await h.manager.retryDelivery(original.id, {
+      requestId: "retry-ci-strictness",
+      expectedSessionId: binding.sessionId!,
+      expectedNoteKey: binding.noteKey,
+    });
+    assert.equal(retried.ok, true);
+    if (!retried.ok) return;
+    assert.equal(retried.value.payloadSha256, original.payloadSha256);
+    assert.deepEqual(h.injected, [original.payload]);
+    assert.equal(reads, 1, "retry must not re-read the strictness");
   } finally {
     await h.stop();
   }

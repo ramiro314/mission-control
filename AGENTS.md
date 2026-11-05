@@ -100,6 +100,20 @@ where `openDb`'s does under **Where this stops**: a child spawned with a scrubbe
 such as a deliberately built daemon launch, drops the tag and is not covered.
 `test/test-leak-guard.test.ts` pins both halves.
 
+The preload also gives each worker a temp dir of its own (`test/temp-guard.mjs`), because a test
+run once exhausted the inodes of a shared `/tmp`. It moves `TMPDIR` to
+`<temp>/mc-test-<uid>-<pid namespace>/<pid>-<token>` (`/private/tmp` is the temp root on macOS,
+where `$TMPDIR` leaves too little of a socket path), and every `tmpdir()` in the file and in the
+children it spawns lands there. The worker removes it at exit, which is why a fixture may hand back
+a temp directory with no teardown. At worker start it removes the directory of any worker that has
+gone, which is how a timeout, `SIGTERM` or `SIGKILL` gets cleaned up, and reports it without failing.
+Only that private parent is read, so nothing else in the shared temp dir is ever touched. tsx's
+compile cache stays shared through a symlink, because a per-worker cache would make every worker
+compile cold. The guard stops at the same place as the other two: a child whose environment drops
+`TMPDIR` writes to the real temp dir, and `npm run test:e2e` and `npm run smoke` skip the preload.
+Set `MISSION_TEST_TEMP_REPORT=1` to print what each file left for the worker to remove. It reports
+rather than fails because what it lists is contained. `test/test-temp-guard.test.ts` pins all of it.
+
 A test that needs a particular database keeps seeding its own home above its imports, exactly
 as before. `src/server/db.ts` backs the preload up rather than trusting it: under the test
 runner `openDb` opens only the `harness.db` named by the state home set *right now*, and only

@@ -23,6 +23,56 @@ snapshot; terminal statusLine and SDK usage reports update the same record. Expi
 remain available as explicitly historical UI data and are excluded from current quota. This is
 independent of the usage ledger and never contributes dollars or tokens.
 
+`worktree_slot_history` is the durable record of what happened to each native slot. `WorktreeStore`
+writes one row for every slot transition in the same transaction as the change, so a failed
+transition writes nothing and a row that cannot be written rolls the transition back. A slot's
+failed-read state adds a row only when it starts or clears, never on each pass. Each finished
+worktree operation adds one `operation` row per slot it targeted, naming the operation, its outcome
+(`done`, `refused`, `partial` or `failed`), who ran it and how long it took. A provisioning, claim
+or seed row reports a step that already ended, with its duration and outcome. Either kind stands
+alone: it commits after the work it reports, so a row that cannot be written is logged and changes
+no result, neither the lease nor the claim. Text is bounded to 2 KB and a row's JSON meta likewise,
+and no row holds a claim variable's value or a claim step's output. A pool's median and seed hit
+rate are computed from these rows on read. Rows have no foreign key, so a destroyed slot's rows stay
+until retention ages them out: each maintenance pass drops rows
+older than 90 days, then anything beyond 2,000 rows per pool, oldest first. Retention is the table's
+only delete. The table arrived with schema version 11, a fork entry: the migration is
+`CREATE ... IF NOT EXISTS` and is not gated by the number, so an upstream 11 can renumber it, as
+#618 did for the fork's 7 to 9.
+
+`history_sessions` is Session History's catalog: one row per agent session a harness's transcript
+store holds, written only by `HistoryStore` from the daemon's reconciler (see
+[Session History](history.md)). Rows are derived from transcripts, but unlike the archive index the
+table is not disposable: when Claude Code's retention deletes a transcript, its row is marked
+`transcript_state = 'gone'` and kept, and is then the only record of the session. Rows are never
+deleted. The table arrived with schema version 12, a fork entry, created in `migrate()` with
+`CREATE ... IF NOT EXISTS` and not gated by the number, so an upstream 12 can renumber it.
+
+`history_search_segments` is the text History's search scans, keyed by agent, session id and
+ordinal and written only by `HistoryStore` beside the session's row: ordinal 0 holds the title
+fields, cwd, repository and branch, later ordinals the user prompts in overlapping chunks. It
+stores only a JavaScript-folded copy and is matched as a literal substring, following
+`archive_search_segments`; FTS5 is deliberately not used. It arrived with schema version 13, a
+fork entry created in `migrate()`. A database that already holds `history_sessions` rows when
+the table is first created has their fingerprints cleared in the same step, so the reconciler
+re-reads each present transcript from the top and indexes its prompts; a row whose transcript is
+already gone gets its fields segment from the row itself. User prompts are therefore copied into
+`harness.db`; see [security](security.md#session-history-copies-user-prompts-into-harnessdb).
+
+`history_resume_launches` holds one row per History Resume, written only by
+`HistoryResumeLaunches` (see [Session History](history.md#resume)): the source session, the
+agent session id the launch waits for (a fork's minted id, which the catalog reads as the fork
+row's `resumed_from`), its directory resolved through symlinks, the worktree slot and lease id
+a slot target holds (`slot_id`, `lease_key`), the transcript copy a fork wrote or reused
+(`copy_path`, never canonical in `history_sessions`), the Mission Control session it
+bound to, its state (`pending`, `expired`, `bound`, `ended`,
+`released`), read back as a string, and `kept_reason` (`uncommitted` or `unbranched_commits`),
+set when an `ended` launch kept its slot leased because the slot was not clean. `kept_reason` is
+added with `addColumn`, so a database already stamped 14 gains it on its next open. A partial unique index over `(agent, source_session_id)`
+where the state is `pending` or `expired` allows one open launch per session, which is what makes
+the row's insert a Resume's claim. Rows are never deleted. It arrived with schema version 14, a
+fork entry created in `migrate()` and not gated by the number.
+
 ## Full-database recovery points
 
 Mission Control creates verified recovery points for normal operation and schema upgrades. See

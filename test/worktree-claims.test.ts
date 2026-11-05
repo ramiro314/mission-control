@@ -59,7 +59,13 @@ const DAEMON_ENV: NodeJS.ProcessEnv = {
   LEAKY_URL: `https://x/?auth=${DAEMON_TOKEN}`,
 };
 
-afterEach(() => {
+// A claim a test left hanging on purpose. Its deadline is a live 10-minute timer, so the
+// worker cannot exit until this is stopped, and that once held the file open for 10 minutes
+// after its last test had passed.
+const abandoned: WorktreeManager[] = [];
+
+afterEach(async () => {
+  await Promise.all(abandoned.splice(0).map((m) => m.stop()));
   db.exec(
     "DELETE FROM worktree_slots; DELETE FROM worktree_pools; " +
       "DELETE FROM app_config WHERE key = 'worktrees';",
@@ -887,6 +893,7 @@ async function crashedClaim(prefix: string, at: "after-write-ahead" | "mid-step"
         },
       };
   const crashing = manager(claim, hang);
+  abandoned.push(crashing);
   void taskAcquire(crashing, fixture.clone, sha, `${prefix}-2`);
   await waitFor(
     () => onlySlot(crashing).depsState === "claiming" && (at === "after-write-ahead" || stepStarted),

@@ -1,4 +1,5 @@
 import type { WorktreeClaim, WorktreesConfig } from "./protocol.ts";
+import type { ProcessSession } from "./storage-health.ts";
 import type { TerminalBackendId } from "./terminal.ts";
 
 export const WORKTREE_INVENTORY_LIMITS = {
@@ -19,6 +20,78 @@ export const WORKTREE_INVENTORY_LIMITS = {
    */
   operations: 64,
 } as const;
+
+/**
+ * What a slot's history row records (`worktree_slot_history.kind`). Append-only: a later build
+ * adds a value, it never renames or reorders one.
+ */
+export const WORKTREE_HISTORY_KINDS = ["transition", "operation", "observation", "claim", "seed", "provisioning"] as const;
+export type WorktreeHistoryKind = (typeof WORKTREE_HISTORY_KINDS)[number];
+
+/** Who caused a history row (`worktree_slot_history.actor`). Append-only, like the kinds. */
+export const WORKTREE_HISTORY_ACTORS = ["automatic", "operator", "owner"] as const;
+export type WorktreeHistoryActor = (typeof WORKTREE_HISTORY_ACTORS)[number];
+
+/** Which operation an `operation` row records (`.operation`). Append-only, like the kinds. */
+export const WORKTREE_HISTORY_OPERATIONS = ["return", "destroy", "prune", "warm", "recover", "repair", "kill", "forget"] as const;
+export type WorktreeHistoryOperation = (typeof WORKTREE_HISTORY_OPERATIONS)[number];
+
+/** How an `operation` row's operation ended (`.outcome`). Append-only, like the kinds. */
+export const WORKTREE_OPERATION_OUTCOMES = ["done", "refused", "partial", "failed"] as const;
+export type WorktreeOperationOutcome = (typeof WORKTREE_OPERATION_OUTCOMES)[number];
+
+export const WORKTREE_HISTORY_LIMITS = {
+  /** One page of `GET /api/worktrees/:slotId/history`. */
+  pageEntries: 50,
+  /** One row's reason, and one row's detail, in UTF-8 bytes. */
+  textBytes: 2048,
+  /** One row's JSON meta, in UTF-8 bytes. */
+  metaBytes: 2048,
+  retentionDays: 90,
+  rowsPerPool: 2000,
+  /** How many of a pool's newest new slots its row's timings cover. */
+  timingWindowSlots: 10,
+} as const;
+
+/**
+ * What a timed step's history row says in `outcome`. Persisted and read back by exact value (a
+ * pool's summary counts `new` and `placed`), so these are append-only like the kinds. A
+ * provisioning row exists only for a granted lease, so its outcome says which slot was granted.
+ */
+export const WORKTREE_PROVISIONING_OUTCOMES = ["new", "reused"] as const;
+export type WorktreeProvisioningOutcome = (typeof WORKTREE_PROVISIONING_OUTCOMES)[number];
+export const WORKTREE_CLAIM_OUTCOMES = ["skipped", "succeeded", "failed", "shutdown", "unrecorded"] as const;
+export type WorktreeClaimOutcome = (typeof WORKTREE_CLAIM_OUTCOMES)[number];
+export const WORKTREE_SEED_OUTCOMES = ["placed", "none", "abandoned", "interrupted", "unrecorded"] as const;
+export type WorktreeSeedOutcome = (typeof WORKTREE_SEED_OUTCOMES)[number];
+
+/** A slot's newest row of one timed kind, as its card shows it. */
+export interface WorktreeTimingView {
+  at: number;
+  /** Read as a string, like a history row's: a value a later build appended stays readable. */
+  outcome: string | null;
+  durationMs: number | null;
+  reason: string | null;
+  /** The sibling a seed copied from. Null on every other row, and on a seed that had none. */
+  sourceOrdinal: number | null;
+  /** Whether that sibling was quarantined, so the seed held its slot lock rather than a lease. */
+  sourceQuarantined: boolean;
+}
+
+export interface WorktreeSlotTimingsView {
+  provisioning: WorktreeTimingView | null;
+  claim: WorktreeTimingView | null;
+  seed: WorktreeTimingView | null;
+}
+
+/** A pool's newest new slots, at most `timingWindowSlots` of them, read from history. */
+export interface WorktreePoolTimingsView {
+  newSlots: number;
+  /** Null when no new slot is on record, since the table arrived or retention dropped them. */
+  medianProvisioningMs: number | null;
+  /** How many of `newSlots` had a seed placed: the seed hit rate's numerator. */
+  seededSlots: number;
+}
 
 export type WorktreeRiskKey =
   | "dirty"
@@ -63,6 +136,10 @@ export interface WorktreeOccupantView {
   command: string;
   /** Epoch milliseconds of the process's start, as `ps` reports it. */
   startedAt: number;
+  /** What the process is, when something names it. A name never makes it safe to ignore. */
+  knownOwner: string | null;
+  /** The live session it belongs to, with its name bounded like any other inventory text. */
+  session?: ProcessSession | null;
 }
 
 /**
@@ -198,13 +275,21 @@ export interface NativeWorktreeSlotView {
   busy: string | null;
   quarantineReason: string | null;
   diagnostic: string | null;
+  /**
+   * Why the last observation of this slot failed, even after its retry, until a read
+   * succeeds. A failed read leaves the slot in its state, whatever that is.
+   */
+  observationFailure: string | null;
   /** Only on a quarantined slot, and only for the quarantine it is in now. */
   recoveryRefusal: WorktreeRecoveryRefusalView | null;
   /**
    * `recover` is offered on a quarantined slot no live owner references: it removes a stale
-   * `index.lock` when no Git process uses the slot, then resets it to available.
+   * `index.lock` when no Git process uses the slot, then resets it to available. `return` is
+   * offered on a leased slot, and on a quarantined one whose active owner is still referenced:
+   * that owner's ordinary return brings it back. `forget` is the fallback when Repair refuses or
+   * cannot prove a result: it deletes the folder, the registration and the row, from a preview.
    */
-  actions: Array<"return" | "destroy" | "warm" | "recover">;
+  actions: Array<"return" | "destroy" | "warm" | "recover" | "repair" | "forget">;
   /** Null when the pool has no dependency claim configured. */
   dependencies: WorktreeSlotDependenciesView | null;
   /**
@@ -212,6 +297,10 @@ export interface NativeWorktreeSlotView {
    * reachable after a restart. Null when no Warm has held it, or that log is gone.
    */
   warmLog: WorktreeWarmLogView | null;
+  /** The last provisioning, claim and seed in this slot's history. */
+  timings: WorktreeSlotTimingsView;
+  /** This slot's newest history row, which is what tells an open History to read again. */
+  lastHistoryId: number | null;
 }
 
 /** A Warm operation's full log, under the daemon's state directory. */
@@ -250,6 +339,7 @@ export interface WorktreeRepositoryView {
   lastReconciledAt: number | null;
   reconciliationError: string | null;
   status: "ready" | "attention" | "unavailable";
+  timings: WorktreePoolTimingsView;
   slots: NativeWorktreeSlotView[];
 }
 
@@ -297,6 +387,10 @@ export interface WorktreeInventory {
 export type WorktreeActionRequest =
   | { action: "return"; slotId: string }
   | { action: "recover"; slotId: string }
+  /** Run Git's own fixes on a slot quarantined for its registration, then recover it. */
+  | { action: "repair"; slotId: string }
+  /** Delete a quarantined slot's folder, registration and row. Offered only from its card. */
+  | { action: "forget"; slotId: string }
   /**
    * Discard and remove a folder under `worktrees/` or `check-worktrees/` that no task or
    * check names and that the orphan tree sweep kept because it holds work. `path` must be the

@@ -199,6 +199,7 @@ export function SettingsPage({
   onNavigate,
   onOpenRuns,
   onOpenPipelines,
+  onOpenSession,
   onLeave,
   foreman,
   cost,
@@ -240,6 +241,11 @@ export function SettingsPage({
    * mount the page without a router.
    */
   onOpenPipelines?: () => void;
+  /**
+   * Leave settings for one session on the fleet. A slot card's Open session uses it, for
+   * `onOpenRuns`' own reason, and it is optional for the same render tests.
+   */
+  onOpenSession?: (sessionId: string) => void;
   /** Escape, and the page's own way back. App points this at the fleet route. */
   onLeave: () => void;
   /**
@@ -610,7 +616,7 @@ export function SettingsPage({
       case "harnesses":
         return <HarnessesPanel state={harnesses} setup={setup.view} />;
       case "worktrees":
-        return <WorktreeSettingsPanel state={worktrees} storageHealth={storageHealth} />;
+        return <WorktreeSettingsPanel state={worktrees} storageHealth={storageHealth} onOpenSession={onOpenSession} />;
       case "repositories":
         return <RepositoriesPanel state={repoIndex} />;
       case "task-sources":

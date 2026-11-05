@@ -37,7 +37,7 @@ const EXIT_GRACE_MS = 1_000;
  * Every process this user can see: pid, parent, a start-time token, and its leak tag if any.
  * `null` when the platform offers no way to read another process's environment.
  */
-function listProcesses() {
+export function listProcesses() {
   if (process.platform === "linux") return listFromProc();
   if (process.platform === "darwin") return listFromPs();
   return null;
@@ -74,7 +74,7 @@ function listFromProc() {
 }
 
 /** The PID namespace `/proc/<pid>` is in, or null where the kernel does not say. */
-function pidNamespace(pid) {
+export function pidNamespace(pid) {
   try {
     return readlinkSync(`/proc/${pid}/ns/pid`);
   } catch {
@@ -157,10 +157,10 @@ function sleep(ms) {
 
 /**
  * Tag this worker, reap what earlier dead workers leaked, and fail the file at exit if it leaves
- * a tagged process of its own. Called once by `setup-state.mjs` in each test worker.
+ * a tagged process of its own. Called once by `setup-state.mjs` in each test worker, with the
+ * process table it already read.
  */
-export function armLeakGuard() {
-  const rows = listProcesses();
+export function armLeakGuard(rows) {
   const self = rows?.find((row) => row.pid === process.pid);
   if (!rows || !self) return;
 

@@ -373,6 +373,20 @@ systemd-run --user --scope --quiet
   systemd stopped it for an OOM kill, and runs `systemctl --user reset-failed` on it once systemd
   has finished stopping it. At startup the daemon resets this instance's failed
   `mission-control-<instance>-*.scope` units and never another daemon's.
+- A scope ends with its agent or app-server. systemd keeps a scope running while anything is left
+  in its cgroup, so once that verdict is read the daemon runs `systemctl --user stop` on a scope
+  that is still active, which sends `SIGTERM` to whatever is left and `SIGKILL` after
+  `TimeoutStopSec`. A process left behind would otherwise keep the cwd it started in and hold the
+  session's checkout ([orphan processes](worktrees-and-checks.md#orphan-processes)). The usual
+  case is `dbus-run-session`: the Qt services its private bus activates, such as
+  `xdg-desktop-portal-kde` and `ksecretd`, outlive that bus. Scope membership is the proof the
+  process is the session's, so no command name is matched. A process that has to outlive its
+  session starts in a unit of its own (`systemd-run --user`), which is outside the scope.
+- A daemon in a unit stops its scopes through `BindsTo`. One that is not, or that exited without
+  reading a verdict, leaves them running, so at startup, before its first probe, the daemon queues
+  a stop for its own `mission-control-<instance>-*.scope` units and never another daemon's. No
+  session outlives its daemon, and a resumed session gets a new scope, so whatever those hold is
+  an orphan. Only the daemon asks for this, on its first `ready` of the run.
 - The driver awaits that verdict before it reports the session gone, so an OOM-stopped session's
   task fails with "stopped: the session ran out of memory (peak N GB)" and the task-failed alert
   carries it ([exit cause](session-lifecycle.md#exit-cause),

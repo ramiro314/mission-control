@@ -15,6 +15,7 @@ Mission Control's product reference is organized by feature below.
 - [Multi-agent ensembles](ensembles.md)
 - [Pipelines (external SDLC engines)](pipelines.md)
 - [Archives](archives.md)
+- [Session History](history.md): every agent session on this machine, listed from the agents' own transcript stores.
 - [Attention, alerts, and away mode](attention-and-alerts.md)
 - [The Library and the Line](library-and-line.md)
 - [Workflows, Personas, and session actions](workflows.md)

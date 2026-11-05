@@ -2662,8 +2662,11 @@ export async function teardownWorktree(
   _priority: "foreground" | "background" = "foreground",
   /** The daemon's singleton allocator. Required only when a recorded provider is `mission`. */
   manager?: WorktreeManager,
-  /** Automatic lifecycle policy, checked before home cleanup and each destructive provider boundary. */
-  beforeReturn?: (path: string) => Promise<string | null>,
+  /**
+   * Automatic lifecycle policy, checked before home cleanup and each destructive provider
+   * boundary. A native reset's own check also gets the commit that reset moves to.
+   */
+  beforeReturn?: (path: string, target?: string) => Promise<string | null>,
 ): Promise<void> {
   // Every tree the task holds, primary first. Each is attempted even if an earlier one
   // failed, and the failures are reported together: stopping at the first would leave the
@@ -2814,7 +2817,7 @@ async function teardownOneWorktree(
   },
   legacy: LegacyTreehouseService,
   manager?: WorktreeManager,
-  beforeReturn?: (path: string) => Promise<string | null>,
+  beforeReturn?: (path: string, target?: string) => Promise<string | null>,
 ): Promise<void> {
   if (!task.worktreePath) return;
   // Read once so every provider check and diagnostic names the same requested path.
@@ -2842,7 +2845,7 @@ async function teardownOneWorktree(
     }
     const released = await manager.release(lookup.lease, {
       ownerAuthorized: true,
-      beforeReset: beforeReturn ? () => beforeReturn(worktreePath) : undefined,
+      beforeReset: beforeReturn ? (target) => beforeReturn(worktreePath, target) : undefined,
     });
     if (released.outcome === "released" || released.outcome === "alreadyReleased") return;
     throw new Error(`native worktree release ${released.outcome}: ${released.reason}`);

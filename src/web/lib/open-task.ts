@@ -1,5 +1,20 @@
 import type { Session, Task } from "@shared/types.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { isHistorySessionId } from "@shared/history.ts";
 import { isTerminalTask } from "@shared/task-status.ts";
+import { missionRouteHash } from "../workflows/useWorkflowRoute.ts";
+
+/**
+ * The History address of the session that did a task's work, or null when it has none to
+ * open: no bound session, or a harness History does not read. The catalog keeps a row after
+ * its transcript is gone, and History builds a record from Mission Control's data for a
+ * session it never indexed, so a bound session always has a page to land on.
+ */
+export function taskHistoryHref(task: Pick<Task, "agent" | "agentSessionId">): string | null {
+  const id = task.agentSessionId;
+  if (!id || !isHistorySessionId(id) || !capabilitiesFor(task.agent).readsHistory) return null;
+  return missionRouteHash({ page: "history", session: { agent: task.agent, id } });
+}
 
 /**
  * Where opening a task lands, decided once for `App.openTask` and for the request it keeps

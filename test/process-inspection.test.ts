@@ -12,6 +12,8 @@ import {
   type CommandRunner,
 } from "../src/server/process-inspection/posix.ts";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
+import { listProcessesSnapshot } from "../src/server/discovery/processes.ts";
+import { readProcCwdsSnapshot } from "../src/server/discovery/proc-cwd.ts";
 
 interface Call {
   sync: boolean;
@@ -208,4 +210,60 @@ test("the default runner starts every command in the C locale, over the daemon's
   const result = await defaultCommandRunner.run("ps", [], { timeoutMs: 5000 });
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.stdout, "C");
+});
+
+// An observation read's one retry runs with double the timeout. The multiplication lives here,
+// so a fake dependency receiving `timeoutScale: 2` proves nothing about the `ps` and `lsof` runs.
+test("a timeout scale multiplies the ps and cwd lsof timeouts, and no scale keeps the defaults", async () => {
+  const { runner, calls } = recordingRunner();
+  const inspector = createPosixProcessInspector(runner);
+  await inspector.listProcesses();
+  await inspector.readCwds([11]);
+  await inspector.listProcesses({ timeoutScale: 2 });
+  await inspector.readCwds([11], { timeoutScale: 2 });
+  assert.deepEqual(
+    calls.map((call) => [call.bin, call.opts.timeoutMs]),
+    [["ps", 30_000], ["ps", 30_000], ["lsof", 30_000], ["ps", 60_000], ["ps", 60_000], ["lsof", 60_000]],
+  );
+});
+
+test("the discovery snapshots forward the timeout scale to the platform inspector", async (t) => {
+  const listed: unknown[] = [];
+  const cwdRead: unknown[] = [];
+  t.mock.method(posixProcessInspector, "listProcesses", async (options?: unknown) => {
+    listed.push(options);
+    return { rows: [], failure: null, collectorPids: [] };
+  });
+  t.mock.method(posixProcessInspector, "readCwds", async (_pids: readonly number[], options?: unknown) => {
+    cwdRead.push(options);
+    return { cwds: new Map(), unreadable: new Set(), result: stubRun({ stdout: "", stderr: "", code: 0 }) };
+  });
+  await listProcessesSnapshot({ timeoutScale: 2 });
+  await readProcCwdsSnapshot([11], { timeoutScale: 2 });
+  assert.deepEqual(listed, [{ timeoutScale: 2 }]);
+  assert.deepEqual(cwdRead, [{ timeoutScale: 2 }]);
+});
+
+test("a cwd listing killed at its timeout names the timeout, never `exit 1`", async (t) => {
+  t.mock.method(posixProcessInspector, "readCwds", async () => ({
+    cwds: new Map(),
+    unreadable: new Set(),
+    result: {
+      ...stubRun({ stdout: "", stderr: "", code: 1 }),
+      outcomeUnknown: true,
+      timedOut: true,
+      signal: "SIGTERM",
+      timeoutMs: 60_000,
+    },
+  }));
+  const snapshot = await readProcCwdsSnapshot([11]);
+  assert.equal(snapshot.unknownReason, "cwd listing failed: the cwd listing timed out after 60 s");
+});
+
+test("the discovery snapshots mark an overflowed listing so a caller does not retry it", async (t) => {
+  const overflow = { ...stubRun({ stdout: "", stderr: "stdout maxBuffer length exceeded", code: 1 }), overflowed: true };
+  t.mock.method(posixProcessInspector, "listProcesses", async () => ({ rows: [], failure: overflow, collectorPids: [] }));
+  t.mock.method(posixProcessInspector, "readCwds", async () => ({ cwds: new Map(), unreadable: new Set(), result: overflow }));
+  assert.equal((await listProcessesSnapshot()).overflowed, true);
+  assert.equal((await readProcCwdsSnapshot([11])).overflowed, true);
 });

@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ForemanConfig, InspectorFindingsResponse } from "../src/shared/protocol.ts";
-import type { InspectorComment, InspectorSummary, Session } from "../src/shared/types.ts";
+import type { ForemanConfig, InspectorConfig, InspectorFindingsResponse } from "../src/shared/protocol.ts";
+import type { InspectorComment, InspectorInspection, InspectorSummary, Session } from "../src/shared/types.ts";
 import { WORKFLOW_RUN_STATUSES } from "../src/shared/workflow.ts";
+import { mkInspection } from "./helpers/inspection-fixture.ts";
 
 // What is at stake: the worker half of the findings relay, driven through the real pass. The
 // decision core says a nudge includes findings; `runReviewFollowup` reads their text through
@@ -33,6 +34,7 @@ const REPO = "/work/alpha";
 const PR_URL = "https://github.com/owner/repo/pull/7";
 const KEY = "owner/repo#7";
 const LEADER = () => true;
+const ADOPTED_READ = ["openInspections", "inspectorConfig"];
 
 const CFG = {
   enabled: true,
@@ -111,23 +113,36 @@ function response(findings: InspectorComment[], round = 3): InspectorFindingsRes
 function fakeDaemon(opts: {
   sessions: (afterRead: boolean) => Session[];
   findings: () => Promise<InspectorFindingsResponse>;
-  workflowRuns?: (afterRead: boolean) => Array<{ status: string }>;
+  workflowRuns?: (afterRead: boolean) => Array<{ status: string; phase?: string; round?: number; maxRepairRounds?: number }>;
   inject?: () => Promise<void>;
+  /** The config the freshness recheck reads, when it must differ from the pass's. */
+  config?: ForemanConfig;
+  codeRabbitAutoResolve?: boolean;
+  /** The Inspector's open adopted rows. None unless a case adopts one. */
+  openInspections?: (afterRead: boolean) => Promise<InspectorInspection[]>;
 }) {
   let afterRead = false;
   const calls: string[] = [];
-  const injected: Array<{ id: string; text: string }> = [];
+  const injected: Array<{ id: string; text: string; codeRabbit?: unknown }> = [];
   const client = {
     sessions: async () => {
       calls.push("sessions");
       return opts.sessions(afterRead);
     },
-    getConfig: async () => CFG,
-    // Upstream's CodeRabbit follow-up reads the Shipping config each pass; off here.
-    shippingConfig: async () => ({ codeRabbitAutoResolve: false }),
+    getConfig: async () => opts.config ?? CFG,
+    // Upstream's CodeRabbit follow-up reads the Shipping config each pass; off unless a case turns it on.
+    shippingConfig: async () => ({ codeRabbitAutoResolve: opts.codeRabbitAutoResolve ?? false }),
     workflowRuns: async () => {
       calls.push("workflowRuns");
       return opts.workflowRuns?.(afterRead) ?? [];
+    },
+    openInspections: async () => {
+      calls.push("openInspections");
+      return (await opts.openInspections?.(afterRead)) ?? [];
+    },
+    inspectorConfig: async () => {
+      calls.push("inspectorConfig");
+      return { mode: "dry-run", enabled: true } as InspectorConfig;
     },
     inspectorFindings: async (prKey: string) => {
       calls.push(`findings:${prKey}`);
@@ -137,9 +152,9 @@ function fakeDaemon(opts: {
         afterRead = true;
       }
     },
-    inject: async (id: string, text: string) => {
+    inject: async (id: string, text: string, codeRabbit?: unknown) => {
       calls.push("inject");
-      injected.push({ id, text });
+      injected.push({ id, text, ...(codeRabbit ? { codeRabbit } : {}) });
       await (opts.inject ?? (async () => {}))();
     },
   } as unknown as Client;
@@ -154,9 +169,11 @@ test("a dry-run draft is read through the daemon, then the fleet is re-read, the
   // The read comes before the freshness recheck, so nothing but the inject follows the recheck.
   assert.deepEqual(fake.calls, [
     "sessions",
+    ...ADOPTED_READ,
     "workflowRuns",
     `findings:${KEY}`,
     "sessions",
+    ...ADOPTED_READ,
     "workflowRuns",
     "inject",
   ]);
@@ -209,6 +226,58 @@ test("a session that comes to need a human, or gains a workflow, during the read
   assert.deepEqual(owned.injected, []);
 });
 
+test("a session held only by a spent blocked run gets its findings, with no CodeRabbit claim", async () => {
+  const codeRabbit = {
+    status: "complete" as const,
+    observationId: "obs-1",
+    headSha: "head",
+    observedAt: Date.now(),
+    freshUntil: Date.now() + 600_000,
+    unresolved: 1,
+    error: null,
+    threads: [],
+    pending: 1,
+    delivery: "Waiting for an eligible session",
+  };
+  const withCodeRabbit = (id: string) => parked(id, { inspector: summary({ codeRabbit }) });
+  const spent = [{ status: "blocked", phase: "round_limit", round: 4, maxRepairRounds: 3 }];
+
+  const released = fakeDaemon({
+    sessions: () => [withCodeRabbit("spent")],
+    workflowRuns: () => spent,
+    findings: async () => response([draft()]),
+    codeRabbitAutoResolve: true,
+  });
+  assert.equal((await runReviewFollowup(released.client, CFG, LEADER)).size, 1);
+  assert.equal(released.injected.length, 1);
+  assert.match(released.injected[0]!.text, /The handler dereferences `user` before checking it\./);
+  assert.equal(released.injected[0]!.codeRabbit, undefined, "the route would refuse a claim while the run is open");
+
+  // The same session with no run carries the claim, so the case above is CodeRabbit turned off.
+  const unbound = fakeDaemon({
+    sessions: () => [withCodeRabbit("unbound")],
+    findings: async () => response([draft()]),
+    codeRabbitAutoResolve: true,
+  });
+  assert.equal((await runReviewFollowup(unbound.client, CFG, LEADER)).size, 1);
+  assert.deepEqual(unbound.injected[0]!.codeRabbit, { prKey: KEY, observationId: "obs-1" });
+});
+
+test("a released run that resumes during the read is not typed across", async () => {
+  const fake = fakeDaemon({
+    sessions: () => [parked("resumed")],
+    workflowRuns: (afterRead) => [afterRead
+      ? { status: "waiting_for_new_head", phase: "inspector_findings", round: 4, maxRepairRounds: 6 }
+      : { status: "blocked", phase: "round_limit", round: 4, maxRepairRounds: 3 }],
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(fake.injected, []);
+  assert.deepEqual(fake.calls, [
+    "sessions", ...ADOPTED_READ, "workflowRuns", `findings:${KEY}`, "sessions", ...ADOPTED_READ, "workflowRuns",
+  ]);
+});
+
 test("an Inspector round that finishes during the read is held, then relayed exactly once", async () => {
   // The snapshot still says round 3; the route already answers for round 4. Typing would
   // stamp round 3 with round 4's findings, and the next pass would relay round 4 again.
@@ -236,7 +305,7 @@ test("a failed read is held: nothing typed, no stamp, and the next pass relays",
   });
   assert.equal((await runReviewFollowup(failed.client, CFG, LEADER)).size, 0);
   assert.deepEqual(failed.injected, []);
-  assert.deepEqual(failed.calls, ["sessions", "workflowRuns", `findings:${KEY}`], "no recheck, no inject");
+  assert.deepEqual(failed.calls, ["sessions", ...ADOPTED_READ, "workflowRuns", `findings:${KEY}`], "no recheck, no inject");
 
   // A shape the client's schema refused throws the same way.
   const unparsed = fakeDaemon({
@@ -296,5 +365,423 @@ test("a delivery the daemon refused frees the pane and leaves the round to retry
 test("a worker that lost the lease types nothing", async () => {
   const fake = fakeDaemon({ sessions: () => [parked("follower")], findings: async () => response([draft()]) });
   assert.equal((await runReviewFollowup(fake.client, CFG, () => false)).size, 0);
+  assert.deepEqual(fake.injected, []);
+});
+
+// ---- a PR the Inspector adopted that the session card no longer carries ----
+
+const BRANCH = "feat/adopted";
+
+/** The live example: the card shows no PR while the checkout sits on the adopted PR's branch. */
+function detached(id: string): Session {
+  return parked(id, { prUrl: null, prNumber: null, prState: null, inspector: null, gitBranch: BRANCH });
+}
+
+function adoptedBy(id: string, over: Partial<InspectorInspection> = {}): InspectorInspection {
+  return mkInspection({ key: KEY, url: PR_URL, sessionId: id, repoRoot: REPO, headRefName: BRANCH, ...over });
+}
+
+const unreadable = async () => Promise.reject(new Error("GET /api/inspector/prs?state=open -> 503"));
+
+test("an adopted PR the card does not carry is relayed with its findings' text", async () => {
+  const fake = fakeDaemon({
+    sessions: () => [detached("adopted")],
+    openInspections: async () => [adoptedBy("adopted")],
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 1);
+  assert.deepEqual(fake.calls, [
+    "sessions", ...ADOPTED_READ, "workflowRuns", `findings:${KEY}`,
+    "sessions", ...ADOPTED_READ, "workflowRuns", "inject",
+  ]);
+  const { id, text } = fake.injected[0]!;
+  assert.equal(id, "adopted");
+  assert.match(text, /^PR #7 needs follow-through: GitHub Inspector has 1 unresolved finding on it/);
+  assert.match(text, /The handler dereferences `user` before checking it\./);
+});
+
+test("a failed adoption read still relays the card's PR", async () => {
+  const fake = fakeDaemon({
+    sessions: () => [parked("card-only")],
+    openInspections: unreadable,
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 1);
+  assert.equal(fake.injected.length, 1);
+});
+
+test("a failed adoption read keeps the adopted PR's mark, so its round is not relayed twice", async () => {
+  const OTHER = "owner/repo#9";
+  for (const [id, session] of [
+    ["flaky-detached", detached("flaky-detached")],
+    ["flaky-alongside", parked("flaky-alongside", { gitBranch: BRANCH })],
+  ] as const) {
+    const sessions = () => [session];
+    const readable = async () => [
+      adoptedBy(id, { key: OTHER, url: "https://github.com/owner/repo/pull/9", number: 9 }),
+    ];
+    const findings = async () => response([draft()]);
+    let relayedTo: string[] = [];
+    for (let pass = 0; pass < 2; pass++) {
+      const relayed = fakeDaemon({ sessions, openInspections: readable, findings });
+      await runReviewFollowup(relayed.client, CFG, LEADER);
+      relayedTo = [...relayedTo, ...relayed.calls.filter((c) => c.startsWith("findings:"))];
+    }
+    assert.ok(relayedTo.includes(`findings:${OTHER}`), `${id}: the adopted PR was relayed`);
+
+    const failed = fakeDaemon({ sessions, openInspections: unreadable, findings });
+    await runReviewFollowup(failed.client, CFG, LEADER);
+    assert.deepEqual(failed.injected, [], `${id}: nothing new on the card's PR`);
+
+    const recovered = fakeDaemon({ sessions, openInspections: readable, findings });
+    assert.equal((await runReviewFollowup(recovered.client, CFG, LEADER)).size, 0);
+    assert.deepEqual(recovered.injected, [], `${id}: round 3 was already relayed`);
+  }
+});
+
+test("an adopted PR on a session an open run holds is not relayed", async () => {
+  const active = WORKFLOW_RUN_STATUSES.find((s) => !["completed", "cancelled", "failed"].includes(s));
+  assert.ok(active);
+  const fake = fakeDaemon({
+    sessions: () => [detached("held")],
+    openInspections: async () => [adoptedBy("held")],
+    workflowRuns: () => [{ status: active }],
+    findings: async () => assert.fail("a held session reads nothing"),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(fake.injected, []);
+});
+
+test("an adopted PR that closes during the findings read is not typed", async () => {
+  const fake = fakeDaemon({
+    sessions: () => [detached("closing")],
+    openInspections: async (afterRead) => (afterRead ? [] : [adoptedBy("closing")]),
+    findings: async () => response([draft()]),
+  });
+  assert.equal((await runReviewFollowup(fake.client, CFG, LEADER)).size, 0);
+  assert.deepEqual(fake.injected, []);
+});
+
+// ---- the held-findings log line ----
+
+const ACTIVE_RUN = WORKFLOW_RUN_STATUSES.find((s) => !["completed", "cancelled", "failed"].includes(s))!;
+
+/** The Foreman lines one pass wrote about `name`. */
+async function heldLines(name: string, fake: ReturnType<typeof fakeDaemon>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+  try {
+    await runReviewFollowup(fake.client, CFG, LEADER);
+  } finally {
+    console.log = original;
+  }
+  return lines.filter((line) => line.startsWith(`[foreman] ${name}`) && line.includes(": holding "));
+}
+
+function heldDaemon(session: () => Session, runs: () => Array<{ status: string }> = () => [{ status: ACTIVE_RUN }]) {
+  return fakeDaemon({
+    sessions: () => [session()],
+    workflowRuns: runs,
+    findings: async () => assert.fail("a held session reads nothing"),
+  });
+}
+
+test("a held PR with findings is logged once per round and reason", async () => {
+  let round = 3;
+  let runs: Array<{ status: string }> = [{ status: ACTIVE_RUN }];
+  let state: Session["state"] = "idle";
+  const pass = () =>
+    heldLines("held-log", heldDaemon(() => parked("held-log", { state, inspector: summary({ open: 2, round }) }), () => runs));
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-log: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await pass(), [], "the same round and reason is not logged again");
+
+  round = 4;
+  assert.deepEqual(await pass(), [
+    "[foreman] held-log: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 4) - an active workflow owns this session",
+  ]);
+
+  runs = [];
+  state = "awaiting_input";
+  assert.deepEqual(await pass(), [
+    "[foreman] held-log: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 4) - the session needs a human",
+  ]);
+  assert.deepEqual(await pass(), []);
+
+  runs = [{ status: ACTIVE_RUN }];
+  state = "idle";
+  assert.deepEqual(await pass(), [], "a reason already logged this round stays quiet when it returns");
+});
+
+test("two held PRs on one session are each logged once", async () => {
+  const pass = () =>
+    heldLines(
+      "held-pair",
+      fakeDaemon({
+        sessions: () => [parked("held-pair", { gitBranch: BRANCH })],
+        openInspections: async () => [
+          adoptedBy("held-pair", { key: "owner/repo#8", url: "https://github.com/owner/repo/pull/8", number: 8 }),
+        ],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-pair: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+    "[foreman] held-pair: holding 1 GitHub Inspector finding(s) on owner/repo#8 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await pass(), []);
+});
+
+test("a hold the freshness recheck finds is logged in the same pass, and a routine one is not", async () => {
+  const owned = fakeDaemon({
+    sessions: () => [parked("held-recheck")],
+    workflowRuns: (afterRead) => (afterRead ? [{ status: ACTIVE_RUN }] : []),
+    findings: async () => response([draft()]),
+  });
+  assert.deepEqual(await heldLines("held-recheck", owned), [
+    "[foreman] held-recheck: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(owned.injected, []);
+
+  const busy = fakeDaemon({
+    sessions: (afterRead) => [parked("held-recheck-busy", afterRead ? { state: "working", lastActivity: Date.now() } : {})],
+    findings: async () => response([draft()]),
+  });
+  assert.deepEqual(await heldLines("held-recheck-busy", busy), []);
+  assert.deepEqual(busy.injected, []);
+});
+
+test("the recheck counts the read's findings, so findings resolved before it are not logged as held", async () => {
+  const resolved = fakeDaemon({
+    sessions: () => [parked("held-recheck-resolved")],
+    findings: async () => response([draft({ status: "resolved" })]),
+  });
+  assert.deepEqual(await heldLines("held-recheck-resolved", resolved), []);
+
+  const twoLeft = fakeDaemon({
+    sessions: () => [parked("held-recheck-count", { inspector: summary({ open: 3 }) })],
+    workflowRuns: (afterRead) => (afterRead ? [{ status: ACTIVE_RUN }] : []),
+    findings: async () =>
+      response([draft(), draft({ id: "c2", fingerprint: "fp-2" }), draft({ id: "c3", fingerprint: "fp-3", status: "resolved" })]),
+  });
+  assert.deepEqual(await heldLines("held-recheck-count", twoLeft), [
+    "[foreman] held-recheck-count: holding 2 GitHub Inspector finding(s) on owner/repo#7 (round 3) - an active workflow owns this session",
+  ]);
+});
+
+test("a recheck whose read is for another round logs the fresh snapshot's count with its round", async () => {
+  const raced = fakeDaemon({
+    sessions: (afterRead) => [
+      parked("held-recheck-round", { inspector: afterRead ? summary({ open: 1, round: 4 }) : summary({ open: 2, round: 3 }) }),
+    ],
+    findings: async () => response([draft(), draft({ id: "c2", fingerprint: "fp-2" })], 3),
+  });
+  assert.deepEqual(await heldLines("held-recheck-round", raced), [
+    "[foreman] held-recheck-round: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - " +
+      "the findings read and the snapshot are from different GitHub Inspector rounds",
+  ]);
+  assert.deepEqual(raced.injected, []);
+});
+
+test("a stale read that found nothing logs the round mismatch, not 'nothing to act on'", async () => {
+  const raced = fakeDaemon({
+    sessions: (afterRead) => [
+      parked("held-stale-empty", { inspector: afterRead ? summary({ open: 1, round: 4 }) : summary({ open: 1, round: 3 }) }),
+    ],
+    findings: async () => response([draft({ status: "resolved" })], 3),
+  });
+  assert.deepEqual(await heldLines("held-stale-empty", raced), [
+    "[foreman] held-stale-empty: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - " +
+      "the findings read and the snapshot are from different GitHub Inspector rounds",
+  ]);
+  assert.deepEqual(raced.injected, []);
+});
+
+test("a stale read with review tracking turned off during it logs the real reason", async () => {
+  const fake = fakeDaemon({
+    sessions: (afterRead) => [
+      parked("held-stale-off", { inspector: afterRead ? summary({ open: 1, round: 4 }) : summary({ open: 1, round: 3 }) }),
+    ],
+    findings: async () => response([draft({ status: "resolved" })], 3),
+    config: { ...CFG, trackReviewFeedback: false } as ForemanConfig,
+  });
+  assert.deepEqual(await heldLines("held-stale-off", fake), [
+    "[foreman] held-stale-off: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - " +
+      "no enabled review comments, failing CI or merge conflict",
+  ]);
+});
+
+test("an exited card and its re-minted successor keep each other's holds", async () => {
+  const pass = () =>
+    heldLines(
+      "held-twin",
+      fakeDaemon({
+        sessions: () => [
+          parked("held-twin-old", { agentSessionId: "agent-held-twin", state: "exited" }),
+          parked("held-twin-new", {
+            agentSessionId: "agent-held-twin",
+            prUrl: null,
+            prNumber: null,
+            prState: null,
+            inspector: null,
+            gitBranch: BRANCH,
+          }),
+        ],
+        openInspections: async () => [
+          adoptedBy("held-twin-new", { key: "owner/repo#8", url: "https://github.com/owner/repo/pull/8", number: 8 }),
+        ],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-twin-old: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 3) - the session exited",
+    "[foreman] held-twin-new: holding 1 GitHub Inspector finding(s) on owner/repo#8 (round 3) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await pass(), [], "neither card's prune erases the other's history");
+});
+
+test("a card whose summary lags a round does not reset the newer round's history", async () => {
+  const pass = () =>
+    heldLines(
+      "held-lag",
+      heldDaemon(() => parked("held-lag-new", { agentSessionId: "agent-held-lag", inspector: summary({ round: 4 }) })),
+    );
+  const lagging = () =>
+    heldLines(
+      "held-lag",
+      fakeDaemon({
+        sessions: () => [
+          parked("held-lag-old", { agentSessionId: "agent-held-lag", state: "exited", inspector: summary({ round: 3 }) }),
+          parked("held-lag-new", { agentSessionId: "agent-held-lag", inspector: summary({ round: 4 }) }),
+        ],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+
+  assert.deepEqual(await pass(), [
+    "[foreman] held-lag-new: holding 1 GitHub Inspector finding(s) on owner/repo#7 (round 4) - an active workflow owns this session",
+  ]);
+  assert.deepEqual(await lagging(), [], "the round-3 card is older than what was logged");
+  assert.deepEqual(await lagging(), []);
+});
+
+test("a session whose id is re-minted keeps its logged holds", async () => {
+  const held = (id: string) => heldDaemon(() => parked(id, { agentSessionId: "agent-held-remint" }));
+  assert.equal((await heldLines("held-remint-a", held("held-remint-a"))).length, 1);
+  assert.deepEqual(await heldLines("held-remint-b", held("held-remint-b")), []);
+});
+
+test("a held PR the session stops following is forgotten, so its return logs again", async () => {
+  let adoptedOpen = true;
+  const pass = () =>
+    heldLines(
+      "held-prune",
+      fakeDaemon({
+        sessions: () => [parked("held-prune", { gitBranch: BRANCH })],
+        openInspections: async () =>
+          adoptedOpen
+            ? [adoptedBy("held-prune", { key: "owner/repo#8", url: "https://github.com/owner/repo/pull/8", number: 8 })]
+            : [],
+        workflowRuns: () => [{ status: ACTIVE_RUN }],
+        findings: async () => assert.fail("a held session reads nothing"),
+      }),
+    );
+  const line8 =
+    "[foreman] held-prune: holding 1 GitHub Inspector finding(s) on owner/repo#8 (round 3) - an active workflow owns this session";
+
+  assert.equal((await pass()).length, 2);
+  adoptedOpen = false;
+  assert.deepEqual(await pass(), []);
+  adoptedOpen = true;
+  assert.deepEqual(await pass(), [line8], "#7 stayed remembered; #8 was pruned while it was gone");
+});
+
+test("a held PR without findings logs nothing", async () => {
+  const fake = heldDaemon(() => parked("held-clean", { inspector: summary({ open: 0 }) }));
+  assert.deepEqual(await heldLines("held-clean", fake), []);
+});
+
+test("the routine waiting skips log nothing", async () => {
+  const working = heldDaemon(() => parked("held-working", { state: "working", lastActivity: Date.now() }), () => []);
+  assert.deepEqual(await heldLines("held-working", working), []);
+
+  const relayed = fakeDaemon({ sessions: () => [parked("held-relayed")], findings: async () => response([draft()]) });
+  assert.equal((await runReviewFollowup(relayed.client, CFG, LEADER)).size, 1);
+  const again = heldDaemon(() => parked("held-relayed"), () => []);
+  assert.deepEqual(await heldLines("held-relayed", again), [], "already nudged this round");
+});
+
+// ---- which failures count (fork: ci-strictness) ----
+//
+// The worker builds the follow-up config twice, once for the pass and once for the recheck
+// just before typing, and each must carry `ciStrictness`. The two configs disagree below, so a
+// site that dropped it would decide as All checks and the outcome would change.
+
+const REQUIRED_CFG = { ...CFG, ciStrictness: "required" } as ForemanConfig;
+const ALL_CFG = { ...CFG, ciStrictness: "all" } as ForemanConfig;
+const HEAD = "head-7";
+
+/** Parked on a PR whose whole rollup is red, with the required checks' rollup as given. */
+function redRollup(id: string, required: "passing" | "failing"): Session {
+  return parked(id, {
+    prChecks: "failing",
+    prHeadSha: HEAD,
+    inspector: summary({ open: 0, ci: { headSha: HEAD, required, inspectorEnabled: true } }),
+  });
+}
+
+test("Required checks: a non-required failure is left alone, a required one is typed with --required", async () => {
+  const quiet = fakeDaemon({
+    sessions: () => [redRollup("required-quiet", "passing")],
+    findings: async () => assert.fail("no findings to read"),
+    config: REQUIRED_CFG,
+  });
+  assert.equal((await runReviewFollowup(quiet.client, REQUIRED_CFG, LEADER)).size, 0);
+  assert.deepEqual(quiet.injected, []);
+
+  const red = fakeDaemon({
+    sessions: () => [redRollup("required-red", "failing")],
+    findings: async () => assert.fail("no findings to read"),
+    config: REQUIRED_CFG,
+  });
+  assert.equal((await runReviewFollowup(red.client, REQUIRED_CFG, LEADER)).size, 1);
+  const text = red.injected[0]!.text;
+  assert.match(text, /^PR #7 needs follow-through: its required CI checks are failing\./);
+  assert.ok(text.includes(`gh pr checks ${PR_URL} --required`));
+});
+
+test("the pass's decision reads ciStrictness from the pass's config", async () => {
+  // Required for the pass, All for the recheck: the pass must skip, so no recheck happens.
+  const fake = fakeDaemon({
+    sessions: () => [redRollup("pass-site", "passing")],
+    findings: async () => assert.fail("no findings to read"),
+    config: ALL_CFG,
+  });
+  assert.equal((await runReviewFollowup(fake.client, REQUIRED_CFG, LEADER)).size, 0);
+  assert.deepEqual(fake.calls, ["sessions", ...ADOPTED_READ, "workflowRuns"], "the pass decided Required and stopped");
+  assert.deepEqual(fake.injected, []);
+});
+
+test("the recheck's decision reads ciStrictness from the fresh config", async () => {
+  // All for the pass, Required by the time of the recheck: the pass nudges, the recheck holds.
+  const fake = fakeDaemon({
+    sessions: () => [redRollup("recheck-site", "passing")],
+    findings: async () => assert.fail("no findings to read"),
+    config: REQUIRED_CFG,
+  });
+  assert.equal((await runReviewFollowup(fake.client, ALL_CFG, LEADER)).size, 0);
+  assert.deepEqual(
+    fake.calls,
+    ["sessions", ...ADOPTED_READ, "workflowRuns", "sessions", ...ADOPTED_READ, "workflowRuns"],
+    "the recheck ran",
+  );
   assert.deepEqual(fake.injected, []);
 });

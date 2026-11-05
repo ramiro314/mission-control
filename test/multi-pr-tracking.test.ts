@@ -26,8 +26,20 @@ const home = mkdtempSync(join(tmpdir(), "mission-multi-pr-tracking-"));
 process.env.HARNESS_HOME = home;
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
-const { getInspectorPr, openDb, primaryRepoPrForTask, taskReposFor, workEpisodeRepoPrsForTask } =
-  await import("../src/server/db.ts");
+const {
+  getInspectorPr,
+  loadInspectorInspection: getInspectorInspection,
+  openDb,
+  primaryRepoPrForTask,
+  recordCodeRabbit,
+  recordInspectorCiObservation,
+  taskReposFor,
+  updateInspectorPr,
+  upsertInspectorComment,
+  workEpisodeRepoPrsForTask,
+} = await import("../src/server/db.ts");
+const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
+const { inspectorSummaryOf } = await import("../src/shared/inspector.ts");
 const { adoptPr } = await import("../src/server/inspector/worker.ts");
 const { currentMergeability } = await import("../src/shared/pr-mergeable.ts");
 
@@ -647,6 +659,103 @@ test("the Inspector's findings reach the repository they were left on", () => {
   const summary = repoPrLines(f).get("/other")?.feedback?.inspector;
   assert.equal(summary?.prKey, "example/other#20");
   assert.equal(summary?.postedOpen, 0);
+});
+
+test("the Inspector summary carries a compact CI projection and never the check list", () => {
+  // Fork (ci-strictness): what Foreman's "Which failures count" reads. Derived from the stored
+  // snapshot beside `codeRabbit`, with whether the Inspector is on read when it is resolved.
+  const f = fixture("live-inspector-ci");
+  f.registry.reconcileRepoPrs(new Map([repoMatch(f, "/other")]), new Set());
+  adoptPr(PR_B, { sessionId: f.id, cwd: "/wt/live-inspector-ci-1", repoRoot: "/other" }, "hook", 1);
+  f.registry.refreshInspections();
+  const ci = () => repoPrLines(f).get("/other")?.feedback?.inspector?.ci;
+  assert.deepEqual(ci(), { headSha: null, required: null, inspectorEnabled: false }, "no snapshot yet");
+
+  const run = (name: string, state: "passing" | "failing" | "pending", required?: boolean) => ({
+    name, state, conclusion: state === "failing" ? "FAILURE" : null, detailsUrl: null, title: null, summary: null,
+    ...(required === undefined ? {} : { required }),
+  });
+  const observe = (checkRuns: ReturnType<typeof run>[], totalCount = checkRuns.length) => {
+    recordInspectorCiObservation("example/other#20", {
+      headSha: "head-20", observedAt: 5_000, checkRuns, flakeReport: null, totalCount,
+    });
+    f.registry.refreshInspections();
+  };
+
+  observe([run("lint", "failing"), run("build", "passing", true)]);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "passing", inspectorEnabled: false });
+  observe([run("lint", "passing"), run("build", "failing", true)]);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "failing", inspectorEnabled: false });
+  observe([run("lint", "failing"), run("build", "passing")]);
+  assert.deepEqual(ci(), { headSha: "head-20", required: null, inspectorEnabled: false }, "nothing marked");
+
+  // GitHub reported more checks than were read: Wait for CI's truncation rule. A required
+  // failure among those read still decides; a pass cannot be confirmed, so every check counts.
+  observe([run("lint", "failing"), run("build", "passing", true)], 140);
+  assert.deepEqual(ci(), { headSha: "head-20", required: null, inspectorEnabled: false }, "truncated pass");
+  observe([run("lint", "passing"), run("build", "failing", true)], 140);
+  assert.deepEqual(ci(), { headSha: "head-20", required: "failing", inspectorEnabled: false }, "truncated failure");
+
+  // Switching the Inspector on changes no ledger row, so the flag is read at resolution.
+  setInspectorConfig({ enabled: true });
+  try {
+    f.registry.refreshInspections();
+    assert.equal(ci()?.inspectorEnabled, true);
+  } finally {
+    setInspectorConfig({ enabled: false });
+  }
+  assert.doesNotMatch(JSON.stringify(f.registry.getSession(f.id)), /"lint"|checkRuns/);
+});
+
+test("the session card's Inspector summary is the shared projection, CI and CodeRabbit included", () => {
+  const f = fixture("card-summary", []);
+  const key = "example/repo#10";
+  f.registry.reconcilePrs(
+    new Map([[f.id, {
+      url: PR_A, number: 10, state: "open" as const, checks: null, branch: "feat/work",
+      agentSessionId: `${f.id}-episode`, episodeId: f.episode.episodeId, createdAt: f.episode.startedAt,
+      mergedAt: null, headSha: "head-10", worktreeHeadSha: "head-10",
+    }]]),
+    new Set(),
+  );
+  adoptPr(PR_A, { sessionId: f.id, cwd: f.cwd, repoRoot: "/repo" }, "hook", 1);
+  updateInspectorPr(key, { observedHeadSha: "head-10", observedState: "OPEN", headRefName: "feat/work" }, 2);
+  upsertInspectorComment({
+    id: "c-1", prKey: key, fingerprint: "fp-1", path: "src/a.ts", line: 3, title: "Null check",
+    body: null, severity: "major", round: 1, status: "drafted", replies: 0, answeredCommentId: null,
+    createdAt: 3, updatedAt: 3,
+  });
+  recordInspectorCiObservation(key, {
+    headSha: "head-10", observedAt: 4,
+    checkRuns: [{ name: "build", state: "failing", conclusion: "FAILURE", detailsUrl: null, title: null, summary: null, required: true }],
+    flakeReport: null, totalCount: 1,
+  });
+  recordCodeRabbit(key, { headSha: "head-10", state: "OPEN", draft: false, findings: [{
+    id: "thread", rootId: "root", url: `${PR_A}#discussion_r1`, path: "src/a.ts", identity: "root-v1", resolved: false,
+  }] });
+  f.registry.refreshInspections();
+
+  const { codeRabbit, ...summary } = f.registry.getSession(f.id)!.inspector!;
+  assert.deepEqual(summary, {
+    ci: { headSha: "head-10", required: "failing", inspectorEnabled: false },
+    prKey: key,
+    url: PR_A,
+    mode: "dry-run",
+    open: 1,
+    postedOpen: 0,
+    round: 0,
+    lastReviewedAt: null,
+    failed: false,
+    reviewedHeadSha: null,
+    observedHeadSha: "head-10",
+    cleanReviewHeadSha: null,
+  });
+  assert.equal(codeRabbit?.unresolved, 1);
+  assert.deepEqual(
+    inspectorSummaryOf(getInspectorInspection(key)!, { mode: "dry-run", enabled: false }, codeRabbit),
+    { ...summary, codeRabbit },
+    "the worker's projection of the same row matches the card",
+  );
 });
 
 // ---- mergeability on the per-repo feedback ---------------------------------------------------

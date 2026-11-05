@@ -3,14 +3,26 @@ import type { InspectorComment, InspectorInspection } from "@shared/types.ts";
 import type { InspectorFindingsResponse } from "@shared/protocol.ts";
 import { findingPublication } from "@shared/inspector-findings.ts";
 import { fetchInspectorFindings } from "../lib/api.ts";
+import { inspectorPrClosedAs } from "../lib/pr-standing.ts";
 import { InspectorFindingsTable } from "./InspectorFindingsTable.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /** "open", "merged" or "closed", the words the Inspections table uses for a pull request. */
-export function inspectorPrStateWord(pr: Pick<InspectorInspection, "state" | "mergedAt">): string {
-  if (pr.state === "open") return "open";
-  return pr.mergedAt ? "merged" : "closed";
+export function inspectorPrStateWord(pr: InspectorInspection): string {
+  return inspectorPrClosedAs(pr) ?? "open";
+}
+
+/** The line that says a closed pull request's unresolved findings are a record, or null. */
+export function closedRecordLine(pr: InspectorInspection): string | null {
+  const closedAs = inspectorPrClosedAs(pr);
+  const n = pr.openFindings;
+  if (closedAs === null || n === 0) return null;
+  const kept = n === 1 ? "It is" : "They are";
+  return (
+    `This pull request ${closedAs} with ${n} finding${n === 1 ? "" : "s"} unresolved. ` +
+    `${kept} kept as a record and will not be reviewed again.`
+  );
 }
 
 export function inspectorRoundsLabel(round: number): string {
@@ -89,6 +101,7 @@ export function InspectorFindingsModal({
   const pr = data?.pr ?? null;
   const findings = data?.findings ?? [];
   const nothingPosted = pr ? nothingPostedLine(pr, findings) : null;
+  const closedRecord = pr ? closedRecordLine(pr) : null;
 
   return (
     <Overlay
@@ -120,6 +133,7 @@ export function InspectorFindingsModal({
             </>
           )}
         </p>
+        {closedRecord && <p className="inspector-findings-record">{closedRecord}</p>}
         {nothingPosted && <p className="inspector-findings-mode">{nothingPosted}</p>}
         {failed && (
           <p className="settings-error">

@@ -166,14 +166,36 @@ async function renders(page: Page): Promise<Record<string, number>> {
 }
 
 /**
+ * Waits until Session History has nothing left to index.
+ *
+ * The fake agent writes its transcript into this daemon's `~/.claude/projects`, and History
+ * indexes it. A pass that changes the catalog publishes `history_changed`, which App answers
+ * by re-reading History, and so re-renders. On a starved runner that pass can land late,
+ * inside the idle window, where it is a real change rather than an idle re-render. So the
+ * window opens only once the catalog has stopped indexing and read the same twice running.
+ */
+async function historySettled(daemon: DaemonHandle): Promise<void> {
+  type Catalog = { progress: { indexing: boolean }; sessions: Array<{ agentSessionId: string; lastActivityAt: number }> };
+  let previous = "";
+  await expect.poll(async () => {
+    const page = await api<Catalog>(daemon, "/api/history/sessions?kind=all&limit=200");
+    const current = JSON.stringify(page.sessions.map((row) => [row.agentSessionId, row.lastActivityAt]));
+    const settled = !page.progress.indexing && page.sessions.length > 0 && current === previous;
+    previous = current;
+    return settled;
+  }, { timeout: 90_000, intervals: [2_000], message: "Session History should finish indexing the fake agent's transcript" }).toBe(true);
+}
+
+/**
  * Renders per component across an idle window, after proving the track is being read at
  * all - a React upgrade that moved it would otherwise pass these tests vacuously.
  *
  * Twelve seconds is three of the four-second polls and two of the five-second ones.
  */
-async function idleWindow(page: Page, mustHaveRendered: string): Promise<Record<string, number>> {
+async function idleWindow(page: Page, daemon: DaemonHandle, mustHaveRendered: string): Promise<Record<string, number>> {
   // Every hook's first read has landed by now.
   await page.waitForTimeout(6_000);
+  await historySettled(daemon);
   expect(
     (await renders(page))[mustHaveRendered] ?? 0,
     `React's component track should have reported ${mustHaveRendered}'s first renders`,
@@ -195,8 +217,10 @@ test("an idle dashboard does not re-render App", async ({ dashboard, daemon }) =
   try {
     await countRenders(dashboard);
     await dashboard.goto(`${dev.origin}/#/fleet`);
-    await expect(dashboard.locator("main.board .tile")).toHaveCount(1);
-    const idle = await idleWindow(dashboard, "App");
+    // Navigation finishes at the small bootstrap, before Vite's cold transform of about 550
+    // modules, which took all of the default 20 s on a CI runner. Give startup its own budget.
+    await expect(dashboard.locator("main.board .tile")).toHaveCount(1, { timeout: 90_000 });
+    const idle = await idleWindow(dashboard, daemon, "App");
     // Before the fix this window held about eight App renders, each one re-rendering the
     // whole board.
     expect(idle.App ?? 0, "App should not re-render while nothing changes").toBeLessThanOrEqual(1);
@@ -243,7 +267,7 @@ test("an idle conversation does not re-render its tool runs", async ({ dashboard
     await dashboard.goto(`${dev.origin}/#/fleet`);
     await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
     await expect(dashboard.locator(".pty-toolrun")).toHaveCount(1);
-    const idle = await idleWindow(dashboard, "TerminalToolRun");
+    const idle = await idleWindow(dashboard, daemon, "TerminalToolRun");
     expect(idle.TerminalToolRun ?? 0, "a finished tool run should not re-render").toBe(0);
     expect(idle.ToolChips ?? 0, "its command list should not re-render").toBe(0);
     expect(idle.App ?? 0, "App should not re-render while nothing changes").toBeLessThanOrEqual(1);

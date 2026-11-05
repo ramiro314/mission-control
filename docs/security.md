@@ -58,9 +58,40 @@ same agent from calling the `/api/*` route directly. The same holds for
 step on the MCP surface, and the apply route it leads to accepts a document from any loopback
 caller with no proposal and no review.
 
+The same holds for reads. [Session History](history.md#api) serves every Claude transcript
+under `~/.claude/projects` as recorded, including anything a tool printed, to any loopback
+caller. Its routes take an agent name and a session UUID, never a path to read; the transcript path
+comes from the catalog and is read only when it resolves, through symlinks, under that harness's
+root. A tool result's sidecar file and a subagent transcript are confined further: a sidecar is
+read only through the file name its parent transcript's own record gives, a subagent only when
+the session's own listing holds it, and either only when it resolves inside that session's own
+`tool-results/` or `subagents/` folder. None of them is exposed as an MCP tool. A session's
+launch context is parsed from the same transcript on each request, so the instruction files,
+standing instructions, appended system prompt and git status it shows are never copied into
+`harness.db`.
+
+The one path a History route accepts is Resume's typed directory, and it is only ever written
+to: it must be absolute and an existing directory outside every worktree pool, it is resolved
+once with `realpath`, and the only file written is a copy of the session's own transcript into
+that directory's Claude project folder, as an exclusive create that never replaces an existing
+file.
+
 Requiring the daemon token, or an equivalent, for writes to executable settings (pool policy,
 Commands, testing settings and bulk apply) is a recorded follow-up:
 [tokenless loopback writes](plans/worktree-claims-and-monorepo-testing/plan.md#follow-ups-not-in-this-plan).
+
+## Session History copies user prompts into `harness.db`
+
+[Session History](history.md) reads the agents' own transcript stores and serves them through
+the same tokenless loopback `/api/history/*` routes, so anything a transcript holds is readable
+by any local process that can reach `/api/*`. Its search index adds one thing the transcripts
+did not already put in Mission Control's state: `history_search_segments` in `harness.db` holds
+a lowercased copy of every user prompt of each conversation (up to 16,000 characters a prompt),
+and the capped first prompt of each one-shot and reviewer run, beside each session's titles,
+working directory, repository and branch. A secret pasted into a prompt is therefore also in
+`harness.db`, and stays there after Claude Code's retention deletes the transcript: catalog
+rows and their search text are never deleted. Nothing is redacted. Database recovery points
+copy it like the rest of the file. None of it is exposed through Mission Control's MCP tools.
 
 ## Public product issue reporting
 

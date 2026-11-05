@@ -290,6 +290,20 @@ test("busy, awaiting-input, uninvited, queued, exited and workflow-owned session
   }
 });
 
+test("CodeRabbit follow-up keeps waiting for a blocked run that has released the review follow-through", async () => {
+  for (const phase of ["round_limit", "unchanged_evidence_exhausted", "session_disappeared", "check_cleanup_unresolved"]) {
+    const f = fixture();
+    f.setRuns([{ noteKey: f.owner.noteKey, sessionId: f.session.id, status: "blocked", phase, round: 4, maxRepairRounds: 3 } as unknown as WorkflowRunSummary]);
+    assert.equal(codeRabbitStanding(f.registry, f.key).delivery, "an active workflow owns this session", phase);
+    assert.equal(codeRabbitCandidate(f.registry, f.session.id, f.request).error, "an active workflow owns this session", phase);
+    const response = await f.post();
+    assert.ok(response.status >= 400, phase);
+    assert.match(await response.text(), /an active workflow owns this session/i, phase);
+    assert.deepEqual(f.messages, [], phase);
+    assert.deepEqual(readCodeRabbit(f.key)!.receipts, [], phase);
+  }
+});
+
 test("revocation, workflow, ownership, intent, queue and head races at the write lock positively release the exact claim", async () => {
   for (const mutate of [
     (f: ReturnType<typeof fixture>) => { f.session.foremanInvite = null; },
@@ -372,6 +386,42 @@ test("the CodeRabbit message leaves out findings and a conflict when there are n
     if (variant === "escalated") assert.match(payload, /Null deref in the parser/, variant);
     else assert.doesNotMatch(payload, /GitHub Inspector has|Null deref in the parser/, variant);
   }
+});
+
+test("the CodeRabbit message's CI lines follow which failures count", (t) => {
+  // Fork (ci-strictness): this payload replaces Foreman's, so it counts CI failures the same way.
+  t.after(() => setForemanConfig({ trackCiFailures: false, ciStrictness: "all" }));
+  const payloadFor = (ciStrictness: "all" | "required", required: "passing" | "failing") => {
+    const f = fixture();
+    Object.assign(f.session, { prChecks: "failing", prHeadSha: "head" });
+    f.session.inspector!.ci = { headSha: "head", required, inspectorEnabled: true };
+    setForemanConfig({ trackCiFailures: true, ciStrictness });
+    const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
+    assert.equal(candidate.error, undefined);
+    return { payload: candidate.payload!, url: f.session.prUrl! };
+  };
+
+  const quiet = payloadFor("required", "passing").payload;
+  assert.match(quiet, /CodeRabbit has 1 unresolved review threads/);
+  assert.doesNotMatch(quiet, /CI checks are failing|gh pr checks/, "a non-required failure is not relayed");
+
+  const red = payloadFor("required", "failing");
+  assert.match(red.payload, /its required CI checks are failing/);
+  assert.ok(red.payload.includes(`gh pr checks ${red.url} --required`));
+
+  // Held: the snapshot is behind the PR's head, so CI is not relayed and every check is not asked for.
+  const held = fixture();
+  Object.assign(held.session, { prChecks: "failing", prHeadSha: "head" });
+  held.session.inspector!.ci = { headSha: "older", required: "passing", inspectorEnabled: true };
+  setForemanConfig({ trackCiFailures: true, ciStrictness: "required" });
+  const heldPayload = codeRabbitCandidate(held.registry, held.session.id, held.request).payload!;
+  assert.doesNotMatch(heldPayload, /CI checks are failing|gh pr checks/);
+  assert.match(heldPayload, /until the required checks are green/);
+
+  const all = payloadFor("all", "passing");
+  assert.match(all.payload, /, and its CI checks are failing/);
+  assert.ok(all.payload.includes(`gh pr checks ${all.url}\``));
+  assert.doesNotMatch(all.payload, /--required/);
 });
 
 test("an attached pull request whose snapshot has no mergeability fields reads as unknown, never throws", () => {

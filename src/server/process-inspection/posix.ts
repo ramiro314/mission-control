@@ -120,10 +120,11 @@ export function createPosixProcessInspector(runner: CommandRunner = defaultComma
      * multi-token `lstart` at the tail (uid, pid, ppid, state, and tty are single tokens
      * before it); pass B puts the multi-token `command` at the tail. We join on pid.
      */
-    async listProcesses() {
+    async listProcesses(options) {
+      const timeoutMs = PS_TIMEOUT_MS * (options?.timeoutScale ?? 1);
       const [a, b] = await Promise.all([
-        runner.run("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="], { timeoutMs: PS_TIMEOUT_MS }),
-        runner.run("ps", ["-Ao", "pid=,command="], { timeoutMs: PS_TIMEOUT_MS }),
+        runner.run("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="], { timeoutMs }),
+        runner.run("ps", ["-Ao", "pid=,command="], { timeoutMs }),
       ]);
 
       const commands = new Map<number, string>();
@@ -168,9 +169,9 @@ export function createPosixProcessInspector(runner: CommandRunner = defaultComma
      * in `unreadable`; any other such record leaves the pid out, which callers read as
      * unresolved.
      */
-    async readCwds(pids) {
+    async readCwds(pids, options) {
       const result = await runner.run("lsof", ["-a", "-d", "cwd", "-p", pids.join(","), "-Fpn"], {
-        timeoutMs: CWD_LIST_TIMEOUT_MS,
+        timeoutMs: CWD_LIST_TIMEOUT_MS * (options?.timeoutScale ?? 1),
       });
       const cwds = new Map<number, string>();
       const unreadable = new Set<number>();

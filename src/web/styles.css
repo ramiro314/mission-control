@@ -582,6 +582,12 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   white-space: nowrap;
 }
 
+.wt-pool-timings {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin: 8px 0 0;
+}
+
 .wt-disclosure {
   align-items: flex-start;
   background: none;
@@ -1114,6 +1120,7 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   color: var(--muted);
   font-size: 11px;
   margin: 2px 0 0;
+  overflow-wrap: anywhere;
 }
 
 .wt-owner,
@@ -1183,9 +1190,52 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   padding: 0;
 }
 
-.wt-occupants li { display: grid; gap: 2px; min-width: 0; }
+.wt-occupants li { display: grid; gap: 2px; justify-items: start; min-width: 0; }
 .wt-occupants code { font-size: 11px; overflow-wrap: anywhere; }
 .wt-occupants span { color: var(--dim); font-size: 10px; }
+.wt-occupants strong,
+.wt-orphan strong { font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+
+/* What happened to the slot: a disclosure at the card's foot, read only while open. */
+.wt-history {
+  border-top: 1px solid var(--border);
+  margin: 10px 0 0;
+  padding-top: 8px;
+}
+
+.wt-history .wt-disclosure {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.wt-history-note { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
+
+.wt-history ol {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 8px 0;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.wt-history li { display: grid; gap: 2px; min-width: 0; }
+
+.wt-history-head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+.wt-history-head strong { font-size: 11px; font-weight: 600; }
+.wt-history-head span { color: var(--dim); font-size: 10px; }
+.wt-history li p { font-size: 11px; line-height: 1.45; margin: 0; overflow-wrap: anywhere; }
+.wt-history li code { color: var(--dim); font-size: 10px; overflow-wrap: anywhere; white-space: pre-wrap; }
 
 /* Processes that outlived the slot's owner, each with its guarded Kill. */
 .wt-orphans {
@@ -1231,6 +1281,9 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   gap: 2px;
   min-width: 0;
 }
+
+/* A long command must never squeeze the row's action onto two lines. */
+.wt-orphan .btn { flex: none; white-space: nowrap; }
 
 .wt-orphan code {
   font-size: 11px;
@@ -12871,6 +12924,16 @@ select:not([multiple]) option:focus-visible {
 .report-name-btn:hover {
   color: var(--select);
 }
+/* A Recent outcomes title that opens its session in History. Same type as the plain name,
+   for the reason the backlog's button is: the hover colour is the affordance. */
+.report-name-link {
+  text-decoration: none;
+}
+.report-name-link:hover,
+.report-name-link:focus-visible {
+  color: var(--select);
+  text-decoration: underline;
+}
 .report-sub {
   font-size: 11.5px;
   color: var(--muted);
@@ -23787,6 +23850,9 @@ button.sc-row:focus-visible {
 }
 .inspector-findings-mode {
   color: var(--attention);
+}
+.inspector-findings-record {
+  color: var(--muted);
 }
 .inspector-findings-body {
   padding: 0 var(--modal-inset, 18px) 14px;
@@ -36879,3 +36945,379 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-toolbar-note { margin: 0; padding: 4px 8px 8px; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .session-toolbar-foot { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
 .session-toolbar-error { margin: 6px 8px; font-size: 12px; color: var(--danger); }
+
+/* ---- Session History ---------------------------------------------------------------------
+   One reading column, grouped by day like the Scouts rail. The progress line keeps its height
+   while empty so rows do not jump when a backfill starts or finishes. */
+.history-page { max-width: 1040px; }
+.history-progress {
+  min-height: 18px;
+  margin: -8px 0 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--attention);
+}
+.history-retention { margin: -6px 0 12px; font-size: 12px; color: var(--muted); }
+.history-retention code { font-size: 11.5px; }
+/* The search box takes what the filters leave, and the row wraps under it at narrow widths. */
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+.history-search { flex: 1 1 240px; min-width: 0; font-size: 12.5px; }
+.history-filter { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.history-filter-label { font-size: 11.5px; font-weight: 560; color: var(--muted); }
+.history-filter-select,
+.history-filter-date {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 7px;
+  max-width: 28ch;
+}
+.history-group { margin: 0 0 14px; }
+.history-day {
+  margin: 0;
+  padding: 8px 0 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border-soft);
+}
+.history-rows { margin: 0; padding: 0; list-style: none; }
+.history-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.history-row-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.history-row-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-row.is-gone .history-row-title { color: var(--muted); }
+.history-badge {
+  flex: none;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+.history-badge-gone { color: var(--attention); border-color: currentColor; }
+.history-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.history-row-place { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-foot { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; }
+.history-more-error { margin: 0; font-size: 12px; color: var(--danger); }
+.history-empty { padding: 40px 20px; text-align: center; color: var(--muted); }
+.history-empty .empty-title { font-size: 14px; color: var(--fg); margin: 0 0 6px; }
+.history-empty .empty-sub { margin: 0 0 12px; font-size: 12.5px; }
+.history-loading { padding: 18px 0; color: var(--muted); }
+a.history-row-title { color: var(--fg); text-decoration: none; }
+a.history-row-title:hover { text-decoration: underline; }
+a.history-row-title:focus-visible { outline: 2px solid var(--find); outline-offset: 2px; }
+.history-badge-live { color: var(--working); border-color: currentColor; }
+
+/* One session: a header of what the catalog recorded, then its read-only conversation. The
+   conversation is the live view's rows, so it takes the page's height rather than the
+   card's capped scroll box. */
+.history-back {
+  margin: 0 0 10px;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.history-back:hover { color: var(--fg); }
+.history-detail-head { margin: 0 0 12px; }
+.history-detail-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+/* Two lines at most: an untitled session is named by its first prompt, which can run to 500
+   characters of generated launch text. The whole of it is the conversation's first turn. */
+.history-detail-title h2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: 0;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.history-detail-action { margin-left: auto; }
+.history-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px 16px;
+  margin: 12px 0 0;
+}
+.history-meta-item { min-width: 0; }
+.history-meta-item dt {
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-meta-item dd { margin: 2px 0 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.history-tabs { display: flex; gap: 4px; padding: 0 0 6px; border-bottom: 1px solid var(--border-soft); }
+.history-tab {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font: 600 10px/1 var(--sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-tab[aria-selected="true"] { color: var(--fg); background: var(--panel); }
+.history-tabpanel { padding: 12px 0 0; }
+.history-conversation { display: flex; flex-direction: column; gap: 10px; }
+.history-gone { margin: 0; padding: 14px 0; font-size: 13px; color: var(--muted); }
+/* What Mission Control adds: the bound task's status and outcome, and the session's PR. The
+   outcome is free text a task wrote, so it ellipsises rather than push the row wider. */
+.history-outcome {
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+a.history-outcome, a.history-pr { color: var(--idle); text-decoration: none; }
+a.history-outcome:hover, a.history-pr:hover { text-decoration: underline; }
+.history-meta-mission { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.history-task-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}
+/* A row's tool calls, each opening to its whole input and its result read on demand. */
+.history-tool-calls { display: flex; flex-direction: column; gap: 2px; margin: -4px 0 0; padding: 0 0 0 12px; list-style: none; }
+.history-tool-toggle,
+.history-subagent-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: 12px/1.4 var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+.history-tool-toggle:hover,
+.history-subagent-toggle:hover { color: var(--fg); background: var(--panel); }
+.history-tool-name { font-weight: 600; }
+.history-tool-detail,
+.history-subagent-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-tool-body { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 8px 14px; }
+.history-tool-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-tool-pre {
+  max-height: 420px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--panel);
+  font: 12px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.history-tool-note { margin: 0; font-size: 12px; color: var(--muted); }
+.history-tool-failed { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+/* Where the agent compacted its context, drawn across the conversation. */
+.transcript-compaction {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--dim);
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.transcript-compaction::before,
+.transcript-compaction::after { content: ""; flex: 1; border-top: 1px dashed var(--border-soft); }
+.transcript-compaction .turn-time { order: 3; letter-spacing: normal; text-transform: none; font-weight: 400; }
+.transcript-compaction-summary { font-size: 12.5px; color: var(--muted); }
+.transcript-compaction-summary summary { cursor: pointer; }
+.transcript-compaction-summary-text { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.history-subagents { padding: 0 0 10px; border-bottom: 1px solid var(--border-soft); }
+.history-subagents h3 {
+  margin: 0 0 4px;
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-subagents ul { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.history-subagent-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 6px 0 10px 14px;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--border-soft);
+}
+/* Launch context: each section lists what the transcript recorded, or says it was not. */
+.history-launch { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.history-launch-note { margin: 0; font-size: 12px; color: var(--muted); }
+.history-launch-section { min-width: 0; }
+.history-launch-section h3 {
+  margin: 0 0 6px;
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-launch-sub { margin: 10px 0 4px; font: 600 11px/1.4 var(--sans); color: var(--dim); }
+.history-launch-absent { margin: 0; font-size: 12.5px; color: var(--muted); font-style: italic; }
+.history-launch-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.history-launch-file summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+  font-size: 12.5px;
+  list-style: none;
+  cursor: pointer;
+}
+.history-launch-file summary::-webkit-details-marker { display: none; }
+.history-launch-file summary::before { content: "▸"; color: var(--dim); }
+.history-launch-file[open] > summary::before { content: "▾"; }
+.history-launch-path { min-width: 0; overflow-wrap: anywhere; }
+.history-launch-reason { font-size: 11.5px; color: var(--muted); }
+.history-launch-text {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--panel);
+  font: 12px/1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.history-launch-names { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.history-launch-names li {
+  padding: 1px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.history-launch-server { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 12.5px; }
+.history-launch-server .history-launch-file { flex-basis: 100%; }
+.history-mcp-needs_auth, .history-mcp-pending { color: var(--attention); border-color: currentColor; }
+.history-mcp-failed { color: var(--danger); border-color: currentColor; }
+.history-launch-pairs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+.history-launch-pair { min-width: 0; }
+.history-launch-pair dt { font-size: 11px; color: var(--dim); }
+.history-launch-pair dd { margin: 2px 0 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.history-launch-hooks { width: 100%; border-collapse: collapse; font-size: 12px; }
+.history-launch-hooks th { text-align: left; font-weight: 600; color: var(--dim); padding: 2px 8px 4px 0; }
+.history-launch-hooks td { padding: 2px 8px 2px 0; vertical-align: top; border-top: 1px solid var(--border-soft); }
+.history-launch-command { overflow-wrap: anywhere; }
+/* History › Resume dialog. The shell supplies the inline inset; the body only spaces its rows. */
+.history-resume-modal { width: min(520px, 100%); }
+.history-resume-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0 18px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.history-resume-lead { margin: 0; color: var(--muted); }
+.history-resume-place { display: grid; gap: 6px; margin: 0; }
+.history-resume-place dt {
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-resume-place dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.history-resume-note { margin: 0; color: var(--muted); }
+.history-resume-started { margin: 0; }
+.history-resume-error { margin: 0; color: var(--danger); overflow-wrap: anywhere; }
+.history-resume-warning { margin: 0; color: var(--attention); overflow-wrap: anywhere; }
+.history-resume-slots {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.history-resume-slots legend {
+  padding: 0 4px;
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.history-resume-slot {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+}
+.history-resume-slot .mono { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+.history-resume-targets {
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.history-resume-body > .btn { align-self: flex-start; }
+.history-resume-directory { display: grid; gap: 4px; }

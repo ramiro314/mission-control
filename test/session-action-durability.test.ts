@@ -655,7 +655,8 @@ test("what may be authored is derived from what can be delivered, not chosen bes
       executionAuthorizationContract({ workflowEvidence: true, workflowContinuation: true, pullRequestGrant }),
       "utf8",
     )))
-    + Buffer.byteLength(workflowPullRequestCiContract(), "utf8")
+    + Math.max(...(["all", "required"] as const).map((strictness) =>
+      Buffer.byteLength(workflowPullRequestCiContract(strictness), "utf8")))
     + Buffer.byteLength(workflowPullRequestConflictContract(), "utf8")
     + 200; // run id, version, labels and newlines
   assert.ok(

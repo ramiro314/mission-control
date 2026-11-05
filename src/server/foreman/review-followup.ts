@@ -1,5 +1,6 @@
 import type {
   InspectorComment,
+  InspectorInspection,
   InspectorSummary,
   PrChecks,
   PrMergeableObservation,
@@ -13,7 +14,8 @@ import { hasPane } from "./queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
 import { currentMergeability, mergeConflictResolutionSteps } from "@shared/pr-mergeable.ts";
 import { findingPublication, type FindingPublicationState } from "@shared/inspector-findings.ts";
-import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import { WORKFLOW_LIMITS, workflowRunReleasesFollowup } from "@shared/workflow.ts";
+import type { CiStrictness } from "@shared/ci-checks.ts";
 import { dedupeInspectorFindings, renderInspectorFindings } from "../inspector/findings-text.ts";
 import { utf8Bytes } from "../util/utf8.ts";
 
@@ -84,6 +86,8 @@ export interface ReviewFollowupConfig {
   codeRabbitAutoResolve?: boolean;
   /** Relay failing CI episodes from `ForemanConfig.trackCiFailures`. */
   trackCiFailures: boolean;
+  /** Which failing checks count, from `ForemanConfig.ciStrictness`. Absent reads as `all`. */
+  ciStrictness?: CiStrictness;
   /** Keep conflicting pull requests on track, from `ForemanConfig.trackMergeConflicts`. */
   trackMergeConflicts: boolean;
   /** How long a session must sit idle before its work counts as settled. */
@@ -99,8 +103,9 @@ export interface ReviewFollowupConfig {
  * `inspector` scalars, which answer for the session's own checkout alone - so a secondary
  * repository's red CI and unresolved findings are as visible here as the primary's.
  *
- * `followupPrs` is the only thing that builds one. A single-repo session yields exactly one,
- * carrying exactly the scalars this file used to read.
+ * `followupPrs` builds them from the session card, and a single-repo session yields exactly
+ * one, carrying exactly the scalars this file used to read. `reviewFollowupPrs` appends the
+ * Inspector-adopted ones the card does not carry.
  */
 export interface FollowupPr {
   /** `owner/repo#123` where the Inspector adopted it, else `#123`. Marks are keyed on it. */
@@ -133,7 +138,7 @@ export interface FollowupPr {
 export interface ReviewFollowupInput {
   session: Session;
   /**
-   * The pull request being considered, from `followupPrs`, or null when the session has no
+   * The pull request being considered, from `reviewFollowupPrs`, or null when the session has no
    * open one at all.
    */
   pr: FollowupPr | null;
@@ -214,6 +219,13 @@ export interface FollowupMark {
   findingsRound: number | null;
   /** Whether we have nudged for the CURRENT CI-failing episode; re-armed on recovery. */
   ciNudged: boolean;
+  /**
+   * Fork (ci-strictness): the PR head the CI episode was last nudged on, or null. In Required
+   * mode a push is held until the Inspector reads the new head, so the PR poller's recovery on
+   * it is never seen, whichever row decided the episode; a decided pass for another head
+   * re-arms it instead. All mode never reads it, so its re-arm rule is unchanged.
+   */
+  ciHead: string | null;
   /** The conflicting head SHA last nudged about, or null. */
   conflictHead: string | null;
   /** Conflict nudges sent this episode. */
@@ -241,6 +253,7 @@ function freshMark(prKey: string): FollowupMark {
     prKey,
     findingsRound: null,
     ciNudged: false,
+    ciHead: null,
     ...CONFLICT_REARMED,
   };
 }
@@ -300,6 +313,54 @@ export function followupPrs(s: Session): FollowupPr[] {
   return out;
 }
 
+/** An open ledger row the Inspector adopted, with the chip facts projected from it. */
+export interface AdoptedInspection {
+  row: InspectorInspection;
+  inspector: InspectorSummary;
+}
+
+/**
+ * The follow-through's PR list: `followupPrs(session)`, then each open pull request the
+ * Inspector adopted under this session, on this repository and on the session's current branch
+ * (D2), that the card does not already carry.
+ *
+ * The session card holds only a PR its current work episode accepts, so a session that went
+ * back to an older PR's branch shows none. The Inspector's adoption rests on observed
+ * authorship instead. An adopted-only entry carries no CI, mergeability or head, so only its
+ * findings can fire; the episode rule and every other `followupPrs` caller are untouched.
+ */
+export function reviewFollowupPrs(
+  session: Session,
+  adopted: readonly AdoptedInspection[],
+): FollowupPr[] {
+  const out = followupPrs(session);
+  // A card without an Inspector summary keys its PR `#123`, while the adopted row says
+  // `owner/repo#123`, so the URL is the identity. GitHub names are case-insensitive.
+  const seen = new Set(out.map((pr) => pr.url.toLowerCase()));
+  for (const { row, inspector } of adopted) {
+    // `state` is checked here too: an older daemon ignores `?state=open` and answers every row.
+    if (row.state !== "open") continue;
+    if (row.sessionId !== session.id || row.repoRoot !== session.repoRoot) continue;
+    if (row.headRefName === null || row.headRefName !== session.gitBranch) continue;
+    const url = row.url.toLowerCase();
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push({
+      prKey: row.key,
+      url: row.url,
+      number: row.number,
+      repoRoot: null,
+      inspector,
+      checks: null,
+      mergeable: null,
+      baseRef: null,
+      headSha: null,
+      conflictEscalated: false,
+    });
+  }
+  return out;
+}
+
 /** The PR's current head mergeability, the one reading rule applied to a `FollowupPr`. */
 export function mergeabilityOf(pr: FollowupPr) {
   return currentMergeability({ prMergeable: pr.mergeable, prHeadSha: pr.headSha });
@@ -320,10 +381,20 @@ export function mergeabilityOf(pr: FollowupPr) {
  * session parks. Without a PR head sha on the snapshot this observed-recovery bit is the
  * only thing that can tell a re-failure from the one we already relayed.
  */
-export function advanceFollowupMark(prev: FollowupMark | null, pr: FollowupPr): FollowupMark {
+export function advanceFollowupMark(
+  prev: FollowupMark | null,
+  pr: FollowupPr,
+  ciStrictness: CiStrictness = "all",
+): FollowupMark {
   let mark: FollowupMark = prev && prev.prKey === pr.prKey ? prev : freshMark(pr.prKey);
-  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it.
-  if (mark.ciNudged && pr.checks !== "failing") mark = { ...mark, ciNudged: false };
+  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it. In
+  // Required mode so is any episode once a decided pass is for another head: the push that
+  // made it may have been held, so its recovery was never observed. A held pass re-arms nothing.
+  const ci = ciFollowup(pr, ciStrictness);
+  const newHead = ciStrictness === "required" && mark.ciHead !== null && pr.headSha !== mark.ciHead;
+  if (mark.ciNudged && ci !== "held" && (!ci.failing || newHead)) {
+    mark = { ...mark, ciNudged: false, ciHead: null };
+  }
   const mergeable = mergeabilityOf(pr);
   if (mergeable === "mergeable") {
     const rearmed = mark.conflictHead === null && mark.conflictNudges === 0 && !mark.conflictEscalated;
@@ -334,12 +405,58 @@ export function advanceFollowupMark(prev: FollowupMark | null, pr: FollowupPr): 
   return mark;
 }
 
+/**
+ * Fork (ci-strictness): whether this pull request's CI counts as failing under `ciStrictness`,
+ * and whether the required checks decided it rather than the whole rollup.
+ *
+ * | strictness | condition                                              | failing when            |
+ * | all        | always                                                 | `checks === "failing"`  |
+ * | required   | the Inspector never adopted the PR, or is off          | `checks === "failing"`  |
+ * | required   | adopted and on, no snapshot for the PR's current head  | never: `held`           |
+ * | required   | snapshot for the head, nothing marked required         | `checks === "failing"`  |
+ * | required   | snapshot for the head, checks marked required          | required rollup failing |
+ *
+ * "Off" is `InspectorConfig.enabled` alone, even when CodeRabbit's poll keeps the snapshot
+ * fresh: every check then counts, so Foreman nudges more, never less. A summary without `ci`
+ * comes from a daemon older than this field and reads as off. `held` neither nudges nor
+ * re-arms: the snapshot cannot say which checks are required on a head it did not read.
+ */
+export function ciFollowup(
+  pr: Pick<FollowupPr, "checks" | "headSha" | "inspector">,
+  ciStrictness: CiStrictness = "all",
+): { failing: boolean; required: boolean } | "held" {
+  const everyCheck = { failing: pr.checks === "failing", required: false };
+  const ci = pr.inspector?.ci;
+  if (ciStrictness === "all" || !ci || !ci.inspectorEnabled) return everyCheck;
+  if (pr.headSha === null || ci.headSha !== pr.headSha) return "held";
+  if (ci.required === null) return everyCheck;
+  return { failing: ci.required === "failing", required: true };
+}
+
+/** The CI half of `Feedback`, for the payload builders outside this file. */
+export function ciFeedback(
+  pr: Pick<FollowupPr, "checks" | "headSha" | "inspector">,
+  cfg: Pick<ReviewFollowupConfig, "trackCiFailures" | "ciStrictness">,
+): Pick<Feedback, "ciFailing" | "ciRequired"> {
+  const ci = cfg.trackCiFailures ? ciFollowup(pr, cfg.ciStrictness) : null;
+  if (ci === null) return { ciFailing: false, ciRequired: false };
+  // Held is Required mode with the snapshot behind the head: nothing is relayed about CI, but
+  // a findings or conflict nudge sent meanwhile must still not ask for every check to go green.
+  if (ci === "held") return { ciFailing: false, ciRequired: true };
+  return { ciFailing: ci.failing, ciRequired: ci.required };
+}
+
 /** What is actionable on one pull request right now. */
 interface Feedback {
   /** The Inspector has unresolved findings, posted on GitHub or not. */
   findings: boolean;
-  /** The PR's CI rollup is failing (as opposed to pending or passing). */
+  /** The PR's CI counts as failing under `ciStrictness` (see `ciFollowup`). */
   ciFailing: boolean;
+  /**
+   * The required checks decided `ciFailing`, or are the ones that will once a held snapshot
+   * catches up, so the nudge names required checks.
+   */
+  ciRequired?: boolean;
   /** The PR's current head is observed conflicting with its base. */
   conflicting: boolean;
   codeRabbit?: boolean;
@@ -350,6 +467,30 @@ export function activeWorkflowOwnsSession(
   runs: readonly Pick<WorkflowRunSummary, "status">[],
 ): boolean {
   return runs.some((run) => !["completed", "cancelled", "failed"].includes(run.status));
+}
+
+/**
+ * Does a workflow run hold Foreman's PR follow-through for this session? Gate 6's input.
+ *
+ * Narrower than `activeWorkflowOwnsSession`: a blocked run that only the operator or the session
+ * can restart (`workflowRunReleasesFollowup`) delivers nothing while it waits, so it stops
+ * silencing findings, CI and conflicts. Every other caller still asks the wider question.
+ */
+export function workflowHoldsReviewFollowup(
+  runs: readonly Pick<WorkflowRunSummary, "status" | "phase" | "round" | "maxRepairRounds">[],
+): boolean {
+  return runs.some((run) => activeWorkflowOwnsSession([run]) && !workflowRunReleasesFollowup(run));
+}
+
+/**
+ * True when open runs own the session but none holds the follow-through. Such a session must be
+ * decided with CodeRabbit auto-resolve off, because the inject route's CodeRabbit guard still
+ * refuses while any run is open.
+ */
+export function workflowReleasedFollowupOnly(
+  runs: readonly Pick<WorkflowRunSummary, "status" | "phase" | "round" | "maxRepairRounds">[],
+): boolean {
+  return activeWorkflowOwnsSession(runs) && !workflowHoldsReviewFollowup(runs);
 }
 
 /**
@@ -381,6 +522,17 @@ function unresolvedFindings(findings: readonly InspectorComment[]): InspectorCom
 }
 
 /**
+ * The findings a held PR still carries. A read for the snapshot's round answers, since the
+ * snapshot's count can be stale; a read for another round would pair its count with the wrong
+ * round in the log, so the snapshot answers then.
+ */
+export function heldFindingsCount(pr: FollowupPr, findings?: readonly InspectorComment[], findingsRound?: number): number {
+  const round = pr.inspector?.round ?? 0;
+  if (findings && findingsRound === round) return dedupeInspectorFindings(unresolvedFindings(findings)).length;
+  return pr.inspector?.open ?? 0;
+}
+
+/**
  * `open` already counts drafted, posting and open rows (`INSPECTION_TALLY_FROM`), so a
  * dry-run draft triggers this exactly as a posted finding does. Once the worker has read the
  * findings, their unresolved rows answer instead: a snapshot that still counts findings
@@ -397,7 +549,7 @@ function feedbackState(
   const cr = pr.inspector?.codeRabbit;
   return {
     findings,
-    ciFailing: cfg.trackCiFailures && pr.checks === "failing",
+    ...ciFeedback(pr, cfg),
     conflicting: cfg.trackMergeConflicts && mergeabilityOf(pr) === "conflicting",
     codeRabbit: !!cfg.codeRabbitAutoResolve && cr?.status === "complete" && cr.pending > 0
       && !!cr.observationId && (cr.freshUntil ?? 0) >= now,
@@ -457,6 +609,30 @@ function decideConflictEscalation(
   return null;
 }
 
+export const SKIP_STILL_WORKING = "still working";
+export const SKIP_ALREADY_NUDGED = "already nudged this round of feedback";
+export const SKIP_NOTHING_OPEN = "no enabled review comments, failing CI or merge conflict";
+export const SKIP_ROUND_MISMATCH = "the findings read and the snapshot are from different GitHub Inspector rounds";
+
+/**
+ * The reason the held-findings log gives. A read for another round that found nothing open
+ * says nothing about the snapshot's round, so that "nothing to act on" is the round mismatch -
+ * unless review feedback is not tracked, which is then the real reason. Log wording only: the
+ * decision is unchanged.
+ */
+export function heldSkipReason(
+  pr: FollowupPr,
+  why: string,
+  findingsRound: number | undefined,
+  trackReviewComments: boolean,
+): string {
+  const stale = findingsRound !== undefined && findingsRound !== (pr.inspector?.round ?? 0);
+  return stale && trackReviewComments && why === SKIP_NOTHING_OPEN ? SKIP_ROUND_MISMATCH : why;
+}
+
+/** The normal waiting states. The worker never logs them as a hold, or the line would repeat every pass. */
+export const ROUTINE_FOLLOWUP_SKIPS: ReadonlySet<string> = new Set([SKIP_STILL_WORKING, SKIP_ALREADY_NUDGED]);
+
 /**
  * Is this session a candidate for a review follow-through nudge? Every branch is an early
  * return and the order is the policy.
@@ -492,7 +668,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
 
   // 3. There has to be an OPEN pull request to speak about. A merged one is done; a
   //    closed-unmerged one is dropped like no PR at all (see `Session.prUrl`). WHICH one is
-  //    the caller's choice now - `followupPrs` enumerates them and a multi-repo session has
+  //    the caller's choice now - `reviewFollowupPrs` enumerates them and a multi-repo session has
   //    several - but the gate is the same one, and it still reads as a property of the
   //    session in the log: nothing here to follow through on.
   if (!pr) return skip("no open pull request");
@@ -535,13 +711,13 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   const conflictOpen = fb.conflicting && !cur.conflictEscalated && !pr.conflictEscalated;
   const open: Feedback = { ...fb, conflicting: conflictOpen };
   if (!open.findings && !open.ciFailing && !open.conflicting && !open.codeRabbit) {
-    return skip("no enabled review comments, failing CI or merge conflict");
+    return skip(SKIP_NOTHING_OPEN);
   }
 
   // 8. Only a settled-idle session with a delivery channel. The idle gate is what keeps
   //    this from interrupting an agent already working the fixes: once it acts on a nudge
   //    it is no longer idle, so it is not re-selected until it parks again.
-  if (!settledIdle(s, now, cfg.settleMs)) return skip("still working");
+  if (!settledIdle(s, now, cfg.settleMs)) return skip(SKIP_STILL_WORKING);
   if (!hasPane(s)) return skip("no pane to type into");
 
   // 9. Typing is a live act, so it needs the same clearance a queue send does - live mode
@@ -559,13 +735,13 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   const ciNew = open.ciFailing && !cur.ciNudged;
   const conflictNew =
     open.conflicting && pr.headSha !== cur.conflictHead && cur.conflictNudges < CONFLICT_NUDGE_CAP;
-  if (!findingsNew && !ciNew && !conflictNew && !open.codeRabbit) return skip("already nudged this round of feedback");
+  if (!findingsNew && !ciNew && !conflictNew && !open.codeRabbit) return skip(SKIP_ALREADY_NUDGED);
 
   // The findings read and this snapshot must describe the same Inspector round, or the payload
   // would carry one round's set under another round's stamp. Nothing is stamped, so the next
   // pass, whose snapshot has caught up, relays the round exactly once.
   if (open.findings && read && input.findingsRound !== round) {
-    return skip("the findings read and the snapshot are from different GitHub Inspector rounds");
+    return skip(SKIP_ROUND_MISMATCH);
   }
 
   // Stamp every currently-open dimension as relayed. The payload covers everything open, so
@@ -575,6 +751,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
     ...cur,
     findingsRound: open.findings ? round : cur.findingsRound,
     ciNudged: cur.ciNudged || open.ciFailing,
+    ciHead: open.ciFailing ? pr.headSha : cur.ciHead,
     ...(conflictNew
       ? { conflictHead: pr.headSha, conflictNudges: cur.conflictNudges + 1, conflictNudgedAt: now }
       : {}),
@@ -605,7 +782,7 @@ function describe(pr: FollowupPr, fb: Feedback, read: readonly InspectorComment[
   const where = pr.repoRoot !== null ? ` in ${pr.repoRoot}` : "";
   const parts: string[] = [];
   if (fb.findings) parts.push(`${open} unresolved finding(s)`);
-  if (fb.ciFailing) parts.push("CI failing");
+  if (fb.ciFailing) parts.push(fb.ciRequired ? "required CI failing" : "CI failing");
   if (fb.conflicting) parts.push(`merge conflicts with ${pr.baseRef ?? "its base"}`);
   return `${parts.join(" + ")}${where}`;
 }
@@ -650,7 +827,7 @@ export function buildPayload(
       `GitHub Inspector has ${n} unresolved finding${n === 1 ? "" : "s"} on it (${publicationCounts(relayed)})`,
     );
   }
-  if (fb.ciFailing) problems.push("its CI checks are failing");
+  if (fb.ciFailing) problems.push(fb.ciRequired ? "its required CI checks are failing" : "its CI checks are failing");
   // `baseRefName` rides every poll, so a missing base is a rare race; say so rather than
   // guess `main`.
   if (fb.conflicting) {
@@ -687,15 +864,17 @@ export function buildPayload(
   // By URL rather than number: a bare number makes `gh` pick the repository from the remotes,
   // which on a fork means asking about the parent - and an org enforcing SAML SSO refuses that.
   if (fb.ciFailing) {
-    steps.push(
-      `Look at the failing CI (\`gh pr checks ${pr.url}\`), reproduce it locally, and fix it.`,
-    );
+    steps.push(fb.ciRequired
+      ? `Look at the failing required checks (\`gh pr checks ${pr.url} --required\`), reproduce them locally, and fix them.`
+      : `Look at the failing CI (\`gh pr checks ${pr.url}\`), reproduce it locally, and fix it.`);
   }
   // The merge-in method has one owner, shared with the workflow's conflict repair round.
   if (fb.conflicting) steps.push(...mergeConflictResolutionSteps(pr.baseRef).split("\n"));
   steps.push("Commit and push.");
+  // Whenever the required checks decide, failing, passing or held, "CI is green" would send
+  // the agent after a non-required check the operator chose not to count.
   steps.push(
-    "Then keep watching the PR until CI is green and the review threads are resolved - " +
+    `Then keep watching the PR until ${fb.ciRequired ? "the required checks are" : "CI is"} green and the review threads are resolved - ` +
       "GitHub Inspector re-reviews each push automatically, so wait for it and answer anything new.",
   );
 

@@ -35,6 +35,10 @@ Reviews that dropped off-diff or over-cap findings are reviewed again on the sam
 their retained findings resolve. The existing review-round limit still applies. An unreviewable
 Live diff reports an error with backoff instead of silently waiting for clean publication.
 
+GitHub refuses a pull request's own diff past 300 files or 20,000 lines, so Inspector reads that
+pull request's diff through the compare API instead, which returns the same merge-base diff. Only
+a diff too large for both, or past the 16MB buffer, parks the pull request until a push.
+
 The session chip says **no open findings** and names the reviewed commit. Its Live checkmark means
 the final clean review was confirmed for the observed PR head; a pending or stale review shows an
 ellipsis. Workflow completion remains a separate state. Dry run also requires a review of the
@@ -221,11 +225,15 @@ check, and stores it with the pull request, keyed to that commit. Nothing polls 
 time for it. For each check the query also reads `isRequired(pullRequestNumber:)`, whether GitHub
 marks it required on this pull request, and for the head it reads `contexts.totalCount`, the
 number of checks GitHub reports, which can exceed the first 100 the query reads. Both are stored
-with the snapshot; a snapshot stored before they existed reads as nothing marked required. Two
+with the snapshot; a snapshot stored before they existed reads as nothing marked required. Three
 things read the snapshot:
 
 - A workflow's [Wait for CI](workflows.md#wait-for-ci) node, which decides from it whether the
   pull request's CI passed, failed, or never reported.
+- Foreman, when **Which failures count** is set to Required checks
+  ([Keeping a PR on track](work-queues.md#keeping-a-pr-on-track)). It reads only the head the
+  snapshot was taken on and the required checks' rollup, through the session's Inspector
+  summary, and makes no GitHub call of its own.
 - The review itself. When the head carries a ["Flaky tests" check](flaky-tests.md#the-flaky-tests-check),
   the review prompt lists its flaky tests - name, file, job, message, history issue - fenced as
   untrusted data and capped at 20. Flakes are informational: the Inspector raises one only
@@ -310,7 +318,10 @@ closes in [three ways](#how-a-finding-gets-closed) and only one of them is a pus
 it. The ledger records the outcome, not which route produced it. A PR that has since closed reads `merged` or
 `closed` and is dimmed: it left the sweep for good, so it is history rather than a queue. A
 closed PR that *was* reviewed keeps its findings, because what the GitHub Inspector said about
-something that landed is the more useful fact.
+something that landed is the more useful fact. Its count reads as left behind, `3 unresolved at
+merge` or `3 unresolved at close`, rather than `3 findings`, since nothing will review them
+again. `merged` follows GitHub's own state as of the last poll, so a PR you merged by hand reads
+`merged` too, not only one YOLO mode merged.
 
 The count strip above the table tallies those same states and filters to one when you click
 it - on a ledger that is mostly landed work, *with findings* is how you get to the two rows
@@ -386,7 +397,11 @@ has no control.
 The modal names the pull request with a link to it, says whether it is open, merged or closed,
 and counts its review rounds. When the last review was not live and no finding on the pull
 request ever reached GitHub, it says so: "Dry run: nothing on this pull request was posted". It
-says nothing about posture for a row from a build that did not record it.
+says nothing about posture for a row from a build that did not record it. On a pull request that
+merged or closed with findings still unresolved, one line says so: "This pull request merged with
+3 findings unresolved. They are kept as a record and will not be reviewed again." The findings
+stay on the ledger as the record of what the GitHub Inspector said, and each keeps its own Posted
+label.
 
 The table is the one the [Completion tab](workflows.md) uses. Each finding shows its severity,
 title, location, round and status, and a **Posted** column that reads

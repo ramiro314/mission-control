@@ -1,4 +1,5 @@
 import { codeRabbitSummary } from "./db.ts";
+import { inspectorSummaryOf } from "@shared/inspector.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
   adoptedTransferHome, transferSummary, updateSessionTransfer, transferScopeMatches, unresolvedSessionTransfers, type SessionTransfer } from "./session-transfers/store.ts";
@@ -252,6 +253,7 @@ import {
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
   taskAutomaticCleanupSummaries,
+  taskAgentSessionIds,
   taskSessionClosureForSession,
   getTaskSessionClosure,
   retireTaskSessionClosure,
@@ -1432,6 +1434,15 @@ export class Registry extends EventEmitter {
    */
   emitArchiveChanged(): void {
     this.emitEvent({ type: "archive_changed" });
+  }
+
+  /**
+   * Announce that a Session History pass changed catalog rows. Content-free for
+   * `archive_changed`'s reason: the catalog is every session on disk, so open History pages
+   * re-read their own bounded window instead.
+   */
+  emitHistoryChanged(): void {
+    this.emitEvent({ type: "history_changed" });
   }
 
   /** Announce one fully committed, reconciled settings restore to every open dashboard. */
@@ -4110,6 +4121,7 @@ export class Registry extends EventEmitter {
         }
       }
     }
+    const pruned = new Set<string>();
     for (const binding of historicalTaskWorkEpisodeBindings()) {
       // A historical binding survives for two independent reasons, and the completion one
       // is the newer: a rolled-past episode's pull request is what `mergedPrFor` reads to
@@ -4124,6 +4136,7 @@ export class Registry extends EventEmitter {
       const dependencyEvidence = legacyTaskIds.has(binding.taskId) && binding.prUrl !== null;
       if (!mergeEvidence && !dependencyEvidence) {
         deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
+        pruned.add(binding.taskId);
         continue;
       }
       episodeKeys.add(`${binding.sessionId}\0${binding.episodeId}`);
@@ -4134,6 +4147,9 @@ export class Registry extends EventEmitter {
       if (episodeKeys.has(`${identity.sessionId}\0${identity.episodeId}`)) continue;
       deleteWorkEpisodePrompts(identity.sessionId, identity.episodeId);
     }
+    // A pruned row may be the one a held task's `agentSessionId` was read from, and every
+    // caller runs this after it has published, so the task is re-read here rather than there.
+    for (const taskId of pruned) this.refreshTaskAgentSession(taskId);
   }
 
   private hydrateTaskDependencyProvenance(): void {
@@ -4303,6 +4319,15 @@ export class Registry extends EventEmitter {
           updatedAt: Math.max(task.updatedAt, at),
         });
       }
+    }
+    // Invalidation deleted these tasks' current bindings, so `agentSessionId` now reads from
+    // a historical binding or from none. A task whose pointer had already moved on still
+    // changes, and is re-sent for that alone.
+    for (const taskId of invalidatedTaskIds) {
+      const task = updates.get(taskId) ?? this.tasks.get(taskId);
+      if (!task) continue;
+      const next = this.withAgentSession(task);
+      if (next !== task || updates.has(taskId)) updates.set(taskId, next);
     }
     for (const task of updates.values()) {
       this.tasks.set(task.id, task);
@@ -4889,6 +4914,7 @@ export class Registry extends EventEmitter {
     dbBindTaskWorkEpisode(binding);
     this.bindPendingTaskDependencies(taskId, binding, at);
     this.cleanupDependencyProvenance();
+    this.refreshTaskAgentSession(taskId);
     return true;
   }
 
@@ -7159,6 +7185,27 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Re-read a task's `agentSessionId` from its work episode bindings. Derived on read like
+   * `extraRepos`, so a task an upsert carries forward from memory would otherwise keep the
+   * value it had before its session was bound.
+   */
+  private withAgentSession(task: Task): Task {
+    const agentSessionId = taskAgentSessionIds(task.id).get(task.id) ?? null;
+    return task.agentSessionId === agentSessionId ? task : { ...task, agentSessionId };
+  }
+
+  /** Re-send one in-memory task when its bindings now name a different agent session. */
+  private refreshTaskAgentSession(taskId: string): void {
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const next = this.withAgentSession(current);
+    if (next === current) return;
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+    if (next.sessionId) this.resyncSessionTask(next.sessionId);
+  }
+
+  /**
    * A shape task with its derived `shapeTickets` recomputed; every other task unchanged.
    *
    * Derived on publish, like `automaticCleanup` is on load, so the field rides the ordinary
@@ -7261,7 +7308,7 @@ export class Registry extends EventEmitter {
   }
 
   private publishTask(published: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
-    const task = this.withProvisioning(this.withShapeTickets(published));
+    const task = this.withProvisioning(this.withShapeTickets(this.withAgentSession(published)));
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
@@ -7515,6 +7562,7 @@ export class Registry extends EventEmitter {
           status: t.status,
           outcome: t.outcome,
           outcomeUrl: t.outcomeUrl,
+          agentSessionId: t.agentSessionId,
           pipelineRun: t.pipelineRun,
           pipelineCommissionId: t.pipelineCommissionId ?? null,
           scheduleId: t.scheduleId,
@@ -9233,20 +9281,7 @@ export class Registry extends EventEmitter {
     if (!row) return null;
     const episodeKey = session ? resolvedSessionIntent(this.getGoal(session.id))?.episodeKey : undefined;
     const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
-    return {
-      codeRabbit: codeRabbitSummary(row.key, owner),
-      prKey: row.key,
-      url: row.url,
-      mode: getInspectorConfig().mode,
-      open: row.openFindings,
-      postedOpen: row.postedOpenFindings,
-      round: row.round,
-      lastReviewedAt: row.lastReviewedAt,
-      failed: row.lastError !== null,
-      reviewedHeadSha: row.headSha,
-      observedHeadSha: row.observedHeadSha,
-      cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
-    };
+    return inspectorSummaryOf(row, getInspectorConfig(), codeRabbitSummary(row.key, owner));
   }
 
   /**

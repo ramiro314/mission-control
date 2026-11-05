@@ -166,6 +166,7 @@ test("Pipeline lifecycle attention claims its host before the blocked-session ba
       status: "running",
       outcome: null,
       outcomeUrl: null,
+      agentSessionId: null,
       pipelineRun: null,
       scheduleId: null,
       scheduleOccurrenceId: null,

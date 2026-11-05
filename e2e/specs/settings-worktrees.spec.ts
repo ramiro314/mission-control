@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TerminalTargetView } from "../../src/shared/terminal.ts";
 import type { WorktreeActionPreview, WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
@@ -151,6 +153,113 @@ for (const action of ["destroy", "prune"] as const) {
     }
   });
 }
+
+test("Open terminal refuses a slot that is not idle, leases an idle one as it stands, and offers Return", async ({ dashboard, daemon }) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "open terminal target" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string; baseSha: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+  const observed = async () => (await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory)
+    .repositories.flatMap((pool) => pool.slots).find((slot) => slot.path === lease.path);
+  const launches = () => readdirSync(daemon.recordDir).filter((name) => name.startsWith("cmux-")).length;
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = pool.getByRole("article", { name: "Slot 1" });
+  await expect(slot.getByText("available", { exact: true })).toBeVisible();
+  await slot.getByLabel("Terminal backend for slot 1").selectOption("cmux");
+  const openTerminal = slot.getByRole("button", { name: "Open terminal" });
+
+  // The tooltip warns about the lease only where Open terminal would take one.
+  const LEASE_SENTENCE = /Takes a manual lease on this slot as it stands; Return gives it back\./;
+  await openTerminal.hover();
+  await expect(openTerminal).toHaveAccessibleDescription(LEASE_SENTENCE);
+
+  // An occupied slot is not idle. It is refused with acquisition's reason and nothing opens.
+  const occupant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: lease.path, stdio: "ignore" });
+  try {
+    await once(occupant, "spawn");
+    await expect.poll(async () => (await observed())?.processes.count).toBe(1);
+    await openTerminal.click();
+    await expect(slot.getByText("the slot is not idle: an available slot has process occupancy")).toBeVisible();
+    expect(launches()).toBe(0);
+    await expect(slot.getByText("available", { exact: true })).toBeVisible();
+    await shoot(dashboard, "16-open-terminal-refused");
+  } finally {
+    const exited = once(occupant, "exit");
+    occupant.kill("SIGKILL");
+    await exited;
+  }
+  await expect.poll(async () => (await observed())?.processes.count).toBe(0);
+
+  await openTerminal.click();
+  await expect(slot.getByText("leased", { exact: true })).toBeVisible();
+  await expect(slot.getByText("Terminal from Settings")).toBeVisible();
+  await openTerminal.hover();
+  await expect(openTerminal).toHaveAccessibleDescription(/\S/);
+  await expect(openTerminal).not.toHaveAccessibleDescription(LEASE_SENTENCE);
+  await expect(slot.getByText("the slot is not idle: an available slot has process occupancy")).toHaveCount(0);
+  await expect.poll(launches).toBe(1);
+  expect((await observed())?.head).toBe(lease.baseSha);
+  await shoot(dashboard, "17-open-terminal-leased");
+
+  // The lease goes back the way any manual lease does.
+  await slot.getByRole("button", { name: "Return", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  await expect(preview.getByText(lease.path)).toBeVisible();
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(slot.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(slot.getByText("Terminal from Settings")).toHaveCount(0);
+});
+
+test("a terminal that went away after the page cached it gives the slot back as it was", async ({ dashboard, daemon }) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "stale terminal target" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string; baseSha: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+
+  // Only the page's cached list is stale. The daemon that refuses the launch is the real one.
+  const { targets } = await (await dashboard.request.get(`${daemon.baseURL}/api/terminal-targets`)).json() as {
+    targets: TerminalTargetView[];
+  };
+  const gone = targets.find((target) => target.unavailable !== null);
+  if (!gone?.unavailable) throw new Error("the fixture daemon reports no unavailable terminal to go stale");
+  await dashboard.route("**/api/terminal-targets", (route) => route.fulfill({
+    json: { targets: targets.map((target) => target.id === gone.id ? { ...target, unavailable: null } : target) },
+  }));
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = pool.getByRole("article", { name: "Slot 1" });
+  await slot.getByLabel("Terminal backend for slot 1").selectOption(gone.id);
+  const opened = dashboard.waitForResponse((response) => response.url().endsWith("/open"));
+  await slot.getByRole("button", { name: "Open terminal" }).click();
+  expect((await opened).status()).toBe(409);
+
+  await expect(slot.getByText(gone.unavailable, { exact: true })).toBeVisible();
+  await expect(slot.getByText("available", { exact: true })).toBeVisible();
+  await expect(slot.getByText("Terminal from Settings")).toHaveCount(0);
+  await expect(slot.getByRole("button", { name: "Return", exact: true })).toHaveCount(0);
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  expect(inventory.repositories.flatMap((entry) => entry.slots).find((entry) => entry.path === lease.path))
+    .toMatchObject({ state: "available", owner: null, head: lease.baseSha });
+  await shoot(dashboard, "18-open-terminal-launcher-refused");
+});
 
 test("Settings Worktrees configures, inventories, previews, blocks, launches, and stays bounded", async ({
   dashboard,
@@ -461,6 +570,44 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
   await shoot(dashboard, "09-quarantined-destroy-complete");
 });
 
+/** The executable name is all that names an IDE helper, so `argv0` is the whole fixture. */
+test("a slot card names a known occupant and still counts it", async ({ dashboard, daemon }) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "named occupant" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string };
+  const script = ["-e", "setInterval(() => {}, 1000)"];
+  const named = spawn(process.execPath, script, { cwd: lease.path, stdio: "ignore", argv0: "gopls" });
+  const plain = spawn(process.execPath, script, { cwd: lease.path, stdio: "ignore" });
+  await Promise.all([once(named, "spawn"), once(plain, "spawn")]);
+
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const slot = repo.locator(".wt-slot", { hasText: lease.path });
+
+    const processes = slot.getByRole("region", { name: /^Processes in slot \d+$/ });
+    await expect(processes.getByRole("listitem").filter({ hasText: `PID ${named.pid}` }))
+      .toContainText("IDE language server");
+    const unnamed = processes.getByRole("listitem").filter({ hasText: `PID ${plain.pid}` });
+    await expect(unnamed).toBeVisible();
+    await expect(unnamed).not.toContainText("IDE language server");
+    await unnamed.scrollIntoViewIfNeeded();
+    await shoot(dashboard, "16-named-occupant");
+
+    // The name changes nothing the daemon decides: both still count as occupancy.
+    const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+    const row = inventory.repositories.flatMap((repository) => repository.slots).find((one) => one.path === lease.path);
+    expect(row?.processes.count).toBe(2);
+  } finally {
+    named.kill("SIGKILL");
+    plain.kill("SIGKILL");
+  }
+});
+
 /**
  * The card says why a slot is stuck, one fact per line: the quarantine reason and Git's detail
  * (the detail used to be hidden whenever a reason existed), the last automatic-recovery refusal
@@ -538,6 +685,652 @@ test("a quarantined slot card shows its reason, detail, last automatic-recovery 
   } finally {
     occupant.kill("SIGKILL");
     await dashboard.unroute("**/api/worktrees");
+  }
+});
+
+/**
+ * A read that fails, even after its retry, never quarantines: the slot keeps its state and its
+ * card says "Last observation failed" with the reason, until a read succeeds.
+ *
+ * The failure is written into the live lease's row, because a Git read cannot be made to time
+ * out under the e2e daemon; `test/worktree-reconciliation.test.ts` proves reconcile writes it
+ * there for a listing or a Git read that failed twice. What this proves is the rest of the path:
+ * the daemon's inventory carries the note to the card on its own line, beside a state that is
+ * still `leased`, and the pool's Reconcile, a real pass whose reads succeed, clears it.
+ */
+test("a slot whose last observation failed stays leased, says why on its card, and Reconcile clears it", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "failed observation" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const failure = "slot Git state is unknown (git status timed out after 15 s, and after 30 s on retry)";
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots SET last_error = ? WHERE active_lease_id = ? AND state = 'leased'`,
+    ).run(`Last observation failed: ${failure}`, lease.leaseId);
+    expect(Number(changed.changes)).toBe(1);
+  });
+
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const slot = repo.locator(".wt-slot", { hasText: lease.path });
+    await expect(slot.getByText("leased", { exact: true })).toBeVisible();
+    await expect(slot.getByText("quarantined", { exact: true })).toHaveCount(0);
+
+    const why = slot.getByRole("region", { name: /^Why slot \d+ is leased$/ });
+    await expect(why.getByRole("term")).toHaveText(["Last observation failed"]);
+    await expect(why.getByRole("definition")).toHaveText(failure);
+    await why.scrollIntoViewIfNeeded();
+    await shoot(dashboard, "16-last-observation-failed");
+
+    await repo.getByRole("button", { name: "Reconcile", exact: true }).click();
+    const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
+    await expect(preview.getByText(/a read that fails leaves each slot as it was/)).toBeVisible();
+    await preview.getByRole("button", { name: "Execute" }).click();
+    await expect(preview).toHaveCount(0);
+
+    await expect(why).toHaveCount(0, { timeout: EXECUTES_MS });
+    await expect(slot.getByText("leased", { exact: true })).toBeVisible();
+    await slot.scrollIntoViewIfNeeded();
+    await shoot(dashboard, "17-last-observation-cleared");
+  } finally {
+    await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } });
+  }
+});
+
+/**
+ * A slot's History is what the store wrote in the same transaction as each change, so everything
+ * here but the paged rows comes from real transitions: a lease and its return, a real Reconcile
+ * quarantining a slot that was made dirty, and a new lease while the disclosure is open. The
+ * rows that prove paging are written directly, because reaching 50 entries for real would mean
+ * dozens of real resets; `test/worktree-history.test.ts` proves the page bounds at the route.
+ */
+test("a slot card's History lists what happened to the slot, newest first, and pages back", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const acquire = async (label: string) => {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    return await response.json() as { path: string; leaseId: string };
+  };
+  const lease = await acquire("history");
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+  const toggle = history.getByRole("button", { name: "History" });
+  const entries = history.getByRole("listitem");
+
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toHaveAccessibleDescription("Show what happened to this slot, newest first");
+  await expect(entries).toHaveCount(0);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(toggle).toHaveAccessibleDescription("Hide this slot's history");
+
+  await expect(entries).toHaveCount(5);
+  await expect(entries.nth(0)).toContainText("returning → available");
+  await expect(entries.nth(0)).toContainText("returned to the pool");
+  await expect(entries.nth(0)).toContainText("by its owner");
+  await expect(entries.nth(1)).toContainText("leased → returning");
+  await expect(entries.nth(2)).toContainText("Provisioned: new slot in");
+  await expect(entries.nth(3)).toContainText("provisioning → leased");
+  await expect(entries.nth(3)).toContainText("lease granted to manual:");
+  await expect(entries.nth(4)).toContainText("new → provisioning");
+
+  // A real fault, from a real pass: the open list follows the slot without being reopened.
+  writeFileSync(join(lease.path, "stray.txt"), "left behind in an available slot\n");
+  await repo.getByRole("button", { name: "Reconcile", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(slot.getByText("quarantined", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(entries).toHaveCount(6);
+  await expect(entries.nth(0)).toContainText("available → quarantined");
+  await expect(entries.nth(0)).toContainText("available slot is dirty");
+  await expect(entries.nth(0)).toContainText("automatic");
+  await history.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "25-slot-history");
+
+  withDaemonDb(daemon, (db) => {
+    const row = db.prepare(`SELECT id, pool_id, ordinal FROM worktree_slots WHERE path = ?`).get(lease.path) as
+      { id: string; pool_id: string; ordinal: number };
+    const insert = db.prepare(
+      `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind, reason, actor)
+       VALUES (?, ?, ?, ?, 'observation', ?, 'automatic')`,
+    );
+    for (let index = 1; index <= 60; index += 1) insert.run(row.pool_id, row.id, row.ordinal, Date.now(), `paged row ${index}`);
+  });
+  await toggle.click();
+  await toggle.click();
+  await expect(entries).toHaveCount(50);
+  await expect(entries.nth(0)).toContainText("paged row 60");
+  await expect(history.getByRole("button", { name: "Show older" }))
+    .toHaveAccessibleDescription("Load the next older entries of this slot's history");
+  await history.getByRole("button", { name: "Show older" }).click();
+  await expect(entries).toHaveCount(66);
+  await expect(entries.nth(65)).toContainText("new → provisioning");
+  await expect(history.getByRole("button", { name: "Show older" })).toHaveCount(0);
+});
+
+/**
+ * A failed read raises no version, so this is the only change an open list hears about through
+ * the slot's failed-read note. The failure is real: a slot whose `.git` file no longer points at
+ * a repository cannot be read, and Reconcile's Git inspection fails twice and keeps the lease.
+ */
+test("an open History picks up a failed read as it starts and as it clears", async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history failed read" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const dotGit = join(lease.path, ".git");
+  const original = readFileSync(dotGit, "utf8");
+
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const slot = repo.locator(".wt-slot", { hasText: lease.path });
+    const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+    const entries = history.getByRole("listitem");
+    const reconcile = async () => {
+      await repo.getByRole("button", { name: "Reconcile", exact: true }).click();
+      const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
+      await preview.getByRole("button", { name: "Execute" }).click();
+      await expect(preview).toHaveCount(0);
+    };
+
+    await history.getByRole("button", { name: "History" }).click();
+    await expect(entries).toHaveCount(3);
+
+    writeFileSync(dotGit, "not a gitdir pointer\n");
+    await reconcile();
+    await expect(entries).toHaveCount(4, { timeout: EXECUTES_MS });
+    await expect(entries.nth(0)).toContainText("Failed read");
+    await expect(entries.nth(0)).toContainText("slot Git state is unknown");
+    await expect(slot.getByText("leased", { exact: true })).toBeVisible();
+
+    writeFileSync(dotGit, original);
+    await reconcile();
+    await expect(entries).toHaveCount(5, { timeout: EXECUTES_MS });
+    await expect(entries.nth(0)).toContainText("Failed read cleared");
+  } finally {
+    writeFileSync(dotGit, original);
+    await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } });
+  }
+});
+
+/**
+ * Two facts about one real Return, clicked in Settings. A closed card asks the daemon for nothing,
+ * even as its slot changes under it, so a pool of closed cards costs no reads. The rows then name
+ * the operator who clicked, not the manual owner the lease belongs to.
+ */
+test("a closed History reads nothing, and a Return from Settings is recorded as the operator's", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history operator return" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  let reads = 0;
+  dashboard.on("request", (request) => {
+    if (new URL(request.url()).pathname.endsWith("/history")) reads += 1;
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  await expect(slot.getByText("leased", { exact: true })).toBeVisible();
+
+  await slot.getByRole("button", { name: "Return", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(slot.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  expect(reads, "the slot changed while its History was closed").toBe(0);
+
+  const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+  const entries = history.getByRole("listitem");
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries).toHaveCount(6);
+  expect(reads).toBe(1);
+  await expect(entries.nth(0)).toContainText("Return done");
+  await expect(entries.nth(0)).toContainText("by the operator");
+  await expect(entries.nth(1)).toContainText("returning → available");
+  await expect(entries.nth(1)).toContainText("by the operator");
+  await expect(entries.nth(2)).toContainText("leased → returning");
+  await expect(entries.nth(2)).toContainText("by the operator");
+});
+
+/**
+ * An outcome beside the transitions, and the report it outlives. The Return is refused for real:
+ * its lease goes back through the owner's own route while the preview is open, so Execute's safety
+ * rebuild no longer matches. The list stays open throughout, because a refusal moves no slot and
+ * only the inventory's history head tells it there is a row to read.
+ */
+test("History lists a refused operation's outcome and reason, and dismissing its report keeps them", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history refused operation" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+  const entries = history.getByRole("listitem");
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries).toHaveCount(3);
+
+  await slot.getByRole("button", { name: "Return", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+  await preview.getByRole("button", { name: "Execute" }).click();
+
+  const background = dashboard.getByRole("region", { name: "Background cleanup" });
+  await expect(background.getByText("State changed after this preview.")).toBeVisible({ timeout: EXECUTES_MS });
+  const refused = entries.filter({ hasText: "Return refused" });
+  await expect(refused).toHaveCount(1, { timeout: EXECUTES_MS });
+  await expect(refused).toContainText("worktree state changed after preview; refresh before executing");
+  await expect(refused).toContainText("by the operator");
+  await expect(entries.nth(0)).toContainText("Return refused");
+  await expect(entries.nth(1)).toContainText("returning → available");
+  await history.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "26-slot-history-refused-operation");
+
+  await background.getByRole("button", { name: "Dismiss" }).click();
+  await expect(background).toHaveCount(0);
+  await dashboard.reload();
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries.filter({ hasText: "Return refused" })).toHaveCount(1);
+});
+
+/**
+ * A Kill's outcome reaches History only through the daemon's own wiring between the orphan monitor
+ * and the operations service, which nothing below the built daemon composes. A stray process in an
+ * available slot is the real path: the refusal keeps it reported, and the Kill that lands drops
+ * the tree from the report before its entry is written, so that entry proves the slot was named
+ * ahead of the Kill. The list stays open, because neither one moves the slot.
+ */
+test("History lists a Kill's outcome, refused and done, by PID and never by command", async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history kill" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+
+  const marker = "history-kill-stray-marker";
+  const stray = spawn(process.execPath, ["-e", `setInterval(() => {}, 1000) // ${marker}`], {
+    cwd: lease.path,
+    stdio: "ignore",
+  });
+  await once(stray, "spawn");
+  const pid = stray.pid!;
+
+  try {
+    // Storage scans before it answers, which is what puts the process on the slot's card.
+    await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+    const problem = dashboard.getByRole("list", { name: "Storage problems" })
+      .getByRole("listitem").filter({ hasText: `Process ${pid}` });
+    await problem.getByRole("button", { name: "Open slot" }).click();
+    const slot = dashboard.locator(".wt-slot", { hasText: lease.path });
+    const orphans = slot.getByRole("region", { name: /Orphan processes in slot/ });
+    await expect(orphans).toContainText(`PID ${pid}`);
+    const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+    const entries = history.getByRole("listitem");
+    await history.getByRole("button", { name: "History" }).click();
+    await expect(entries).toHaveCount(5);
+
+    const refused = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/processes/kill`, {
+      data: { path: lease.path, pid, startedAt: 1, command: "not this process" },
+    });
+    expect(refused.status()).toBe(409);
+    await expect(entries.nth(0)).toContainText("Kill refused", { timeout: EXECUTES_MS });
+    await expect(entries.nth(0)).toContainText(`process ${pid} does not match the reported start time and command`);
+    await expect(entries.nth(0)).toContainText("by the operator");
+
+    await orphans.getByRole("button", { name: `Kill process ${pid}` }).click();
+    const confirm = dashboard.getByRole("dialog", { name: "Kill orphan process" });
+    const killed = dashboard.waitForResponse((response) => response.url().endsWith("/api/worktrees/processes/kill"));
+    await confirm.getByRole("button", { name: "Kill process" }).click();
+    expect((await killed).status()).toBe(200);
+    await expect(orphans).toHaveCount(0);
+    await expect(entries.nth(0)).toContainText("Kill done", { timeout: EXECUTES_MS });
+    await expect(entries.nth(0)).toContainText(`Stopped process ${pid} with SIGTERM.`);
+    await expect(entries.nth(0)).toContainText("by the operator");
+    await expect(entries.filter({ hasText: marker })).toHaveCount(0);
+    await expect(entries).toHaveCount(7);
+  } finally {
+    stray.kill("SIGKILL");
+  }
+});
+
+/**
+ * The timings a card and its pool row show, from a real claim and a real new slot. The rows that
+ * prove a seed hit and the ten-slot window are written directly: an idle sibling is leased in
+ * preference to a new slot, so a real hit is a race, and copy-on-write needs a volume that can
+ * clone. `test/worktree-history.test.ts` drives a real seed, and proves the summary's arithmetic.
+ */
+test("a slot card shows its last timings and seed outcome, and the pool row its median and hit rate", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const firstLease = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "timings before a claim" },
+  });
+  expect(firstLease.status()).toBe(201);
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const saved = await dashboard.request.put(`${daemon.baseURL}/api/worktrees/config`, {
+    data: {
+      repositories: {
+        [inventory.repositories.find((pool) => pool.name === "demo-repo")!.commonDirectory]: {
+          claim: { steps: [{ argv: [process.execPath, "-e", "process.exit(0)"], env: [] }], timeoutMinutes: 5, fingerprintPaths: [] },
+        },
+      },
+    },
+  });
+  expect(saved.status()).toBe(200);
+
+  // The first slot is still held, so this lease makes a new one and runs the claim in it.
+  const accepted = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "timings" },
+  });
+  expect(accepted.status()).toBe(202);
+  const { requestId } = await accepted.json() as { requestId: string };
+  let leasePath = "";
+  await expect.poll(async () => {
+    const view = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees/manual/requests/${requestId}`)).json() as
+      { state: string; lease?: { path: string } };
+    leasePath = view.lease?.path ?? "";
+    return view.state;
+  }, { timeout: EXECUTES_MS }).toBe("granted");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const slot = repo.locator(".wt-slot", { hasText: leasePath });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const timings = slot.getByLabel(/^Slot \d+ timings$/);
+  await expect(timings.getByRole("definition").nth(0)).toHaveText(/^new slot in \d+/);
+  await expect(timings.getByRole("definition").nth(1)).toHaveText(/^succeeded in \d+/);
+  await expect(timings.getByRole("definition").nth(2)).toHaveText("none: the pool's claim configures no seed");
+  await expect(repo.getByText(/^Median new slot \d+.* · seed hit rate 0% \(0 of last 2 new slots\)$/)).toBeVisible();
+
+  const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+  await history.getByRole("button", { name: "History" }).click();
+  const entries = history.getByRole("listitem");
+  await expect(entries.nth(0)).toContainText(/Provisioned: new slot in \d+/);
+  await expect(entries.nth(0)).toContainText("by its owner");
+  await expect(entries.filter({ hasText: /Claim: succeeded in \d+/ })).toHaveCount(1);
+  const noSeed = entries.filter({ hasText: "Seed: none" });
+  await expect(noSeed).toContainText("the pool's claim configures no seed");
+
+  withDaemonDb(daemon, (db) => {
+    const row = db.prepare(`SELECT id, pool_id, ordinal FROM worktree_slots WHERE path = ?`).get(leasePath) as
+      { id: string; pool_id: string; ordinal: number };
+    const insert = db.prepare(
+      `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind, outcome, actor, duration_ms, meta)
+       VALUES (?, ?, ?, ?, ?, ?, 'owner', ?, ?)`,
+    );
+    const now = Date.now();
+    for (let index = 1; index <= 10; index += 1) {
+      const slotId = `written-slot-${index}`;
+      if (index <= 3) insert.run(row.pool_id, slotId, 50 + index, now, "seed", "placed", 1_000, null);
+      insert.run(row.pool_id, slotId, 50 + index, now, "provisioning", "new", index * 60_000, null);
+    }
+    insert.run(row.pool_id, row.id, row.ordinal, now, "seed", "placed", 12_000, JSON.stringify({ sourceOrdinal: 7 }));
+  });
+  // These writes moved no slot, so only the newest row's id can tell the open list to read again.
+  await dashboard.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(timings.getByRole("definition").nth(2)).toHaveText("from slot 7 in 12s");
+  await expect(repo.getByText("Median new slot 5m 30s · seed hit rate 30% (3 of last 10 new slots)")).toBeVisible();
+  await expect(entries.nth(0)).toContainText("Seed: from slot 7 in 12s");
+  await slot.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "26-slot-timings");
+  await repo.getByText("Median new slot 5m 30s").scrollIntoViewIfNeeded();
+  await shoot(dashboard, "27-pool-timings");
+});
+
+/**
+ * History open at 60 written rows with its older page held in flight, for the two ways a refresh
+ * can land under it. The refresh in each is real: a Return, whose two rows push the row at the
+ * cursor off the end of the newest page. Only the rows that give the list more pages are written
+ * directly.
+ */
+async function historyWithOlderPageHeld(dashboard: Page, daemon: DaemonHandle) {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history refresh race" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const seed = (from: number, to: number) => withDaemonDb(daemon, (db) => {
+    const row = db.prepare(`SELECT id, pool_id, ordinal FROM worktree_slots WHERE path = ?`).get(lease.path) as
+      { id: string; pool_id: string; ordinal: number };
+    const insert = db.prepare(
+      `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind, reason, actor)
+       VALUES (?, ?, ?, ?, 'observation', ?, 'automatic')`,
+    );
+    for (let index = from; index <= to; index += 1) insert.run(row.pool_id, row.id, row.ordinal, Date.now(), `paged row ${index}`);
+  });
+  seed(1, 60);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const history = repo.locator(".wt-slot", { hasText: lease.path }).getByRole("region", { name: /^Slot \d+ history$/ });
+  const entries = history.getByRole("listitem");
+  await history.getByRole("button", { name: "History" }).click();
+  await expect(entries).toHaveCount(50);
+
+  const olderPage = (url: URL) => url.pathname.endsWith("/history") && url.searchParams.has("before");
+  let openRoute = () => {};
+  const opened = new Promise<void>((resolve) => { openRoute = resolve; });
+  await dashboard.route(olderPage, async (route) => {
+    await opened;
+    await route.continue();
+  });
+  const older = history.getByRole("button", { name: "Show older" });
+  const held = dashboard.waitForRequest((request) => olderPage(new URL(request.url())));
+  await older.click();
+  await held;
+
+  return {
+    entries,
+    older,
+    seed,
+    /** The real Return, and the refresh it causes reaching the open list. */
+    refresh: async () => {
+      const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+        data: { leaseId: lease.leaseId },
+      });
+      expect(returned.ok()).toBe(true);
+      await expect(entries.nth(0)).toContainText("returning → available", { timeout: EXECUTES_MS });
+    },
+    /** Let the held older page answer, and wait until the card has dealt with it. */
+    answerOlder: async () => {
+      const answered = dashboard.waitForResponse((response) => olderPage(new URL(response.url())));
+      openRoute();
+      await answered;
+      await dashboard.unroute(olderPage);
+    },
+    pagedRows: async () => (await entries.allTextContents())
+      .flatMap((text) => /paged row (\d+)/.exec(text)?.[1] ?? [])
+      .map(Number),
+  };
+}
+
+test("a refresh that lands during Show older leaves every row in the list once, in order", async ({
+  dashboard,
+  daemon,
+}) => {
+  const held = await historyWithOlderPageHeld(dashboard, daemon);
+  await held.refresh();
+  await held.answerOlder();
+
+  await expect(held.entries).toHaveCount(65);
+  expect(await held.pagedRows()).toEqual(Array.from({ length: 60 }, (_, index) => 60 - index));
+  await expect(held.entries.nth(64)).toContainText("new → provisioning");
+  await expect(held.older).toHaveCount(0);
+});
+
+test("an older page that answers after a refresh started the list again is dropped, not spliced in", async ({
+  dashboard,
+  daemon,
+}) => {
+  const held = await historyWithOlderPageHeld(dashboard, daemon);
+  // More new rows than a page holds, so the refreshed page cannot reach the list it replaces.
+  held.seed(61, 120);
+  await held.refresh();
+  await expect(held.entries).toHaveCount(50);
+  await held.answerOlder();
+
+  await expect(held.older).toBeEnabled();
+  await expect(held.entries).toHaveCount(50);
+  const downFrom = (first: number, length: number) => Array.from({ length }, (_, index) => first - index);
+  expect(await held.pagedRows()).toEqual(downFrom(120, 48));
+
+  await held.older.click();
+  await expect(held.entries).toHaveCount(100);
+  expect(await held.pagedRows()).toEqual(downFrom(120, 98));
+});
+
+/**
+ * The states of History that hold no list of real rows. A slot that predates the table is real:
+ * its rows are deleted, as a slot leased before this shipped never had any. A read that fails
+ * cannot be produced from the daemon, so those replies are routed, and each is judged by what the
+ * browser's own schema check and the card do with it.
+ */
+test("History says when a slot has no entries, and when its read or an older page fails", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "history states" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  const { id: slotId, pool_id: poolId, ordinal } = withDaemonDb(daemon, (db) => {
+    const row = db.prepare(`SELECT id, pool_id, ordinal FROM worktree_slots WHERE path = ?`).get(lease.path) as
+      { id: string; pool_id: string; ordinal: number };
+    db.prepare(`DELETE FROM worktree_slot_history WHERE slot_id = ?`).run(row.id);
+    return row;
+  });
+
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const slot = repo.locator(".wt-slot", { hasText: lease.path });
+    const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
+    const toggle = history.getByRole("button", { name: "History" });
+    const entries = history.getByRole("listitem");
+    const unreadable = history.getByText("This slot's history could not be read.");
+    const empty = history.getByText("Nothing recorded for this slot yet.");
+    const reading = history.getByText("Reading this slot's history…");
+    const reopen = async () => {
+      await toggle.click();
+      await toggle.click();
+    };
+    const firstPage = (url: URL) => url.pathname.endsWith("/history") && !url.searchParams.has("before");
+
+    // The first read of all fails: only the failure shows, with nothing to imply a read or a result.
+    await dashboard.route(firstPage, (route) => route.fulfill({ status: 500, json: { error: "database is busy" } }));
+    await toggle.click();
+    await expect(unreadable).toBeVisible();
+    await expect(reading).toHaveCount(0);
+    await expect(empty).toHaveCount(0);
+    await dashboard.unroute(firstPage);
+
+    await reopen();
+    await expect(empty).toBeVisible();
+    await expect(unreadable).toHaveCount(0);
+
+    // A re-read that fails must not keep saying the slot has no history: that is no longer known.
+    await dashboard.route(firstPage, (route) => route.fulfill({ status: 500, json: { error: "database is busy" } }));
+    await reopen();
+    await expect(unreadable).toBeVisible();
+    await expect(empty).toHaveCount(0);
+    await dashboard.unroute(firstPage);
+
+    await dashboard.route(firstPage, (route) => route.fulfill({ json: { entries: "not a list", nextBefore: null } }));
+    await reopen();
+    await expect(unreadable).toBeVisible();
+    await expect(empty).toHaveCount(0);
+    await dashboard.unroute(firstPage);
+
+    await reopen();
+    await expect(empty).toBeVisible();
+    await expect(unreadable).toHaveCount(0, { timeout: 5_000 });
+
+    // An older page that fails keeps what is shown, says so, and can be asked for again.
+    withDaemonDb(daemon, (db) => {
+      const insert = db.prepare(
+        `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind, reason, actor)
+         VALUES (?, ?, ?, ?, 'observation', ?, 'automatic')`,
+      );
+      for (let index = 1; index <= 51; index += 1) insert.run(poolId, slotId, ordinal, Date.now(), `paged row ${index}`);
+    });
+    await reopen();
+    await expect(entries).toHaveCount(50);
+    const olderPage = (url: URL) => url.pathname.endsWith("/history") && url.searchParams.has("before");
+    await dashboard.route(olderPage, (route) => route.fulfill({ status: 500, json: { error: "database is busy" } }));
+    const older = history.getByRole("button", { name: "Show older" });
+    await older.click();
+    await expect(unreadable).toBeVisible();
+    await expect(entries).toHaveCount(50);
+    await dashboard.unroute(olderPage);
+    await expect(older).toBeEnabled();
+    await older.click();
+    await expect(entries).toHaveCount(51);
+    await expect(entries.nth(50)).toContainText("paged row 1");
+    await expect(unreadable).toHaveCount(0);
+    await expect(older).toHaveCount(0);
+  } finally {
+    await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } });
   }
 });
 
@@ -1093,13 +1886,15 @@ test("a slot held by a running claim shows busy and names the claim until it fin
     await held.scrollIntoViewIfNeeded();
     await shoot(dashboard, "10-slot-busy-with-claim");
 
-    // A busy slot still opens a terminal: opening a shell writes nothing. The fake cmux records it.
+    // A slot its claim is still provisioning is not idle, so Open terminal refuses it by its state,
+    // never as a slot it could not find, and nothing opens.
     const launches = () => readdirSync(daemon.recordDir).filter((name) => name.startsWith("cmux-")).length;
     const before = launches();
     await held.getByLabel("Terminal backend for slot 2").selectOption("cmux");
     await held.getByRole("button", { name: "Open terminal" }).click();
-    await expect.poll(launches).toBe(before + 1);
+    await expect(held.getByText("the slot is provisioning")).toBeVisible();
     await expect(held.getByText(/not found/)).toHaveCount(0);
+    expect(launches()).toBe(before);
 
     // Once the claim finishes, the slot is read again: leased, and no longer busy.
     writeFileSync(gate, "0");

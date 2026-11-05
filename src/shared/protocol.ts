@@ -5,7 +5,8 @@ import { z } from "zod";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "./wait-for-ci.ts";
-import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
+import { CI_STRICTNESS } from "./ci-checks.ts";
+import { WORKTREE_HISTORY_LIMITS, WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
@@ -2114,6 +2115,15 @@ export const ForemanConfigSchema = z.object({
    */
   trackCiFailures: z.boolean().default(true),
   /**
+   * Fork (ci-strictness): which failing checks count for `trackCiFailures`. `required` counts
+   * only the checks GitHub marks required on the pull request, read from the GitHub
+   * Inspector's stored snapshot (`InspectorSummary.ci`), and falls back to every check when
+   * the Inspector is off, never adopted the pull request, or nothing is marked required. It
+   * also picks the wording of the Pull Request action's CI instructions. A stored config
+   * without the key reads as `all`, today's behavior.
+   */
+  ciStrictness: z.enum(CI_STRICTNESS).default("all"),
+  /**
    * Whether Foreman keeps a session on track when its OPEN pull request conflicts with its
    * base. Off, a live session's conflict is the operator's: it goes to the attention inbox's
    * Blocked pull requests section as "Foreman can't drive this session".
@@ -2667,10 +2677,18 @@ export const InspectorInspectionSchema = z.object({
     pending: z.number(),
     delivery: z.string(),
   }).optional(),
+  // Fork (ci-strictness): `InspectorCiProjection` in `types.ts`, restated likewise.
+  ci: z.object({
+    headSha: z.string().nullable(),
+    required: z.enum(["passing", "failing", "pending"]).nullable(),
+  }).optional(),
   openFindings: z.number().int(),
   postedOpenFindings: z.number().int(),
   resolvedFindings: z.number().int(),
 });
+
+/** `GET /api/inspector/prs?state=`: only `open` is a reading the route serves. */
+export const InspectorPrsStateSchema = z.enum(["open"]);
 
 /**
  * `GET /api/inspector/findings?pr=<prKey>`: one pull request's ledger row and every finding
@@ -3119,8 +3137,8 @@ const WorktreeClaimSeedExcludeSchema = z
   );
 
 /**
- * Which ignored dependency trees a cold slot clones copy-on-write from an idle sibling before
- * its steps run, and what to leave out of the clone.
+ * Which ignored dependency trees a cold slot clones copy-on-write from a sibling before its
+ * steps run, and what to leave out of the clone.
  */
 const WorktreeClaimSeedSchema = z
   .object({
@@ -3307,6 +3325,8 @@ export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
     .strict(),
   z.object({ action: z.literal("reconcile"), poolId: WorktreeStableIdSchema }).strict(),
   z.object({ action: z.literal("recover"), slotId: WorktreeStableIdSchema }).strict(),
+  z.object({ action: z.literal("repair"), slotId: WorktreeStableIdSchema }).strict(),
+  z.object({ action: z.literal("forget"), slotId: WorktreeStableIdSchema }).strict(),
   z.object({ action: z.literal("removeUnowned"), path: z.string().min(1).max(4096) }).strict(),
   z
     .object({
@@ -3371,6 +3391,40 @@ export const OpenWorktreeSchema = z
 export const StopWorktreeClaimSchema = z
   .object({ claimId: z.string().min(1).max(128) })
   .strict();
+
+/** One page of a slot's history, newest first. `before` is the `nextBefore` of the page above. */
+export const WorktreeSlotHistoryQuerySchema = z
+  .object({ before: z.coerce.number().int().positive().optional() })
+  .strict();
+
+/**
+ * One row of a slot's history. `kind` and `actor` are read as strings, like a slot's `state`: a
+ * value a later build appended stays readable after a downgrade instead of hiding the page.
+ */
+export const WorktreeSlotHistoryEntrySchema = z.object({
+  id: z.number().int().positive(),
+  slotId: z.string(),
+  ordinal: z.number().int(),
+  at: z.number(),
+  kind: z.string(),
+  fromState: z.string().nullable(),
+  toState: z.string().nullable(),
+  reason: z.string().nullable(),
+  detail: z.string().nullable(),
+  operation: z.string().nullable(),
+  outcome: z.string().nullable(),
+  actor: z.string().nullable(),
+  durationMs: z.number().nullable(),
+  meta: z.record(z.unknown()).nullable(),
+});
+export type WorktreeSlotHistoryEntry = z.infer<typeof WorktreeSlotHistoryEntrySchema>;
+
+export const WorktreeSlotHistoryPageSchema = z.object({
+  entries: z.array(WorktreeSlotHistoryEntrySchema).max(WORKTREE_HISTORY_LIMITS.pageEntries),
+  /** Null on the last page. */
+  nextBefore: z.number().int().positive().nullable(),
+});
+export type WorktreeSlotHistoryPage = z.infer<typeof WorktreeSlotHistoryPageSchema>;
 
 /**
  * Partial update of the harnesses config from the dashboard.

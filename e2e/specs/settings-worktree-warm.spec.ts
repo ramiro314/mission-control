@@ -65,6 +65,96 @@ function alive(pid: number): boolean {
   }
 }
 
+/** One idle slot in a pool whose claim runs `STEP_SCRIPT` until `gate` appears, with its pool open. */
+async function openWarmablePool(dashboard: Page, daemon: DaemonHandle, gate: string, pidFile: string): Promise<Locator> {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "idle slot" },
+  });
+  expect(acquired.status()).toBe(201);
+  const { leaseId } = await acquired.json() as { leaseId: string };
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId } });
+  expect(returned.ok()).toBe(true);
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const saved = await dashboard.request.put(`${daemon.baseURL}/api/worktrees/config`, {
+    data: {
+      repositories: {
+        [inventory.repositories.find((repo) => repo.name === "demo-repo")!.commonDirectory]: {
+          claim: {
+            steps: [{ argv: [process.execPath, "-e", STEP_SCRIPT, gate, pidFile], env: [] }],
+            timeoutMinutes: 5,
+            fingerprintPaths: [],
+          },
+        },
+      },
+    },
+  });
+  expect(saved.status()).toBe(200);
+  const pool = await openPool(dashboard, daemon);
+  await expect(pool.getByRole("article", { name: "Slot 1" }).getByRole("button", { name: "Warm", exact: true })).toBeVisible();
+  return pool;
+}
+
+/** Warm slot 1 through its preview, and the operation's row. */
+async function warmSlotOne(dashboard: Page, pool: Locator): Promise<Locator> {
+  await pool.getByRole("article", { name: "Slot 1" }).getByRole("button", { name: "Warm", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "warm worktree preview" });
+  await dialog.getByRole("button", { name: "Execute" }).click();
+  await expect(dialog).toHaveCount(0);
+  return dashboard.getByRole("region", { name: "Warm operations" }).getByRole("listitem", { name: "Warm slot 1" });
+}
+
+test("a Warm's card keeps advancing while every inventory read is slower than its revision bumps", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-warm-slow-"));
+  const gate = join(dir, "gate");
+  const pool = await openWarmablePool(dashboard, daemon, gate, join(dir, "pid"));
+
+  // A loaded machine's inventory read: slower than the once-a-second bump a running Warm's tail
+  // publishes, so a newer read always starts before the last one lands.
+  await dashboard.route("**/api/worktrees", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    await route.continue();
+  });
+
+  const single = await warmSlotOne(dashboard, pool);
+  await expect(single).toContainText("in progress", { timeout: WARM_SETTLES_MS });
+  const tail = single.getByLabel("Warm slot 1 output");
+  await expect(tail).toContainText("fetched package 3", { timeout: WARM_SETTLES_MS });
+  await expect(tail).toContainText("fetched package 30", { timeout: WARM_SETTLES_MS });
+
+  writeFileSync(gate, "0");
+  await expect(single).toContainText("finished", { timeout: WARM_SETTLES_MS });
+});
+
+test("an inventory read that never answers cannot freeze a Warm's card", async ({ dashboard, daemon }) => {
+  test.setTimeout(150_000);
+  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-warm-hung-"));
+  const gate = join(dir, "gate");
+  const pool = await openWarmablePool(dashboard, daemon, gate, join(dir, "pid"));
+
+  const single = await warmSlotOne(dashboard, pool);
+  await expect(single).toContainText("in progress", { timeout: WARM_SETTLES_MS });
+
+  // A connection stalled across a machine sleep. With the Warm running, only revision bumps start
+  // reads now, and this one is never answered.
+  let held = false;
+  await dashboard.route("**/api/worktrees", async (route) => {
+    if (held) await route.continue();
+    else held = true;
+  });
+  await expect.poll(() => held).toBe(true);
+
+  // A read has a deadline of a minute, and then the bumps it held back read again. A three-digit
+  // package is 25 s past the hold, so it can only have arrived through a later read.
+  await expect(single.getByLabel("Warm slot 1 output")).toContainText(/fetched package \d{3}$/m, { timeout: 90_000 });
+
+  writeFileSync(gate, "0");
+  await expect(single).toContainText("finished", { timeout: WARM_SETTLES_MS });
+});
+
 test("Warm and Warm idle slots prepare idle slots with a live tail, Cancel, and a kept log", async ({
   dashboard,
   daemon,

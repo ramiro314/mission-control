@@ -279,6 +279,19 @@ popover's **Pull requests** section has three independent, default-on controls:
   PR's branch. It also adds CI follow-through instructions when a workflow prepares a Pull
   Request action: wait for checks, make scoped repairs with focused tests, push to the same
   branch, and verify CI for the new head before ending the turn.
+- **Which failures count** (`ciStrictness`), under the CI control and disabled while it is off,
+  chooses **All checks** (the default) or **Required checks**. All checks nudges on GitHub's whole
+  rollup, as the PR card's CI chip shows it. Required checks nudges only when a check GitHub
+  marks required on the PR is failing, read from the
+  [GitHub Inspector's stored CI snapshot](inspector-and-shipping.md#ci-and-flaky-tests) rather
+  than a new poll, and the nudge points at `gh pr checks <url> --required`. Every check counts
+  instead when the Inspector is off (even if CodeRabbit follow-up keeps the snapshot fresh), when
+  it never adopted the PR, or when no check on the head is marked required. A head with more
+  checks than the snapshot holds (over 100) counts every check unless a required one among those
+  read is failing. While the snapshot is for an older head than the PR's, Foreman holds: it
+  neither nudges nor treats the failure as over until the Inspector reads the new head, and CI
+  that counts as failing on that new head is a new episode, whichever rule counted it. The PR card's CI chip is
+  unchanged and still shows every check.
 - **Keep sessions on track with merge conflicts** (`trackMergeConflicts`) nudges the parked
   session when its pull request conflicts with its base: merge the base branch in
   (`git fetch origin <base>`, `git merge origin/<base>`), resolve every conflict, run the tests
@@ -288,8 +301,9 @@ popover's **Pull requests** section has three independent, default-on controls:
   inbox's [Blocked pull requests](attention-and-alerts.md) section as "Foreman can't drive
   this session".
 
-Workflow PR instructions read the CI preference at packet preparation, independently of the
-findings preference and the Foreman worker's mode or enabled state. The workflow's own
+Workflow PR instructions read the CI preference, and which failures count, at packet
+preparation, independently of the findings preference and the Foreman worker's mode or enabled
+state. With Required checks they ask the session to watch and fix the required checks. The workflow's own
 delivery authorization still controls whether the packet may be sent. Prepared and delivered
 packets keep their exact instructions across setting changes and retries; the next newly
 prepared action uses the new setting. Other action completion kinds receive no CI policy.
@@ -310,6 +324,13 @@ Both apply to parked sessions on harnesses Foreman can reliably drive - currentl
 and Codex sessions launched with Mission Control's scoped hooks - whether the PR came from
 **Straight to PR**, a review workflow, or one you shipped by hand.
 
+The session card shows only the PR its current work episode accepted, so a session that returned
+to an older PR's branch can show none. Foreman also follows the GitHub Inspector's adoption: an
+open PR the Inspector adopted under that session, in its repository, whose head branch is the
+session's current branch, has its unresolved findings relayed even when the card shows no PR.
+Such a PR carries only its findings. CI, conflict and CodeRabbit follow-through stay with the
+card's PR.
+
 Each nudge is typed into the session's pane, so it carries the usual gates and one more:
 
 - it only **types** in **live** mode on an **allowlisted** repo, exactly like direct
@@ -321,11 +342,25 @@ Each nudge is typed into the session's pane, so it carries the usual gates and o
   CI that merely goes green does not re-nudge the findings already relayed);
 - it stands down while the session **needs you**, while it has a live **work queue**
   (the drain trigger owns that checkout), and while a non-terminal **workflow run owns the
-  session and branch**;
+  session and branch**. A run **Blocked** where only you or the session can restart it is the
+  exception: one that spent its repair budget, or stopped on `unchanged_evidence_exhausted` or
+  `session_disappeared`, delivers nothing while it waits, so findings, failing CI and conflicts
+  reach the session again. Granting rounds, reattaching or resubmitting puts the run back in
+  charge, and every other blocked phase keeps holding the session. CodeRabbit follow-up still
+  waits for the run to finish;
 - the findings half counts every **unresolved** GitHub Inspector finding, whether it was
   posted on GitHub, is being posted, or was drafted and never posted (in dry run, for example).
   The Inspector's mode decides only whether a finding reaches GitHub, never whether the session
   hears about it. Foreman's own gates above still decide whether it types at all.
+
+When a gate holds a pull request that has unresolved GitHub Inspector findings, the Foreman worker
+logs one line naming the session, the pull request, the number of findings, the Inspector round
+and the gate, for example
+`[foreman] my-session: holding 3 GitHub Inspector finding(s) on owner/repo#123 (round 7) - an active workflow owns this session`.
+It logs once per pull request, round and reason, so the line appears again only when the
+Inspector finishes a round or a gate that has not yet held that pull request this round holds it. A pull request with no unresolved findings is
+never logged, and neither are the normal waiting states: a session that is still working, and a
+round that was already relayed.
 
 #### The findings a nudge carries
 

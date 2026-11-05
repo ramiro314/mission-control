@@ -1,13 +1,16 @@
-import { mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
-// Settings > Worktrees: the claim editor's seed fields. Seed paths and exclusions save with the
-// rest of the claim through the settings route, a refusal lands beside the seed field that
-// holds the glob, a saved seed comes back into a fresh page, and blank fields save a claim that
-// never seeds. Nothing is dispatched, so no agent runs; every agent binary stays faked anyway.
+// Settings > Worktrees: the claim editor's seed fields, and a seed's source on the slot it
+// seeded. Seed paths and exclusions save with the rest of the claim through the settings route,
+// a refusal lands beside the seed field that holds the glob, a saved seed comes back into a fresh
+// page, and blank fields save a claim that never seeds. Nothing is dispatched, so no agent runs;
+// every agent binary stays faked anyway.
 
 const EVIDENCE = artifactsDir("settings-worktree-seed");
 
@@ -18,6 +21,14 @@ async function shoot(page: Page, target: Locator, name: string): Promise<void> {
   await target.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
   // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-worktree-seed/${name}.png`);
+}
+
+/** A slot card whole: at the default viewport its upper half sits under the page's chrome. */
+async function shootCard(page: Page, card: Locator, name: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  await page.setViewportSize({ width: 1600, height: 2000 });
+  await card.scrollIntoViewIfNeeded();
+  await shoot(page, card, name);
 }
 
 async function openEditor(page: Page, daemon: DaemonHandle): Promise<Locator> {
@@ -62,7 +73,7 @@ test("the claim editor saves seed paths and exclusions, and refuses a bad glob b
   await expect(seedPaths).toHaveValue("");
   await expect(seedExclude).toHaveValue("");
   await expect(editor.getByText(
-    "A cold slot (new, never claimed, failed or interrupted) clones these ignored paths copy-on-write from an idle sibling before its steps run. A slot whose last claim succeeded seeds only when it is stale and a sibling matches its commit exactly.",
+    "A cold slot (new, never claimed, failed or interrupted) clones these ignored paths copy-on-write from an idle sibling, or a quarantined one when none is idle, before its steps run. A slot whose last claim succeeded seeds only when it is stale and a sibling matches its commit exactly.",
     { exact: false },
   )).toBeVisible();
 
@@ -119,4 +130,107 @@ test("the claim editor saves seed paths and exclusions, and refuses a bad glob b
   const unseeded = await storedClaim(dashboard, daemon);
   expect(unseeded?.seed).toBeUndefined();
   expect(unseeded?.steps).toEqual([{ argv: ["yarn", "install", "--immutable"], env: [] }]);
+});
+
+/**
+ * A real seed from a real quarantined sibling. The source is chosen and held by the daemon, and
+ * only its quarantine is written directly. Whether the clone lands depends on the disk: a volume
+ * that can clone places the seed, and one that cannot abandons it, so either way the source is
+ * real and on the card. The placed wording is then proven from a written row, as the timings
+ * spec does, because CI's volume cannot clone. `test/worktree-seed.test.ts` drives a placed seed.
+ */
+test("a slot seeded from a quarantined sibling shows that source in its timings and History", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  // Ignored through the shared `info/exclude`, so the seed's target proves the path ignored too.
+  const excludes = join(daemon.repo, ".git", "info", "exclude");
+  appendFileSync(excludes, "deps/\n");
+
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "the seed's source" },
+  });
+  expect(acquired.status()).toBe(201);
+  const source = await acquired.json() as { path: string; leaseId: string };
+  const marker = join(source.path, "deps", "marker");
+  mkdirSync(join(source.path, "deps"));
+  writeFileSync(marker, "installed in the source\n");
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: source.leaseId },
+  });
+  expect(returned.status()).toBe(200);
+
+  const editor = await openEditor(dashboard, daemon);
+  await editor.getByRole("button", { name: "Add step" }).click();
+  await editor.getByLabel("Step 1 command, one argument per line").fill(`${process.execPath}\n-e\nprocess.exit(0)`);
+  await editor.getByLabel("Seed paths, one repository-relative glob per line").fill("deps");
+  expect(await save(dashboard, editor)).toBe(200);
+
+  // The source's install is `current`, its owner is gone, and nothing runs in it. This reason is
+  // none automatic recovery clears, so no maintenance pass can bring it back mid-spec.
+  const row = withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+              quarantine_reason = 'return reset failed', last_error = NULL,
+              deps_state = 'current', deps_claimed_at = ?
+        WHERE path = ?`,
+    ).run(Date.now(), Date.now(), source.path);
+    return db.prepare(`SELECT id, pool_id, ordinal, version FROM worktree_slots WHERE path = ?`).get(source.path) as
+      { id: string; pool_id: string; ordinal: number; version: number };
+  });
+
+  const accepted = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "the seeded slot" },
+  });
+  expect(accepted.status()).toBe(202);
+  const { requestId } = await accepted.json() as { requestId: string };
+  let leasePath = "";
+  await expect.poll(async () => {
+    const view = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees/manual/requests/${requestId}`)).json() as
+      { state: string; lease?: { path: string } };
+    leasePath = view.lease?.path ?? "";
+    return view.state;
+  }, { timeout: 60_000 }).toBe("granted");
+  expect(leasePath).not.toBe(source.path);
+
+  await dashboard.reload();
+  await openEditor(dashboard, daemon);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const seeded = pool.locator(".wt-slot", { hasText: leasePath });
+  const copiedFrom = new RegExp(`^(from|abandoned copying from) quarantined slot ${row.ordinal} `);
+  const timings = seeded.getByLabel(/^Slot \d+ timings$/);
+  await expect(timings.getByRole("definition").nth(2)).toHaveText(copiedFrom);
+
+  const history = seeded.getByRole("region", { name: /^Slot \d+ history$/ });
+  await history.getByRole("button", { name: "History" }).click();
+  const seedEntry = history.getByRole("listitem").filter({ hasText: `quarantined slot ${row.ordinal}` });
+  await expect(seedEntry).toHaveCount(1);
+  await expect(seedEntry).toContainText("Seed: ");
+  await shootCard(dashboard, seeded, "03-seed-from-a-quarantined-slot-on-this-disk");
+
+  // The source is still quarantined, as it was, with its install in place.
+  await expect(pool.getByRole("article", { name: `Slot ${row.ordinal}`, exact: true })).toContainText("return reset failed");
+  expect(withDaemonDb(daemon, (db) => db.prepare(`SELECT state, version FROM worktree_slots WHERE id = ?`).get(row.id)))
+    .toEqual({ state: "quarantined", version: row.version });
+  expect(readFileSync(marker, "utf8")).toBe("installed in the source\n");
+
+  // What a volume that can clone shows, which also feeds the card through the same row.
+  withDaemonDb(daemon, (db) => {
+    const target = db.prepare(`SELECT id, pool_id, ordinal FROM worktree_slots WHERE path = ?`).get(leasePath) as
+      { id: string; pool_id: string; ordinal: number };
+    db.prepare(
+      `INSERT INTO worktree_slot_history (pool_id, slot_id, ordinal, at, kind, outcome, actor, duration_ms, meta)
+       VALUES (?, ?, ?, ?, 'seed', 'placed', 'owner', 12000, ?)`,
+    ).run(target.pool_id, target.id, target.ordinal, Date.now() + 1_000, JSON.stringify({
+      sourceSlotId: row.id,
+      sourceOrdinal: row.ordinal,
+      sourceQuarantined: true,
+    }));
+  });
+  await dashboard.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(timings.getByRole("definition").nth(2)).toHaveText(`from quarantined slot ${row.ordinal} in 12s`);
+  await expect(history.getByRole("listitem").filter({ hasText: `Seed: from quarantined slot ${row.ordinal} in 12s` })).toHaveCount(1);
+  await shootCard(dashboard, seeded, "04-seed-placed-from-a-quarantined-slot");
 });

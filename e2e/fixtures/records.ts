@@ -50,7 +50,7 @@ export function recordsIn<T>(
  * then exec what follows `--` in place, so a spec can see a launch went through the session
  * scope without a real scope ever being made.
  */
-export function scopeArgvs(recordDir: string, prefix: "systemd-run-" | "choom-"): string[][] {
+export function scopeArgvs(recordDir: string, prefix: "systemd-run-" | "systemctl-" | "choom-"): string[][] {
   if (!existsSync(recordDir)) return [];
   return readdirSync(recordDir)
     .filter((name) => name.startsWith(prefix) && name.endsWith(".argv"))

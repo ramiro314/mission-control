@@ -1,0 +1,470 @@
+import { watch, type FSWatcher } from "node:fs";
+import { setImmediate as yieldToLoop, setTimeout as sleep } from "node:timers/promises";
+import { isHistoryConversationKind, type HistoryProgress, type HistoryRetention } from "@shared/history.ts";
+import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
+import { HARNESSES } from "../harness/index.ts";
+import type { HistoryFile, HistoryParse, HistorySpec } from "../harness/types.ts";
+import { unref } from "../util/timers.ts";
+import { resolveHistoryRepository } from "./repository.ts";
+import { historyFieldsSegment, historyPromptSegments } from "./search.ts";
+import type { HistoryIndexEntry, HistorySearchWrite, HistoryStore, HistoryUpsert } from "./store.ts";
+
+/**
+ * Keeps the Session History catalog in step with the agents' transcript stores, on the Scout
+ * archive reconciler's model (`archives/reconciler.ts`):
+ *
+ * - **Unchanged transcripts cost one `lstat`.** A file whose size, mtime and inode match its
+ *   row is not opened. A changed one is re-summarized from where its last parse stopped.
+ * - **Backfill is newest first, in small batches.** Each batch is summarized, written in ONE
+ *   short transaction, and followed by a yield to the event loop, so a first run over
+ *   thousands of transcripts never holds the daemon or SQLite for long. Progress is exposed
+ *   so the page can say "Indexing N of M sessions" while rows appear.
+ * - **Search text follows the kind.** A conversation indexes every user prompt; a background
+ *   run (one-shot, reviewer) only its capped first prompt, which is in its fields segment,
+ *   because its prompts are large generated diffs.
+ * - **Gone follows a COMPLETE walk.** A row is marked gone only when a pass walked every root
+ *   of its harness and did not see the file - never because a root could not be read or a
+ *   pass was stopped. Rows are never deleted.
+ * - **One row per session id, from its canonical file.** Several files can carry one id once
+ *   a History Resume copies a transcript for a fork. A recorded copy is never canonical; of
+ *   the rest the harness's stable rule chooses (`HistorySpec.canonical`), never scan order.
+ *   A row whose canonical file disappears is marked gone, never repointed at a recorded copy;
+ *   an unrecorded file with its id (a transcript moved with its project folder) competes like
+ *   any other, so an incremental and a rebuilt catalog choose the same file.
+ * - **The watcher is a hint; the scan is the authority.** `fs.watch` on each root (recursive
+ *   where the platform has it) asks for a pass shortly after a transcript moves, so an open
+ *   page sees a session within seconds. Watchers drop events, overflow, and cannot watch a
+ *   root that does not exist yet, so a missed event only delays a row until the next pass.
+ * - **One `onChanged` per changing pass.** A pass that wrote or marked any row calls it once,
+ *   never once per file or batch; a pass that changed nothing does not call it.
+ *
+ * Started after the daemon is serving, and never awaited by startup.
+ */
+
+/**
+ * How long after a watch event the pass starts. Further events in the window fold into the
+ * same pass, so a live session appending every few hundred milliseconds costs about one walk
+ * a second, not one per write.
+ */
+const WATCH_DEBOUNCE_MS = 1000;
+
+export interface HistoryReader {
+  agent: AgentType;
+  spec: HistorySpec;
+}
+
+export interface HistoryReconcilerOptions {
+  store: HistoryStore;
+  /** Defaults to every harness with a non-null `history` slot. */
+  readers?: readonly HistoryReader[];
+  /** Recurring cadence in ms, or null to run only when triggered. */
+  intervalMs?: number | null;
+  /** Whether to watch the roots for hints. Off in tests that drive passes directly. */
+  watch?: boolean;
+  /** Called once after a pass that wrote or marked any row. Never once per file. */
+  onChanged?: () => void;
+  batchSize?: number;
+  /** An extra pause after each batch; 0 in production. */
+  batchPauseMs?: number;
+  /** Repository resolution, injectable for tests. Defaults to the store's pools and tasks. */
+  resolveRepository?: (cwd: string | null) => string | null;
+  now?: () => number;
+}
+
+/** What one pass did, for tests and a log line. */
+export interface HistoryReconcilePass {
+  scanned: number;
+  indexed: number;
+  gone: number;
+  failed: number;
+  complete: boolean;
+}
+
+/** Every harness that has a history reader, in `AGENT_TYPES` order. */
+export function historyReaders(): HistoryReader[] {
+  return AGENT_TYPES.flatMap((agent) => {
+    const spec = HARNESSES[agent].history;
+    return spec ? [{ agent, spec }] : [];
+  });
+}
+
+/** A row's search text: its fields, and its prompts when it is a conversation. */
+function searchWrite(parse: HistoryParse, repoRoot: string | null): HistorySearchWrite {
+  const conversation = isHistoryConversationKind(parse.summary.kind);
+  return {
+    fields: historyFieldsSegment({ ...parse.summary, repoRoot }),
+    prompts: conversation ? historyPromptSegments(parse.prompts) : [],
+    // A background run keeps no prompt segments, so one indexed while it still looked like a
+    // conversation loses them here.
+    resetPrompts: parse.fromStart || !conversation,
+  };
+}
+
+function sameFile(entry: HistoryIndexEntry | undefined, file: HistoryFile): boolean {
+  const known = entry?.fingerprint;
+  return !!entry
+    && !!known
+    && entry.transcriptState === "present"
+    && entry.transcriptPath === file.path
+    && known.size === file.fingerprint.size
+    && known.mtimeMs === file.fingerprint.mtimeMs
+    && known.ino === file.fingerprint.ino;
+}
+
+/** A fingerprint as one comparable string. */
+function fingerprintKey(file: HistoryFile): string {
+  return `${file.fingerprint.ino}:${file.fingerprint.size}:${file.fingerprint.mtimeMs}`;
+}
+
+/** Every file of a duplicate-id group and its fingerprint, independent of scan order. */
+function groupSignature(group: readonly HistoryFile[]): string {
+  return group.map((file) => `${file.path}|${fingerprintKey(file)}`).sort().join("\n");
+}
+
+export class HistoryReconciler {
+  private readonly store: HistoryStore;
+  private readonly readers: readonly HistoryReader[];
+  private readonly intervalMs: number | null;
+  private readonly wantsWatch: boolean;
+  private readonly onChanged: () => void;
+  /** One watcher per root that could be watched, by root. */
+  private readonly watchers = new Map<string, FSWatcher>();
+  private watchTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly batchSize: number;
+  private readonly batchPauseMs: number;
+  private readonly resolveRepositoryOverride: ((cwd: string | null) => string | null) | null;
+  private readonly now: () => number;
+  private readonly complainedRoots = new Set<string>();
+  /**
+   * Files a reader summarized to nothing (an empty transcript, or one with no record a row can
+   * be built from), by path, with the fingerprint they had. They have no row for `sameFile` to
+   * match, so without this each pass would read them again from byte 0. Kept in memory: a
+   * restart re-reads each once.
+   *
+   * Per agent, like `groupChoices`: each reader's walk prunes only its own entries, so a second
+   * harness with a reader never clears the first one's.
+   */
+  private readonly emptyByAgent = new Map<AgentType, Map<string, string>>();
+  /**
+   * For a session id several files share, the group's signature when its canonical file was
+   * last chosen. Choosing summarizes every candidate from the top, so it runs again only when a
+   * file in the group appeared, went, or changed. Per agent, because a session id is unique only
+   * within one harness.
+   */
+  private readonly groupChoicesByAgent = new Map<AgentType, Map<string, string>>();
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private running: Promise<HistoryReconcilePass> | null = null;
+  private retrigger = false;
+  private stopped = false;
+  private passes = 0;
+  /**
+   * `start()` marks it indexing until the first walk says otherwise, so a page opened during
+   * startup reads "indexing" rather than an empty history nobody has looked at yet.
+   */
+  private state: HistoryProgress = { indexing: false, indexed: 0, total: 0 };
+
+  /** One agent's entry in a per-agent cache, created on first use. */
+  private static forAgent<T>(caches: Map<AgentType, Map<string, T>>, agent: AgentType): Map<string, T> {
+    let cache = caches.get(agent);
+    if (!cache) {
+      cache = new Map();
+      caches.set(agent, cache);
+    }
+    return cache;
+  }
+
+  constructor(options: HistoryReconcilerOptions) {
+    this.store = options.store;
+    this.readers = options.readers ?? historyReaders();
+    this.intervalMs = options.intervalMs ?? null;
+    this.wantsWatch = options.watch ?? false;
+    this.onChanged = options.onChanged ?? ((): void => {});
+    this.batchSize = Math.max(1, options.batchSize ?? 25);
+    this.batchPauseMs = Math.max(0, options.batchPauseMs ?? 0);
+    this.resolveRepositoryOverride = options.resolveRepository ?? null;
+    this.now = options.now ?? Date.now;
+  }
+
+  start(): void {
+    if (this.stopped) return;
+    if (this.passes === 0 && !this.running) this.state = { indexing: true, indexed: 0, total: 0 };
+    void this.trigger().finally(() => this.schedule());
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    if (this.watchTimer) clearTimeout(this.watchTimer);
+    this.watchTimer = null;
+    for (const watcher of this.watchers.values()) watcher.close();
+    this.watchers.clear();
+  }
+
+  progress(): HistoryProgress {
+    return { ...this.state };
+  }
+
+  get passCount(): number {
+    return this.passes;
+  }
+
+  /** The agents this reconciler reads, in `AGENT_TYPES` order. */
+  agents(): AgentType[] {
+    return this.readers.map((reader) => reader.agent);
+  }
+
+  /** Each reader's retention period, read from the agent's settings now. */
+  retention(): HistoryRetention[] {
+    return this.readers.flatMap(({ agent, spec }) => {
+      const retention = spec.retention();
+      return retention ? [{ agent, ...retention }] : [];
+    });
+  }
+
+  /** Ask for a pass. Passes are serialized; triggers during one coalesce into one more. */
+  trigger(): Promise<HistoryReconcilePass> {
+    if (this.running) {
+      this.retrigger = true;
+      return this.running;
+    }
+    // Shared with `runPass`, which fills it as it goes, so a pass that wrote some batches and
+    // then failed still announces the rows it did write.
+    const result: HistoryReconcilePass = { scanned: 0, indexed: 0, gone: 0, failed: 0, complete: true };
+    const pass = this.runPass(result)
+      .catch((error: unknown): HistoryReconcilePass => {
+        console.warn("[history] reconcile pass failed:", error);
+        this.state = { ...this.state, indexing: false };
+        return { ...result, complete: false };
+      })
+      .then((outcome) => {
+        this.running = null;
+        if (!this.stopped && outcome.indexed + outcome.gone > 0) {
+          // Every caller but a test discards this promise (`void this.trigger()`), so a listener
+          // that throws must not reject it: that would be an unhandled rejection, fatal to the
+          // daemon, and it would skip the follow-up pass a trigger asked for.
+          try {
+            this.onChanged();
+          } catch (error) {
+            console.warn("[history] change listener failed:", error);
+          }
+        }
+        if (this.retrigger && !this.stopped) {
+          this.retrigger = false;
+          return this.trigger();
+        }
+        this.retrigger = false;
+        return outcome;
+      });
+    this.running = pass;
+    return pass;
+  }
+
+  /**
+   * Watch every root not watched yet. Run before each pass rather than once, because a root
+   * that does not exist yet (no Claude session has ever run here) cannot be watched until it
+   * does. Best-effort in every direction: a root that cannot be watched is left to the scan.
+   */
+  private installWatchers(): void {
+    if (!this.wantsWatch || this.stopped) return;
+    for (const { spec } of this.readers) {
+      for (const root of spec.roots()) {
+        if (this.watchers.has(root)) continue;
+        const open = (recursive: boolean): FSWatcher | null => {
+          try {
+            return watch(root, { recursive, persistent: false }, () => this.hint());
+          } catch {
+            return null;
+          }
+        };
+        const watcher = open(true) ?? open(false);
+        if (!watcher) continue;
+        // A removed root or an overflow closes it; the next pass watches the root again.
+        watcher.on("error", () => {
+          watcher.close();
+          if (this.watchers.get(root) === watcher) this.watchers.delete(root);
+        });
+        this.watchers.set(root, watcher);
+      }
+    }
+  }
+
+  private hint(): void {
+    if (this.stopped || this.watchTimer) return;
+    this.watchTimer = unref(setTimeout(() => {
+      this.watchTimer = null;
+      void this.trigger();
+    }, WATCH_DEBOUNCE_MS));
+  }
+
+  private schedule(): void {
+    if (this.stopped || this.intervalMs === null) return;
+    this.timer = unref(setTimeout(() => {
+      void this.trigger().finally(() => this.schedule());
+    }, this.intervalMs));
+  }
+
+  private repositoryResolver(): (cwd: string | null) => string | null {
+    if (this.resolveRepositoryOverride) return this.resolveRepositoryOverride;
+    const pools = this.store.worktreePools();
+    const cache = new Map<string, string | null>();
+    return (cwd) => {
+      if (!cwd) return null;
+      if (!cache.has(cwd)) {
+        cache.set(cwd, resolveHistoryRepository(cwd, { pools, taskRepoRoot: (id) => this.store.taskRepoRoot(id) }));
+      }
+      return cache.get(cwd)!;
+    };
+  }
+
+  private async runPass(result: HistoryReconcilePass): Promise<HistoryReconcilePass> {
+    this.passes += 1;
+    this.installWatchers();
+    const resolveRepository = this.repositoryResolver();
+    // Rows cataloged before their search text existed, including gone ones nothing will re-read.
+    if (this.passes === 1) this.store.seedFieldSegments();
+
+    // Walk every reader first, so progress names the whole job before the first batch.
+    const plans: { reader: HistoryReader; complete: boolean; seen: Set<string>; work: HistoryFile[];
+      parsed: Map<string, HistoryParse>; index: Map<string, HistoryIndexEntry>; empty: Map<string, string> }[] = [];
+    for (const reader of this.readers) {
+      const empty = HistoryReconciler.forAgent(this.emptyByAgent, reader.agent);
+      const groupChoices = HistoryReconciler.forAgent(this.groupChoicesByAgent, reader.agent);
+      const files: HistoryFile[] = [];
+      let complete = true;
+      for (const root of reader.spec.roots()) {
+        try {
+          files.push(...await reader.spec.enumerate(root));
+          this.complainedRoots.delete(root);
+        } catch (error) {
+          complete = false;
+          if (!this.complainedRoots.has(root)) {
+            this.complainedRoots.add(root);
+            console.warn(`[history] could not walk ${root}; its rows are kept as they are:`, error);
+          }
+        }
+      }
+      if (this.stopped) return { ...result, complete: false };
+      result.scanned += files.length;
+      const index = this.store.index(reader.agent);
+      // A transcript a History Resume copied for its fork is never canonical, whatever the
+      // order the walk found it in, so it is left out of the choice entirely.
+      const copies = this.store.copyPaths(reader.agent);
+      const walkedPaths = new Set(files.map((file) => file.path));
+      const byId = new Map<string, HistoryFile[]>();
+      for (const file of files) {
+        if (copies.has(file.path)) continue;
+        const group = byId.get(file.agentSessionId);
+        if (group) group.push(file);
+        else byId.set(file.agentSessionId, [file]);
+      }
+      const parsed = new Map<string, HistoryParse>();
+      const canonical: HistoryFile[] = [];
+      for (const path of empty.keys()) if (!walkedPaths.has(path)) empty.delete(path);
+      for (const [id, group] of byId) {
+        if (group.length === 1) {
+          canonical.push(group[0]!);
+          continue;
+        }
+        // Rare: several files share one session id. Nothing in the group changed since the
+        // last choice, and the row still follows one of its files unchanged: keep that one.
+        const signature = groupSignature(group);
+        const kept = group.find((file) => sameFile(index.get(id), file));
+        if (kept && groupChoices.get(id) === signature) {
+          canonical.push(kept);
+          continue;
+        }
+        // Otherwise each candidate is summarized from the top so the harness's stable rule can
+        // choose, and the chosen parse is kept for the write.
+        const candidates: { file: HistoryFile; parse: HistoryParse }[] = [];
+        let unreadable = false;
+        for (const file of group) {
+          if (empty.get(file.path) === fingerprintKey(file)) continue;
+          const parse = await reader.spec.summarize(file, null).catch(() => undefined);
+          if (parse === undefined) unreadable = true;
+          else if (parse === null) empty.set(file.path, fingerprintKey(file));
+          else candidates.push({ file, parse });
+        }
+        // A candidate that could not be read leaves the choice open for the next pass.
+        if (unreadable) groupChoices.delete(id);
+        else groupChoices.set(id, signature);
+        if (candidates.length === 0) continue;
+        const chosen = reader.spec.canonical(candidates.map(({ file, parse }) => ({ path: file.path, summary: parse.summary })));
+        const winner = candidates.find(({ file }) => file.path === chosen) ?? candidates[0]!;
+        canonical.push(winner.file);
+        if (!sameFile(index.get(winner.file.agentSessionId), winner.file)) parsed.set(winner.file.path, winner.parse);
+      }
+      for (const id of groupChoices.keys()) if ((byId.get(id)?.length ?? 0) < 2) groupChoices.delete(id);
+      const work = canonical
+        .filter((file) => !sameFile(index.get(file.agentSessionId), file))
+        .filter((file) => empty.get(file.path) !== fingerprintKey(file))
+        .sort((a, b) => b.fingerprint.mtimeMs - a.fingerprint.mtimeMs || (a.path < b.path ? -1 : 1));
+      plans.push({ reader, complete, seen: new Set(byId.keys()), work, parsed, index, empty });
+      this.state = {
+        indexing: plans.some((entry) => entry.work.length > 0),
+        indexed: plans.reduce((sum, plan) => sum + plan.seen.size - plan.work.length, 0),
+        total: plans.reduce((sum, plan) => sum + plan.seen.size, 0),
+      };
+    }
+
+    for (const plan of plans) {
+      const { agent, spec } = plan.reader;
+      for (let start = 0; start < plan.work.length; start += this.batchSize) {
+        if (this.stopped) return { ...result, complete: false };
+        const batch = plan.work.slice(start, start + this.batchSize);
+        const rows: HistoryUpsert[] = [];
+        for (const file of batch) {
+          const entry = plan.index.get(file.agentSessionId);
+          let parse = plan.parsed.get(file.path) ?? null;
+          if (!parse) {
+            const previous = entry && entry.transcriptState === "present" && entry.transcriptPath === file.path
+              ? this.store.parsePoint(agent, file.agentSessionId)
+              : null;
+            try {
+              parse = await spec.summarize(file, previous);
+              // A row that was a background run kept no prompts. Now that it reads as a
+              // conversation, its earlier prompts are needed too, so read it from the top.
+              if (parse && previous && !parse.fromStart
+                && !isHistoryConversationKind(previous.summary.kind) && isHistoryConversationKind(parse.summary.kind)) {
+                parse = await spec.summarize(file, null);
+              }
+            } catch {
+              // Vanished or unreadable mid-pass: not written, so the next pass tries again.
+              result.failed += 1;
+              continue;
+            }
+          }
+          if (!parse) {
+            // Nothing to build a row from. Remembered, so it is not read again until it changes.
+            plan.empty.set(file.path, fingerprintKey(file));
+            continue;
+          }
+          plan.empty.delete(file.path);
+          const repoRoot = resolveRepository(parse.summary.cwd);
+          rows.push({
+            agent,
+            agentSessionId: file.agentSessionId,
+            transcriptPath: file.path,
+            fingerprint: file.fingerprint,
+            parsedBytes: parse.parsedBytes,
+            readerState: parse.state,
+            repoRoot,
+            summary: parse.summary,
+            fallbackActivityAt: file.fingerprint.mtimeMs,
+            search: searchWrite(parse, repoRoot),
+          });
+        }
+        this.store.upsertBatch(rows, this.now());
+        result.indexed += rows.length;
+        this.state = { ...this.state, indexed: Math.min(this.state.total, this.state.indexed + batch.length) };
+        await yieldToLoop();
+        if (this.batchPauseMs > 0) await sleep(this.batchPauseMs, undefined, { ref: false });
+      }
+      if (this.stopped) return { ...result, complete: false };
+      if (plan.complete) result.gone += this.store.markGone(agent, plan.seen, this.now());
+      else result.complete = false;
+    }
+    this.state = { indexing: false, indexed: this.state.total, total: this.state.total };
+    return result;
+  }
+}

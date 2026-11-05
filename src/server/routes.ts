@@ -13,7 +13,7 @@ import { validatePlanInputs } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
-import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
+import { InspectorPrsStateSchema, RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
 import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
@@ -118,6 +118,7 @@ import {
   ManualWorktreeReturnSchema,
   OpenWorktreeSchema,
   StopWorktreeClaimSchema,
+  WorktreeSlotHistoryQuerySchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   PendingTurnDeliverSchema,
@@ -252,6 +253,7 @@ import type { Registry } from "./registry.ts";
 import { ComposerActivityTracker } from "./composer-activity.ts";
 import type { QueueManager } from "./queue.ts";
 import type {
+  InspectorInspection,
   InspectorStatus,
   LlmStatus,
   ReviewActor,
@@ -272,6 +274,15 @@ import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
+import type { HistoryLiveLookup, HistoryService } from "./history/service.ts";
+import type { HistoryResumeLauncher } from "./history/resume.ts";
+import { historyResumeSlots, type HistoryResumeSlots } from "./history/resume-slots.ts";
+import {
+  HistoryMessagesQuerySchema,
+  HistoryResumeBodySchema,
+  HistoryResumeCancelSchema,
+  HistorySessionsQuerySchema,
+} from "@shared/history.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
@@ -285,7 +296,8 @@ import { runRetro } from "./retro.ts";
 import { startShapeTicketsFollowup } from "./shape-tickets-followup.ts";
 import { setAffectedTestsCommand, startTestingSetup } from "./testing-setup.ts";
 import { harnessFor, sessionMessages } from "./harness/index.ts";
-import { prepareTerminalResume, recheckManagedResumes, resumeConversation, type PreparedResume } from "./harness/resume.ts";
+import { prepareTerminalResume, recheckManagedResumes, resumeConversation, revokeUnclaimedResumes,
+  type PreparedResume } from "./harness/resume.ts";
 import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
@@ -371,6 +383,7 @@ import {
   type SettingsRestoreResult,
 } from "@shared/settings-backups.ts";
 import { SLOT_SETTLE_MS, type WorktreeManager } from "./worktrees/manager.ts";
+import { terminalOwnerKey } from "./worktrees/owners.ts";
 import {
   WorktreeOperationError,
   type WorktreeOperationsService,
@@ -531,6 +544,7 @@ import {
   loadConversationResolvedReviews,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
+  loadOpenInspectorInspections,
   loadInspectorInspection,
   loadInspectorComments,
   getInspectorPr,
@@ -598,7 +612,7 @@ import {
   SessionFileError,
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
-import { agentHostUnavailable, terminalTargetViews, launchManagedAgentTerminal, launchTerminal } from "./terminal/targets.ts";
+import { agentHostUnavailable, terminalTargetViews, launchManagedAgentTerminal, launchNotAttempted, launchTerminal } from "./terminal/targets.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -1234,6 +1248,22 @@ export interface RouteDeps {
    */
   archives?: ArchiveManager;
   /**
+   * Session History's catalog and reconciler. Absent means the history routes answer 503
+   * rather than constructing a service here: a route-built twin would be a second walker of
+   * the agents' transcript stores and a second writer of one catalog.
+   */
+  history?: HistoryService;
+  /**
+   * The terminal half of a History Resume. Absent means the real one: `prepareTerminalResume`
+   * with no task context and no Mission Control tools, launched through the selected backend.
+   */
+  historyResumeLauncher?: HistoryResumeLauncher;
+  /**
+   * The worktree pool as a History Resume reads and leases it. Absent means the one built over
+   * `worktreeOperations`' manager, or none when there is no manager: then no slot is offered.
+   */
+  historyResumeSlots?: HistoryResumeSlots;
+  /**
    * The Global Command catalog owner. Absent means the catalog routes answer 503 and the
    * legacy config route projects an empty command list. A route-built twin would be a second
    * writer of one catalog and a second emitter on one live stream.
@@ -1327,6 +1357,9 @@ export const ROUTE_DEP_NAMES = [
   "paneDeps",
   "keepAwake",
   "archives",
+  "history",
+  "historyResumeLauncher",
+  "historyResumeSlots",
   "workflowCommands",
   "testingSettings",
   "commandDocumentProposals",
@@ -1624,6 +1657,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     paneDeps,
     keepAwake,
     archives,
+    history,
+    historyResumeLauncher,
+    historyResumeSlots: injectedResumeSlots,
     workflowCommands,
     testingSettings,
     commandDocumentProposals,
@@ -2038,23 +2074,47 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       : c.json({ error: "that dependency claim is no longer running" }, 404);
   });
 
+  // What happened to a slot, newest first, a page at a time. Answers for a slot that has since
+  // been destroyed, whose rows stay until they age out.
+  app.get("/api/worktrees/:slotId/history", (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const query = WorktreeSlotHistoryQuerySchema.safeParse(c.req.query());
+    if (!query.success) return c.json({ error: "invalid slot history cursor" }, 400);
+    return c.json(worktreeOperations.manager.store.slotHistory(c.req.param("slotId"), query.data.before ?? null));
+  });
+
   app.post("/api/worktrees/:slotId/open", async (c) => {
     if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
     const parsed = await parseBody(c, OpenWorktreeSchema);
     if (!parsed.ok) return parsed.res;
     const slotId = c.req.param("slotId");
-    const cwd = await worktreeOperations.slotPath(slotId);
+    // A shell in an available slot must not sit there unowned for acquisition to hand out, so
+    // that slot is leased as it stands before anything opens in it.
+    const taken = await worktreeOperations.manager.leaseAsIs(slotId, {
+      kind: "manual",
+      key: terminalOwnerKey(randomUUID()),
+    });
+    if (taken.outcome === "refused") return c.json({ error: taken.reason }, 409);
+    if (taken.outcome === "outcomeUnknown") return c.json({ error: taken.reason }, 503);
+    const leased = taken.outcome === "leased";
+    const cwd = leased ? taken.lease.path : await worktreeOperations.slotPath(slotId);
     if (!cwd) return c.json({ error: "native worktree slot was not found" }, 404);
     const result = await terminalLauncher(parsed.data.backend, {
       name: `worktree-${slotId.slice(0, 8)}`,
       cwd,
       argv: [process.env.SHELL || FIXED_OS_EXECUTABLES.sh, "-l"],
     });
+    // A launcher that refused never tried, so the slot goes back as it was. One that failed or
+    // timed out may still have opened a shell, so its lease stands.
+    const leaseStands = leased && !(launchNotAttempted(result) && await worktreeOperations.manager.handBackAsIs(taken.lease));
+    const error = result.error && leaseStands
+      ? `${result.error}. The slot stays leased, so Return it from its card.`
+      : result.error;
     const body = {
       ok: result.ok,
       backend: parsed.data.backend,
       label: result.label,
-      ...(result.error ? { error: result.error } : {}),
+      ...(error ? { error } : {}),
     };
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
@@ -3970,6 +4030,92 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ ok: false, error: known?.message ?? "could not open session file" }, status);
     }
   });
+  // --- Session History ---
+  //
+  // Loopback-only like the rest of `/api/*`, and never exposed as an MCP tool. Everything is a
+  // read except Resume, below. A request names no path: rows come from the catalog the daemon's
+  // reconciler writes. A session is addressed by agent and UUID, and its transcript path is the
+  // catalog's, never the request's.
+  //
+  // "Live" is the Registry's answer, read once per request: a running session whose agent
+  // session id matches a row.
+  const liveHistorySessions = (): HistoryLiveLookup => {
+    const live = new Map<string, string>();
+    for (const s of registry.liveSessions()) if (s.agentSessionId) live.set(`${s.agent}:${s.agentSessionId}`, s.id);
+    return (agent, agentSessionId) => live.get(`${agent}:${agentSessionId}`) ?? null;
+  };
+  app.get("/api/history/sessions", (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const parsed = HistorySessionsQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid history query" }, 400);
+    return c.json(history.list(parsed.data, liveHistorySessions()));
+  });
+  app.get("/api/history/sessions/:agent/:id", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const detail = await history.detail(c.req.param("agent"), c.req.param("id"), liveHistorySessions());
+    return detail ? c.json(detail) : c.json({ error: "no such history session" }, 404);
+  });
+  app.get("/api/history/sessions/:agent/:id/messages", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const parsed = HistoryMessagesQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid history query" }, 400);
+    const read = await history.messages(c.req.param("agent"), c.req.param("id"), parsed.data);
+    return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
+  });
+  app.get("/api/history/sessions/:agent/:id/launch-context", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const read = await history.launchContext(c.req.param("agent"), c.req.param("id"));
+    return read.ok ? c.json(read.context) : c.json({ error: read.error }, read.status);
+  });
+  // Neither `:toolUseId` nor `:agentId` is ever joined into a path: the service format-checks
+  // each, finds the result through the parent transcript's own record or the subagent through
+  // the session's own listing, and confines what it resolves to the session's own folder.
+  app.get("/api/history/sessions/:agent/:id/tool-results/:toolUseId", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const read = await history.toolResult(c.req.param("agent"), c.req.param("id"), c.req.param("toolUseId"));
+    return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
+  });
+  app.get("/api/history/sessions/:agent/:id/subagents/:agentId/messages", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const parsed = HistoryMessagesQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid history query" }, 400);
+    const read = await history.subagentMessages(c.req.param("agent"), c.req.param("id"), c.req.param("agentId"), parsed.data);
+    return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
+  });
+  // Resume: a new unmanaged terminal running the agent's own resume command in the session's
+  // original directory or a worktree slot, with no task context and no Mission Control tools.
+  // The directory is the catalog's, resolved by the daemon, and a slot is one the daemon
+  // offered; the body names only a backend and a target.
+  const resumeLauncher: HistoryResumeLauncher = historyResumeLauncher ?? {
+    hostUnavailable: (backend) => agentHostUnavailable(backend, configuredTerminalTargetDeps),
+    prepare: (session) => prepareTerminalResume(session, { managed: false, requiredTools: [], extraDirs: [] }),
+    launch: (backend, input) => launchManagedAgentTerminal(backend, input, terminalLauncher),
+    abandon: (owner) => { revokeUnclaimedResumes(owner); },
+  };
+  const resumeSlots = injectedResumeSlots ?? (worktreeOperations ? historyResumeSlots(worktreeOperations.manager) : null);
+  app.get("/api/history/sessions/:agent/:id/resume-options", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const read = await history.resume.options(c.req.param("agent"), c.req.param("id"), liveHistorySessions(), resumeSlots);
+    return read.ok ? c.json(read.options) : c.json({ error: read.error }, read.status);
+  });
+  app.post("/api/history/sessions/:agent/:id/resume", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const parsed = await parseBody(c, HistoryResumeBodySchema);
+    if (!parsed.ok) return parsed.res;
+    const outcome = await history.resume.resume(c.req.param("agent"), c.req.param("id"), parsed.data,
+      liveHistorySessions(), resumeLauncher, resumeSlots);
+    if (outcome.ok) return c.json({ ok: true, launch: outcome.launch, label: outcome.label, checkout: outcome.checkout });
+    return c.json({ ok: false, ...outcome.refusal, ...(outcome.launch ? { launch: outcome.launch } : {}) }, outcome.status);
+  });
+  app.post("/api/history/sessions/:agent/:id/resume/cancel", async (c) => {
+    if (!history) return c.json({ error: "session history unavailable" }, 503);
+    const parsed = await parseBody(c, HistoryResumeCancelSchema);
+    if (!parsed.ok) return parsed.res;
+    const outcome = history.resume.cancel(c.req.param("agent"), c.req.param("id"), parsed.data.launchId, resumeLauncher);
+    if (outcome.ok) return c.json({ ok: true, launch: outcome.launch });
+    return c.json({ ok: false, code: outcome.code, error: outcome.error, ...(outcome.launch ? { launch: outcome.launch } : {}) }, outcome.status);
+  });
+
   // --- The archive library ---
   //
   // Thin adapters over `ArchiveManager`. Nothing here touches the store, the
@@ -7712,9 +7858,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // against the Line's Shipped count, which is uncapped by construction (`prsOpenedSince`).
   // One route rather than two over the same table, for the reason `useShipping` records:
   // a second endpoint over one ledger is a second thing to keep honest.
+  //
+  // With `state=open`: every open row, uncapped, for Foreman's follow-through to find a pull
+  // request the Inspector adopted under a session whose card no longer carries it. It does not
+  // combine with `adoptedSince`, since the two orderings answer different questions.
   app.get("/api/inspector/prs", (c) => {
     const raw = c.req.query("adoptedSince");
-    if (raw === undefined) return c.json(loadInspectorInspections(50).map((row) => ({ ...row, codeRabbit: codeRabbitStanding(registry, row.key) })));
+    const state = c.req.query("state");
+    const withStanding = (rows: InspectorInspection[]) =>
+      rows.map((row) => ({ ...row, codeRabbit: codeRabbitStanding(registry, row.key) }));
+    if (state !== undefined) {
+      const parsed = InspectorPrsStateSchema.safeParse(state);
+      if (!parsed.success) return c.json({ error: "state must be open" }, 400);
+      if (raw !== undefined) return c.json({ error: "state and adoptedSince do not combine" }, 400);
+      return c.json(withStanding(loadOpenInspectorInspections()));
+    }
+    if (raw === undefined) return c.json(withStanding(loadInspectorInspections(50)));
     // Two guards, each doing work the other cannot.
     //
     // The SHAPE is matched as text before anything is coerced, because `Number()` is far too

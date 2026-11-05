@@ -744,7 +744,12 @@ branch using focused tests, push, and verify the newly pushed head. It extends a
 instruction that says to stop immediately after opening the PR without rewriting that frozen
 instruction. With the preference off, no CI follow-through policy is added.
 
-The preference is read once per newly prepared packet. Preview, retries, and restart retain
+The wording follows Foreman's **Which failures count** picker. With **All checks** the session
+follows every check. With **Required checks** it watches the checks GitHub marks required
+(`gh pr checks <url> --required`), repairs failures of those, and leaves a failing check that is
+not required alone unless the task asks; if no check is marked required, it follows every check.
+
+The preference and the picker are read once per newly prepared packet. Preview, retries, and restart retain
 the recorded payload even if the setting later changes. Foreman's enabled state, mode,
 allowlist, and review-comment preference do not change this instruction choice; the workflow's
 existing delivery authorization still applies. Other completion kinds and on-demand session
@@ -2732,6 +2737,15 @@ reaches, and a version whose completion policy is not `inspector` never pins a p
 all - so all three surfaces read one derivation, which answers "which pull request, if any"
 rather than assuming there is one. A run holding no gate is told plainly that cancelling
 clears the run and keeps its history, and nothing more.
+
+A blocked run also keeps its session, with one exception. Foreman's
+[PR follow-through](work-queues.md#keeping-a-pr-on-track) stops waiting on a run that spent its
+repair budget or stopped on `unchanged_evidence_exhausted` or `session_disappeared`, because
+only the operator or the session can restart it and it delivers nothing until then. Unresolved
+GitHub Inspector findings, failing CI and conflicts reach the session again, while the run keeps
+its Shipping veto and CodeRabbit follow-up keeps waiting for it. The list is
+`WORKFLOW_FOLLOWUP_RELEASE_PHASES` in `src/shared/workflow.ts`, and it is an allowlist: every
+other blocked phase, including one added later, keeps holding the follow-through.
 
 ### One run, one lifecycle state
 

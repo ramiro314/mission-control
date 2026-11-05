@@ -305,3 +305,52 @@ test("a saved round limit whose version refresh fails is reported as saved, with
   await expect(failure).toBeVisible();
   await expect(failure.getByRole("button", { name: "Retry" })).toHaveCount(0);
 });
+
+/**
+ * The save's own server event reloads the detail while the version refresh runs. Holding that
+ * load until the refresh has failed is the order that used to take the Retry away while its
+ * notice stayed on screen, which was the intermittent failure of the test above.
+ */
+test("a detail load that lands after the failed version refresh keeps the notice's Retry", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.setViewportSize({ width: 1440, height: 900 });
+  const before = await builtinDetail(daemon);
+  const shipped = before.workflow.bindingDefaults.maxRepairRounds;
+
+  let holding = false;
+  let failVersions = true;
+  let refreshFailed = () => {};
+  const failed = new Promise<void>((resolve) => { refreshFailed = resolve; });
+  await dashboard.route(/\/api\/workflows\/[^/]+\/versions$/, async (route) => {
+    if (!failVersions) return route.continue();
+    await route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"unavailable"}' });
+    if (holding) refreshFailed();
+  });
+  await dashboard.route(/\/api\/workflows\/[^/?]+$/, async (route) => {
+    if (holding && route.request().method() === "GET") await failed;
+    await route.continue();
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/workflows`);
+  await dashboard.getByRole("button", { name: BUILTIN_BUTTON }).click();
+  const rail = dashboard.getByRole("complementary", { name: "Workflow settings and validation" });
+  const rounds = rail.getByRole("spinbutton", { name: "Maximum repair rounds" });
+  await expect(rounds).toBeEnabled();
+
+  holding = true;
+  const reloaded = dashboard.waitForResponse((response) =>
+    response.request().method() === "GET" && /\/api\/workflows\/[^/?]+$/.test(new URL(response.url()).pathname));
+  await rounds.fill(String(shipped + 3));
+  await rail.getByRole("button", { name: "Save rounds" }).click();
+  await reloaded;
+  holding = false;
+
+  const notice = dashboard.getByRole("alert").filter({ hasText: "Repair rounds saved, but the version history could not be refreshed." });
+  await expect(notice.getByRole("button", { name: "Retry" })).toBeVisible();
+
+  failVersions = false;
+  await notice.getByRole("button", { name: "Retry" }).click();
+  await expect(notice).toHaveCount(0);
+});

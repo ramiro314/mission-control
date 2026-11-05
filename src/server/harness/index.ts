@@ -25,6 +25,7 @@ import { claudeDetect } from "./claude/detect.ts";
 import { claudeBin } from "./claude/bin.ts";
 import { claudeControl } from "./claude/control.ts";
 import { claudeSdk } from "./claude/sdk.ts";
+import { claudeHistory } from "./claude/history.ts";
 import { discoverClaudeModels } from "./claude/model-catalog.ts";
 import { codexTranscript } from "./codex/transcript.ts";
 import { codexTui } from "./codex/tui.ts";
@@ -127,7 +128,10 @@ export const HARNESSES: Record<AgentType, Harness> = {
         agentSessionId,
         ...claudeResumeModeArgs(permissionMode),
       ],
+      forkArgv: (forkSessionId) => ["--fork-session", "--session-id", forkSessionId],
     },
+    // Session History's reader over `~/.claude/projects`. See `HistorySpec`.
+    history: claudeHistory,
   },
   // `hooks` was null here, as a statement rather than a gap - "Codex pushes nothing at
   // us". The spike that was supposed to test that claim did, and refuted it: Codex takes
@@ -185,6 +189,9 @@ export const HARNESSES: Record<AgentType, Harness> = {
         ...codexResumeModeArgs(permissionMode),
       ],
     },
+    // No Codex rollouts exist on any machine this was built on, so there is nothing to test a
+    // reader against yet. Implementing this slot is all Codex needs to appear in History.
+    history: null,
   },
   // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image
   // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process
@@ -236,6 +243,9 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // unread: pi declares `permissionModes: null`, so there is no mode to carry and no
     // flag to spell one with.
     resume: { argv: (agentSessionId) => ["--session", agentSessionId] },
+    // No Pi sessions exist on any machine this was built on, so there is nothing to test a
+    // reader against yet. Implementing this slot is all Pi needs to appear in History.
+    history: null,
   },
 };
 
@@ -322,7 +332,8 @@ export function resumeFor(agent: AgentType): ResumeSpec | null {
  * The full argv - binary included - that reopens `agentSessionId` for this agent, or null
  * when the harness cannot. `permissionMode` is the mode the session was running in, so the
  * reopened CLI starts where the operator left it rather than on its own default - see
- * `ResumeSpec` for why it is the one setting that has to ride along.
+ * `ResumeSpec` for why it is the one setting that has to ride along. A `forkSessionId`
+ * starts the conversation as a fork under that id instead (`ResumeSpec.forkArgv`).
  *
  * The one composer, so a caller never pairs `resolveAgentBin` with a hand-written flag.
  * Both readers (the embedded handoff, and the conversation pane's agent launcher) go
@@ -332,13 +343,15 @@ export async function resumeArgvFor(
   agent: AgentType,
   agentSessionId: string,
   permissionMode: PermissionMode | null,
+  forkSessionId: string | null = null,
 ): Promise<string[] | null> {
   const spec = resumeFor(agent);
   if (!spec) return null;
+  if (forkSessionId !== null && !spec.forkArgv) throw new Error(`${agent} cannot fork a conversation under a given id`);
   const configured = resolveAgentBin(agent);
   const executable = await resolveBinPath(configured);
   if (!executable) throw new Error(`agent binary "${configured}" not found on PATH`);
-  return [executable, ...spec.argv(agentSessionId, permissionMode)];
+  return [executable, ...spec.argv(agentSessionId, permissionMode), ...(forkSessionId !== null ? spec.forkArgv!(forkSessionId) : [])];
 }
 
 /**

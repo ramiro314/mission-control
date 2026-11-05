@@ -174,6 +174,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/sessions/:id/pending-turns/:turnId/deliver", "conversation.expedite", "sessions"],
   ["POST", "/api/session-transfers/:id/recheck", "session.transfer_recheck", "sessions"],
   ["POST", "/api/session-transfers/:id/resolve", "session.transfer_resolve", "sessions"],
+  ["POST", "/api/history/sessions/:agent/:id/resume", "session.history_resume", "sessions"],
+  ["POST", "/api/history/sessions/:agent/:id/resume/cancel", "session.history_resume_cancel", "sessions"],
 ] as const;
 export type PrimaryAction = typeof PRIMARY_ACTION_ROUTES[number][2] | typeof ensembleActions[number] | typeof pipelineActions[number];
 export type PrimaryFeature = typeof PRIMARY_ACTION_ROUTES[number][3];

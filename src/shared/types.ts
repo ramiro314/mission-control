@@ -2520,6 +2520,13 @@ export interface Task {
    */
   sessionId: string | null;
   /**
+   * The agent's own id for the conversation that did this task's work, or null when no
+   * work episode was ever bound. Read on the daemon from the current binding, else the
+   * newest historical one, so it survives the session pointer above moving on. It is what
+   * links a finished task to its session in History (`#/history/<agent>/<id>`).
+   */
+  agentSessionId: string | null;
+  /**
    * The recurring mission that filed this task, or null. See `MissionSchedule`
    * (@shared/schedules.ts).
    *
@@ -2671,6 +2678,8 @@ export interface TaskSummary {
   status: TaskStatus;
   outcome: string | null;
   outcomeUrl: string | null;
+  /** `Task.agentSessionId`: this task's conversation, as History keys it. */
+  agentSessionId: string | null;
   /** The provider run this task owns, separate from process-owned `Session.pipeline`. */
   pipelineRun: PipelineRunLink | null;
   /** The durable authoring-to-shipment lifecycle this task owns, when commissioned. */
@@ -3161,8 +3170,28 @@ export type InspectorLegacyPosted = (typeof INSPECTOR_LEGACY_POSTED)[number];
  * Deliberately counts rather than findings: the card says whether to go look, and the
  * PR itself is where you look.
  */
+/**
+ * Fork (ci-strictness): the compact CI facts Foreman's "Which failures count" reads, projected
+ * from the Inspector's stored CI snapshot (`inspector_prs.observed_ci_json`). The check list
+ * itself never travels on the session wire; this is all of it Foreman needs.
+ */
+export interface InspectorCiProjection {
+  /** The head commit the stored snapshot was read on, or null when none is stored. */
+  headSha: string | null;
+  /** `requiredChecksRollup` of that snapshot: null when no check is marked required. */
+  required: PrChecks | null;
+}
+
+/** The projection plus whether the Inspector is on, which `InspectorSummary.ci` carries. */
+export interface InspectorCiSummary extends InspectorCiProjection {
+  /** `InspectorConfig.enabled` when the summary was built. Off means every check counts. */
+  inspectorEnabled: boolean;
+}
+
 export interface InspectorSummary {
   codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
+  /** Fork (ci-strictness): see `InspectorCiSummary`. Absent from an older daemon. */
+  ci?: InspectorCiSummary;
   prKey: string;
   url: string;
   mode: InspectorMode;
@@ -3218,6 +3247,8 @@ export interface RetroSummary {
 /** A ledger row plus its finding tallies - what the settings panel lists. */
 export interface InspectorInspection extends InspectorPr {
   codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
+  /** Fork (ci-strictness): the stored CI snapshot's compact projection. */
+  ci?: InspectorCiProjection;
   openFindings: number;
   postedOpenFindings: number;
   resolvedFindings: number;
@@ -3724,7 +3755,17 @@ export type ServerEvent =
    * single revision bump, because forty is not more informative than one to something whose
    * only response is to re-read its current page.
    */
-  | { type: "archive_changed" };
+  | { type: "archive_changed" }
+  /**
+   * A Session History reconcile pass wrote or marked at least one catalog row. An
+   * invalidation signal: an open History page re-reads its current window from
+   * `GET /api/history/sessions`.
+   *
+   * CONTENT-FREE for `archive_changed`'s reason: the catalog holds every session on disk and
+   * rides neither this frame nor the reconnect snapshot. ONE frame per changing pass, never
+   * one per file, and none for a pass that changed nothing.
+   */
+  | { type: "history_changed" };
 
 // ---- session transcript (session detail) ----
 
@@ -3744,6 +3785,11 @@ export interface ToolCall {
    * reviewer through here or not at all.
    */
   input?: string;
+  /**
+   * The agent's own id for this call (Claude's `tool_use.id`). Set only by Session History's
+   * reader, which looks a call's result up by it; the live readers leave it out.
+   */
+  id?: string;
 }
 
 /** One normalized turn from a Claude/Codex transcript, for the session detail. */
@@ -3787,8 +3833,8 @@ export interface TranscriptMessage {
    *
    * Additive and advisory: `text`, `tools`, `ts`, `role` and `id` are the native record
    * either way, so a server-side evidence consumer that ignores this field reads exactly
-   * what it read before the field existed. Only `src/web/lib/launch-presentation.ts` acts
-   * on it.
+   * what it read before the field existed. `src/web/lib/launch-presentation.ts` acts on
+   * `launch`, and the conversation renderer draws the two compaction kinds.
    */
   presentation?: TranscriptPresentation;
 }
@@ -3809,10 +3855,28 @@ export interface TranscriptMessage {
  * launch had no distinct human-authored request, and the turn is omitted from the visible
  * log rather than drawn as platform instructions or invented prose.
  */
-export type TranscriptPresentation = {
-  kind: "launch";
-  displayText: string | null;
-};
+export type TranscriptPresentation =
+  | {
+    kind: "launch";
+    displayText: string | null;
+  }
+  /**
+   * Where the agent compacted its context: everything above was summarized away. An empty
+   * turn that stands for the boundary itself. Only Session History's reader emits it.
+   */
+  | {
+    kind: "compaction";
+    /** How compaction started (`auto`, `manual`), when the transcript says. */
+    trigger: string | null;
+    /** The context size, in tokens, just before it was compacted. */
+    preTokens: number | null;
+  }
+  /**
+   * The summary the agent carried past a compaction. Recorded as a user turn but written by
+   * the agent, so it is drawn as the summary rather than as the operator speaking. Only
+   * Session History's reader emits it.
+   */
+  | { kind: "compaction_summary" };
 
 /**
  * The non-human authors of a "user" turn.

@@ -9,10 +9,12 @@ import {
   inspectionSummary,
 } from "../src/web/components/InspectorSettingsPanel.tsx";
 import {
+  closedRecordLine,
   inspectorPrStateWord,
   inspectorRoundsLabel,
   nothingPostedLine,
 } from "../src/web/components/InspectorFindingsModal.tsx";
+import { inspectorPrClosedAs } from "../src/web/lib/pr-standing.ts";
 import { INSPECTOR_MODEL_SPEC } from "../src/shared/inspector.ts";
 import { InspectorConfigSchema } from "../src/shared/protocol.ts";
 import type { InspectorState } from "../src/web/useInspector.ts";
@@ -89,11 +91,44 @@ test("a PR closed without merging is distinguished from one that landed", () => 
   assert.equal(inspectionSummary(row({ state: "closed", mergedAt: null })), "closed");
 });
 
-test("a retired PR keeps the findings it was reviewed with", () => {
+test("a retired PR keeps the findings it was reviewed with, worded as left at merge", () => {
   // The more useful fact about a PR that has landed: what the Inspector said about it.
   // Retirement must not overwrite that with "merged".
   const reviewed = row({ state: "closed", mergedAt: 1000, round: 2, openFindings: 3 });
-  assert.equal(inspectionSummary(reviewed), "3 findings");
+  assert.equal(inspectionSummary(reviewed), "3 unresolved at merge");
+});
+
+test("a PR merged by hand reads 'at merge', because merged follows GitHub's observed state", () => {
+  // `mergedAt` is written only when YOLO mode merged it, so a human merge has it null.
+  const humanMerged = row({ state: "closed", observedState: "MERGED", round: 2, openFindings: 3 });
+  assert.equal(inspectionSummary(humanMerged), "3 unresolved at merge");
+  assert.equal(inspectionSummary({ ...humanMerged, round: 0, openFindings: 0 }), "merged");
+});
+
+test("a PR closed without merging reads 'at close'", () => {
+  const closed = { state: "closed", round: 1, openFindings: 1 } as const;
+  assert.equal(inspectionSummary(row({ ...closed, observedState: "CLOSED" })), "1 unresolved at close");
+  assert.equal(inspectionSummary(row({ ...closed, observedState: null })), "1 unresolved at close");
+});
+
+test("a clean or failed closed row keeps its wording", () => {
+  assert.equal(
+    inspectionSummary(row({ state: "closed", observedState: "MERGED", round: 2, openFindings: 0 })),
+    "clean",
+  );
+  assert.equal(
+    inspectionSummary(row({ state: "closed", observedState: "MERGED", round: 2, openFindings: 3, lastError: "boom" })),
+    "failed",
+  );
+});
+
+test("whether a closed PR merged reads observedState as well as mergedAt", () => {
+  assert.equal(inspectorPrClosedAs(row({ state: "open" })), null);
+  assert.equal(inspectorPrClosedAs(row({ state: "open", observedState: "MERGED" })), null);
+  assert.equal(inspectorPrClosedAs(row({ state: "closed", observedState: "MERGED", mergedAt: null })), "merged");
+  assert.equal(inspectorPrClosedAs(row({ state: "closed", mergedAt: 1000 })), "merged");
+  assert.equal(inspectorPrClosedAs(row({ state: "closed", observedState: "CLOSED" })), "closed");
+  assert.equal(inspectorPrClosedAs(row({ state: "closed", observedState: null })), "closed");
 });
 
 test("an open PR nothing has looked at yet is still 'queued'", () => {
@@ -347,7 +382,22 @@ test("the modal's header words for state and rounds", () => {
   assert.equal(inspectorPrStateWord(row({ state: "open" })), "open");
   assert.equal(inspectorPrStateWord(row({ state: "closed", mergedAt: 1 })), "merged");
   assert.equal(inspectorPrStateWord(row({ state: "closed", mergedAt: null })), "closed");
+  assert.equal(inspectorPrStateWord(row({ state: "closed", observedState: "MERGED" })), "merged");
   assert.equal(inspectorRoundsLabel(0), "not reviewed yet");
   assert.equal(inspectorRoundsLabel(1), "1 review round");
   assert.equal(inspectorRoundsLabel(3), "3 review rounds");
+});
+
+test("a closed PR's leftover findings are named a record, and an open one's are not", () => {
+  const merged = row({ state: "closed", observedState: "MERGED", round: 2, openFindings: 3 });
+  assert.equal(
+    closedRecordLine(merged),
+    "This pull request merged with 3 findings unresolved. They are kept as a record and will not be reviewed again.",
+  );
+  assert.equal(
+    closedRecordLine(row({ state: "closed", observedState: "CLOSED", round: 2, openFindings: 1 })),
+    "This pull request closed with 1 finding unresolved. It is kept as a record and will not be reviewed again.",
+  );
+  assert.equal(closedRecordLine(row({ state: "open", round: 2, openFindings: 3 })), null);
+  assert.equal(closedRecordLine({ ...merged, openFindings: 0 }), null);
 });

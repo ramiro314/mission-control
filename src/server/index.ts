@@ -43,7 +43,7 @@ import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
-import { getForemanConfig } from "./foreman/config.ts";
+import { foremanPullRequestPacketPreferences, getForemanConfig } from "./foreman/config.ts";
 import { startPoller } from "./discovery/poller.ts";
 import {
   defaultRetentionCleanupDeps,
@@ -73,6 +73,8 @@ import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
 import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ArchiveManager } from "./archives/manager.ts";
+import { HistoryService } from "./history/service.ts";
+import { historyResumeSlots } from "./history/resume-slots.ts";
 import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
 import { getCostConfig, reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
@@ -123,6 +125,8 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { StorageHealthService, stuckReturnSource } from "./storage-health.ts";
+import { knownOwnerLabels, observedSessionProcesses } from "./worktrees/known-owners.ts";
+import { inspectWorktreeOccupancy } from "./worktrees/occupancy.ts";
 import { finishedTrees, OrphanProcessMonitor } from "./worktrees/orphan-processes.ts";
 import { LeaseActivityObserver } from "./worktrees/lease-activity.ts";
 import { quarantinedSlotProblems } from "./worktrees/storage-problems.ts";
@@ -238,7 +242,12 @@ const publishWorktreesChanged = () => {
   registry.emitWorktreesChanged();
   recomputeStorageHealth();
 };
+// Names what an inspection finds, for the slot card. Passed to the two readers a card shows.
+const namedOccupancy = (paths: readonly string[]) => inspectWorktreeOccupancy(paths, {
+  knownOwner: knownOwnerLabels(() => observedSessionProcesses(registry)),
+});
 const worktrees = new WorktreeManager(undefined, {
+  occupancy: namedOccupancy,
   ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference),
   publishChanged: () => {
     publishWorktreesChanged();
@@ -292,6 +301,21 @@ const archives = new ArchiveManager({
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
 registry.onSessionExit((session) => archives.reserveOnExit(session));
+// Session History's catalog of every agent session on disk. Constructed here, started only
+// after the port is won (below), for the archive library's reason: a first run indexes
+// thousands of transcripts, and the daemon serves while it does. As with archives, the watcher
+// is a latency hint under the recurring scan, and a pass that changed rows reaches open
+// History pages as one content-free `history_changed` through the Registry.
+const history = new HistoryService({
+  onChanged: () => registry.emitHistoryChanged(),
+  watch: true,
+});
+// Resume's launch records follow the Registry from here, before any Resume can be made: a
+// resumed agent binds when discovery registers it, and the startup twin waits for the first
+// sweep to judge launches a previous run left open. A slot launch closes when the worktree
+// manager says its slot no longer holds it, or when its session ends with the slot clean; a
+// change to what its slot card says republishes the worktree inventory.
+history.trackResumes(registry, historyResumeSlots(worktrees), () => registry.emitWorktreesChanged());
 registry.subscribe((event) => {
   if (event.type === "session_remove") archives.sessionRemoved(event.id);
 });
@@ -351,12 +375,18 @@ const checkScheduler = createCheckScheduler();
 // still writing in it, and only the second authorizes provider release. That seam is injected
 // here with a refusing default, so missing recovery keeps the resource instead of guessing.
 //
-// Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
-// daemon that refused to start over one unreconcilable lease would be worse than one
-// running without it.
+// Not awaited: the ordering above is the pins `reconcileOnStartup` registers before its first
+// await, and resolving a recovered tree can delete a whole checkout, which held the listener
+// back for minutes. Best-effort, because one unreconcilable lease must not stop the daemon.
+// Unreferenced folders under the overflow and check-fallback directories. Husks and clean trees
+// are removed on each maintenance pass; a dirty one is kept and listed as `dirty-orphan-folder`,
+// and Worktrees > Unowned trees discards it through the preview below. Created before the check
+// leases, whose startup reconciliation may already prune a deleted check tree's registration.
+const orphanTrees = new OrphanTreeSweep();
 const checkLeases = new CheckLeaseManager(undefined, {
   manager: worktrees,
   legacy: legacyWorktrees,
+  pruneRegistrations: () => orphanTrees.pruneRegistrations(),
 });
 // The operator's test lease and concurrency settings reach the executor here and nowhere
 // else, so every test-running check in this daemon reads them per check.
@@ -364,15 +394,9 @@ const checkRuntime = new CheckRuntime(checkLeases, {
   testPolicy: getWorkflowPolicy,
   storedTestingLayers: (repoRoot) => testingSettings.forRepository(repoRoot),
 });
-try {
-  await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
-} catch (err) {
+checkLeases.reconcileOnStartup(checkRuntime.groupRecovery).catch((err) => {
   console.error("[mission-control] could not reconcile check leases:", err);
-}
-// Unreferenced folders under the overflow and check-fallback directories. Husks and clean trees
-// are removed on each maintenance pass; a dirty one is kept and listed as `dirty-orphan-folder`,
-// and Worktrees > Unowned trees discards it through the preview below.
-const orphanTrees = new OrphanTreeSweep();
+});
 const worktreeOperations = new WorktreeOperationsService(worktrees, {
   legacy: legacyWorktrees,
   tasks: {
@@ -410,6 +434,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   notifyChanged: publishWorktreesChanged,
   staleLeases: () => leaseActivity.staleSinceBySlot(),
   unownedTrees: orphanTrees,
+  historyResumeLabel: (ownerKey) => history.slotLabel(ownerKey),
 });
 // No Warm survives a restart, so only the Warm logs a slot row still names are kept. Native
 // reconciliation above has already returned every slot a crashed Warm held.
@@ -421,8 +446,7 @@ await worktreeOperations.sweepWarmLogs();
 // other's store. The guard hands back only a reason string or null.
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
-  trackCiFailures: () => getForemanConfig().trackCiFailures,
-  trackMergeConflicts: () => getForemanConfig().trackMergeConflicts,
+  ...foremanPullRequestPacketPreferences(),
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
@@ -471,22 +495,25 @@ let stopDatabaseBackups = async () => {};
 // whenever the worktree pool publishes a change, so a quarantine raises its problem at once,
 // and when the settled task trees a restart kept change.
 // Processes still inside a tree whose owner has finished (a pending task return, a check
-// lease stuck in `returning`, a quarantined slot, an unreferenced folder the sweep left).
+// lease stuck in `returning`, a quarantined slot) or that has none (an available slot with no
+// lease, an unreferenced folder the sweep left).
 // Scanned after each maintenance pass, which sweeps first, and reported as `orphan-process`
 // problems; Kill retries the blocked return at once, and sweeps again for an unowned tree.
 const orphanProcesses = new OrphanProcessMonitor({
+  occupancy: namedOccupancy,
   trees: () => finishedTrees({
-    slots: worktrees.store.slots(),
+    pool: worktrees,
     taskReturns: tasks.pendingWorktreeReturns(),
     returningChecks: checkLeases.returningLeases(),
     unownedTrees: orphanTrees.unreferenced(),
   }),
   retryReturn: (owner) => {
     if (owner.kind === "task") return tasks.retryWorktreeReturn(owner.taskId);
-    if (owner.kind === "check") return checkLeases.retryReturning(owner.attemptId);
+    if (owner.kind === "check") return checkLeases.retryReturning(owner.attemptId, checkRuntime.groupRecovery);
     // A fresh pass: one already running may have read occupancy before the kill.
     if (owner.kind === "unowned") return orphanTrees.sweepFresh().then((): void => recomputeStorageHealth());
   },
+  killFinished: (kill) => worktreeOperations.recordKill(kill),
   changed: () => storageHealth.recompute(),
 });
 // A task or check return refused for over an hour is a `stuck-return` problem. Its first
@@ -827,6 +854,7 @@ const app = buildApp({
   pendingTurns,
   keepAwake,
   archives,
+  history,
   workflowCommands,
   testingSettings,
   commandDocumentProposals,
@@ -909,10 +937,13 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // design - a library that could not be walked is a background failure to log, never a
   // reason a daemon does not start.
   archives.start();
-  // The session scope's probe, and the reset of this instance's failed scopes a previous run
+  // Session History's backfill: newest first, in short batches that yield between writes, and
+  // fire-and-forget for the archive library's reason above.
+  history.start();
+  // The session scope's probe, and the stop and reset of this instance's scopes a previous run
   // left behind. After the port for the same reason: it runs `systemd-run` and `systemctl`, and
   // a session start that comes first awaits the same probe, bounded at 5 s, never fails on it.
-  void sessionScope.ready();
+  void sessionScope.ready({ stopStale: true });
   // And the captures this daemon already owed when it stopped. Separate from discovery
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips
@@ -1103,6 +1134,9 @@ async function shutdown(): Promise<void> {
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.
   archives.stop();
+  // A History pass in flight writes whole rows per batch, so abandoning it costs the next pass
+  // a re-summarize of the files it had not reached and nothing else.
+  history.stop();
   // Release the idle-sleep assertion while we can still do it gracefully. IOKit drops the
   // native assertion with this process, and the Linux inhibitor's `tail --pid=<daemon PID>`
   // exits with it, so this is the orderly half of a two-part cleanup, not the only one.

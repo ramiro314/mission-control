@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStaleLeaseDays, WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
+import { parseStaleLeaseDays, slotHistoryHeadline, WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
 import { capacityGeometry } from "../src/web/lib/worktree-capacity.ts";
+import { poolTimingSummary, refreshedSlotHistory, timingSummary } from "../src/web/lib/worktree-history.ts";
 import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
 import type { WorktreesState } from "../src/web/useWorktrees.ts";
+import type { StorageHealth } from "../src/shared/storage-health.ts";
 
 const noop = async () => {};
 
@@ -27,6 +29,7 @@ const overCapacityPool: WorktreeRepositoryView = {
   diskBytes: 4096,
   lastReconciledAt: 1,
   reconciliationError: "one slot needs attention",
+  timings: { newSlots: 0, medianProvisioningMs: null, seededSlots: 0 },
   status: "attention",
   slots: [{
     id: "slot-1",
@@ -43,15 +46,18 @@ const overCapacityPool: WorktreeRepositoryView = {
     defaultRelation: "unmerged",
     dirty: true,
     processes: { state: "known", count: 1, reason: null },
-    occupants: [{ pid: 4242, command: "node server.js", startedAt: 0 }],
+    occupants: [{ pid: 4242, command: "node server.js", startedAt: 0, knownOwner: null }],
     diskBytes: 4096,
     busy: null,
     quarantineReason: null,
     diagnostic: null,
+    observationFailure: null,
     recoveryRefusal: null,
     actions: ["return", "destroy"],
     dependencies: null,
     warmLog: null,
+    timings: { provisioning: null, claim: null, seed: null },
+    lastHistoryId: null,
   }],
 };
 
@@ -68,6 +74,7 @@ const roomToGrowPool: WorktreeRepositoryView = {
   diskBytes: 8192,
   lastReconciledAt: 1,
   reconciliationError: null,
+  timings: { newSlots: 0, medianProvisioningMs: null, seededSlots: 0 },
   status: "ready",
   slots: [],
 };
@@ -669,8 +676,8 @@ test("a quarantined slot card shows its reason, detail, last automatic-recovery 
           diagnostic: "git checkout failed: fatal: Unable to create index.lock: File exists",
           processes: { state: "known", count: 18, reason: null },
           occupants: [
-            { pid: 4242, command: "node /pool/1/repo/node_modules/.bin/tsserver", startedAt: started },
-            ...Array.from({ length: 15 }, (_, index) => ({ pid: 5000 + index, command: "sleep 600", startedAt: started })),
+            { pid: 4242, command: "node /pool/1/repo/node_modules/.bin/tsserver", startedAt: started, knownOwner: "Session fix the login" },
+            ...Array.from({ length: 15 }, (_, index) => ({ pid: 5000 + index, command: "sleep 600", startedAt: started, knownOwner: null })),
           ],
           recoveryRefusal: {
             at: started,
@@ -689,8 +696,94 @@ test("a quarantined slot card shows its reason, detail, last automatic-recovery 
   assert.match(html, /<dd>Blocked by ignored file <code>.idea\/workspace.xml<\/code><\/dd>/);
   // Occupants name PID, command and start time; past the inventory's bound, the rest are counted.
   assert.match(html, /<section class="wt-occupants" aria-label="Processes in slot 1">/);
-  assert.match(html, /<code>node \/pool\/1\/repo\/node_modules\/.bin\/tsserver<\/code><span>PID 4242 · started [^<]+<\/span>/);
+  assert.match(html, /<strong>Session fix the login<\/strong><code>node \/pool\/1\/repo\/node_modules\/.bin\/tsserver<\/code><span>PID 4242 · started [^<]+<\/span>/);
   assert.match(html, /and 2 more not listed/);
+});
+
+test("an orphan row shows what names its process, and an unnamed one shows no name", () => {
+  const slot = overCapacityPool.slots[0]!;
+  const problem = (pid: number, knownOwner?: string | null) => ({
+    kind: "orphan-process",
+    link: { target: "slot", slotId: slot.id },
+    process: { tree: slot.path, pid, ppid: 1, command: `worker-${pid}`, startedAt: 0, knownOwner },
+  });
+  const html = renderToStaticMarkup(createElement(WorktreeSettingsPanel, {
+    state: {
+      ...state,
+      inventory: {
+        ...state.inventory!,
+        repositories: [{ ...overCapacityPool, slots: [{ ...slot, occupants: [] }] }],
+      },
+    },
+    storageHealth: { problems: [problem(7001, "IDE language server"), problem(7002, null), problem(7003)] } as unknown as StorageHealth,
+  }));
+  assert.match(html, /<li class="wt-orphan"><div><strong>IDE language server<\/strong><code>worker-7001<\/code><span>PID 7001 /);
+  assert.match(html, /<li class="wt-orphan"><div><code>worker-7002<\/code><span>PID 7002 /);
+  assert.match(html, /<li class="wt-orphan"><div><code>worker-7003<\/code><span>PID 7003 /);
+  assert.match(html, /aria-label="Kill process 7001"/, "a name does not take the Kill away");
+});
+
+/** A slot card whose orphan list holds a live session's process and `orphans` others. */
+function cardWithSessionProcess(orphans: number): string {
+  const slot = overCapacityPool.slots[0]!;
+  const problem = (pid: number, session: { id: string; name: string } | null) => ({
+    kind: "orphan-process",
+    link: { target: "slot", slotId: slot.id },
+    process: { tree: slot.path, pid, ppid: 1, command: `worker-${pid}`, startedAt: 0, knownOwner: session && `Session ${session.name}`, session },
+  });
+  return renderToStaticMarkup(createElement(WorktreeSettingsPanel, {
+    state: {
+      ...state,
+      inventory: {
+        ...state.inventory!,
+        repositories: [{ ...overCapacityPool, slots: [{ ...slot, occupants: [] }] }],
+      },
+    },
+    storageHealth: {
+      problems: [
+        problem(7000, { id: "session-1", name: "fix the login" }),
+        ...Array.from({ length: orphans }, (_, index) => problem(7001 + index, null)),
+      ],
+    } as unknown as StorageHealth,
+  }));
+}
+
+test("a live session's process stays listed with Open session and no Kill, and Kill all counts only the rest", () => {
+  const two = cardWithSessionProcess(2);
+  assert.match(two, /<strong>Session fix the login<\/strong><code>worker-7000<\/code>/);
+  assert.match(two, />Open session<\/button>/);
+  assert.doesNotMatch(two, /aria-label="Kill process 7000"/);
+  assert.match(two, /aria-label="Kill process 7001"/);
+  assert.match(two, /aria-label="Kill process 7002"/);
+  assert.match(two, />Kill all<\/button>/);
+
+  const one = cardWithSessionProcess(1);
+  assert.match(one, /aria-label="Kill process 7001"/);
+  assert.doesNotMatch(one, />Kill all<\/button>/, "one killable process is its row's Kill alone");
+
+  const none = cardWithSessionProcess(0);
+  assert.match(none, />Open session<\/button>/);
+  assert.doesNotMatch(none, />Kill</);
+});
+
+test("a live session's process inside a leased slot offers Open session too", () => {
+  const slot = overCapacityPool.slots[0]!;
+  const html = render({
+    inventory: {
+      ...inventory,
+      repositories: [{
+        ...overCapacityPool,
+        slots: [{
+          ...slot,
+          occupants: [
+            { pid: 7000, command: "claude", startedAt: 0, knownOwner: "Session fix the login", session: { id: "session-1", name: "fix the login" } },
+            { pid: 7001, command: "vite", startedAt: 0, knownOwner: null, session: null },
+          ],
+        }],
+      }],
+    },
+  });
+  assert.equal(html.match(/>Open session<\/button>/g)?.length, 1);
 });
 
 test("a lock refusal names the lock path, and a detail equal to the reason is not repeated", () => {
@@ -721,4 +814,180 @@ test("a lock refusal names the lock path, and a detail equal to the reason is no
   assert.match(html, /<dt>Processes<\/dt><dd>process listing timed out<\/dd>/);
   assert.match(html, /<dd>Blocked by lock file <code>\/repo\/.git\/worktrees\/repo1\/index.lock<\/code><\/dd>/);
   assert.doesNotMatch(html, /Processes in slot 1/);
+});
+
+test("a quarantined slot whose owner is referenced names it and offers its Return; a leased one says nothing more", () => {
+  const base = overCapacityPool.slots[0]!;
+  const card = (slot: Partial<typeof base>) => render({
+    inventory: { ...inventory, repositories: [{ ...overCapacityPool, slots: [{ ...base, ...slot }] }] },
+  });
+  const sentence = /<p class="wt-owner">Its owner&#x27;s return brings this slot back\.<\/p>/;
+  const owned = card({ state: "quarantined", quarantineReason: "worktree reset failed", actions: ["return", "destroy"] });
+  assert.match(owned, /<p class="wt-owner"><span>task<\/span> Ship Worktrees<\/p>/);
+  assert.match(owned, sentence);
+  assert.match(owned, />Return<\/button>/);
+  // The daemon withholds Return when the owner is gone or unknown, and then the card does not
+  // promise it.
+  const gone = card({ state: "quarantined", quarantineReason: "worktree reset failed", actions: ["destroy", "recover"] });
+  assert.doesNotMatch(gone, sentence);
+  assert.doesNotMatch(gone, />Return<\/button>/);
+  assert.doesNotMatch(card({}), sentence);
+});
+
+test("a slot whose last observation failed says so on its own line, in whatever state it kept", () => {
+  const base = overCapacityPool.slots[0]!;
+  const failure = "slot Git state is unknown (git status timed out after 15 s, and after 30 s on retry)";
+  const html = render({
+    inventory: {
+      ...inventory,
+      repositories: [{
+        ...overCapacityPool,
+        slots: [
+          { ...base, state: "leased", occupants: [], observationFailure: failure },
+          {
+            ...base,
+            id: "slot-quarantined",
+            ordinal: 2,
+            state: "quarantined",
+            owner: null,
+            occupants: [],
+            quarantineReason: "worktree reset failed",
+            diagnostic: "fatal: unable to write new index file",
+            observationFailure: failure,
+          },
+        ],
+      }],
+    },
+  });
+  assert.match(html, /aria-label="Why slot 1 is leased"><dl><div><dt>Last observation failed<\/dt><dd>slot Git state is unknown \(git status timed out after 15 s, and after 30 s on retry\)<\/dd><\/div>/);
+  // A quarantine keeps its reason and detail; the failed read is a line of its own beside them.
+  assert.match(html, /<dt>Reason<\/dt><dd>worktree reset failed<\/dd><\/div><div><dt>Detail<\/dt><dd>fatal: unable to write new index file<\/dd><\/div><div><dt>Last observation failed<\/dt>/);
+});
+
+test("every slot card starts with its History closed, showing no list and no note", () => {
+  const html = render();
+  assert.match(html, /<section class="wt-history" aria-label="Slot 1 history">/);
+  assert.match(html, /aria-expanded="false"[^>]*>.*?<span>History<\/span>/s);
+  assert.doesNotMatch(html, /Reading this slot's history|Nothing recorded for this slot/);
+});
+
+function cardHtml(slot: Partial<WorktreeRepositoryView["slots"][number]> = {}): string {
+  return render({
+    inventory: {
+      ...inventory,
+      repositories: [{ ...overCapacityPool, slots: [{ ...overCapacityPool.slots[0]!, ...slot }] }],
+    },
+  });
+}
+
+test("a slot card shows the last timings and why a seed had no source, and nothing until it has some", () => {
+  assert.doesNotMatch(cardHtml(), /Last provisioning|Last claim|Last seed/);
+  const html = cardHtml({
+    timings: {
+      provisioning: { at: 1, outcome: "new", durationMs: 662_000, reason: null, sourceOrdinal: null, sourceQuarantined: false },
+      claim: { at: 2, outcome: "succeeded", durationMs: 640_000, reason: null, sourceOrdinal: null, sourceQuarantined: false },
+      seed: { at: 3, outcome: "none", durationMs: 0, reason: "no idle sibling holds a current install", sourceOrdinal: null, sourceQuarantined: false },
+    },
+  });
+  assert.match(html, /<dl class="wt-facts" aria-label="Slot 1 timings">/);
+  assert.match(html, /<dt>Last provisioning<\/dt><dd>new slot in 11m 02s<\/dd>/);
+  assert.match(html, /<dt>Last claim<\/dt><dd>succeeded in 10m 40s<\/dd>/);
+  assert.match(html, /<dt>Last seed<\/dt><dd>none: no idle sibling holds a current install<\/dd>/);
+});
+
+test("the pool row shows the median and hit rate once history holds a new slot", () => {
+  assert.equal(poolTimingSummary({ newSlots: 0, medianProvisioningMs: null, seededSlots: 0 }), null);
+  assert.equal(
+    poolTimingSummary({ newSlots: 10, medianProvisioningMs: 662_000, seededSlots: 3 }),
+    "Median new slot 11m 02s · seed hit rate 30% (3 of last 10 new slots)",
+  );
+  assert.equal(
+    poolTimingSummary({ newSlots: 1, medianProvisioningMs: 5_000, seededSlots: 1 }),
+    "Median new slot 5s · seed hit rate 100% (1 of last 1 new slot)",
+  );
+});
+
+test("a timed step reads the same on the card and in History, and a later outcome reads as itself", () => {
+  const timing = { outcome: "failed", durationMs: 3_000, sourceOrdinal: null, sourceQuarantined: false };
+  assert.equal(timingSummary("claim", timing), "failed after 3s");
+  assert.equal(timingSummary("claim", { ...timing, outcome: "skipped" }), "skipped, dependencies already matched");
+  assert.equal(timingSummary("claim", { ...timing, outcome: "shutdown" }), "stopped by a shutdown after 3s");
+  assert.equal(timingSummary("provisioning", { ...timing, outcome: "reused" }), "reused slot in 3s");
+  assert.equal(timingSummary("seed", { ...timing, outcome: "placed", sourceOrdinal: 4 }), "from slot 4 in 3s");
+  assert.equal(timingSummary("seed", { ...timing, outcome: "abandoned" }), "abandoned after 3s");
+  assert.equal(timingSummary("seed", { ...timing, outcome: "interrupted" }), "cut off after 3s");
+  const quarantined = { ...timing, sourceOrdinal: 4, sourceQuarantined: true };
+  assert.equal(timingSummary("seed", { ...quarantined, outcome: "placed" }), "from quarantined slot 4 in 3s");
+  assert.equal(timingSummary("seed", { ...quarantined, outcome: "abandoned" }), "abandoned copying from quarantined slot 4 after 3s");
+  assert.equal(timingSummary("seed", { ...quarantined, outcome: "interrupted" }), "cut off copying from quarantined slot 4 after 3s");
+  assert.equal(timingSummary("seed", { ...timing, outcome: "abandoned", sourceOrdinal: 4 }), "abandoned copying from slot 4 after 3s");
+  assert.equal(timingSummary("seed", { ...timing, outcome: "a-later-outcome" }), "a-later-outcome");
+  assert.equal(timingSummary("seed", { ...timing, outcome: null }), "unknown");
+
+  const entry = {
+    id: 1, slotId: "slot-1", ordinal: 1, at: 1, kind: "seed", fromState: null, toState: null, reason: null,
+    detail: null, operation: null, outcome: "placed", actor: "owner", durationMs: 12_000, meta: { sourceOrdinal: 3 },
+  };
+  assert.equal(slotHistoryHeadline(entry), "Seed: from slot 3 in 12s");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "claim", outcome: "succeeded" }), "Claim: succeeded in 12s");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "provisioning", outcome: "new" }), "Provisioned: new slot in 12s");
+  assert.equal(slotHistoryHeadline({ ...entry, meta: null }), "Seed: from slot unknown in 12s");
+  assert.equal(
+    slotHistoryHeadline({ ...entry, meta: { sourceOrdinal: 3, sourceQuarantined: true } }),
+    "Seed: from quarantined slot 3 in 12s",
+  );
+});
+
+test("a history row's headline names the change, and a later build's kind reads as itself", () => {
+  const entry = {
+    id: 1, slotId: "s", ordinal: 1, at: 1, kind: "transition", fromState: "leased", toState: "returning", reason: null,
+    detail: null, operation: null, outcome: null, actor: null, durationMs: null, meta: null,
+  };
+  assert.equal(slotHistoryHeadline(entry), "leased → returning");
+  assert.equal(slotHistoryHeadline({ ...entry, fromState: null, toState: "provisioning" }), "new → provisioning");
+  assert.equal(slotHistoryHeadline({ ...entry, fromState: "pruning", toState: null }), "pruning → removed");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "observation", outcome: "started" }), "Failed read");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "observation", outcome: "cleared" }), "Failed read cleared");
+  assert.equal(slotHistoryHeadline({ ...entry, kind: "a-later-kind" }), "a-later-kind");
+  const operation = { ...entry, kind: "operation", fromState: null, toState: null, operation: "destroy", outcome: "partial" };
+  assert.equal(slotHistoryHeadline(operation), "Destroy partly done");
+  assert.equal(slotHistoryHeadline({ ...operation, operation: "kill", outcome: "refused" }), "Kill refused");
+  assert.equal(slotHistoryHeadline({ ...operation, operation: "a-later-operation", outcome: "a-later-outcome" }), "a-later-operation a-later-outcome");
+});
+
+test("a refresh adds what is newer to an open list and keeps its older rows and cursor", () => {
+  const entry = (id: number) => ({
+    id, slotId: "s", ordinal: 1, at: id, kind: "transition", fromState: null, toState: null, reason: null,
+    detail: null, operation: null, outcome: null, actor: null, durationMs: null, meta: null,
+  });
+  const ids = (page: { entries: Array<{ id: number }> }) => page.entries.map((row) => row.id);
+  const shown = { entries: [10, 9, 8, 7, 6].map(entry), nextBefore: 6 };
+
+  const nothing = { entries: [], nextBefore: null };
+  assert.deepEqual(refreshedSlotHistory(null, shown), shown, "the first read is the list");
+  assert.deepEqual(refreshedSlotHistory(nothing, shown), shown, "as it is over an empty one");
+  assert.deepEqual(refreshedSlotHistory(shown, nothing), nothing, "a slot with nothing left shows nothing");
+
+  const newer = refreshedSlotHistory(shown, { entries: [12, 11, 10, 9].map(entry), nextBefore: 9 });
+  assert.deepEqual(ids(newer), [12, 11, 10, 9, 8, 7, 6], "every row once, in order");
+  assert.equal(newer.nextBefore, 6, "the cursor still continues below the oldest row shown");
+
+  const reaching = refreshedSlotHistory(shown, { entries: [12, 11, 10].map(entry), nextBefore: 10 });
+  assert.deepEqual(ids(reaching), [12, 11, 10, 9, 8, 7, 6], "a page ending on the newest row shown still reaches it");
+  assert.equal(reaching.nextBefore, 6);
+
+  const complete = { entries: shown.entries, nextBefore: null };
+  const stillComplete = refreshedSlotHistory(complete, { entries: [11, 10, 9].map(entry), nextBefore: 9 });
+  assert.deepEqual(ids(stillComplete), [11, 10, 9, 8, 7, 6]);
+  assert.equal(stillComplete.nextBefore, null, "every row is already shown, whatever cursor the new page carries");
+
+  const same = refreshedSlotHistory(shown, { entries: [10, 9].map(entry), nextBefore: 9 });
+  assert.deepEqual(same, shown);
+
+  const whole = refreshedSlotHistory(shown, { entries: [11, 10, 9, 8, 7, 6, 5].map(entry), nextBefore: null });
+  assert.deepEqual(ids(whole), [11, 10, 9, 8, 7, 6]);
+  assert.equal(whole.nextBefore, null, "the daemon holds nothing older than this page");
+
+  const past = { entries: [40, 39].map(entry), nextBefore: 39 };
+  assert.deepEqual(refreshedSlotHistory(shown, past), past, "a page that cannot reach the list starts it again");
 });

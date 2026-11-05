@@ -57,7 +57,8 @@ export type ActionId =
   | "delete"
   | "lineDensity"
   | "composerEditor"
-  | "requeue";
+  | "requeue"
+  | "history";
 
 export interface ActionDef {
   id: ActionId;
@@ -127,6 +128,13 @@ export const ACTIONS: readonly ActionDef[] = [
     // expressible: the chord grammar treats "shift+s" as distinct from "s", so claiming it
     // takes nothing away from sending - see the modifier note further down this file.
     defaultBinding: "shift+s",
+    group: "global",
+  },
+  {
+    id: "history",
+    label: "Open History",
+    description: "List every agent session this machine holds, newest activity first.",
+    defaultBinding: "h",
     group: "global",
   },
   {

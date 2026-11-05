@@ -4,7 +4,13 @@ import { remoteDefaultRef } from "../actions.ts";
 import { resetWorktreeToCommit } from "../git/ensemble-snapshot.ts";
 import { freshRemoteDefaultSha } from "../git/remote-default.ts";
 import { isConductorScratchPath } from "../pipelines/conductor/scratch.ts";
-import { run } from "../util/exec.ts";
+import { describeCommandFailure, run, type RunResult } from "../util/exec.ts";
+import {
+  bothAttempts,
+  OBSERVATION_RETRY_DELAY_MS,
+  OBSERVATION_RETRY_TIMEOUT_SCALE,
+  pauseFor,
+} from "./observation-retry.ts";
 import { trackOwnWorktreeProcess } from "./own-processes.ts";
 import {
   worktreeRepositoryIdentity,
@@ -14,6 +20,8 @@ import {
 export interface WorktreeRegistration {
   path: string;
   head: string | null;
+  /** The full ref checked out there (`refs/heads/<name>`), or null when none is. */
+  branch: string | null;
   bare: boolean;
   detached: boolean;
   locked: boolean;
@@ -47,6 +55,18 @@ export interface WorktreeInspection {
   detached: boolean;
 }
 
+/** Where a branch's tip is, in this clone: its local branch and origin's remote-tracking ref. */
+export interface BranchTips {
+  local: string | null;
+  remote: string | null;
+}
+
+/**
+ * How a History Resume checks a branch out in a slot: `attach` its local branch, `track` a new
+ * local branch from origin's, or `detach` at the local tip because another worktree holds it.
+ */
+export type BranchCheckoutMode = "attach" | "track" | "detach";
+
 export interface WorktreeGit {
   list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>>;
   inspect(path: string): Promise<GitResult<WorktreeInspection>>;
@@ -55,7 +75,18 @@ export interface WorktreeGit {
   observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>>;
-  remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean): Promise<GitResult<void>>;
+  /** `"locked"` also removes a registration whose lock would stop a plain `--force`. */
+  remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean | "locked"): Promise<GitResult<void>>;
+  unlock(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<void>>;
+  repair(identity: WorktreeRepositoryIdentity, path?: string): Promise<GitResult<void>>;
+  /** `branch` is a bare name that `isCheckoutBranchName` accepted. Reads refs only; never fetches. */
+  branchTips(identity: WorktreeRepositoryIdentity, branch: string): Promise<GitResult<BranchTips>>;
+  checkoutBranch(path: string, branch: string, mode: BranchCheckoutMode): Promise<GitResult<void>>;
+  /**
+   * Whether `HEAD` holds a commit that no branch, tag or remote-tracking ref holds: work a
+   * reset would leave only in the reflog.
+   */
+  unbranchedCommits(path: string): Promise<GitResult<boolean>>;
 }
 
 /**
@@ -68,19 +99,29 @@ export interface WorktreeGit {
  */
 export const OBSERVATION_GIT_OPTIONS = ["--no-optional-locks"] as const;
 
-function failure(step: string, result: Awaited<ReturnType<typeof run>>): GitResult<never> {
+/**
+ * Whether a recorded branch name can be handed to Git as one. A transcript records whatever
+ * Git printed, so this refuses anything that could read as an option or as a detached `HEAD`,
+ * and leaves the rest to `check-ref-format` through the reads that follow.
+ */
+export function isCheckoutBranchName(branch: string | null): branch is string {
+  return branch !== null && branch !== "" && branch !== "HEAD" && !branch.startsWith("-") &&
+    !/[\s~^:?*[\\]|\.\.|@\{|\/\/|^\/|\/$|\.lock$|\.$/.test(branch);
+}
+
+function failure(step: string, result: RunResult): GitResult<never> {
   return {
     ok: false,
-    reason: `${step} failed: ${result.stderr.trim() || `exit ${result.code}`}`,
+    reason: describeCommandFailure(step, result),
     outcomeUnknown: result.outcomeUnknown,
   };
 }
 
-function commandFailed(result: Awaited<ReturnType<typeof run>>): boolean {
+function commandFailed(result: RunResult): boolean {
   return result.code !== 0 || result.outcomeUnknown || result.overflowed;
 }
 
-async function canonical(path: string): Promise<string> {
+export async function canonical(path: string): Promise<string> {
   try {
     return await realpath(path);
   } catch {
@@ -97,6 +138,7 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
       current = {
         path: line.slice("worktree ".length),
         head: null,
+        branch: null,
         bare: false,
         detached: false,
         locked: false,
@@ -106,6 +148,7 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
     }
     if (!current) continue;
     if (line.startsWith("HEAD ")) current.head = line.slice("HEAD ".length);
+    else if (line.startsWith("branch ")) current.branch = line.slice("branch ".length);
     else if (line === "bare") current.bare = true;
     else if (line === "detached") current.detached = true;
     else if (line === "locked" || line.startsWith("locked ")) current.locked = true;
@@ -118,21 +161,54 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
 /** Production Git operations for the native allocator. */
 export class NativeWorktreeGit implements WorktreeGit {
   private readonly execute: typeof run;
+  private readonly pause: (ms: number) => Promise<void>;
 
-  /** Every command is recorded while it runs, so occupancy never counts our own Git. */
-  constructor(execute: typeof run = run) {
+  /**
+   * Every command is recorded while it runs, so occupancy never counts our own Git. `pause`
+   * is the wait before an observation read's one retry, injected so a test need not wait.
+   */
+  constructor(execute: typeof run = run, pause: (ms: number) => Promise<void> = pauseFor) {
     this.execute = (bin, args, opts = {}) =>
       trackOwnWorktreeProcess((onSpawn) => execute(bin, args, { ...opts, onSpawn }));
+    this.pause = pause;
+  }
+
+  /**
+   * One observation read, retried once (see `observation-retry.ts`). `interpret` turns a
+   * command result into the read's answer. Only a failure whose outcome is unknown - a child
+   * killed at its timeout or by a signal - is retried; a Git that exited with its own error
+   * ("not a git repository", a corrupt index) would say the same again, so it is answered at
+   * once rather than adding 2 s to every status read of a broken slot. One that fails twice
+   * names both attempts. Mutations never come through here.
+   */
+  private async observe<T>(
+    args: string[],
+    timeoutMs: number,
+    interpret: (result: RunResult) => GitResult<T> | Promise<GitResult<T>>,
+  ): Promise<GitResult<T>> {
+    const first = await interpret(await this.execute("git", args, { timeoutMs }));
+    if (first.ok || !first.outcomeUnknown) return first;
+    await this.pause(OBSERVATION_RETRY_DELAY_MS);
+    const second = await interpret(
+      await this.execute("git", args, { timeoutMs: timeoutMs * OBSERVATION_RETRY_TIMEOUT_SCALE }),
+    );
+    if (second.ok) return second;
+    return {
+      ok: false,
+      reason: bothAttempts(first.reason, second.reason),
+      outcomeUnknown: first.outcomeUnknown || second.outcomeUnknown,
+    };
   }
 
   async list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>> {
-    const result = await this.execute(
-      "git",
+    const listed = await this.observe(
       ["-C", identity.mainCheckoutRoot, ...OBSERVATION_GIT_OPTIONS, "worktree", "list", "--porcelain"],
-      { timeoutMs: 30_000 },
+      30_000,
+      (result): GitResult<string> =>
+        commandFailed(result) ? failure("git worktree list", result) : { ok: true, value: result.stdout },
     );
-    if (commandFailed(result)) return failure("git worktree list", result);
-    const parsed = parseWorktreePorcelain(result.stdout);
+    if (!listed.ok) return listed;
+    const parsed = parseWorktreePorcelain(listed.value);
     for (const registration of parsed) registration.path = await canonical(registration.path);
     return { ok: true, value: parsed };
   }
@@ -149,23 +225,28 @@ export class NativeWorktreeGit implements WorktreeGit {
    * transition and "we did not find out" must not read as "detached".
    */
   private async detachedAt(path: string): Promise<GitResult<boolean>> {
-    const probe = await this.execute("git", ["-C", path, ...OBSERVATION_GIT_OPTIONS, "symbolic-ref", "--quiet", "HEAD"], {
-      timeoutMs: 15_000,
+    return this.observe(["-C", path, ...OBSERVATION_GIT_OPTIONS, "symbolic-ref", "--quiet", "HEAD"], 15_000, (probe) => {
+      if (probe.outcomeUnknown || probe.overflowed) return failure("git symbolic-ref HEAD", probe);
+      if (probe.code === 0 && probe.stdout.trim().length > 0) return { ok: true, value: false };
+      if (probe.code === 1 && probe.stdout.trim().length === 0 && probe.stderr.trim().length === 0) {
+        return { ok: true, value: true };
+      }
+      return failure("git symbolic-ref HEAD", probe);
     });
-    if (probe.outcomeUnknown || probe.overflowed) return failure("git symbolic-ref HEAD", probe);
-    if (probe.code === 0 && probe.stdout.trim().length > 0) return { ok: true, value: false };
-    if (probe.code === 1 && probe.stdout.trim().length === 0 && probe.stderr.trim().length === 0) {
-      return { ok: true, value: true };
-    }
-    return failure("git symbolic-ref HEAD", probe);
   }
 
   private async status(path: string): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
-    const status = await this.execute(
-      "git", ["-C", path, ...OBSERVATION_GIT_OPTIONS, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-      { timeoutMs: 15_000 },
+    return this.observe(
+      ["-C", path, ...OBSERVATION_GIT_OPTIONS, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      15_000,
+      (status) => commandFailed(status) ? failure("git status", status) : this.statusOf(path, status),
     );
-    if (commandFailed(status)) return failure("git status", status);
+  }
+
+  private async statusOf(
+    path: string,
+    status: RunResult,
+  ): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
     const dirty: GitResult<{ dirty: boolean; scratch: string[] }> = {
       ok: true, value: { dirty: true, scratch: [] },
     };
@@ -200,18 +281,21 @@ export class NativeWorktreeGit implements WorktreeGit {
       return { ok: false, reason: `${path} is not a provable linked worktree`, outcomeUnknown: false };
     }
     const [head, status, detached] = await Promise.all([
-      this.execute("git", ["-C", path, ...OBSERVATION_GIT_OPTIONS, "rev-parse", "HEAD"], { timeoutMs: 15_000 }),
+      this.observe(["-C", path, ...OBSERVATION_GIT_OPTIONS, "rev-parse", "HEAD"], 15_000, (result): GitResult<string> =>
+        commandFailed(result)
+          ? failure("git rev-parse HEAD", result)
+          : { ok: true, value: result.stdout.trim() }),
       this.status(path),
       this.detachedAt(path),
     ]);
-    if (commandFailed(head)) return failure("git rev-parse HEAD", head);
+    if (!head.ok) return head;
     if (!status.ok) return status;
     if (!detached.ok) return detached;
     return {
       ok: true,
       value: {
         path: await canonical(path),
-        head: head.stdout.trim(),
+        head: head.value,
         dirty: status.value.dirty,
         commonDirectory: identity.gitCommonDirectory,
         detached: detached.value,
@@ -234,10 +318,12 @@ export class NativeWorktreeGit implements WorktreeGit {
         outcomeUnknown: false,
       };
     }
+    // Git translates the `initializing` it writes to `locked`, and Repair recognizes an
+    // interrupted add by that word. `LANGUAGE` reaches only messages, so hooks keep their locale.
     const result = await this.execute(
       "git",
       ["-C", identity.mainCheckoutRoot, "worktree", "add", "--detach", path, commit],
-      { timeoutMs: 60_000 },
+      { timeoutMs: 60_000, env: { ...process.env, LANGUAGE: "C" } },
     );
     if (commandFailed(result)) return failure("git worktree add", result);
     return { ok: true, value: undefined };
@@ -281,7 +367,7 @@ export class NativeWorktreeGit implements WorktreeGit {
     if (commandFailed(detach)) {
       return {
         ok: false,
-        reason: `git checkout --force --detach failed: ${detach.stderr.trim() || `exit ${detach.code}`}`,
+        reason: describeCommandFailure("git checkout --force --detach", detach),
         // A checkout that died mid-flight may have moved HEAD, replaced working files, or
         // done neither, and an overflowed one never reported which. Either way the slot is
         // quarantined for reconciliation rather than reset again in place.
@@ -366,7 +452,7 @@ export class NativeWorktreeGit implements WorktreeGit {
   async remove(
     identity: WorktreeRepositoryIdentity,
     path: string,
-    force: boolean,
+    force: boolean | "locked",
   ): Promise<GitResult<void>> {
     if (!force) {
       const status = await this.status(path);
@@ -388,9 +474,77 @@ export class NativeWorktreeGit implements WorktreeGit {
     // Keep Git's final dirty check: newly arrived work must still prevent safe removal.
     const args = ["-C", identity.mainCheckoutRoot, "worktree", "remove"];
     if (force) args.push("--force");
+    if (force === "locked") args.push("--force");
     args.push(path);
     const result = await this.execute("git", args, { timeoutMs: 60_000 });
     if (commandFailed(result)) return failure("git worktree remove", result);
     return { ok: true, value: undefined };
+  }
+
+  async unlock(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<void>> {
+    const result = await this.execute(
+      "git",
+      ["-C", identity.mainCheckoutRoot, "worktree", "unlock", path],
+      { timeoutMs: 30_000 },
+    );
+    if (commandFailed(result)) return failure("git worktree unlock", result);
+    return { ok: true, value: undefined };
+  }
+
+  /**
+   * Git's own registration repair, from the main checkout. With `path` it first points a
+   * registration back at that folder, reading the folder's `.git` file. Either form then rewrites
+   * the `.git` file of every registered worktree whose file is missing or wrong: no form is
+   * scoped to one worktree, and only a `.git` file already broken is touched.
+   */
+  async repair(identity: WorktreeRepositoryIdentity, path?: string): Promise<GitResult<void>> {
+    const result = await this.execute(
+      "git",
+      ["-C", identity.mainCheckoutRoot, "worktree", "repair", ...(path === undefined ? [] : [path])],
+      { timeoutMs: 30_000 },
+    );
+    if (commandFailed(result)) return failure("git worktree repair", result);
+    return { ok: true, value: undefined };
+  }
+
+  async branchTips(identity: WorktreeRepositoryIdentity, branch: string): Promise<GitResult<BranchTips>> {
+    const tip = (ref: string) => this.observe(
+      ["-C", identity.mainCheckoutRoot, ...OBSERVATION_GIT_OPTIONS, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+      15_000,
+      (result): GitResult<string | null> => {
+        if (result.outcomeUnknown || result.overflowed) return failure(`git rev-parse ${ref}`, result);
+        if (result.code === 0 && /^[0-9a-f]{40}$/.test(result.stdout.trim())) return { ok: true, value: result.stdout.trim() };
+        // `--verify --quiet` answers a ref that does not exist with exit 1 and nothing printed.
+        if (result.code === 1 && result.stdout.trim() === "") return { ok: true, value: null };
+        return failure(`git rev-parse ${ref}`, result);
+      },
+    );
+    const [local, remote] = await Promise.all([tip(`refs/heads/${branch}`), tip(`refs/remotes/origin/${branch}`)]);
+    if (!local.ok) return local;
+    if (!remote.ok) return remote;
+    return { ok: true, value: { local: local.value, remote: remote.value } };
+  }
+
+  async checkoutBranch(path: string, branch: string, mode: BranchCheckoutMode): Promise<GitResult<void>> {
+    // `isCheckoutBranchName` refused a leading dash and every list ends in `--`, so the name is
+    // never read as an option or a path. Attaching takes the bare name, since a full ref detaches.
+    const args = mode === "attach"
+      ? ["checkout", "--quiet", branch, "--"]
+      : mode === "track"
+        ? ["checkout", "--quiet", "--track", "-b", branch, `refs/remotes/origin/${branch}`, "--"]
+        : ["checkout", "--quiet", "--detach", `refs/heads/${branch}`, "--"];
+    const result = await this.execute("git", ["-C", path, ...args], { timeoutMs: 60_000 });
+    if (commandFailed(result)) return failure(`git checkout (${mode})`, result);
+    return { ok: true, value: undefined };
+  }
+
+  async unbranchedCommits(path: string): Promise<GitResult<boolean>> {
+    // One commit is enough to answer, so the walk stops at the first.
+    return this.observe(
+      ["-C", path, ...OBSERVATION_GIT_OPTIONS, "rev-list", "--max-count=1", "HEAD", "--not", "--branches", "--tags", "--remotes"],
+      15_000,
+      (result): GitResult<boolean> =>
+        commandFailed(result) ? failure("git rev-list HEAD --not --branches --tags --remotes", result) : { ok: true, value: result.stdout.trim() !== "" },
+    );
   }
 }

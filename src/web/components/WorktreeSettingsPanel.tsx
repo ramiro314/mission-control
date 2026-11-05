@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { WORKTREES_CONFIG_LIMITS, type WorktreeClaim, type WorktreesConfigPatch } from "@shared/protocol.ts";
-import type { OrphanProcess, StorageHealth, StorageProblem } from "@shared/storage-health.ts";
+import {
+  WORKTREES_CONFIG_LIMITS,
+  type WorktreeClaim,
+  type WorktreeSlotHistoryEntry,
+  type WorktreeSlotHistoryPage,
+  type WorktreesConfigPatch,
+} from "@shared/protocol.ts";
+import type { OrphanProcess, ProcessSession, StorageHealth, StorageProblem } from "@shared/storage-health.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
 import type {
   NativeWorktreeSlotView,
@@ -14,14 +20,16 @@ import type {
   WorktreeRiskKey,
   WorktreeSlotDependenciesView,
   WorktreeSlotDependencyState,
+  WorktreeSlotTimingsView,
   WorktreeWarmTargetOutcome,
 } from "@shared/worktrees.ts";
 import { worktreeOperationPending, worktreeRetryRequest } from "@shared/worktrees.ts";
 import type { WorktreesConfigUpdate, WorktreesState } from "../useWorktrees.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
-import { api, openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
+import { api, fetchWorktreeSlotHistory, openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
+import { poolTimingSummary, refreshedSlotHistory, timingHeadline, timingSummary } from "../lib/worktree-history.ts";
 import { BULK_SELECTION_LIMIT, changeSelection } from "../lib/worktree-selection.ts";
 import {
   claimErrorsFrom,
@@ -108,6 +116,8 @@ function StateChip({ label, tone = "neutral" }: { label: string; tone?: string }
 const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
   return: "Return",
   recover: "Recover",
+  repair: "Repair",
+  forget: "Forget",
   prune: "Prune",
   reconcile: "Reconcile",
   destroy: "Destroy",
@@ -547,29 +557,50 @@ export function worktreeUnownedTreeAnchor(path: string): string {
   return `worktrees/unowned/${path}`;
 }
 
+/** The way to a process a live session owns, offered instead of Kill: it ends from there. */
+function OpenSession({
+  session,
+  onOpenSession,
+}: {
+  session: ProcessSession;
+  onOpenSession?: (sessionId: string) => void;
+}): React.JSX.Element {
+  return (
+    <Tooltip label="Focus the session this process belongs to; end it from there">
+      <button className="btn btn-ghost" type="button" onClick={() => onOpenSession?.(session.id)}>
+        Open session
+      </button>
+    </Tooltip>
+  );
+}
+
 /**
- * Processes still running in a tree after its owner finished, each with a guarded Kill, and
- * a Kill all that confirms every listed process at once when there is more than one.
+ * Processes still running in a tree with no live owner, each with a guarded Kill, and a Kill all
+ * that confirms every killable process at once when there is more than one. A live session's
+ * process stays listed, because it still holds the tree, but it offers Open session instead.
  */
 function OrphanList({
   label,
   orphans,
   killHint,
   onKill,
+  onOpenSession,
 }: {
   label: string;
   orphans: readonly OrphanProcess[];
   killHint: string;
   onKill: (orphans: readonly OrphanProcess[], trigger: HTMLButtonElement) => void;
+  onOpenSession?: (sessionId: string) => void;
 }): React.JSX.Element | null {
   if (orphans.length === 0) return null;
+  const killable = orphans.filter((orphan) => !orphan.session);
   return (
     <section className="wt-orphans" aria-label={label}>
       <div className="wt-orphans-head">
         <h5>Orphan processes</h5>
-        {orphans.length > 1 && (
-          <Tooltip label={`Confirm stopping all ${orphans.length} processes listed here`}>
-            <button className="btn btn-danger" type="button" onClick={(event) => onKill(orphans, event.currentTarget)}>
+        {killable.length > 1 && (
+          <Tooltip label={`Confirm stopping the ${killable.length} processes here that offer Kill`}>
+            <button className="btn btn-danger" type="button" onClick={(event) => onKill(killable, event.currentTarget)}>
               Kill all
             </button>
           </Tooltip>
@@ -579,14 +610,17 @@ function OrphanList({
         {orphans.map((orphan) => (
           <li key={`${orphan.pid}:${orphan.startedAt}`} className="wt-orphan">
             <div>
+              {orphan.knownOwner && <strong>{orphan.knownOwner}</strong>}
               <code>{orphan.command}</code>
               <span>PID {orphan.pid} · parent {orphan.ppid} · started {startedLabel(orphan.startedAt)}</span>
             </div>
-            <Tooltip label={killHint}>
-              <button className="btn btn-danger" type="button" aria-label={`Kill process ${orphan.pid}`} onClick={(event) => onKill([orphan], event.currentTarget)}>
-                Kill
-              </button>
-            </Tooltip>
+            {orphan.session ? <OpenSession session={orphan.session} onOpenSession={onOpenSession} /> : (
+              <Tooltip label={killHint}>
+                <button className="btn btn-danger" type="button" aria-label={`Kill process ${orphan.pid}`} onClick={(event) => onKill([orphan], event.currentTarget)}>
+                  Kill
+                </button>
+              </Tooltip>
+            )}
           </li>
         ))}
       </ul>
@@ -621,11 +655,13 @@ function UnownedTreeRow({
   pending,
   onAction,
   onKill,
+  onOpenSession,
 }: {
   entry: UnownedTreeEntry;
   pending: boolean;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
   onKill: (orphans: readonly OrphanProcess[], trigger: HTMLButtonElement) => void;
+  onOpenSession?: (sessionId: string) => void;
 }): React.JSX.Element {
   const copy = useCopyFeedback({ resetOn: entry.path });
   return (
@@ -641,6 +677,7 @@ function UnownedTreeRow({
         orphans={entry.orphans}
         killHint="Confirm stopping this process, which keeps the unowned tree from being swept"
         onKill={onKill}
+        onOpenSession={onOpenSession}
       />
       <div className="wt-slot-actions">
         <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : "Copy exact tree path"}>
@@ -671,6 +708,7 @@ function SlotCard({
   onAction,
   orphans,
   onKill,
+  onOpenSession,
 }: {
   slot: NativeWorktreeSlotView;
   /** A queued or running cleanup already covers this slot; no second one may be started. */
@@ -682,9 +720,10 @@ function SlotCard({
   selectionFull: boolean;
   onSelect: (slotId: string, selected: boolean) => void;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
-  /** Processes still running in this slot after its owner finished, from the storage report. */
+  /** Processes still running in this slot with no live owner, from the storage report. */
   orphans: readonly OrphanProcess[];
   onKill: (orphans: readonly OrphanProcess[], trigger: HTMLButtonElement) => void;
+  onOpenSession?: (sessionId: string) => void;
 }): React.JSX.Element {
   const copy = useCopyFeedback({ resetOn: slot.path });
   const terminals = useTerminalTargets();
@@ -755,6 +794,7 @@ function SlotCard({
         <div><dt>Processes</dt><dd>{slot.processes.count ?? "unknown"}</dd></div>
         <div><dt>Disk</dt><dd>{bytes(slot.diskBytes)}</dd></div>
       </dl>
+      <SlotTimings ordinal={slot.ordinal} timings={slot.timings} />
       {slot.dependencies && <SlotDependencies slotId={slot.id} ordinal={slot.ordinal} dependencies={slot.dependencies} />}
       {slot.warmLog && (
         <p className="wt-warm-log">
@@ -770,18 +810,25 @@ function SlotCard({
         </p>
       )}
       {slot.owner && <p className="wt-owner"><span>{slot.owner.kind}</span> {slot.owner.label}</p>}
+      {/* The daemon offers Return on a quarantine only while its owner still references it. */}
+      {slot.state === "quarantined" && slot.owner && slot.actions.includes("return") && (
+        <p className="wt-owner">Its owner's return brings this slot back.</p>
+      )}
       {stuckReturn && <p className="wt-diagnostic wt-stuck-return">{stuckReturn.message}</p>}
       {slot.busy && (
         <p className="wt-busy">
           Busy with {slot.busy}. Its Git is not read until that finishes, so these are its last recorded facts.
         </p>
       )}
-      <SlotDiagnosis slot={slot} orphans={orphans} />
+      <SlotDiagnosis slot={slot} orphans={orphans} onOpenSession={onOpenSession} />
       <OrphanList
         label={`Orphan processes in slot ${slot.ordinal}`}
         orphans={orphans}
-        killHint="Confirm stopping this process, which outlived the slot's owner and blocks its return"
+        killHint={slot.state === "available"
+          ? "Confirm stopping this process, which keeps this slot from being leased"
+          : "Confirm stopping this process, which outlived the slot's owner and blocks its return"}
         onKill={onKill}
+        onOpenSession={onOpenSession}
       />
       <div className="wt-slot-actions">
         <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : "Copy exact worktree path"}>
@@ -800,7 +847,11 @@ function SlotCard({
             {terminals.targets?.map((target) => <option key={target.id} value={target.id} disabled={target.unavailable !== null}>{target.label}{target.unavailable ? `: ${target.unavailable}` : ""}</option>)}
           </select>
         </Tooltip>
-        <Tooltip label={terminal?.blurb ?? "No terminal backend is currently available"}>
+        <Tooltip label={!terminal
+          ? "No terminal backend is currently available"
+          : slot.state === "available"
+            ? `${terminal.blurb} Takes a manual lease on this slot as it stands; Return gives it back.`
+            : terminal.blurb}>
           <button className="btn btn-ghost" type="button" disabled={!terminal} onClick={() => void openTerminal()}>Open terminal</button>
         </Tooltip>
         {!pending && slot.actions.includes("warm") && (
@@ -814,6 +865,20 @@ function SlotCard({
           <Tooltip label="Preview recovering this quarantined slot: remove a stale index.lock when no Git process uses it, then reset it to the remote default">
             <button className="btn btn-secondary" type="button" onClick={(event) => onAction({ action: "recover", slotId: slot.id }, event.currentTarget)}>
               Recover
+            </button>
+          </Tooltip>
+        )}
+        {!pending && slot.actions.includes("repair") && (
+          <Tooltip label="Preview repairing this slot's Git registration with Git's own fixes, then recovering it. Work is never discarded">
+            <button className="btn btn-secondary" type="button" onClick={(event) => onAction({ action: "repair", slotId: slot.id }, event.currentTarget)}>
+              Repair
+            </button>
+          </Tooltip>
+        )}
+        {!pending && slot.actions.includes("forget") && (
+          <Tooltip label="Preview deleting this slot's folder, its Git registration and its row, when Repair has no answer. Work in the folder is discarded">
+            <button className="btn btn-danger" type="button" onClick={(event) => onAction({ action: "forget", slotId: slot.id }, event.currentTarget)}>
+              Forget
             </button>
           </Tooltip>
         )}
@@ -833,7 +898,154 @@ function SlotCard({
         )}
       </div>
       {(copy.error || openError) && <p className="settings-error">{copy.error ?? openError}</p>}
+      <SlotHistory
+        slotId={slot.id}
+        ordinal={slot.ordinal}
+        lastHistoryId={slot.lastHistoryId}
+      />
     </article>
+  );
+}
+
+const TIMED_STEPS = [
+  { step: "provisioning", label: "Last provisioning" },
+  { step: "claim", label: "Last claim" },
+  { step: "seed", label: "Last seed" },
+] as const;
+
+/** The last of each timed step in this slot's history, with why a seed had no source. */
+function SlotTimings({ ordinal, timings }: { ordinal: number; timings: WorktreeSlotTimingsView }): React.JSX.Element | null {
+  const facts = TIMED_STEPS.flatMap(({ step, label }) => {
+    const timing = timings[step];
+    return timing ? [{ step, label, timing }] : [];
+  });
+  if (facts.length === 0) return null;
+  return (
+    <dl className="wt-facts" aria-label={`Slot ${ordinal} timings`}>
+      {facts.map(({ step, label, timing }) => (
+        <div key={step}>
+          <dt>{label}</dt>
+          <dd>{timingSummary(step, timing)}{step === "seed" && timing.reason ? `: ${timing.reason}` : ""}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+const HISTORY_OPERATIONS: Record<string, string> = {
+  return: "Return",
+  destroy: "Destroy",
+  prune: "Prune",
+  warm: "Warm",
+  recover: "Recover",
+  repair: "Repair",
+  kill: "Kill",
+};
+
+const HISTORY_OUTCOMES: Record<string, string> = { partial: "partly done" };
+
+/** What one history row is, in the row's first line. A value a later build added reads as itself. */
+export function slotHistoryHeadline(entry: WorktreeSlotHistoryEntry): string {
+  if (entry.kind === "transition") return `${entry.fromState ?? "new"} → ${entry.toState ?? "removed"}`;
+  if (entry.kind === "observation") return entry.outcome === "cleared" ? "Failed read cleared" : "Failed read";
+  if (entry.kind === "operation") {
+    const operation = entry.operation ?? "Operation";
+    const outcome = entry.outcome ?? "";
+    return `${HISTORY_OPERATIONS[operation] ?? operation} ${HISTORY_OUTCOMES[outcome] ?? outcome}`.trim();
+  }
+  return timingHeadline(entry) ?? entry.kind;
+}
+
+const HISTORY_ACTORS: Record<string, string> = {
+  automatic: "automatic",
+  operator: "by the operator",
+  owner: "by its owner",
+};
+
+/**
+ * What happened to this slot, newest first. Read only while open, so a pool of closed cards asks
+ * the daemon for nothing, and read again when `lastHistoryId` says a row was written, which keeps
+ * the older pages already shown.
+ */
+function SlotHistory({
+  slotId,
+  ordinal,
+  lastHistoryId,
+}: {
+  slotId: string;
+  ordinal: number;
+  lastHistoryId: number | null;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [list, setList] = useState<WorktreeSlotHistoryPage | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const entries = list?.entries ?? null;
+  const nextBefore = list?.nextBefore ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    void fetchWorktreeSlotHistory(slotId, null, controller.signal).then((page) => {
+      if (controller.signal.aborted) return;
+      setFailed(page === null);
+      if (page) setList((shown) => refreshedSlotHistory(shown, page));
+    });
+    return () => controller.abort();
+  }, [open, slotId, lastHistoryId]);
+
+  async function showOlder(): Promise<void> {
+    setLoadingOlder(true);
+    const page = await fetchWorktreeSlotHistory(slotId, nextBefore);
+    setLoadingOlder(false);
+    setFailed(page === null);
+    if (!page) return;
+    // A list that a refresh started again meanwhile no longer ends where this page begins.
+    setList((shown) => shown?.nextBefore === nextBefore
+      ? { entries: [...shown.entries, ...page.entries], nextBefore: page.nextBefore }
+      : shown);
+  }
+
+  return (
+    <section className="wt-history" aria-label={`Slot ${ordinal} history`}>
+      <Tooltip label={open ? "Hide this slot's history" : "Show what happened to this slot, newest first"}>
+        <button type="button" className="wt-disclosure" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+          <span className="wt-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+          <span>History</span>
+        </button>
+      </Tooltip>
+      {open && (
+        <>
+          {entries === null && !failed && <p className="wt-history-note">Reading this slot's history…</p>}
+          {entries?.length === 0 && !failed && <p className="wt-history-note">Nothing recorded for this slot yet.</p>}
+          {failed && <p className="settings-error">This slot's history could not be read.</p>}
+          {entries && entries.length > 0 && (
+            <ol>
+              {entries.map((entry) => (
+                <li key={entry.id}>
+                  <div className="wt-history-head">
+                    <strong>{slotHistoryHeadline(entry)}</strong>
+                    <span>
+                      {startedLabel(entry.at)}
+                      {entry.actor && ` · ${HISTORY_ACTORS[entry.actor] ?? entry.actor}`}
+                    </span>
+                  </div>
+                  {entry.reason && <p>{entry.reason}</p>}
+                  {entry.detail && <code>{entry.detail}</code>}
+                </li>
+              ))}
+            </ol>
+          )}
+          {nextBefore !== null && (
+            <Tooltip label="Load the next older entries of this slot's history">
+              <button className="btn btn-ghost" type="button" disabled={loadingOlder} onClick={() => void showOlder()}>
+                Show older
+              </button>
+            </Tooltip>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -848,23 +1060,25 @@ const BLOCKING_KIND: Record<NonNullable<WorktreeRecoveryRefusalView["blocking"]>
 
 /**
  * Why a slot is in its state, one fact per line, so no fact hides another: the reason, the
- * detail behind it, why its processes are unknown, the last automatic-recovery refusal with the
- * exact path that blocked it, and the processes inside it. A process the orphan list already
- * names, with its Kill, is not listed twice.
+ * detail behind it, why its last observation failed, why its processes are unknown, the last
+ * automatic-recovery refusal with the exact path that blocked it, and the processes inside it. A process the orphan list already
+ * names, with its Kill or Open session, is not listed twice.
  */
 function SlotDiagnosis({
   slot,
   orphans,
+  onOpenSession,
 }: {
   slot: NativeWorktreeSlotView;
   orphans: readonly OrphanProcess[];
+  onOpenSession?: (sessionId: string) => void;
 }): React.JSX.Element | null {
   const detail = slot.diagnostic !== slot.quarantineReason ? slot.diagnostic : null;
   const refusal = slot.recoveryRefusal;
-  const killable = new Set(orphans.map((orphan) => orphan.pid));
-  const occupants = slot.occupants.filter((occupant) => !killable.has(occupant.pid));
+  const inOrphanList = new Set(orphans.map((orphan) => orphan.pid));
+  const occupants = slot.occupants.filter((occupant) => !inOrphanList.has(occupant.pid));
   const unlisted = Math.max(0, (slot.processes.count ?? 0) - slot.occupants.length);
-  const facts = Boolean(slot.quarantineReason || detail || slot.processes.reason || refusal);
+  const facts = Boolean(slot.quarantineReason || detail || slot.observationFailure || slot.processes.reason || refusal);
   if (!facts && occupants.length === 0 && unlisted === 0) return null;
   return (
     <>
@@ -873,6 +1087,7 @@ function SlotDiagnosis({
           <dl>
             {slot.quarantineReason && <div><dt>Reason</dt><dd>{slot.quarantineReason}</dd></div>}
             {detail && <div><dt>Detail</dt><dd>{detail}</dd></div>}
+            {slot.observationFailure && <div><dt>Last observation failed</dt><dd>{slot.observationFailure}</dd></div>}
             {slot.processes.reason && <div><dt>Processes</dt><dd>{slot.processes.reason}</dd></div>}
             {refusal && (
               <div>
@@ -892,8 +1107,10 @@ function SlotDiagnosis({
           <ul>
             {occupants.map((occupant) => (
               <li key={`${occupant.pid}:${occupant.startedAt}`}>
+                {occupant.knownOwner && <strong>{occupant.knownOwner}</strong>}
                 <code>{occupant.command}</code>
                 <span>PID {occupant.pid} · started {startedLabel(occupant.startedAt)}</span>
+                {occupant.session && <OpenSession session={occupant.session} onOpenSession={onOpenSession} />}
               </li>
             ))}
             {unlisted > 0 && <li><span>and {unlisted} more not listed</span></li>}
@@ -1224,9 +1441,10 @@ function ClaimEditor({
         <FieldErrors id={`${base}-seed-exclude-errors`} messages={errors.seedExclude} />
         <p className="wt-claim-note">
           A cold slot (new, never claimed, failed or interrupted) clones these ignored paths
-          copy-on-write from an idle sibling before its steps run. A slot whose last claim succeeded
-          seeds only when it is stale and a sibling matches its commit exactly. Where the disk
-          cannot clone, there is no seed. With no seed paths, a slot never seeds.
+          copy-on-write from an idle sibling, or a quarantined one when none is idle, before its
+          steps run. A slot whose last claim succeeded seeds only when it is stale and a sibling
+          matches its commit exactly. Where the disk cannot clone, there is no seed. With no seed
+          paths, a slot never seeds.
         </p>
       </div>
       <FieldErrors id={`${base}-general`} messages={errors.general} />
@@ -1277,6 +1495,7 @@ function PoolRow({
   onAction,
   orphansBySlot,
   onKill,
+  onOpenSession,
 }: {
   repo: WorktreeRepositoryView;
   overridden: boolean;
@@ -1288,6 +1507,7 @@ function PoolRow({
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
   orphansBySlot: ReadonlyMap<string, readonly OrphanProcess[]>;
   onKill: (orphans: readonly OrphanProcess[], trigger: HTMLButtonElement) => void;
+  onOpenSession?: (sessionId: string) => void;
 }): React.JSX.Element {
   // A slot whose return is stuck, or that holds an orphan process, opens its pool and is always
   // rendered, so the Storage problem that links to its card finds it, with its Kill in view.
@@ -1302,6 +1522,7 @@ function PoolRow({
   }, [hasFlagged]);
   const tone = repo.status === "ready" ? "ready" : repo.status === "attention" ? "attention" : "danger";
   const geometry = capacityGeometry(repo.counts, repo.policy.maxSlots);
+  const timings = poolTimingSummary(repo.timings);
   const selectable = repo.slots.filter((slot) => slot.actions.includes("destroy") && !pendingBySlot.has(slot.id));
   const allSelected = selectable.length > 0 && selectable.every((slot) => selected.has(slot.id));
 
@@ -1329,6 +1550,7 @@ function PoolRow({
       </header>
       <CapacityBar geometry={geometry} />
       <CapacityLegend geometry={geometry} />
+      {timings && <p className="wt-pool-timings">{timings}</p>}
       {repo.status === "unavailable" && (
         <p className="wt-diagnostic">This pool&rsquo;s state could not be observed. The counts above are the last reading Mission Control took.</p>
       )}
@@ -1432,6 +1654,7 @@ function PoolRow({
                   onAction={onAction}
                   orphans={orphansBySlot.get(slot.id) ?? []}
                   onKill={onKill}
+                  onOpenSession={onOpenSession}
                 />
               ))}
             </div>
@@ -1549,10 +1772,13 @@ const LEGACY_KINDS = ["ownedExact", "identityUnverifiable", "foreign", "unreadab
 export function WorktreeSettingsPanel({
   state,
   storageHealth = null,
+  onOpenSession,
 }: {
   state: WorktreesState;
   /** The live storage aggregate, whose `stuck-return` and `orphan-process` problems the slot cards show. */
   storageHealth?: StorageHealth | null;
+  /** Leaves settings for one session on the fleet. */
+  onOpenSession?: (sessionId: string) => void;
 }): React.JSX.Element {
   const { inventory, loading, error, preview, previewError, previewChanged, busy, operations } = state;
   const orphansBySlot = useMemo(() => {
@@ -1763,7 +1989,7 @@ export function WorktreeSettingsPanel({
             <p><strong>No pools yet.</strong> Mission Control creates one the first time something needs a checkout in a repository.</p>
           </div>
         )}
-        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} stuckBySlot={stuckBySlot} selected={selected} onSelect={select} onAction={request} orphansBySlot={orphansBySlot} onKill={startKill} />)}</div>
+        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} stuckBySlot={stuckBySlot} selected={selected} onSelect={select} onAction={request} orphansBySlot={orphansBySlot} onKill={startKill} onOpenSession={onOpenSession} />)}</div>
       </section>
 
       <section className="wt-group" data-anchor="worktrees/unowned-trees">
@@ -1778,7 +2004,7 @@ export function WorktreeSettingsPanel({
         ) : (
           <div className="wt-unowned-list">
             {unowned.map((entry) => (
-              <UnownedTreeRow key={entry.path} entry={entry} pending={pendingPaths.has(entry.path)} onAction={request} onKill={startKill} />
+              <UnownedTreeRow key={entry.path} entry={entry} pending={pendingPaths.has(entry.path)} onAction={request} onKill={startKill} onOpenSession={onOpenSession} />
             ))}
           </div>
         )}

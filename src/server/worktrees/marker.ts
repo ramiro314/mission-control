@@ -25,11 +25,27 @@ function parseMarker(raw: string): WorktreePoolMarker | null {
 
 /** Read and validate the provider-neutral marker at one exact pool root. */
 export async function readWorktreePoolMarker(poolPath: string): Promise<WorktreePoolMarker | null> {
+  const observed = await observeWorktreePoolMarker(poolPath);
+  return observed.ok ? observed.marker : null;
+}
+
+/**
+ * The marker at one exact pool root, telling a marker that is absent or malformed (`marker`
+ * null, a proven fault) from one that could not be read at all (a failed read, which proves
+ * nothing about the pool).
+ */
+export async function observeWorktreePoolMarker(
+  poolPath: string,
+): Promise<{ ok: true; marker: WorktreePoolMarker | null } | { ok: false; reason: string }> {
+  let raw: string;
   try {
-    return parseMarker(await readFile(join(poolPath, WORKTREE_POOL_MARKER), "utf8"));
-  } catch {
-    return null;
+    raw = await readFile(join(poolPath, WORKTREE_POOL_MARKER), "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return { ok: true, marker: null };
+    return { ok: false, reason: String(error) };
   }
+  return { ok: true, marker: parseMarker(raw) };
 }
 
 /**

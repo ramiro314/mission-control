@@ -923,8 +923,8 @@ exec "$@"
 `;
 
 /**
- * The stand-in `systemctl`. It answers the two verbs the session scope asks, `show` as a scope
- * that ended cleanly and `reset-failed` as done, and refuses every other verb, as the
+ * The stand-in `systemctl`. It answers the three verbs the session scope asks, `show` as a scope
+ * that ended cleanly and `stop` and `reset-failed` as done, and refuses every other verb, as the
  * no-graphical-session spec's own stand-in does, so `show-environment` reads as "no manager
  * environment" and nothing reaches the operator's manager.
  */
@@ -937,7 +937,7 @@ fi
 [ "$1" = "--user" ] && shift
 case "$1" in
   show) printf 'ActiveState=inactive\\nResult=success\\nMemoryPeak=[not set]\\n' ;;
-  reset-failed) ;;
+  stop|reset-failed) ;;
   *) exit 1 ;;
 esac
 `;

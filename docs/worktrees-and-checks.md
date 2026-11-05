@@ -86,7 +86,57 @@ where it was, and the reset's clean step still spares ignored files, so warm cac
 Every slot carries a random lease ID and an exact task, check, or manual owner. Task and check
 rows persist that ID before work starts. Cleanup reads the recorded provider and lease ID rather
 than deciding again from current configuration, and refuses a stale lease or any slot whose
-process occupancy cannot be proved empty. Startup reconciliation uses the same fail-closed rules.
+process occupancy cannot be proved empty. Startup reconciliation uses the same rules.
+
+An observation read gets one retry before it counts as unknown. The process and cwd listings
+behind occupancy and an owner lookup that throws each try once more in the same pass, 2 seconds
+later and with double the timeout. A listing too large to buffer is not retried, because asking
+again cannot make it smaller. So do `git worktree list` and each Git read of a slot
+inspection when they timed out or were killed; a Git that exited with its own error is answered
+at once, because it would say the same again. A PID that an otherwise healthy cwd listing
+omitted is first re-read on its own, one at a time and stopping at the first re-read that does
+not answer, and only one that is still unresolved, and still alive with the same start time,
+leaves occupancy unknown. A read
+that fails twice records both attempts, for example "git status timed out after 15 s, and after
+30 s on retry". A command killed at its timeout is named as a timeout, and one killed by another
+signal names that signal, so neither reads as "exit 1".
+
+A read that still fails proves nothing about a slot, so it never quarantines one. Reconcile,
+including a pool whose `git worktree list` or pool marker cannot be read at all, and the idle
+screening that acquisition, Warm and seed-source selection share leave every slot they could not
+read in the state it was in: leased stays leased, available stays available, quarantined stays
+quarantined. The slot's last error records "Last observation failed: `<reason>`", its card shows
+that on its own line, and the next read that succeeds clears it. A quarantined slot keeps the
+detail of its quarantine under that line. Such a slot is never leased, reset or returned while it
+is unknown: acquisition does not lease a slot it could not prove idle in this pass, and Lease,
+Return, reset, Recover, Prune and Destroy still refuse on unknown, exactly as before. The reasons
+that count as a failed read, including the ones older builds quarantined with, are one exported
+set in `src/server/worktrees/quarantine-reasons.ts`, so rows already in the database qualify
+without a migration.
+
+Only a proven fault quarantines: an inexact path, a missing registration once listing succeeded,
+a bare, locked or prunable registration, a different common directory, an interrupted
+provisioning or prune (judged before any Git or process read, and even when the pool's listing
+or marker cannot be read, so a failed read never keeps one; only a prune whose folder is already
+gone waits for a listing to tell a finished removal from a fault), an interrupted return proven
+occupied, dirty or off its target commit (one whose read failed waits for the next pass to prove
+and complete it), a dirty available slot, an available slot whose HEAD moved or that carries an active lease identity, an incomplete identity, a leased slot whose owner is positively
+gone, a reset or verification that failed, and a pool identity or marker that is missing,
+malformed or belongs to another pool. A process inside an available slot is not a fault: the slot
+stays available, acquisition passes over it, and its card lists the process as an
+[orphan process](#orphan-processes) with **Kill**. A reservation that a
+read refused before anything in the slot changed - its occupancy became unknown, or a process
+entered it, before the reset - goes back to available as it was, and the acquisition reports it
+as not acquired, so a task falls back as it does for any refusal. One whose mutation outcome is
+unknown is still quarantined, and so is a reservation that could not be handed back, as "a
+refused reservation could not be handed back to available"; only those report an unknown
+outcome. That reason is deliberately outside the failed-read set, because whether the hand-back
+landed is unknown.
+
+Each quarantine, each recovery, each restore to `leased`, each automatic-recovery refusal and
+each slot left unchanged after a failed read writes one `[worktrees]` line to the daemon's output,
+naming the pool and slot. A refusal or failed read is logged only when the slot's reason changes, so a pass repeating
+the same one stays quiet.
 
 A reservation quarantined before its lease is granted - a failed or unproven reset, creation,
 setup command, or verification, or a lost lease commit - drops its active owner in the same
@@ -95,6 +145,21 @@ stays quarantined and Destroy removes it through the ordinary revalidation. Reco
 same state left by an earlier build: a quarantined slot whose owner is positively proven not to
 reference its active lease loses that identity and stays quarantined. Unknown ownership is left
 untouched.
+
+A slot an earlier build quarantined only because a read failed, while its owner was alive, goes
+back to that owner. Reconcile returns a quarantined slot to `leased` when its reason is in the
+failed-read set, its active lease was granted, its active identity is complete, its owner is
+positively referenced, and this pass read it: registration exact, Git readable, path and common
+directory matching, occupancy known. Granted means `finalizeLease` ran, which the row shows as
+`last_used_at` no earlier than `leased_at`. The reason cannot prove that, because earlier builds
+took these reasons in any state, and a manual owner's row answers for itself. A reservation
+quarantined before its grant therefore stays quarantined, for its card's Return. An interrupted
+return leaves no such mark, so it resumes as a lease too, and its owner's ordinary return, which
+proves the tree again, finishes it. The compare-and-swap, `WorktreeStore.restoreLease`, changes the slot's state and clears its
+quarantine fields, and nothing on disk is touched: HEAD, the index and every file stay as they
+were, and a slot may be dirty and occupied, as any live lease may. A slot whose owner cannot be
+read stays quarantined and records that on its card. One whose owner is positively gone loses its
+identity as above and stays quarantined; it is not restored.
 
 `make session` is a loopback client for that daemon-owned inventory:
 
@@ -239,7 +304,7 @@ seeds before its steps run when either of these holds:
   seed was interrupted. A slot whose last claim succeeded is not cold, even when its claim lists
   no fingerprint paths and so recorded no fingerprint, or every lease would copy a sibling's tree
   over its own fresh install;
-- its fingerprint is stale, **and** an idle sibling's fingerprint matches the leased commit's
+- its fingerprint is stale, **and** a sibling's fingerprint matches the leased commit's
   exactly. A slot whose last claim succeeded with no fingerprint, before fingerprint paths were
   configured, is stale as soon as the claim can compute one.
 
@@ -248,11 +313,39 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
 - **The source** is an idle sibling: an available slot of the same pool, with no active lease,
   whose last owner is provably gone, with no process inside, and whose last claim succeeded. It
   is screened by the same code acquisition screens an available slot with, so a sibling
-  acquisition would quarantine is quarantined here too, and is never a source. The first choice
+  acquisition would quarantine is quarantined here too, and is never a source. A sibling whose
+  read failed is left available with the failure recorded, and is not a source this time. The first choice
   is one whose fingerprint matches the leased commit's, and the next is the one most recently
   claimed successfully, including one whose claim recorded no fingerprint. A stale slot takes
-  only the first choice. The main checkout is never a source. With no idle sibling
-  there is no seed, and the steps run alone.
+  only the first choice. The main checkout is never a source. With no idle sibling, a quarantined
+  one may serve instead. With neither there is no seed, and the steps run alone.
+- **A quarantined source** is the fallback when no idle sibling can be held, so a pool that is
+  mostly quarantined can still seed. Idle siblings always come first, even one that does not match
+  the leased commit, and quarantined ones are ranked among themselves the same way. A quarantined
+  sibling qualifies only when all of these hold, proven under its slot lock, and a seed that finds
+  no source records why each one was passed over:
+  - its last claim succeeded (`deps_state` is `current`), and for a stale slot its fingerprint
+    matches exactly;
+  - its active and last-released owners are both positively gone. An owner that cannot be read or
+    an incomplete identity disqualifies it;
+  - occupancy is known and empty;
+  - no claim runs in it, and no other seed holds it;
+  - its path is the exact one its pool owns, and is a real directory rather than a symlink;
+  - its tree can be trusted as an install. A removal that did not finish ("worktree removal could
+    not be verified", or "startup found an interrupted prune...") may have left only part of it,
+    and "slot belongs to a different Git common directory" means it is another repository's. Each
+    of those is refused, and a removal also clears the slot's `deps_state` the moment it begins,
+    so the slot is never trusted again, whatever its quarantine later says, and starts cold if it
+    returns to the pool. Any other quarantine reason qualifies, because the seed reads no Git in
+    the source, and the target proves each path ignored as it does for any seed.
+
+  A quarantined slot cannot be leased, so the seed holds its **slot lock** for the copy instead of
+  a `warm` lease. The lock is taken only when free, never waited on, so a sibling that is busy is
+  passed over. Nothing about the source changes: it stays quarantined with its reason, version and
+  files as they were, it keeps counting toward the pool's maximum, and a crash leaves it exactly
+  so. The hold ends once the clone is staged, before anything is placed in the target. Meanwhile
+  Recover, Repair, Forget and Destroy are refused with "a seed is copying from this slot", and maintenance
+  skips the slot rather than waiting for the clone.
 - **The `warm` lease.** The source is leased to a `warm` owner for the length of the copy,
   through the same reservation, `finalizeLease` and release paths as any lease. Nothing can
   lease, reset or quarantine it meanwhile: a process in a leased slot does not quarantine it, and
@@ -374,7 +467,8 @@ dies anywhere after that write leaves no fingerprint for a later lease to trust.
 the slot still `provisioning` and quarantines it as an interrupted provisioning intent, exactly
 as it does after a restart during setup, and marks its `deps_state` as `interrupted`, whether it
 found `claiming` or `seeding`. That marking happens on every reconciliation path, including one
-that quarantines the whole pool because its identity or marker cannot be proven. If that slot
+that quarantines the whole pool because its identity or marker cannot be proven, and one that
+leaves every slot as it was because the pool's registrations or marker could not be read. If that slot
 ever returns to the pool, its next claim first removes the pool's seed paths, then starts cold:
 it seeds if a sibling qualifies, and runs every step either way. That recovering claim never
 skips the steps on an inherited fingerprint, even from an exact match. The write-ahead does not
@@ -413,8 +507,8 @@ the slot. The occupancy check therefore sees it, and the slot is never handed ou
 
 **Maintenance and shutdown.** The manager keeps an in-memory registry of the claims running
 right now. Periodic maintenance skips a slot whose claim is running instead of waiting for it,
-because a claim may run for hours. The pool's reconciliation record names the skipped slot, and
-the next pass retries it. Shutdown kills every running claim's process group before anything
+because a claim may run for hours, and likewise a quarantined slot a seed is copying from. The
+pool's reconciliation record names the skipped slot, and the next pass retries it. Shutdown kills every running claim's process group before anything
 else stops, and grants no claimed lease from then on. The slot is left `provisioning` with
 `deps_state = claiming`, and the next startup recovers it as above.
 
@@ -509,7 +603,8 @@ button and the check each slot gets when its turn comes all apply acquisition's 
 slot that is leased, quarantined, mid-transition, occupied, not proven clean, still referenced by
 its last owner, or already covered by a queued operation is never a target: named directly it
 blocks the preview with the rule's own reason, and in a pool Warm it is left out and counted in
-the preview. A pool with no claim, or with native
+the preview. A slot whose fresh screening fails to read it when its turn comes is skipped, not
+quarantined, and records the failed read. A pool with no claim, or with native
 worktrees disabled, has nothing to warm. Nothing in a Warm discards work, so it asks for no
 acknowledgement.
 
@@ -523,7 +618,7 @@ For each slot, in order, a Warm:
    processes never count as occupancy of an available slot;
 3. fetches origin and resets the slot to its current default branch;
 4. runs the pool's claim under its usual rules: a matching fingerprint skips the steps, a cold
-   slot (or a stale one an idle sibling matches exactly) is seeded copy-on-write, and the steps
+   slot (or a stale one a sibling matches exactly) is seeded copy-on-write, and the steps
    run otherwise;
 5. proves the tree exactly as an acquired slot is proved before its grant, and quarantines it if
    a step modified a tracked file or attached a branch;
@@ -610,17 +705,98 @@ this order:
   dependency state. **Copy path** stays in the browser.
   A slot that an operation or a dependency claim holds when the page looks is marked **busy**,
   and its card names the holder: a running dependency claim and its step, or the lease
-  acquisition, seed source lease, Warm, Return, Recover, Destroy or reconciliation holding its
-  slot lock. The inventory runs no Git in a busy slot, so it never races that operation for the
+  acquisition, seed source lease, Warm, Return, Recover, Repair, Forget, Destroy or
+  reconciliation holding its slot lock. The inventory runs no Git in a busy slot, so it never races that operation for the
   index: the card shows the slot's last recorded state, owner and HEAD, and its cleanliness and
   default relationship read unknown until the slot is free. A preview that names a busy slot is
   blocked until it is free. Execute's own recheck, and a manual lease's return, wait up to 10
   seconds for a slot's current holder to let go first, so a maintenance pass passing over the
   slot is not read as a change or as unknown cleanliness; a running claim is not waited for, and
-  a return refused for a holder that stays names it. **Open terminal** still works on a busy slot, from its
-  exact pool path and Git registration, because opening a shell writes nothing.
+  a return refused for a holder that stays names it. **Open terminal** still works on a busy slot
+  that is leased or quarantined, from its exact pool path and Git registration, because opening a
+  shell writes nothing. A slot its claim is still provisioning is not idle, so it is refused by
+  its state, as any slot that is neither idle nor leased is.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
-  manager-known path.
+  manager-known path. On an available slot it first takes a manual lease, so acquisition cannot
+  hand out a slot with an unowned shell in it. The lease takes the slot exactly as it stands, with
+  no reset and no claim, so HEAD and every file stay as they were, and the shell opens only once
+  the lease is held. The card then shows a manual lease labelled "Terminal from Settings", with
+  **Return**. The slot must pass acquisition's idle rule on a fresh read, under the slot lock, and
+  a slot that does not is refused with the reason and no shell opens: one that is occupied stays
+  available, and one that is dirty is quarantined, as acquisition would leave it. A slot attached
+  to a branch is refused too, since only a reset can undo that. On a leased or quarantined slot
+  Open terminal opens a shell and takes no lease. Closing the shell does not return the lease, as
+  with any manual lease, and [Stale live leases](#stale-live-leases) applies to it. A terminal that
+  is unknown or unavailable is refused before anything is launched, so the lease is given back with
+  no fetch or reset and the slot is available again as it was. A launcher that tried and failed may
+  still have opened a shell, so that lease stands and the error says to Return it.
+  A History Resume leases a slot the same way, and on the same idle, detached terms, through
+  `leaseForResume`, which then checks out the session's recorded branch. Its card shows a manual
+  lease labelled "Resumed History session", and Returning it releases the Resume's launch. When
+  the resumed session ends, `returnResumed` returns the slot by itself if it is clean; otherwise
+  the card says "Kept: uncommitted changes from a resumed session" or "Kept: commits on no branch
+  from a resumed session" until it is Returned. A Resume whose agent never appeared keeps its
+  slot, labelled "Held for a resumed session that has not appeared". See
+  [Session History](history.md#resume).
+
+  Each slot card ends in a **History** disclosure: what happened to the slot, newest first, 50
+  entries at a time through `GET /api/worktrees/:slotId/history`, each with its state change, its
+  reason and detail, and who caused it: the operator (an action run from this page, whichever
+  domain owns the lease), automatic (a decision the daemon made on its own, such as retention or
+  reclaiming a leaked check lease), or the owner. The list is read only while open, and follows
+  the slot while it stays open. Every state transition writes one
+  entry in the same transaction as the change, and a failed read adds an entry only when it starts
+  and when it clears. See [the database guide](database-and-migrations.md) for retention.
+
+  Operation results go into the same list, beside the transitions they caused. Every operation
+  this page accepts writes one entry per slot it targeted once it finishes: Return, Destroy,
+  Prune, Warm, Recover, Repair, Forget and Kill. The entry names the outcome: done, refused with its reason
+  (the slot was left as it was, such as a preview that went stale), partly done, or failed (the
+  outcome is unknown, or the work began and may have changed the slot). A partly done entry says
+  whether its slot finished before the operation stopped, and a Repair that kept the slot
+  quarantined for its work is partly done too. A task's trees are torn down together, so a Return
+  that brought one back and not another is partly done, one that brought none back after trying
+  is failed, and one refused before teardown reached a tree, such as by a terminal that would not
+  close, is refused. Destroying one slot of a task
+  returns the task's other slots, so their entries read Return, not Destroy. A Warm decides each slot on its own turn, so each entry carries that slot's own result:
+  a slot skipped reads refused, a failed claim or a Cancel that reached the slot reads partly done,
+  and a slot Cancel stopped before its turn was never touched and has no entry. Automatic Recover
+  and Repair write the same entries as automatic; a refusal or an unknown outcome writes one when
+  its reason changes, so a pass repeating it stays quiet. On either path, a Recover or Repair whose
+  outcome is unknown reads refused when the slot's version did not move, because its read failed
+  before the reset began and the slot is as it was, and failed when the version moved. Git's fixes
+  change the registration and no version, so a Repair that ran one never reads refused: it reads
+  failed when the registration was not proven healthy afterwards, and partly done when it was and
+  the recovery after it did not finish. A Kill entry
+  names the PID and never the command. The operations list above the pools keeps its behavior, and dismissing a report there leaves the history alone.
+  An Unowned trees operation has no slot, so it is logged to the daemon log only. A request refused
+  before it was accepted (an expired token, a target with a cleanup already queued) answers the
+  dialog and writes nothing, and a return a task or check makes on its own is recorded by its
+  transitions.
+
+  History also holds the timed steps, and the card shows the last of each as **Last provisioning**,
+  **Last claim** and **Last seed**:
+
+  - A **provisioning** entry runs from reservation to granted lease, for a new slot and for a reused
+    one. An acquisition that never reached a lease has none, and neither has a Warm or Open
+    terminal's lease, which provision nothing.
+  - A **claim** entry records the claim's duration, its seed included, and its outcome: succeeded,
+    failed, skipped on a matching fingerprint, or stopped by a shutdown. A failed one keeps the
+    failing step's command and reason, never its output.
+  - A **seed** entry names its source slot and duration, and says when that source was quarantined:
+    "from quarantined slot 4 in 12s". A seed abandoned or cut off during its copy names the source
+    too. One that placed nothing says why: no idle sibling held a current install or matched a stale
+    slot's commit, its siblings could not be read, none could be held (naming why each quarantined
+    sibling was passed over), the clone was abandoned or cut off, the paths of an earlier cut-off
+    seed could not be removed, or the pool's claim configures no seed. A slot that wants no seed, because
+    its install still matches, adds no entry, so the last seed stays readable.
+
+  The pool row shows the **median new slot** provisioning time and the **seed hit rate** over the
+  pool's last 10 new slots, computed from history whenever it is read, so retention can shorten
+  the window. A new slot counts once it is granted, a claim that failed included, and it is a hit
+  when a seed placed anything in it before the grant. Acquisition leases an idle sibling before it
+  makes a new slot, so a new slot rarely finds a seed source, and a low rate there is the fault
+  this number exists to show. A reused slot's seed is in its History and not in the rate.
 
   The group states loading, empty, and unavailable separately, and never renders a heading over
   nothing. An inventory that could not be observed says so and offers Refresh; it is never drawn as
@@ -679,11 +855,27 @@ The operations have deliberately narrow meanings:
   process-group recovery. Manual Return uses the exact durable lease. A successful native Return
   resets to the freshly fetched remote default - the branch the remote advertises now, proved the
   same way dispatch proves it - leaves the slot detached and clean, and keeps the warm slot.
+
+  A quarantined slot whose active owner is still referenced offers Return too, since the owner's
+  own return accepts a quarantined lease. Its card names the owner (the task's title, the check,
+  or the manual lease with the label `make session --label` gave it) and says "Its owner's return
+  brings this slot back." The preview is that owner's ordinary Return preview, so a task Return
+  still lists every tree the task holds. It is refused while any process is inside the
+  quarantined slot, the task's own agent included, and when the owner's reference is gone or
+  unknown. An owner that is gone leaves the slot to Recover instead.
+
+  A `warm` lease is the one owner neither Return nor Destroy can act on, whatever its state. While
+  its seed runs, the preview says the seed returns the slot when its copy ends. A seed interrupted
+  by a restart is not coming back: reconcile returns its lease, the preview says so until then,
+  and if the lease cannot be returned the slot is quarantined with that dead owner still on it.
+  Its preview then points at Recover, which clears it.
 - **Prune** removes only the clean, merged, process-free, unreferenced available slots enumerated in
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.
 - **Reconcile** re-observes durable state, Git registration, ownership, and processes. It repairs
-  only states whose result is positively proven and keeps uncertainty quarantined.
+  only states whose result is positively proven and quarantines only a proven fault; a slot whose
+  read failed keeps its state and says so on its card, and a slot quarantined only by a failed
+  read goes back to its referenced owner (see [Native pools](#native-pools)).
 - **Destroy** removes one exact manager-owned slot, the fixed slot set enumerated for one pool, or
   a bulk selection. Each destroyable slot has a checkbox, and a pool's **Select all slots** adds
   every destroyable slot in it; the selection may span pools. **Destroy selected** previews exactly
@@ -700,33 +892,84 @@ The operations have deliberately narrow meanings:
 - **Recover** brings back a quarantined slot that no live owner references. It is offered on
   every such slot's card, and Settings > Storage lists each quarantined slot as a problem whose
   **Open slot** link jumps to that card. Its preview names the slot's `index.lock` (under the Git
-  directory its `.git` file names), any Git process whose working directory is in the slot, and,
-  when the slot holds uncommitted, untracked, unpushed or ignored work outside the regenerable
-  directories (`node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/`, `.next/`),
-  that the reset discards it, which must be acknowledged. Execute removes `index.lock` only when no
-  Git process uses the worktree and `lsof` shows nothing holding the lock, then runs the same
-  owner-authorized reset Return ends in, and the slot becomes available. A slot with a live or
-  unknown owner, any process inside it, or a lock it cannot prove free is refused. Recover is the
+  directory its `.git` file names), any Git process whose working directory is in the slot, and
+  each entry the reset would discard, which must be acknowledged. Execute runs the same
+  owner-authorized reset Return ends in, and the slot becomes available. It removes `index.lock`
+  as the reset's last check, once the target is fetched and the work check has passed, and only
+  when no Git process uses the worktree and `lsof` shows nothing holding the lock. A slot with a
+  live or unknown owner, any process inside it, or a lock it cannot prove free is refused, and a
+  refusal leaves the lock in place.
+
+  Recover keeps the slot's folder, so it counts work by the **reset rule**, against origin's
+  default fetched for the preview. A reset runs `checkout --force`, `reset --hard` and
+  `clean -fd`, never `-fdx`, so it keeps an ignored file while that file stays ignored and
+  nothing the default tracks lands on it. Work is an uncommitted change, an untracked file that is
+  not ignored (other than ai-conductor's disposable `.pipeline/` scratch), unpushed commits, or an
+  ignored entry outside the regenerable directories (`node_modules/`, `dist/`, `build/`,
+  `coverage/`, `.cache/`, `.turbo/`, `.next/`) that the reset would overwrite or delete:
+  - the default tracks a path at, under or above it, where above means a file, symlink or
+    submodule in place of one of its parent directories. Paths are compared after Unicode
+    normalization and case folding, always, so `.Idea/x` in the default overlaps an ignored
+    `.idea/` whatever `core.ignorecase` says;
+  - the default's `.gitignore` files no longer ignore it, so `clean -fd` deletes it.
+
+  A warm install (`node_modules/`, `.yarn/install-state.gz`), an IDE folder, build info, `.env` or
+  evidence that the default still ignores and does not track is therefore not work: Recover asks
+  for no acknowledgement and the reset keeps each file where it is. The preview names each entry
+  that is work and why, such as "ignored .idea/ (the target tracks .idea/codeStyles/Project.xml)".
+  The check writes nothing in the slot. It reads a bounded listing of the default's tracked paths
+  and a `.gitignore` diff, and only when a `.gitignore` differs, or the slot has a `.gitignore`
+  of its own that is changed, staged or untracked, evaluates the default's rules with
+  `git check-ignore` in a private temporary repository, holding the default's `.gitignore` files,
+  the common directory's `info/exclude`, and the slot's `core.excludesFile` and `core.ignorecase`.
+  Any of those steps that fails, overflows or times out counts the entries it could not clear as
+  work. The reset checks the work set again once it has fetched its own target, and Execute
+  refuses when the default moved to a commit whose work set differs from the preview's. The
+  preview names at most 20 entries, but that comparison covers every one. Safe Kill
+  and the other return checks keep the stricter rule, which counts every ignored file outside the
+  regenerable directories.
+
+  Recover is the
   way out of the stale-lock quarantine: a Git command that dies holding `index.lock` makes the
   next reset fail with Git's "Unable to create '...index.lock': File exists", and the slot is
   quarantined with that text as its last error. Watching a slot never takes that lock: every Git
-  read the allocator observes with (`status`, `rev-parse`, `symbolic-ref`, `worktree list`,
-  `merge-base` and the remote-default reads) passes `--no-optional-locks` before its subcommand,
+  read the allocator observes with (`status`, `rev-parse`, `rev-list`, `symbolic-ref`, `worktree
+  list`, `merge-base` and the remote-default reads) passes `--no-optional-locks` before its subcommand,
   so a read killed mid-way cannot leave `index.lock` behind. The mutations (`worktree add` and
   `remove`, `checkout`, `reset`, `clean` and Return's `fetch`) take their locks as usual.
 
-  Each maintenance pass also retries every quarantine whose last error is that text, with no
-  operator. It recovers the slot when the lock is gone, or when the lock is more than 10 minutes
-  old and the same no-Git-process and no-holder check passes, and only when the slot is clean
-  with regenerable ignored files discounted. A slot holding any other work stays quarantined, with
-  that work intact, until someone runs Recover and reads its preview. Each refusal is recorded
-  with the exact path that blocked it: the first entry the reset would discard, with its kind
-  (an uncommitted change, an untracked file, an ignored file or unpushed commits on `HEAD`), or
-  the slot's `index.lock` for a lock-caused refusal. The record is kept in memory for the
-  quarantine it judged, so a restart drops it until the next pass, which runs at startup.
+  Each maintenance pass also runs Recover's automatic half, with no operator, on every quarantine
+  that a fresh read can disprove: one whose last error is that lock text, one whose reason is a
+  failed read (the set in `src/server/worktrees/quarantine-reasons.ts`, older builds' reasons
+  included), and "available slot is dirty" or the "available slot is occupied or dirty" that older
+  builds wrote. A slot quarantined for its identity is never cleared here, however healthy it
+  reads and whatever its last error says, because a read that happens to succeed repairs nothing.
+  A slot quarantined for its registration takes **Repair** instead, which tries Git's own fixes
+  first and then applies the same safety line.
+
+  The safety line is the same for all of them. The slot's active and last-released owners must be
+  positively gone, its occupancy known and empty, its registration exact, a fresh Git read must
+  succeed, and it must hold no work by the reset rule above, against origin's default. The slot
+  then takes the ordinary owner-authorized reset and becomes available, keeping its warm install.
+  The reset rule is judged again inside the reset, against the commit it fetched, so a default
+  that moved between the check and the reset is refused with every file unchanged. The pass never
+  discards work: a slot with an occupant, a live or unknown owner, a failed read or any work stays
+  quarantined, exactly as it was, until someone runs Recover and reads its preview.
+
+  The `index.lock` checks apply only to a lock-caused quarantine. There the slot comes back when
+  the lock is gone, or when the lock is more than 10 minutes old and the same no-Git-process and
+  no-holder check passes. Any other quarantine leaves a lock alone, and a reset that lock then
+  refuses records Git's text, so the next pass judges the slot as lock-caused.
+
+  Each refusal is recorded with the exact path that blocked it, when there is one: the first entry
+  the reset would discard, with its kind (an uncommitted change, an untracked file, an ignored
+  file or unpushed commits on `HEAD`), or the slot's `index.lock` for a lock-caused refusal. The
+  record is kept in memory for the quarantine it judged, so a restart drops it until the next
+  pass.
 
   A slot's card shows why it is in its state, each fact on its own line: the quarantine reason,
-  the detail behind it (such as Git's own error), why its processes are unknown, the last
+  the detail behind it (such as Git's own error), why its last observation failed, why its
+  processes are unknown, the last
   automatic-recovery refusal with the path that blocked it, and the processes inside the slot
   with PID, command and start time. The inventory carries at most 16 of those processes per slot,
   each command bounded to 512 bytes, and the card counts the rest. A process already listed with
@@ -736,6 +979,82 @@ The operations have deliberately narrow meanings:
   where the entry time is the slot's own `quarantined_at` column, so the id survives a daemon
   restart. A slot quarantined before that column existed is stamped once by the first start that
   finds it.
+- **Repair** is the way out for a slot quarantined because Git's registration of it is bare,
+  locked, prunable, or names another path. Each maintenance pass tries it with no operator, on
+  every such slot, and a quarantined slot's card offers it once the slot's owner is positively
+  gone. Recover needs a proven registration, so Repair is the one that can start from a broken
+  one.
+
+  It runs only when no owner is referenced, no process is in the slot (which covers a Git
+  process with its working directory there), and no claim runs. An unknown owner or unknown
+  occupancy refuses it. It then applies only Git's own fixes, each decided from the files Git
+  itself reads:
+
+  - a registration locked `initializing`, which an interrupted `git worktree add` leaves, is
+    unlocked with `git worktree unlock`. Any other lock refuses Repair. That includes a lock an
+    earlier build left in another language, because Git translates that word and a translated
+    lock cannot be told from a reason someone wrote. Slots are now added with `LANGUAGE=C`, so
+    new locks always read `initializing`;
+  - a `.git` file that is missing or wrong, while an administrative directory under
+    `<common>/worktrees/` still names this path, is fixed with `git worktree repair`;
+  - a `.git` file naming an administrative directory whose `gitdir` points elsewhere is fixed
+    with `git worktree repair <path>` from the main checkout. A pass reads this as a missing
+    registration, because Git lists it under the path it names. If the folder it names still
+    exists, even without its `.git`, the registration may belong to that checkout, and Repair
+    refuses.
+
+  Neither form of `git worktree repair` stops at one worktree: each also rewrites any other
+  worktree's `.git` file in the repository that is already broken, and the preview says so.
+
+  A bare registration, a folder that is gone, a `.git` that is not a file, and a registration no
+  administrative directory can be traced to all refuse, and the card shows why, with **Forget**
+  as the fallback where it applies. A `git worktree
+  list` that fails says nothing about the slot, so its preview asks you to try again, and nothing
+  runs. Moving a folder aside to register it again never happens here. After a fix, Repair reads
+  the registration again instead of trusting Git's exit code, then takes automatic recovery's
+  checks and reset. The
+  preview names each fix, and Execute refuses a registration or an occupant that changed after
+  it. Repair asks for no acknowledgement, because it never discards work.
+
+  A slot that holds work by the reset rule is not reset. It stays quarantined as "registration
+  repaired; holds work", with that entry as its detail, and no pass touches it again until
+  someone reads Recover's preview. A `git worktree add` cut off before its checkout usually lands
+  here too: without an index every tracked file reads as a change, which cannot be told from
+  work. A recovery refused for any other reason, such as an unreachable origin, leaves the fix in
+  place and the reason as it was, so the next pass, finding the registration healthy, finishes it.
+- **Forget** is the fallback when Repair refuses or cannot prove a result. A quarantined slot's card
+  offers it, once the slot's owner is positively gone, in four cases: the folder is gone, the slot
+  belongs to a different Git common directory, the slot's registration belongs to another path that
+  still exists, or a prune was interrupted with files still present (including one whose removal
+  could not be verified). These are read from the slot as it stands, because a quarantine keeps its
+  first reason whatever happens to the folder later. A registration that is gone while its folder
+  remains is not one of them. No maintenance pass runs Forget: it runs only from the card.
+
+  The preview names the path and states that the folder and the slot's row are deleted. It lists
+  the work it can see: the delete rule, with the pool's `seed.paths` counted as regenerable, when
+  Git can read the tree, and otherwise up to ten files, as Unowned trees does. Execute always
+  requires the discard acknowledgement, even with nothing listed, because a tree Git cannot read
+  cannot be proven empty and the row does not come back.
+
+  It refuses a slot with an occupant, a live or unknown owner or a running claim. A Git listing
+  that fails refuses too, because a registration may name the path, and so does a folder whose
+  contents cannot be read, because its work cannot be named. Execute refuses a changed
+  preview: the preview binds a signature of the folder's entries, as Unowned trees does, so a write
+  the list does not show still stops it. Execute refuses a running claim, then takes the owner, pool
+  and occupancy proofs again under the slot lock. It records "a Forget was cut off before its folder
+  was gone" as the quarantine reason, deletes the folder without following a symlink, in the tree or
+  at its path, removes any registration that names the path, a locked one included, and deletes the
+  row. A registration that names another path is that checkout's and stays. The pool's ordinal
+  high-water mark stays too, so the ordinal is never reused.
+
+  A delete is not atomic, and it can take the `.git` file a cause was read from. That recorded
+  reason keeps Forget on the card however far the delete got, a restart included, so the slot can
+  always be finished. No maintenance pass clears it or repairs the slot, and the card stops offering
+  Recover, which refuses it: a reset keeps ignored files and the slot's dependency state, so it could
+  hand a partly deleted install to the next lease as a warm one. A seed refuses it as a source for
+  the same reason. Forget or Destroy finishes it. The
+  reason stays through any later quarantine, so a Destroy that is itself cut off does not bring
+  Recover back, and the card shows the newer reason as its detail.
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
   adapter. There is no force action for unverifiable or foreign resources.
 - **Warm** prepares idle slots ahead of time: it holds each under a `warm` lease, fetches, resets
@@ -743,35 +1062,53 @@ The operations have deliberately narrow meanings:
   offered on an available slot's card and, as **Warm idle slots**, among a pool's maintenance
   actions. It never touches a leased or quarantined slot. See [Warm](#warm).
 - **Kill** stops one orphan process: a process still running inside a tree whose owner has
-  finished. It is offered on the process's row in the slot card, behind a confirmation. With
-  more than one listed, **Kill all** confirms every one of them in a single dialog. See
-  [Orphan processes](#orphan-processes).
+  finished, or inside an available slot, which has no owner. It is offered on the process's row in the slot card, behind a confirmation. With
+  more than one killable process listed, **Kill all** confirms every one of them in a single
+  dialog. A live Mission Control session's process offers **Open session** instead, and neither
+  action reaches it. See [Orphan processes](#orphan-processes).
 
 #### Orphan processes
 
 A tree whose owner has finished is one a completed task still owes a return, a check lease left in
-`returning`, a quarantined slot, or an unreferenced folder the [orphan tree sweep](#orphan-tree-sweep)
-left in place because it is kept or occupied. After each maintenance pass (`MISSION_WORKTREE_SWEEP_MS`,
+`returning`, or a quarantined slot. An available slot with no lease, and an unreferenced folder the
+[orphan tree sweep](#orphan-tree-sweep) left in place because it is kept or occupied, have no owner
+at all and count the same way. After each maintenance pass (`MISSION_WORKTREE_SWEEP_MS`,
 5 minutes by default), and whenever Settings > Storage is opened, Mission Control runs the same
-occupancy inspection the return guard uses (`ps` plus one batched `lsof`) over every such tree.
+occupancy inspection the return guard uses (`ps` plus one batched `lsof`, with its one retry)
+over every such tree.
 Only pool slots and children of `worktrees/` and `check-worktrees/` are inspected. A pool slot
-counts only while it holds the finished owner's own lease, or no lease and is quarantined. A
-completed task can keep owing a return after its slot was reset and leased to a live task, a
-quarantine can keep a live lease, and an available slot with no lease can be running a Warm or a
-dependency claim, and none of those processes are orphans. An owner still finishing is skipped too:
-a task whose session closure is still taking its agent down, and a check lease this daemon still
+counts only while it holds the finished owner's own lease, or holds no lease and is quarantined or
+available. A completed task can keep owing a return after its slot was reset and leased to a live
+task, and a quarantine can keep a live lease, and none of those processes are orphans. A Warm holds
+its slot under a lease, so a Warm's processes are never listed. A slot a dependency claim is running
+in is skipped too, and the trees are listed again once the inspection answers, so a claim that
+started during the inspection is not reported. A claim step that outlives its claim, such as one a
+daemon restart left behind, has no claim running any more and is an orphan. An owner still
+finishing is skipped too: a task whose session closure is still taking its agent down, and a check lease this daemon still
 owns or is working on. Each process
 found is reported as a bannered `orphan-process` problem in Settings > Storage, with its PID,
 parent PID, command, start time and tree. Its id is
 `orphan-process:<tree>:<pid>:<start time>`, so it survives a daemon restart. A pass that cannot
 inspect a tree keeps the last report for it rather than dropping it.
 
-Such a process blocks the tree's return, because the return guard refuses an occupied tree.
+An SDK session on Linux rarely leaves one, because its
+[scope](harnesses-and-terminals.md#agent-session-scopes) is stopped when its agent exits, before the
+task's return looks at the tree. What still reaches this report is a process from a terminal-runtime
+session, a Pi command or a check, none of which has that scope, and one that ignored the stop for
+longer than a return's first attempt, which the return's next retry clears.
+
+Such a process blocks the tree's return, because the return guard refuses an occupied tree. In an
+available slot, which has no return, it keeps the slot from being leased, because acquisition
+passes over an occupied slot. Its problem says the tree is one no task or check owns.
 The Storage problem's Open slot link lands on the slot's card, which lists each orphan process
-with **Kill**. The confirmation names the process and what happens. When the card lists more
-than one, **Kill all** opens one confirmation naming every listed process and sends one guarded
-request per process, all at once. Any it could not kill stay in the dialog with their reasons, so
-a retry never signals a process that is already gone.
+with **Kill**. The confirmation names the process and what happens. A process that belongs to a
+live Mission Control session stays in the list, because it still holds the tree, but it shows
+the session's name and **Open session** instead of Kill, so a session still leaves only through
+the registry's eviction path. When the card lists more than one process that offers Kill,
+**Kill all** opens one confirmation naming those processes and sends one guarded request per
+process, all at once. It never counts, confirms or signals a session's process, and with fewer
+than two killable processes it is not offered. Any it could not kill stay in the dialog with
+their reasons, so a retry never signals a process that is already gone.
 `POST /api/worktrees/processes/kill` takes `{ path, pid, startedAt, command }` and signals nothing
 unless all of these hold:
 
@@ -779,16 +1116,42 @@ unless all of these hold:
    a symlink that resolves anywhere else, is refused before any process is inspected.
 2. That report lists the same PID with the same start time and command.
 3. A fresh inspection still finds that PID inside the tree with the same start time and command.
+4. That inspection does not name the PID as a live session's, and could read the live sessions at
+   all. Otherwise the refusal says `belongs to live session <name>; end it from the session`, or
+   that the process could not be checked. This is read fresh, not from the report, so a Kill all
+   built from a stale list cannot reach a session. Until the first discovery sweep after a
+   restart the sessions are unread, so every Kill is refused.
 
 It then sends `SIGTERM`, and `SIGKILL` 5 seconds later if the same process (same start time) is
 still running. It retries the tree's pending task or check return at once, skipping that
-return's backoff, and scans again, so the problem clears with the next `storage_health` event.
+return's backoff (an available slot has none, and the next acquisition screens it afresh), and
+scans again, so the problem clears with the next `storage_health` event.
 For an unreferenced folder the retry is another orphan tree sweep. A refusal answers 409 with its
 reason. A tree that is not a pool slot has no slot card, so its Storage link, Open tree, lands on
 its row under [Unowned trees](#unowned-trees), which lists the same processes with the same Kill.
 
 Unlike the inventory, the storage report carries each orphan process's command line, bounded to
 512 bytes, because the confirmation must show what will be signalled.
+
+A slot card names the processes it can identify, on the process's own line in the list and on its
+orphan row:
+
+- **`Session <name>`** is a live Mission Control session's own process or a descendant of it: a
+  terminal pane's process, or an SDK session's driver child and what that runs. Process ancestry
+  alone decides this, with the session's process matched by PID and start time, so a reused PID is
+  not the session. A process that only shares a session's cwd, pane or hook coordinates is not named
+  as that session. An SDK session with no recorded process names nothing.
+- **`<agent> background process`** is a process the harness's own background vocabulary recognizes,
+  such as `claude daemon` or `claude mcp serve`, or a descendant of one, such as an MCP server. A
+  background process a session spawned is named as that session.
+- **An IDE helper**, such as `VS Code helper`, `JetBrains IDE helper` or `IDE language server`, is
+  matched by its executable name against a small table. Its children are not named.
+
+A name never makes a process safe to ignore. Occupancy, every refusal and the orphan report count
+a named process exactly as they count any other, and a process with no name is only one nothing
+identified. The only thing a name changes is Kill, and only a `Session <name>` name changes it: a
+session's process offers **Open session**, on its row in **Processes inside** as well as in the
+orphan list, and the Kill route refuses it. When the names cannot be read, the occupants are still counted, without them.
 
 Native slot cleanliness allows a narrow set of untracked ai-conductor scratch files at the
 checkout root: `.pipeline/.memory-count-at-start`, `conduct-state.json`, `engineer-run.json`,
@@ -880,6 +1243,15 @@ completed before this policy keep their existing retained checkouts and 30-day a
 upgrade never infers return permission from an old done status or session-closure record.
 Another live session or process always blocks automatic return.
 
+A cancelled or failed task can leave that window early. When a session ends inside a tree such a
+task holds, Mission Control reclaims all of the task's trees at once if they hold no work and no
+session or process remains in any of them, the same check a restart runs. A tree with work stays
+for the 30 days and is listed in **Settings > Storage**. A process still inside keeps the trees
+too, and the session's exit does not ask again, so they then wait for **Clean up**, a restart or
+the 30 days. A task that was still running when its agent left is not reclaimed by that exit: it
+settles as failed and keeps its trees. A managed Pipeline task is left out, because its provider
+owns the outcome.
+
 A return that keeps being refused is recorded rather than silent. A completed task's owed
 return and a check's lease return each record when their return was first refused and the
 latest refusal: its reason, plus the processes found occupying the tree when occupancy was the
@@ -918,15 +1290,36 @@ return obligations after session discovery.
 
 **A restart reclaims a settled task's clean trees at once.** When a restart settles a task whose
 agent did not survive it, or finds a failed or cancelled task still holding trees, it checks every
-tree the task holds. This amends the earlier settle-and-retain rule for clean trees only:
+tree the task holds, by the rule of what reclaiming that tree does. This amends the earlier
+settle-and-retain rule for clean trees only:
 
-- **Clean** means nothing uncommitted, untracked or unpushed, and no ignored file except under
-  the regenerable directories `node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`,
-  `.turbo/` and `.next/`, at any depth. A clean task whose trees no process occupies is
-  reclaimed through the same path as **Clean up**, keeping its status and outcome.
-- **Anything else keeps the 30-day window.** Any other ignored file is work here: workflow
-  evidence under `.evidence/` or `e2e/.artifacts/`, or a local `.env`. So is a tree Git cannot
-  read. The task is listed as a `dirty-settled-tree` problem in **Settings > Storage**, named
+- **A pool slot keeps its folder**, so it is judged by the [reset rule](#settings--worktrees) against
+  origin's default as last fetched, with no network: nothing uncommitted, untracked or unpushed,
+  and no ignored entry the reset would overwrite or delete. A slot holding only ignored files is
+  therefore reclaimed at once and keeps them, warm install included. The reset fetches and judges
+  the rule again against that commit, so a default that moved keeps the slot, with every file
+  unchanged, and the task is listed with that reset's own refusal. A checkout with no local
+  default ref leaves the whole judgement to the reset. A reclaim that fails for any other reason,
+  such as an unreachable origin or a locked registration, keeps the slot too and is listed as a
+  tree that could not be reclaimed, because nothing says it holds work.
+- **A tree that is deleted takes the delete rule.** A disposable Git worktree or a Treehouse lease
+  is removed rather than reset, so **clean** means nothing uncommitted, untracked or unpushed, and
+  no ignored file except under the regenerable directories `node_modules/`, `dist/`, `build/`,
+  `coverage/`, `.cache/`, `.turbo/` and `.next/`, at any depth, or what its pool claim's
+  `seed.paths` bring back (see "Seeding" under [Dependency claims](#dependency-claims)), matched as
+  repository-relative patterns exactly as a seed matches them. In a pool whose seed paths list
+  `.yarn/install-state.gz`, a tree holding it is still clean, while `.idea/` and `.env` stay
+  work, as does workflow evidence under `.evidence/` or `e2e/.artifacts/`. A path `seed.exclude`
+  could reach is not regenerable: a seed strips it from every clone, so it never comes back. That
+  covers an excluded path, anything inside one, and a directory an exclusion could match under,
+  so `**` in an exclusion takes a seeded directory out of the set (the built-in directories stay
+  in it). An exclusion with a group spanning a slash, such as `.yarn/{secrets/*,keys/*}`, takes
+  every seed path out. The tree is mapped to its pool by the Git common directory its `.git` file
+  names. A pool with no claim or no seed, and a folder with no repository, get only the built-in
+  directories.
+- A clean task whose trees no process occupies is reclaimed through the same path as **Clean
+  up**, keeping its status and outcome.
+- **Anything else keeps the 30-day window.** So does a tree Git cannot read. The task is listed as a `dirty-settled-tree` problem in **Settings > Storage**, named
   `dirty-settled-tree:<task id>:<first seen at>` from the storage first-seen record, so a restart
   keeps its id. It is listed in Storage only and never raises the banner.
 - **Discard and reclaim is the slot card's Return.** The problem links to the task's pool slot,
@@ -980,10 +1373,14 @@ maintenance starts, after startup reconciliation, and again on every maintenance
 - A folder some process is working in, or whose occupancy cannot be read, is skipped.
 - A **husk**, a folder holding nothing but empty directories and a `.git` file whose Git
   directory is gone, is removed.
-- A **clean** worktree is removed with `git worktree remove --force`. Clean means nothing
-  uncommitted, untracked or unpushed, and no ignored file outside the regenerable directories
-  (`node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`, `.turbo/` and `.next/`). Its
-  `harness/*` branch is deleted only when a remote branch contains it.
+- A **clean** worktree is removed with `git worktree remove --force`. Clean is the delete rule:
+  nothing uncommitted, untracked or unpushed, and no ignored file outside the regenerable set.
+  That set is the regenerable directories (`node_modules/`, `dist/`, `build/`, `coverage/`,
+  `.cache/`, `.turbo/` and `.next/`) plus the `seed.paths` of the pool whose Git common
+  directory the tree's `.git` file names, so a tree holding only its pool's installed state is
+  removed. A path `seed.exclude` could reach stays work. A pool with no claim or no seed gets the
+  directories alone. Its `harness/*` branch is
+  deleted only when a remote branch contains it.
 - Anything else is kept: a dirty or unpushed worktree, one whose safety cannot be read, and a
   folder that is not a worktree but still holds files, such as a tree whose `.git` file was
   lost. **Settings > Storage** lists each one as a bannered `dirty-orphan-folder` problem, with
@@ -997,7 +1394,9 @@ repositories and the repositories of tasks and checks), it reads `git worktree l
 and removes only the `prunable` registrations whose path is under the state home and no longer
 exists. It never runs an unscoped `git worktree prune`, so the operator's own worktrees
 elsewhere are untouched. A missing path that a task, check lease or native slot row still names
-keeps its registration, because that owner's own cleanup or reconciliation decides it.
+keeps its registration, because that owner's own cleanup or reconciliation decides it. A check
+lease that deleted a [tree Git no longer recognizes](#check-leases) runs the same scoped prune
+once the lease has settled.
 
 #### Unowned trees
 
@@ -1008,7 +1407,7 @@ unowned tree, from the live `storage_health` aggregate: each folder the sweep ke
 Each Storage problem's **Open tree** link lands on that tree's row.
 
 - A process in the tree is listed with **Kill**, through the same confirmation and guarded route
-  as a slot card's. A folder the sweep skipped because a process occupies it is inspected by the
+  as a slot card's, or with **Open session** when a live session owns it. A folder the sweep skipped because a process occupies it is inspected by the
   orphan process scan too, so a process holding a folder nobody owns is reported, not just
   skipped. After a kill a fresh sweep runs, one that starts after the kill rather than a pass
   already in flight that may have seen the process: a clean folder is removed, and one holding
@@ -1016,15 +1415,19 @@ Each Storage problem's **Open tree** link lands on that tree's row.
 - A kept folder offers **Discard and remove**. Its preview, the `removeUnowned` worktree action,
   names the path and the work it discards: the reason it was kept, any unpublished commits, and up
   to ten of the paths it deletes (changed, untracked and ignored ones for a worktree, files for
-  any other folder). Execute needs the discard acknowledgement. Cancel leaves the row and the
-  folder in place.
+  any other folder). The work it names follows the sweep's delete rule, so an ignored path in the
+  regenerable set, the pool's seed paths included, is never called work: it is listed as
+  `(regenerable)`, since it is deleted too but loses nothing. Execute needs the discard
+  acknowledgement. Cancel leaves the row and the folder in place.
 - Only a folder the sweep keeps right now can be previewed. Any other path, a pool slot, a live
   task's tree or `$HOME`, is answered 404 before anything on disk is inspected.
 - On Execute, Mission Control rebuilds the preview and refuses one that changed. A preview is
   bound to the size and modification time of every entry under the folder, not just the paths it
   names, so any write after it, such as another edit to a file already listed as changed, refuses
   the run. The walk stops at regenerable directories (`node_modules/`, `dist/` and the rest of
-  that list), which count by their own entry only, since they are deleted either way. An entry
+  that list) and at the pool's seed paths, which count by their own entry only, since they are
+  deleted either way. It goes on through a seed path `seed.exclude` could reach, so a later write
+  to an excluded file refuses the run. An entry
   that vanishes or cannot be read during the walk makes the tree read as changed. The sweep then
   checks again under its own pass lock that it still keeps the folder, with the same inode, that
   no row names it, that nothing is creating it, and that no process is in it. A worktree is
@@ -1049,6 +1452,35 @@ authoritative above the generic slot record. Cleanup first proves the process gr
 conditionally returns the exact native lease. A missing, stale, occupied, or uncertain lease is
 kept for startup or maintenance reconciliation rather than guessed away. Native check leak
 reclamation runs on the native maintenance cadence after slot startup reconciliation.
+
+Check lease startup reconciliation does not hold the daemon back from listening. It pins every
+live lease's tree synchronously, so a new check cannot take a tree a durable row still names, and
+then resolves each row in the background. Releasing a tree Git no longer recognizes deletes the
+whole checkout, which can take minutes for a large monorepo, and a failure is logged and retried
+by the next maintenance pass.
+
+A Git fallback tree that Git no longer recognizes is deleted rather than retried forever. Once a
+tree's `.git` file is gone, `git worktree remove --force` refuses it with "validation failed",
+and the orphan tree sweep leaves it because the lease still names it. So when that return fails,
+the check lease deletes the folder itself, provided all of these hold:
+
+- the folder is a real directory, not a symlink, named for its attempt, whose real path is a
+  child of `check-worktrees/`;
+- its `.git` file is missing, or names a Git directory that is gone or that belongs to another
+  tree;
+- the attempt's process group is proven empty;
+- a fresh occupancy read of the folder is known and empty.
+
+The folder is deleted without following symlinks, then the lease settles `returned`, which
+clears its `stuck-return` problem, then the [scoped prune](#orphan-tree-sweep) removes the
+registration in the same pass. A prune that fails is left to the next sweep, since no row names
+the path any more. A deletion that fails, or any condition that does not hold, keeps the lease
+`returning` with the reason recorded. A folder that is already gone, after a run cut off between
+the deletion and the settle or a tree removed by hand, still completes its lease: usually through
+the ordinary return, because Git removes an absent tree's registration without complaint, and
+otherwise when the recorded path's parent resolves to `check-worktrees/` and nothing, not even a
+symlink, exists at the path. A tree Git still recognizes keeps the ordinary failed return, and so
+does a native check slot, which is a pool slot that Recover handles.
 
 #### The dependency claim in a check lease
 
