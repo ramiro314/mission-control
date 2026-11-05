@@ -18,7 +18,7 @@ import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import { mergedPullRequestForBranch } from "./pr.ts";
-import { fetchOrigin, resolveBaseBranch } from "./git/remote-default.ts";
+import { branchLandedIn, fetchOrigin, resolveBaseBranch } from "./git/remote-default.ts";
 import type {
   AgentType,
   AssignRefusalScope,
@@ -4200,6 +4200,8 @@ export class TaskManager {
    * pull request merges, and from then on only a merge into the branch it merged into can land
    * the task. This is the one in-flight base change, and the daemon picks the target from
    * `gh`, so the operator who asks for it cannot point a running task at an arbitrary branch.
+   * It also requires the base as origin has it NOW to have landed there (`branchLandedIn`), so
+   * an old merged pull request on a long-lived or reused branch name moves nothing.
    *
    * The target is stored BY NAME, origin's default included - the one exception to "the
    * default is stored as NULL". Every reader then follows it without a change of its own: the
@@ -4227,6 +4229,17 @@ export class TaskManager {
     if (!target.ok) return { ok: false, error: target.error, status: 409 };
     const fetched = await (deps.fetch ?? fetchOrigin)(t.repoRoot);
     if (!fetched.ok) return { ok: false, error: `could not fetch origin: ${fetched.reason}`, status: 502 };
+    // A merged pull request with the base's NAME is not the base landing: a long-lived branch
+    // or a reused name carries older merged pull requests while it still has work of its own.
+    const landed = await branchLandedIn(t.repoRoot, from, to, merged.pr.headSha);
+    if (!landed.ok) return { ok: false, error: `could not check whether ${from} landed: ${landed.reason}`, status: 502 };
+    if (!landed.value) {
+      return {
+        ok: false,
+        error: `base branch ${from} has moved on since ${merged.pr.url} merged it into ${to}, so it has not landed there`,
+        status: 409,
+      };
+    }
     // The awaits above leave the row free to change. Write only over the row this was asked of.
     const live = this.registry.getTask(id);
     if (!live || live.baseBranch !== from || this.baseBranchMoveRefusal(live)) {

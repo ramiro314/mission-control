@@ -128,3 +128,45 @@ test("a base moved onto a non-default branch keeps the control, naming the new b
   expect(task.baseBranch).toBe("feat/mid");
   expect(task.baseBranchMove).toMatchObject({ from: "feat/base", to: "feat/mid", toDefault: false });
 });
+
+test("a task sent back and stacked again is offered the move, despite its earlier move onto main", async ({ dashboard, daemon }) => {
+  for (const branch of ["feat/base", "feat/other"]) {
+    execFileSync("git", ["-C", daemon.repo, "push", "-q", "origin", `main:refs/heads/${branch}`], { stdio: "pipe" });
+  }
+  const filed = await api<TaskReply>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title: TITLE, intent: "Build on the base branch.", kind: "ship",
+    backlog: true, workflowId: null, baseBranch: "feat/base",
+  });
+  await api(daemon, `/api/tasks/${filed.id}/dispatch`, {});
+  await expect.poll(async () => (await taskById(daemon, filed.id))?.status, { timeout: 60_000 }).toBe("running");
+  writeGhPullRequests(daemon.home, [{
+    cwd: daemon.repo, url: BASE_PR, number: 41, state: "MERGED",
+    createdAt: "2026-11-01T09:00:00Z", mergedAt: "2026-11-01T10:00:00Z",
+    headRefOid: "a".repeat(40), baseRefName: "main",
+  }]);
+  execFileSync("git", ["-C", daemon.repo, "push", "-q", "origin", ":refs/heads/feat/base"], { stdio: "pipe" });
+  await api(daemon, `/api/tasks/${filed.id}/base-branch/move`, {});
+  expect((await taskById(daemon, filed.id))?.baseBranchMove).toMatchObject({ to: "main", toDefault: true });
+
+  // Back to the backlog, onto a new stacked base, and out again. The move record onto `main`
+  // stays on the task, and must not hide the control for a base it does not describe.
+  await api(daemon, `/api/tasks/${filed.id}/requeue`, {});
+  await expect.poll(async () => (await taskById(daemon, filed.id))?.status, { timeout: 60_000 }).toBe("backlog");
+  await api(daemon, `/api/tasks/${filed.id}/update`, { baseBranch: "feat/other" });
+  await api(daemon, `/api/tasks/${filed.id}/dispatch`, {});
+  await expect.poll(async () => (await taskById(daemon, filed.id))?.status, { timeout: 60_000 }).toBe("running");
+  const again = (await taskById(daemon, filed.id))!;
+  expect(again.baseBranch).toBe("feat/other");
+  expect(again.baseBranchMove).toMatchObject({ to: "main", toDefault: true });
+
+  const card = dashboard.locator(".console-detail");
+  const move = card.getByRole("button", { name: "move base" });
+  const rows = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: TITLE });
+  // The first session may still be leaving the rail; the live one is the one offering the move.
+  await expect(async () => {
+    await rows.first().click();
+    await expect(move).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 60_000 });
+  await expect(move).toHaveAccessibleDescription(/^Move this task's base from feat\/other /);
+  await shoot(dashboard, "04-offered-after-restack", card);
+});

@@ -441,6 +441,23 @@ export const DISPATCH_TASK_KINDS = TASK_KINDS.filter(
   (kind) => taskKindCreator(kind) !== "resident-launch",
 );
 
+/**
+ * The base branch the session footer offers to move, or null when it offers none.
+ *
+ * Offered for a task past the backlog and not done that has a base branch, unless that base
+ * is ALREADY the target of a move onto origin's default: there is nowhere further to go. The
+ * move record is the latest move and outlives a return to the backlog, so it hides the control
+ * only while it describes the base the task has now. The daemon checks everything else.
+ */
+export function movableBaseBranch(
+  task: Pick<Task, "status" | "baseBranch" | "baseBranchMove">,
+): string | null {
+  const base = task.baseBranch;
+  if (!base || task.status === "backlog" || task.status === "dispatching" || task.status === "done") return null;
+  const move = task.baseBranchMove;
+  return move?.toDefault && move.to === base ? null : base;
+}
+
 /** The fields `taskRequeueRefusal` reads, so a `TaskSummary` answers as well as a `Task`. */
 export type RequeueCandidate = Pick<Task, "kind" | "status"> & {
   pipelineCommissionId?: Task["pipelineCommissionId"];

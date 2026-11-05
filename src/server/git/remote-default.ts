@@ -356,6 +356,39 @@ export async function remoteBranchSha(
 }
 
 /**
+ * Whether `branch`, as origin has it now, has landed in `target`: it was deleted, its tip is
+ * still `mergedHead` (the head commit of the pull request that merged it, which a squash merge
+ * leaves outside `target`), or its tip is already contained in the fetched `origin/<target>`.
+ *
+ * Asked before an in-flight task's base moves to where its base merged. A branch name with an
+ * old merged pull request - a long-lived `develop` that once merged into `main`, or a reused
+ * feature branch name - is still live with work `target` does not have, and moving onto
+ * `target` would strand the task there. Fetch first: the ancestry check reads local refs.
+ */
+export async function branchLandedIn(
+  root: string,
+  branch: string,
+  target: string,
+  mergedHead: string | null,
+  execute: Run = run,
+): Promise<RemoteProbe<boolean>> {
+  const tip = await remoteBranchSha(root, branch, execute);
+  if (!tip.ok) return tip;
+  if (tip.value === null || tip.value === mergedHead) return { ok: true, value: true };
+  const contained = await execute(
+    "git",
+    ["-C", root, "merge-base", "--is-ancestor", tip.value, `refs/remotes/origin/${target}`],
+    { timeoutMs: LOCAL_TIMEOUT_MS },
+  );
+  // `--is-ancestor` answers no with exit 1 and nothing on stderr; anything else is a failure.
+  if (!contained.outcomeUnknown && !contained.overflowed && contained.code === 0) return { ok: true, value: true };
+  if (!contained.outcomeUnknown && !contained.overflowed && contained.code === 1 && !contained.stderr.trim()) {
+    return { ok: true, value: false };
+  }
+  return failure(`git merge-base --is-ancestor ${branch} origin/${target}`, contained, LOCAL_TIMEOUT_MS);
+}
+
+/**
  * The base branch a task should store for `branch` in `root`, or why it may not take it.
  *
  * Asked when a task is created or edited with a base branch: the branch has to exist on

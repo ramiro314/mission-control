@@ -9,6 +9,8 @@ import { trackedTaskManagers } from "./helpers/task-manager.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { Task } from "../src/shared/types.ts";
+// Pure and browser-safe, so a static import cannot open the DB ahead of the home below.
+import { movableBaseBranch } from "../src/shared/task.ts";
 
 // Moving an in-flight task's base branch to where its base branch merged (#771). Every fixture
 // is a stack: `feat/base` cut from `main`, and the task's worktree `feat/stacked` cut from
@@ -66,7 +68,9 @@ const git = (dir: string, ...args: string[]): string =>
     .toString()
     .trim();
 
-function ghReports(prs: Array<{ url: string; state: string; mergedAt: string | null; baseRefName: string | null }>): void {
+function ghReports(
+  prs: Array<{ url: string; state: string; mergedAt: string | null; baseRefName: string | null; headRefOid?: string }>,
+): void {
   writeFileSync(join(bin, "gh-prs.json"), JSON.stringify(prs));
 }
 
@@ -80,7 +84,19 @@ const BASE_PR = "https://github.com/mc-test/stack/pull/7";
  * `insteadOf` sends git's own traffic to the bare repository. The checkout's `origin/main` is
  * left behind the merge, so measuring from it proves the move fetched.
  */
-function strandedStack(name: string): { repo: string; wt: string } {
+interface StackShape {
+  /** How `feat/base` landed in `main`: a merge commit, or a squash that leaves its tip outside. */
+  landing?: "merge" | "squash";
+  /** Leave `feat/base` on origin after it landed, as a long-lived branch would be. */
+  keepBase?: boolean;
+  /** Then push one more commit to the kept `feat/base`: work `main` does not have. */
+  advanceBase?: boolean;
+}
+
+function strandedStack(
+  name: string,
+  { landing = "merge", keepBase = false, advanceBase = false }: StackShape = {},
+): { repo: string; wt: string; mergedHead: string } {
   const repo = join(repos, name);
   mkdirSync(repo, { recursive: true });
   execFileSync("git", ["init", "-q", "-b", "main", repo]);
@@ -110,19 +126,34 @@ function strandedStack(name: string): { repo: string; wt: string } {
   git(wt, "add", "-A");
   git(wt, "commit", "-qm", "stacked");
 
-  // `feat/base`'s pull request merges into `main` elsewhere, and its branch is deleted.
+  // `feat/base`'s pull request merges into `main` elsewhere, and by default its branch is deleted.
   const other = join(repos, `${name}-other`);
   execFileSync("git", ["clone", "-q", origin, other]);
   git(other, "fetch", "-q", "origin", "feat/base");
-  git(other, "merge", "-q", "--no-ff", "-m", "Merge feat/base", "FETCH_HEAD");
-  git(other, "push", "-q", "origin", "main", ":feat/base");
-  git(repo, "update-ref", "-d", "refs/remotes/origin/feat/base");
-  return { repo: realpathSync(repo), wt: realpathSync(wt) };
+  const mergedHead = git(other, "rev-parse", "FETCH_HEAD");
+  if (landing === "merge") {
+    git(other, "merge", "-q", "--no-ff", "-m", "Merge feat/base", "FETCH_HEAD");
+  } else {
+    git(other, "merge", "-q", "--squash", "FETCH_HEAD");
+    git(other, "commit", "-qm", "Squashed feat/base");
+  }
+  git(other, "push", "-q", "origin", "main");
+  if (!keepBase) {
+    git(other, "push", "-q", "origin", ":feat/base");
+    git(repo, "update-ref", "-d", "refs/remotes/origin/feat/base");
+  } else if (advanceBase) {
+    git(other, "checkout", "-qb", "feat/base", "FETCH_HEAD");
+    writeFileSync(join(other, "later.txt"), "after the merge\n");
+    git(other, "add", "-A");
+    git(other, "commit", "-qm", "later work on the base");
+    git(other, "push", "-q", "origin", "feat/base");
+  }
+  return { repo: realpathSync(repo), wt: realpathSync(wt), mergedHead };
 }
 
-function baseMerged(baseRefName: string | null = "main"): void {
+function baseMerged(baseRefName: string | null = "main", headRefOid?: string): void {
   ghReports([
-    { url: BASE_PR, state: "MERGED", mergedAt: "2026-11-01T10:00:00Z", baseRefName },
+    { url: BASE_PR, state: "MERGED", mergedAt: "2026-11-01T10:00:00Z", baseRefName, ...(headRefOid ? { headRefOid } : {}) },
   ]);
 }
 
@@ -138,8 +169,8 @@ function appFor(registry = new Registry()) {
 }
 
 /** A running task on `feat/base` whose session stands in the stacked worktree. */
-function runningStack(name: string) {
-  const { repo, wt } = strandedStack(name);
+function runningStack(name: string, shape: StackShape = {}) {
+  const { repo, wt, mergedHead } = strandedStack(name, shape);
   const registry = new Registry();
   registry.applyDiscovery([{
     syntheticId: name, agent: "claude", name, nameSource: "process", cwd: wt,
@@ -150,7 +181,7 @@ function runningStack(name: string) {
     id: `task-${name}`, kind: "ship", status: "running", repoRoot: repo, baseBranch: "feat/base",
     sessionId: session.id, worktreePath: wt, branch: "feat/stacked",
   }));
-  return { repo, wt, session, taskId: `task-${name}`, ...appFor(registry) };
+  return { repo, wt, mergedHead, session, taskId: `task-${name}`, ...appFor(registry) };
 }
 
 test("a stacked task's base moves to where its base branch merged, and is recorded on the task", async () => {
@@ -233,6 +264,62 @@ test("a move whose origin fetch fails is refused with nothing written", async ()
   assert.equal(!res.ok && res.error, "could not fetch origin: git fetch origin failed: could not resolve host");
   assert.equal(getTask(f.taskId)?.baseBranch, "feat/base");
   assert.equal(getTask(f.taskId)?.baseBranchMove, null);
+});
+
+// --- the base has to have landed, not just share a name with a merged pull request ---
+
+test("a base still on origin moves once its tip is in the target", async () => {
+  const f = runningStack("kept-merged", { keepBase: true });
+  baseMerged();
+  const res = await f.move(f.taskId);
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(getTask(f.taskId)?.baseBranch, "main");
+});
+
+test("a squash-merged base still on origin moves while its tip is the merged pull request's head", async () => {
+  const f = runningStack("kept-squashed", { landing: "squash", keepBase: true });
+  // A squash leaves the base's tip outside `main`, so only the pull request's head vouches for it.
+  baseMerged("main", "f".repeat(40));
+  const unvouched = await f.move(f.taskId);
+  assert.equal(unvouched.status, 409, await unvouched.clone().text());
+  baseMerged("main", f.mergedHead);
+  const res = await f.move(f.taskId);
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(getTask(f.taskId)?.baseBranch, "main");
+});
+
+test("a base with work newer than its merged pull request is refused, as a long-lived branch would be", async () => {
+  const f = runningStack("moved-on", { keepBase: true, advanceBase: true });
+  // `feat/base` merged into `main` once, like a `develop` release, and has moved on since.
+  baseMerged("main", f.mergedHead);
+  const res = await f.move(f.taskId);
+  assert.equal(res.status, 409, await res.clone().text());
+  assert.equal(
+    ((await res.json()) as { error: string }).error,
+    `base branch feat/base has moved on since ${BASE_PR} merged it into main, so it has not landed there`,
+  );
+  assert.equal(getTask(f.taskId)?.baseBranch, "feat/base");
+  assert.equal(getTask(f.taskId)?.baseBranchMove, null);
+});
+
+// --- the footer's offer ---
+
+test("the footer offers a move for the base the task has now, not for a stale move record", () => {
+  const ontoMain = { from: "feat/base", to: "main", toDefault: true, prUrl: BASE_PR, movedAt: 1 };
+  assert.equal(movableBaseBranch({ status: "running", baseBranch: "feat/base", baseBranchMove: null }), "feat/base");
+  assert.equal(movableBaseBranch({ status: "failed", baseBranch: "feat/base" }), "feat/base");
+  assert.equal(movableBaseBranch({ status: "running", baseBranch: "main", baseBranchMove: ontoMain }), null, "already on the default");
+  // Moved onto `main`, sent back, edited onto a new stacked base and dispatched again.
+  assert.equal(movableBaseBranch({ status: "running", baseBranch: "feat/other", baseBranchMove: ontoMain }), "feat/other");
+  assert.equal(
+    movableBaseBranch({ status: "running", baseBranch: "feat/mid", baseBranchMove: { ...ontoMain, to: "feat/mid", toDefault: false } }),
+    "feat/mid",
+    "a move onto a non-default branch can be followed again",
+  );
+  for (const status of ["backlog", "dispatching", "done"] as const) {
+    assert.equal(movableBaseBranch({ status, baseBranch: "feat/base" }), null, status);
+  }
+  assert.equal(movableBaseBranch({ status: "running", baseBranch: null }), null);
 });
 
 test("after the move the Diff view, evidence diff and affected-tests base measure from the new base, though the old branch is gone", async () => {

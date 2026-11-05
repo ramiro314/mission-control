@@ -4,7 +4,12 @@ import { PendingMessageDelivery } from "./MessageDelivery.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { canCycleMode, canInterruptSession } from "@shared/session.ts";
 import { canMessage, muxHandle } from "@shared/pane.ts";
-import { taskHasRepository, taskKindTerminalHandoffRefusal, taskRequeueRefusal } from "@shared/task.ts";
+import {
+  movableBaseBranch,
+  taskHasRepository,
+  taskKindTerminalHandoffRefusal,
+  taskRequeueRefusal,
+} from "@shared/task.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
@@ -191,14 +196,7 @@ export function ActionBar({
   // disabled Retro anywhere in this row - a greyed-out button for the whole
   // life of a session would say "you could have retrospected" rather than "now is the time".
   const retro = retroOffer(session, workflowRun);
-  // A stacked task whose base branch can still move: one past the backlog and not done, whose
-  // base did not already move onto origin's default. The daemon checks the rest.
-  const movableBase =
-    session.task?.baseBranch &&
-    !["backlog", "dispatching", "done"].includes(session.task.status) &&
-    !session.task.baseBranchMove?.toDefault
-      ? session.task.baseBranch
-      : null;
+  const movableBase = session.task ? movableBaseBranch(session.task) : null;
 
   // Written once so every control tells the same story about the click.
   const completeLabel = session.task
@@ -335,9 +333,10 @@ export function ActionBar({
   /**
    * Move this task's base branch to where its base branch's pull request merged.
    *
-   * One click, no confirm: the daemon picks the target from GitHub and refuses unless the base
-   * branch's pull request has merged, so there is no choice here to get wrong. The outcome is
-   * flashed either way, because the target is something the operator did not type.
+   * One click, no confirm: the daemon picks the target from GitHub, and refuses unless the base
+   * branch's pull request merged AND the branch as it stands now has landed in that target, so
+   * a long-lived or reused base name cannot be moved by an old merge. The outcome is flashed
+   * either way, because the target is something the operator did not type.
    */
   async function moveBase(): Promise<void> {
     if (!session.task) return;
