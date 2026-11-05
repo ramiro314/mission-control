@@ -356,6 +356,108 @@ export async function remoteBranchSha(
 }
 
 /**
+ * Whether `branch`, as origin has it now, has landed in `target`: it was deleted, its tip is
+ * still `mergedHead` (the head commit of the pull request that merged it, which a squash merge
+ * leaves outside `target`), or its tip is already contained in the fetched `origin/<target>`.
+ *
+ * Asked before an in-flight task's base moves to where its base merged. A branch name with an
+ * old merged pull request - a long-lived `develop` that once merged into `main`, or a reused
+ * feature branch name - is still live with work `target` does not have, and moving onto
+ * `target` would strand the task there. Fetch first: the ancestry check reads local refs.
+ */
+export async function branchLandedIn(
+  root: string,
+  branch: string,
+  target: string,
+  mergedHead: string | null,
+  execute: Run = run,
+): Promise<RemoteProbe<boolean>> {
+  const tip = await remoteBranchSha(root, branch, execute);
+  if (!tip.ok) return tip;
+  if (tip.value === null || tip.value === mergedHead) return { ok: true, value: true };
+  const contained = await execute(
+    "git",
+    ["-C", root, "merge-base", "--is-ancestor", tip.value, `refs/remotes/origin/${target}`],
+    { timeoutMs: LOCAL_TIMEOUT_MS },
+  );
+  // `--is-ancestor` answers no with exit 1 and nothing on stderr; anything else is a failure.
+  if (!contained.outcomeUnknown && !contained.overflowed && contained.code === 0) return { ok: true, value: true };
+  if (!contained.outcomeUnknown && !contained.overflowed && contained.code === 1 && !contained.stderr.trim()) {
+    return { ok: true, value: false };
+  }
+  return failure(`git merge-base --is-ancestor ${branch} origin/${target}`, contained, LOCAL_TIMEOUT_MS);
+}
+
+/**
+ * The commit the fetched `origin/<branch>` names, or why there is none. Read after a fetch.
+ */
+export async function trackingBranchSha(
+  root: string,
+  branch: string,
+  execute: Run = run,
+): Promise<RemoteProbe<string>> {
+  const ref = `refs/remotes/origin/${branch}`;
+  const resolved = await execute("git", ["-C", root, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+    timeoutMs: LOCAL_TIMEOUT_MS,
+  });
+  // A killed child prints what a genuine miss prints, so the uncertainty flags come first.
+  if (resolved.outcomeUnknown || resolved.overflowed) return failure(`git rev-parse ${ref}`, resolved, LOCAL_TIMEOUT_MS);
+  const sha = resolved.stdout.trim();
+  return resolved.code === 0 && FULL_SHA.test(sha)
+    ? { ok: true, value: sha }
+    : { ok: false, reason: `${branch} is not in this repository's remote-tracking refs`, outcomeUnknown: false };
+}
+
+/**
+ * Whether commit `descendant` carries `ancestor` (is it, or descends from it).
+ *
+ * Asked of a merged pull request's head and the commit an in-flight task started from, before
+ * the task's base moves to where that pull request merged: a pull request listed by head NAME
+ * may be an older use of a reused branch name, and only one that carries the task's own start
+ * commit is the merge of the base the task was stacked on. A head missing locally - a
+ * squash-merged branch deleted before this checkout fetched its last commit - is fetched by id
+ * once (GitHub keeps every pull request's head). Only a fetch that succeeded and still left it
+ * missing reads as "does not carry"; a failed or interrupted fetch or `cat-file` is a failure
+ * with its reason, which the caller reports as one rather than as a verdict on the pull request.
+ */
+export async function commitCarries(
+  root: string,
+  ancestor: string,
+  descendant: string,
+  execute: Run = run,
+): Promise<RemoteProbe<boolean>> {
+  // Present, absent, or unknown. A killed or overflowed `cat-file` answered nothing, and an
+  // absent head must not be read off it: that would turn an interrupted probe into a refusal.
+  const present = async (): Promise<RemoteProbe<boolean>> => {
+    const listed = await execute("git", ["-C", root, "cat-file", "-e", `${descendant}^{commit}`], {
+      timeoutMs: LOCAL_TIMEOUT_MS,
+    });
+    if (listed.outcomeUnknown || listed.overflowed) return failure(`git cat-file ${descendant}`, listed, LOCAL_TIMEOUT_MS);
+    return { ok: true, value: listed.code === 0 };
+  };
+  const local = await present();
+  if (!local.ok) return local;
+  if (!local.value) {
+    // Only a fetch that SUCCEEDED and still left the head missing says it is not there; a failed
+    // or interrupted one says nothing about the pull request, and a retry may well work.
+    const fetched = await execute("git", ["-C", root, "fetch", "-q", "origin", descendant], {
+      timeoutMs: NETWORK_TIMEOUT_MS,
+    });
+    if (failed(fetched)) return failure(`git fetch origin ${descendant}`, fetched, NETWORK_TIMEOUT_MS);
+    const after = await present();
+    if (!after.ok || !after.value) return after;
+  }
+  const carried = await execute("git", ["-C", root, "merge-base", "--is-ancestor", ancestor, descendant], {
+    timeoutMs: LOCAL_TIMEOUT_MS,
+  });
+  if (!carried.outcomeUnknown && !carried.overflowed && carried.code === 0) return { ok: true, value: true };
+  if (!carried.outcomeUnknown && !carried.overflowed && carried.code === 1 && !carried.stderr.trim()) {
+    return { ok: true, value: false };
+  }
+  return failure(`git merge-base --is-ancestor ${ancestor} ${descendant}`, carried, LOCAL_TIMEOUT_MS);
+}
+
+/**
  * The base branch a task should store for `branch` in `root`, or why it may not take it.
  *
  * Asked when a task is created or edited with a base branch: the branch has to exist on

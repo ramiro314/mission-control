@@ -10062,6 +10062,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ ...t, sessionClosureRequested: taskHasWorktrees(t) && t.sessionId !== null });
   });
 
+  // An in-flight task's base branch, moved to where its base branch's pull request merged.
+  // No body: the daemon reads the target from `gh` (`TaskManager.moveBaseBranch`).
+  app.post("/api/tasks/:id/base-branch/move", async (c) => {
+    const r = await tasks.moveBaseBranch(c.req.param("id"));
+    return r.ok ? c.json(r.task) : c.json({ error: r.error }, r.status);
+  });
+
   app.delete("/api/tasks/:id", async (c) => {
     const r = await tasks.remove(c.req.param("id"));
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
