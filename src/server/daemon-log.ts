@@ -24,11 +24,15 @@ export interface DaemonLogOptions {
   streams?: readonly WritableOutput[];
   maxBytes?: number;
   keep?: number;
+  /** False appends without ever rotating, until `allowRotation()`. */
+  rotate?: boolean;
 }
 
 export interface DaemonLogCapture {
   /** Append everything written so far. Runs on its own after each batch and at exit. */
   flush(): void;
+  /** Start rotating, from the next batch on. */
+  allowRotation(): void;
   /** Put the streams' own `write` back, after a final flush. */
   stop(): void;
 }
@@ -66,6 +70,7 @@ export function teeToDaemonLog(options: DaemonLogOptions): DaemonLogCapture {
   let pending: Buffer[] = [];
   let scheduled = false;
   let reported = false;
+  let rotate = options.rotate ?? true;
 
   const flush = (): void => {
     scheduled = false;
@@ -74,7 +79,7 @@ export function teeToDaemonLog(options: DaemonLogOptions): DaemonLogCapture {
     pending = [];
     try {
       mkdirSync(dirname(path), { recursive: true });
-      if ((statSync(path, { throwIfNoEntry: false })?.size ?? 0) >= maxBytes) rotateDaemonLog(path, keep);
+      if (rotate && (statSync(path, { throwIfNoEntry: false })?.size ?? 0) >= maxBytes) rotateDaemonLog(path, keep);
       appendFileSync(path, batch, { mode: 0o600 });
     } catch (error) {
       // Through the original write, so the warning is not itself queued for the same file.
@@ -107,6 +112,7 @@ export function teeToDaemonLog(options: DaemonLogOptions): DaemonLogCapture {
 
   return {
     flush,
+    allowRotation() { rotate = true; },
     stop() {
       flush();
       streams.forEach((stream, index) => { stream.write = originals[index]!; });
@@ -121,12 +127,17 @@ export function daemonLogCaptured(): boolean {
   return envVar("DAEMON_LOG_CAPTURED") === "1";
 }
 
-/** Start the daemon's own log unless its launcher captures the output. */
+/**
+ * Start the daemon's own log unless its launcher captures the output. It appends without
+ * rotating until the daemon owns its state (`allowRotation()`): a dev launch refused because a
+ * service already owns this home must not rename the `daemon.log` that service's launcher
+ * holds open, while its refusal line, appended alongside, is still kept.
+ */
 export function startDaemonLog(): DaemonLogCapture | null {
   const captured = daemonLogCaptured();
   // The variable describes this process's launcher only. A dev daemon started from a shell this
   // daemon launched (a terminal session, an agent) has no such launcher and must keep its log.
   for (const prefix of ["MISSION", "FLEET", "HARNESS"]) delete process.env[`${prefix}_DAEMON_LOG_CAPTURED`];
   if (captured) return null;
-  return teeToDaemonLog({ path: join(stateDir(), "daemon.log") });
+  return teeToDaemonLog({ path: join(stateDir(), "daemon.log"), rotate: false });
 }

@@ -80,6 +80,52 @@ test("AC32: with MISSION_DAEMON_LOG_CAPTURED=1 the daemon writes nothing to daem
   assert.match(run.stdout, /inherited=none/, "children the daemon starts do not inherit the variable");
 });
 
+test("a dev daemon that does not own the state yet appends to an over-limit log without rotating it", (t) => {
+  // As when the installed service owns this home and launchd holds daemon.log open: the refused
+  // dev launch must keep its refusal line without renaming the file under the service.
+  const home = scratch(t);
+  const path = join(home, "daemon.log");
+  writeFileSync(path, "service output\n");
+  truncateSync(path, DAEMON_LOG_MAX_BYTES + 1);
+  const run = runDaemonLike(home, false);
+  assert.notEqual(run.status, 0);
+  assert.equal(existsSync(`${path}.1`), false, "the service's file is never renamed");
+  const tail = readFileSync(path).subarray(DAEMON_LOG_MAX_BYTES + 1).toString("utf8");
+  assert.match(tail, /quarantined uwf slot 3/);
+  assert.match(tail, /Error: daemon crashed/);
+});
+
+test("rotation waits for allowRotation, then applies from the next batch", (t) => {
+  const path = join(scratch(t), "daemon.log");
+  writeFileSync(path, "0123456789");
+  const out = fakeStream();
+  const capture = teeToDaemonLog({ path, streams: [out], maxBytes: 10, rotate: false });
+  t.after(() => capture.stop());
+
+  out.write("refused\n");
+  capture.flush();
+  assert.equal(existsSync(`${path}.1`), false);
+  assert.equal(readFileSync(path, "utf8"), "0123456789refused\n");
+
+  capture.allowRotation();
+  out.write("owner\n");
+  capture.flush();
+  assert.equal(readFileSync(`${path}.1`, "utf8"), "0123456789refused\n");
+  assert.equal(readFileSync(path, "utf8"), "owner\n");
+});
+
+test("the daemon allows rotation only after it acquires state ownership", () => {
+  // A daemon refused the state lock exits before this line, so it never renames a daemon.log
+  // another daemon's launcher holds open. Nothing else fails if the call moves above the lock.
+  const src = readFileSync(join(repo, "src", "server", "index.ts"), "utf8");
+  const lock = src.indexOf("stateOwnership = acquireStateOwnership();");
+  const exit = src.indexOf("process.exit(STATE_CONTENTION_EXIT_STATUS);");
+  const allow = src.indexOf("daemonLog?.allowRotation();");
+  assert.ok(lock >= 0 && exit > lock, "the daemon still takes the state lock and exits on contention");
+  assert.ok(allow > exit, "and allows rotation only once it holds it");
+  assert.equal(src.indexOf("allowRotation", allow + "daemonLog?.allowRotation".length), -1, "from exactly one place");
+});
+
 test("AC32: the log rotates once it passes 10 MB, keeping 3 old files", (t) => {
   assert.equal(DAEMON_LOG_MAX_BYTES, 10 * 1024 * 1024);
   assert.equal(DAEMON_LOG_KEEP, 3);
