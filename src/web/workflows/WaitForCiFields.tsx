@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from "react";
+import { Tooltip } from "../components/Tooltip.tsx";
 import type { CiStrictness } from "@shared/ci-checks.ts";
 import {
   WAIT_FOR_CI_EXPECTED_CHECKS,
@@ -131,17 +132,19 @@ export function WaitForCiSettingsFields({
         {/* The hint describes the choice rather than naming it, so it stays out of the label. */}
         {STRICTNESS_CHOICES.map((choice) => (
           <div key={choice.value} className="wf-ci-choice">
-            <label>
-              <input
-                type="radio"
-                name={name}
-                value={choice.value}
-                checked={settings.strictness === choice.value}
-                aria-describedby={`${name}-${choice.value}`}
-                onChange={() => change({ strictness: choice.value })}
-              />
-              {choice.label}
-            </label>
+            <Tooltip label={choice.hint}>
+              <label>
+                <input
+                  type="radio"
+                  name={name}
+                  value={choice.value}
+                  checked={settings.strictness === choice.value}
+                  aria-describedby={`${name}-${choice.value}`}
+                  onChange={() => change({ strictness: choice.value })}
+                />
+                {choice.label}
+              </label>
+            </Tooltip>
             <small id={`${name}-${choice.value}`}>{choice.hint}</small>
           </div>
         ))}
