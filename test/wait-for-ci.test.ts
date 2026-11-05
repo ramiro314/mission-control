@@ -726,13 +726,49 @@ test("a head with more than 100 checks never passes on the first 100, but a coun
     assert.equal(quiet!.kind === "block" && quiet!.code, "ci_checks_truncated", strictness);
     assert.equal(quiet!.kind === "block" && quiet!.detail, "GitHub reported 140 checks; only the first 100 were read.");
     assert.equal(quiet!.state.checksTotal, 140);
-    const [skipped] = observe(configured({ strictness, expectedChecks: ["build"] }), at([req("build", "passing")], T0 + 10, 140));
-    assert.equal(skipped!.kind === "block" && skipped!.code, "ci_checks_truncated", strictness);
+    // Expected names read on a truncated head do not skip the quiet period: the rest are unknown.
+    const [first, expectedQuiet] = observe(
+      configured({ strictness, expectedChecks: ["build"] }),
+      at([req("build", "passing")], T0 + 10, 140),
+      at([req("build", "passing")], T0 + 10 + QUIET_MS, 140),
+    );
+    assert.equal(first!.kind, "wait", strictness);
+    assert.equal(expectedQuiet!.kind === "block" && expectedQuiet!.code, "ci_checks_truncated", strictness);
     const [zero] = observe(configured({ strictness, quietMinutes: 0 }), at([req("build", "passing")], T0 + 10, 140));
     assert.equal(zero!.kind === "block" && zero!.code, "ci_checks_truncated", strictness);
     const [failed] = observe(configured({ strictness }), at([req("build", "failing")], T0 + 10, 140));
     assert.equal(failed!.kind, "fail", strictness);
   }
+  // Required mode on a truncated head never falls back: the required checks may be unread, so a
+  // failure that is not marked among those read blocks rather than spend a repair round.
+  const unmarked = [run("build", "passing"), run("lint", "failing")];
+  const [held, blocked] = observe(
+    configured({ strictness: "required" }),
+    at(unmarked, T0 + 10, 140),
+    at(unmarked, T0 + 10 + QUIET_MS, 140),
+  );
+  assert.equal(held!.kind, "wait");
+  assert.equal(held!.state.quietSince, T0 + 10, "the checks read settling still runs the quiet period");
+  assert.equal(blocked!.kind === "block" && blocked!.code, "ci_checks_truncated");
+  assert.equal(blocked!.state.requiredFallback, undefined, "a truncated head claimed no check was marked required");
+  const [atOnce] = observe(configured({ strictness: "required", quietMinutes: 0 }), at(unmarked, T0 + 10, 140));
+  assert.equal(atOnce!.kind === "block" && atOnce!.code, "ci_checks_truncated");
+  // While the checks read are still running, it waits; at the timeout it names them.
+  const running = decideWaitForCi(configured({ strictness: "required" }), at([run("lint", "pending")], T0 + 10, 140), LIMIT);
+  assert.equal(running.kind === "block" && running.detail, 'Still running after 45 minutes: "lint".');
+  // An expected name not among the checks read is unknown, not missing: no wait for it, no
+  // ci_expected_missing, and no quiet-period skip on the strength of the names read.
+  const expectedNode = configured({ strictness: "required", expectedChecks: ["deploy"] });
+  const [unknown] = observe(expectedNode, at([req("build", "passing")], T0 + 10, 140));
+  assert.equal(unknown!.kind, "wait");
+  assert.deepEqual(unknown!.state.missingExpected, []);
+  assert.equal(unknown!.state.quietSince, T0 + 10);
+  const late = decideWaitForCi(unknown!.state, null, LIMIT);
+  assert.equal(late.kind === "block" && late.code, "ci_timeout");
+  // A marked failure among the checks read still fails.
+  const [markedFail] = observe(configured({ strictness: "required" }), at([req("build", "failing"), run("lint", "failing")], T0 + 10, 140));
+  assert.equal(markedFail!.kind, "fail");
+  if (markedFail!.kind === "fail") assert.deepEqual(markedFail!.failing.map((check) => check.name), ["build"]);
   // Exactly 100, or a total GitHub did not give, is the whole list.
   assert.equal(observe(configured({ quietMinutes: 0 }), at([run("build", "passing")], T0 + 10, 100))[0]!.kind, "pass");
   assert.equal(observe(configured({ quietMinutes: 0 }), at([run("build", "passing")], T0 + 10, null))[0]!.kind, "pass");
@@ -845,7 +881,7 @@ test("every state the node writes carries a null greenWithoutReportSince and par
     // The node settings and what they record: the fallback, missing expected checks, the total.
     decideWaitForCi(
       state({ strictness: "required", quietMinutes: 0, expectedChecks: ["deploy"], greenWithoutReportSince: T0 }),
-      { ...seen([run("unit", "failing")]), totalCount: 140 },
+      { ...seen([run("unit", "failing")]), totalCount: 100 },
       T0 + 2,
     ).state,
     decideWaitForCi(

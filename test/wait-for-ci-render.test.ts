@@ -257,4 +257,17 @@ test("the fallback and truncation notes appear only when they apply", () => {
   const truncated = render(waiting({ checksTotal: 140, checkRuns: [ciRun("unit", "passing")], observedAt: NOW }));
   assert.match(truncated, /<p class="wf-run-meta">GitHub reported 140 checks; only the first 100 were read\.<\/p>/);
   assert.doesNotMatch(render(waiting({ checksTotal: 100, checkRuns: [ciRun("unit", "passing")], observedAt: NOW })), /only the first/);
+  // A truncated Required head counts nothing it cannot see marked: an unmarked check read is not
+  // required, and the panel never claims the fallback for it.
+  const truncatedRequired = render(waiting({
+    strictness: "required",
+    outcome: "blocked",
+    blocked: { code: "ci_checks_truncated", detail: "x" },
+    checksTotal: 140,
+    observedAt: NOW,
+    missingExpected: [],
+    checkRuns: [ciRun("lint", "failing")],
+  }));
+  assert.deepEqual(checkRows(truncatedRequired), ["lint|Not required|Failed"]);
+  assert.doesNotMatch(truncatedRequired, /marked required, so every check/);
 });

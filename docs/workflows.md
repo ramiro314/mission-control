@@ -857,20 +857,28 @@ detail comes from each check's own title and summary; CI logs are not read.
 checks are the ones GitHub marks required plus every check whose name is expected; a failing or
 running check that is neither is shown in the run view, tagged "Not required", and never decides
 anything or reaches the repair packet. When no check on the head is marked required, Required mode
-counts every check instead, but only after the quiet period: GitHub can mark required checks late,
-so even a failure waits out the period first. A verdict reached that way records the fallback, and
-the run view says "No check on this head is marked required, so every check was judged." Skipped
-and neutral checks count as passing.
+counts every check instead. GitHub can mark required checks late, so a failure judged this way
+waits out the quiet period first; a pass skips it only when every expected check has reported, as
+in any mode. A verdict reached that way records the fallback, and the run view says "No check on
+this head is marked required, so every check was judged." Skipped and neutral checks count as
+passing.
+
+**More than 100 checks.** The node reads the first 100 checks on the head, and never passes on a
+partial list. When GitHub reports more, an unread check may be a required or expected one, so
+Required mode never falls back to counting every check, and an expected check that was not read is
+unknown rather than missing: the node neither waits for it nor skips the quiet period on the
+strength of the names it did read. A counted failure among the checks read still fails. Otherwise,
+once the checks read have settled for the quiet period, the node blocks as `ci_checks_truncated`.
 
 | CI on the head | Outcome |
 | --- | --- |
 | The pull request conflicts with its base on this head | **Fail**, before anything else: a repair packet asks for one change, "Resolve merge conflicts with `<base>`". |
 | Any counted check still running, or nothing reported yet | Keeps waiting. |
-| Every counted check finished, one or more failing | **Fail** at once, with no quiet period: a repair packet asks for one change per counted failing check, with its conclusion, title, summary excerpt, and link. Expected checks that have not appeared are named in the summary: `Not reported when CI failed: "deploy".` |
+| Every counted check finished, one or more failing | **Fail** at once, with no quiet period (after it, in the Required fallback): a repair packet asks for one change per counted failing check, with its conclusion, title, summary excerpt, and link. Expected checks that have not appeared are named in the summary: `Not reported when CI failed: "deploy".` |
 | Every counted check passed, an expected check not reported yet | Keeps waiting for it. |
 | Every counted check passed, every expected check reported | **Passes** at once: the quiet period is skipped. |
 | Every counted check passed, no expected checks | The **quiet period** starts, and the node **passes** once every counted check has stayed settled and unchanged for it (at once with 0). The flake report is recorded on the attempt when CI published one. |
-| A pass, but GitHub reported more than 100 checks | **Blocks**: `ci_checks_truncated`. The node never passes on a partial list; a counted failure among the first 100 still fails. |
+| Nothing counted failed, but GitHub reported more than 100 checks | **Blocks**: `ci_checks_truncated` once the checks read have settled for the quiet period. A counted failure among the first 100 still fails. |
 | Nothing appeared on the head by the timeout | **Blocks**: `ci_missing`. |
 | Counted checks still running at the timeout, or never settled for the quiet period | **Blocks**: `ci_timeout`, naming the counted checks still running. |
 | Every counted check settled at the timeout, an expected check never reported | **Blocks**: `ci_expected_missing`, naming the expected checks that never appeared. |

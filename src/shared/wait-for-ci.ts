@@ -401,28 +401,60 @@ function sameChecks(a: readonly CiCheckRun[], b: readonly CiCheckRun[]): boolean
   return left.every((key, index) => key === right[index]);
 }
 
+/** Whether a head's total says GitHub reported more checks than were read. */
+function truncatedTotal(checksTotal: number | null | undefined): boolean {
+  return checksTotal != null && checksTotal > CI_CHECK_RUNS_MAX;
+}
+
 /**
- * The checks a node counts on one observation, under its settings.
+ * The checks a node counts on one observation, under its settings. `checksTotal` is what
+ * GitHub reported on the head, which can exceed the checks read.
  *
  * - All: every check.
  * - Required, with checks marked: the marked checks, plus every check whose name is expected.
  * - Required, with nothing marked: every check, and `fallback` says so. A verdict reached this
- *   way records it.
+ *   way records it. Never on a truncated head: the unread checks may be the required ones, so
+ *   it counts only what is marked or expected among those read, possibly nothing.
  */
 export function countedChecks(
   runs: readonly CiCheckRun[],
   settings: WaitForCiSettings,
+  checksTotal?: number | null,
 ): { counted: CiCheckRun[]; fallback: boolean } {
   if (settings.strictness === "all") return { counted: [...runs], fallback: false };
-  if (requiredChecksRollup(runs) === null) return { counted: [...runs], fallback: true };
+  if (requiredChecksRollup(runs) === null && !truncatedTotal(checksTotal)) {
+    return { counted: [...runs], fallback: true };
+  }
   const expected = new Set(settings.expectedChecks);
   return { counted: runs.filter((run) => run.required === true || expected.has(run.name)), fallback: false };
 }
 
-/** The expected names no check on this observation carries, in the order the node lists them. */
-export function missingExpectedChecks(runs: readonly CiCheckRun[], settings: WaitForCiSettings): string[] {
+/**
+ * The expected names no check on this observation carries, in the order the node lists them.
+ * None on a truncated head: an absent name may be among the checks that were not read.
+ */
+export function missingExpectedChecks(
+  runs: readonly CiCheckRun[],
+  settings: WaitForCiSettings,
+  checksTotal?: number | null,
+): string[] {
+  if (truncatedTotal(checksTotal)) return [];
   const present = new Set(runs.map((run) => run.name));
   return [...new Set(settings.expectedChecks)].filter((name) => !present.has(name));
+}
+
+/**
+ * What decides whether CI has settled: the counted checks, or, on a truncated head where nothing
+ * read is counted, every check read, so the node blocks `ci_checks_truncated` once CI has quieted
+ * rather than wait for marks it can never read.
+ */
+function settlingChecks(
+  runs: readonly CiCheckRun[],
+  settings: WaitForCiSettings,
+  checksTotal: number | null | undefined,
+): { counted: CiCheckRun[]; fallback: boolean; settling: CiCheckRun[] } {
+  const { counted, fallback } = countedChecks(runs, settings, checksTotal);
+  return { counted, fallback, settling: counted.length === 0 && truncatedTotal(checksTotal) ? [...runs] : counted };
 }
 
 /**
@@ -441,7 +473,7 @@ export function notReportedWhenFailed(missing: readonly string[]): string {
 
 /** Whether GitHub reported more checks on the head than the node read. */
 export function waitForCiTruncated(state: Pick<WaitForCiState, "checksTotal">): boolean {
-  return state.checksTotal != null && state.checksTotal > CI_CHECK_RUNS_MAX;
+  return truncatedTotal(state.checksTotal);
 }
 
 /** Names as the block details and summaries quote them: `"e2e", "build"`. */
@@ -513,17 +545,19 @@ export function decideWaitForCi(
   const quietMs = settings.quietMinutes * 60_000;
   if (observation && sameHead(next.expectedHeadOid, observation.headSha)) {
     const runs = observation.checkRuns;
-    const missing = missingExpectedChecks(runs, settings);
-    const previous = countedChecks(next.checkRuns, settings).counted;
-    const { counted, fallback } = countedChecks(runs, settings);
+    const total = observation.totalCount ?? null;
+    const truncated = truncatedTotal(total);
+    const missing = missingExpectedChecks(runs, settings, total);
+    const previous = settlingChecks(next.checkRuns, settings, next.checksTotal).settling;
+    const { counted, fallback, settling } = settlingChecks(runs, settings, total);
     next = {
       ...next,
       observedAt: observation.observedAt,
       checkRuns: runs,
       missingExpected: missing,
-      checksTotal: observation.totalCount ?? null,
+      checksTotal: total,
     };
-    const settled = counted.length > 0 && counted.every((run) => run.state !== "pending");
+    const settled = settling.length > 0 && settling.every((run) => run.state !== "pending");
     const failing = counted.filter((run) => run.state === "failing");
     if (!settled || (failing.length === 0 && missing.length > 0)) {
       next = { ...next, quietSince: null };
@@ -547,10 +581,13 @@ export function decideWaitForCi(
       if (failing.length > 0 && !fallback) return verdict();
       // Every expected check reported and settled: nothing more to wait for. A pass only: a
       // fallback failure still waits out the quiet period above, whatever was expected.
-      if (failing.length === 0 && settings.expectedChecks.length > 0 && missing.length === 0) return verdict();
+      // Not on a truncated head, where an expected name not read is unknown rather than absent.
+      if (failing.length === 0 && !truncated && settings.expectedChecks.length > 0 && missing.length === 0) {
+        return verdict();
+      }
       if (quietMs === 0) return verdict();
       const since = next.quietSince ?? null;
-      if (since !== null && sameChecks(previous, counted)) {
+      if (since !== null && sameChecks(previous, settling)) {
         if (observation.observedAt - since >= quietMs) return verdict();
         if (timedOut(next, now) && now - since >= quietMs + WAIT_FOR_CI_QUIET_GRACE_MS) {
           return timeoutBlock(next, "No new CI observation arrived to finish the quiet period "
@@ -573,13 +610,13 @@ export function decideWaitForCi(
       };
       return { kind: "block", ...blocked, state: { ...next, outcome: "blocked", blocked } };
     }
-    const pending = countedChecks(next.checkRuns, settings).counted
+    const pending = settlingChecks(next.checkRuns, settings, next.checksTotal).settling
       .filter((run) => run.state === "pending")
       .map((run) => run.name);
     if (pending.length > 0) {
       return timeoutBlock(next, `Still running after ${next.timeoutMinutes} minutes: ${quotedNames(pending)}.`);
     }
-    const missing = missingExpectedChecks(next.checkRuns, settings);
+    const missing = missingExpectedChecks(next.checkRuns, settings, next.checksTotal);
     if (missing.length > 0) {
       const blocked = {
         code: "ci_expected_missing" as const,

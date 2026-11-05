@@ -1030,7 +1030,9 @@ A SessionAction is a durable side effect, not an evaluator:
   observation cannot. Past the timeout a running quiet period may finish but never restart,
   bounded by `WAIT_FOR_CI_QUIET_GRACE_MS`.
 - The node never passes on a partial list: when the observation's `totalCount` exceeds the 100
-  checks read, a pass becomes `ci_checks_truncated`. `ci_expected_missing` and
+  checks read, a pass becomes `ci_checks_truncated`. On such a head `countedChecks` never takes
+  the Required fallback and `missingExpectedChecks` reports nothing, because the unread checks
+  may be the required or expected ones; pass the total to both. `ci_expected_missing` and
   `ci_checks_truncated` were appended to the block codes and the run phases with recovery
   `retry`; append new codes after them.
 - `greenWithoutReportSince` is retired but stays in `WaitForCiStateSchema`, always written as

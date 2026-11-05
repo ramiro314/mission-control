@@ -50,7 +50,7 @@ export function WaitForCiPanel({
   const settings = waitForCiSettings(state);
   // The panel lists only what the node counted, so a failure that is not required never reads
   // as the reason it failed.
-  const counted = countedChecks(state.checkRuns, settings).counted;
+  const counted = countedChecks(state.checkRuns, settings, state.checksTotal).counted;
   const countedSet = new Set(counted);
   const failing = counted.filter((run) => run.state === "failing");
   const unreported = state.observedAt === null ? [] : (state.missingExpected ?? []);
