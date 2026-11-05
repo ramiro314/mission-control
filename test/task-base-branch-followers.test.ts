@@ -32,7 +32,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const taskManager = trackedTaskManagers(TaskManager);
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
-const { taskWorkEpisodeForTask } = await import("../src/server/db.ts");
+const { taskWorkEpisodeForTask, getTask } = await import("../src/server/db.ts");
 const { changedPathsSince, deletedPathsSince, computeSessionDiff } = await import("../src/server/diff.ts");
 const { selectAffectedTests } = await import("../src/server/test-selection.ts");
 const { CheckRuntime } = await import("../src/server/workflows/check-runtime.ts");
@@ -598,4 +598,31 @@ test("the branch poller counts a merge into the base a task was moved to", () =>
   f.branchPoll("https://github.com/example/repo/pull/907", "merged", "release/3.0");
   assert.equal(taskWorkEpisodeForTask(f.taskId)?.mergedAt, NOW);
   assert.deepEqual(f.tasks.dependencyBlockers(f.dependent()), []);
+});
+
+test("a finished source the registry no longer holds is still moved, and its merge into the new base releases its dependent", async () => {
+  const url = "https://github.com/example/repo/pull/908";
+  const f = withDependent("evicted-source");
+  f.branchPoll(url, "open", "release/2.0");
+  f.depart();
+  f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, status: "done", completedAt: NOW });
+  // Evicted as the registry evicts a finished task past its recent-terminal window: gone from
+  // memory, still in the database.
+  (f.registry as unknown as { tasks: Map<string, unknown> }).tasks.delete(f.taskId);
+  const { registry, tasks } = f;
+  assert.equal(registry.getTask(f.taskId), undefined, "evicted from memory");
+  assert.ok(registry.baseBranchMoveCandidates().some((t) => t.id === f.taskId), "still a candidate");
+
+  assert.equal(tasks.moveBaseBranch(f.taskId, "release/2.0", null).ok, true);
+  assert.equal(getTask(f.taskId)?.baseBranch, null, "the stored row moved");
+  assert.equal(getTask(f.taskId)?.baseBranchMovedFrom, "release/2.0");
+
+  await pollAndReconcilePrs(
+    registry,
+    async () => null,
+    async (candidate) => (candidate === url ? { state: "merged" as const, mergedAt: NOW, baseRef: "main" } : null),
+  );
+  const dependent = f.dependent();
+  assert.notEqual(dependent.dependencies[0]?.satisfiedAt, null, "stamped on the edge");
+  assert.deepEqual(tasks.dependencyBlockers(dependent), []);
 });

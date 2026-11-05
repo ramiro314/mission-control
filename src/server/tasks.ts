@@ -4199,10 +4199,11 @@ export class TaskManager {
    * Request action and a contract composed on a later assign - asks the row when it runs, so
    * each follows the move from then on. A backlog task keeps the edit path. Refused when the
    * task's base is no longer `from`, because the caller decided on a row read before its
-   * network calls.
+   * network calls. A finished dependency source the registry no longer holds is read back from
+   * the database, as the merge watcher reads it, so its dependents are not stranded.
    */
   moveBaseBranch(id: string, from: string, to: string | null): Ok & { task?: Task } {
-    const t = this.registry.getTask(id);
+    const t = this.registry.getTask(id) ?? getDurableTask(id);
     if (!t) return { ok: false, error: "no such task" };
     if (t.status === "backlog") return { ok: false, error: "a backlog task's base branch is changed by editing it" };
     if (this.assigningTasks.has(id)) return { ok: false, error: "task is being assigned" };
