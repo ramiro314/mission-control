@@ -4210,14 +4210,14 @@ export class TaskManager {
    */
   async moveBaseBranch(
     id: string,
-    lookup: typeof mergedPullRequestForBranch = mergedPullRequestForBranch,
+    deps: { mergedPullRequest?: typeof mergedPullRequestForBranch; fetch?: typeof fetchOrigin } = {},
   ): Promise<{ ok: true; task: Task } | { ok: false; error: string; status: 404 | 409 | 502 }> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task", status: 404 };
     const refused = this.baseBranchMoveRefusal(t);
     if (refused) return { ok: false, error: refused, status: 409 };
     const from = t.baseBranch!;
-    const merged = await lookup(t.repoRoot, from);
+    const merged = await (deps.mergedPullRequest ?? mergedPullRequestForBranch)(t.repoRoot, from);
     if (!merged.ok) return { ok: false, error: merged.error, status: 502 };
     if (!merged.pr) {
       return { ok: false, error: `base branch ${from} has no merged pull request, so it has nowhere to move yet`, status: 409 };
@@ -4225,7 +4225,7 @@ export class TaskManager {
     const to = merged.pr.baseRef;
     const target = await resolveBaseBranch(t.repoRoot, to);
     if (!target.ok) return { ok: false, error: target.error, status: 409 };
-    const fetched = await fetchOrigin(t.repoRoot);
+    const fetched = await (deps.fetch ?? fetchOrigin)(t.repoRoot);
     if (!fetched.ok) return { ok: false, error: `could not fetch origin: ${fetched.reason}`, status: 502 };
     // The awaits above leave the row free to change. Write only over the row this was asked of.
     const live = this.registry.getTask(id);

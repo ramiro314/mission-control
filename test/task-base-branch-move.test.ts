@@ -13,7 +13,8 @@ import type { Task } from "../src/shared/types.ts";
 // Moving an in-flight task's base branch to where its base branch merged (#771). Every fixture
 // is a stack: `feat/base` cut from `main`, and the task's worktree `feat/stacked` cut from
 // `feat/base`. Then `feat/base` merges into `main` from another clone and is deleted on origin,
-// which is exactly the state a stacked task is stranded in.
+// which is exactly the state a stacked task is stranded in. Origin also carries `feat/mid`, a
+// non-default branch a base can merge into instead.
 
 const home = mkdtempSync(join(tmpdir(), "mission-base-move-home-"));
 const repos = mkdtempSync(join(tmpdir(), "mission-base-move-repos-"));
@@ -93,6 +94,7 @@ function strandedStack(name: string): { repo: string; wt: string } {
   git(repo, "remote", "add", "origin", url);
   git(repo, "push", "-qu", "origin", "main");
   git(origin, "symbolic-ref", "HEAD", "refs/heads/main");
+  git(repo, "push", "-q", "origin", "main:refs/heads/feat/mid");
   git(repo, "checkout", "-qb", "feat/base");
   writeFileSync(join(repo, "base.txt"), "base\n");
   git(repo, "add", "-A");
@@ -172,6 +174,65 @@ test("a stacked task's base moves to where its base branch merged, and is record
   const card = f.registry.snapshot().sessions.find((s) => s.id === f.session.id)!;
   assert.equal(card.task?.baseBranch, "main");
   assert.equal(card.task?.baseBranchMove?.toDefault, true);
+});
+
+test("a move onto a non-default branch stores it as not the default, so the base can move again", async () => {
+  const f = runningStack("onto-mid");
+  baseMerged("feat/mid");
+  const res = await f.move(f.taskId);
+  assert.equal(res.status, 200, await res.clone().text());
+  const moved = getTask(f.taskId)!;
+  assert.equal(moved.baseBranch, "feat/mid");
+  assert.equal(moved.baseBranchMove?.to, "feat/mid");
+  assert.equal(moved.baseBranchMove?.toDefault, false, "feat/mid is not origin's default");
+  const card = f.registry.snapshot().sessions.find((s) => s.id === f.session.id)!;
+  assert.equal(card.task?.baseBranch, "feat/mid");
+  assert.equal(card.task?.baseBranchMove?.toDefault, false);
+});
+
+test("a cancelled or failed task, which a merge can still complete, may move its base", async () => {
+  const f = runningStack("stopped");
+  baseMerged();
+  for (const status of ["cancelled", "failed"] as const) {
+    const id = `stopped-${status}`;
+    f.registry.upsertTask(mkTask({ id, status, repoRoot: f.repo, baseBranch: "feat/base" }));
+    const res = await f.move(id);
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal(getTask(id)?.baseBranch, "main");
+    assert.equal(getTask(id)?.status, status, "the move does not change the task's status");
+  }
+});
+
+test("of several merged pull requests on the base branch, the newest decides the target", async () => {
+  const f = runningStack("newest");
+  const older = "https://github.com/mc-test/newest/pull/3";
+  // Listed oldest first, so taking the first or last row as given would pick the wrong one.
+  ghReports([
+    { url: older, state: "MERGED", mergedAt: "2026-10-01T10:00:00Z", baseRefName: "main" },
+    { url: BASE_PR, state: "MERGED", mergedAt: "2026-11-01T10:00:00Z", baseRefName: "feat/mid" },
+  ]);
+  const res = await f.move(f.taskId);
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(getTask(f.taskId)?.baseBranch, "feat/mid");
+  assert.equal(getTask(f.taskId)?.baseBranchMove?.prUrl, BASE_PR);
+});
+
+test("a move whose origin fetch fails is refused with nothing written", async () => {
+  const f = runningStack("unfetched");
+  baseMerged();
+  const fetched: string[] = [];
+  const res = await f.tasks.moveBaseBranch(f.taskId, {
+    fetch: async (root) => {
+      fetched.push(root);
+      return { ok: false, reason: "git fetch origin failed: could not resolve host", outcomeUnknown: false };
+    },
+  });
+  assert.deepEqual(fetched, [f.repo], "the target resolved, so the fetch was reached");
+  assert.equal(res.ok, false);
+  assert.equal(!res.ok && res.status, 502);
+  assert.equal(!res.ok && res.error, "could not fetch origin: git fetch origin failed: could not resolve host");
+  assert.equal(getTask(f.taskId)?.baseBranch, "feat/base");
+  assert.equal(getTask(f.taskId)?.baseBranchMove, null);
 });
 
 test("after the move the Diff view, evidence diff and affected-tests base measure from the new base, though the old branch is gone", async () => {

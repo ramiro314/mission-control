@@ -77,15 +77,18 @@ naming the new base, so a stack of three can be walked down one merge at a time.
 
 - `test/task-base-branch-move.test.ts`: the route's refusals (backlog, dispatching, done, no
   base, unknown, no merged pull request, `gh` failure, a merge `gh` names no base for, missing
-  target); a successful move storing the target
-  by name and the record; after the move, a merge into the target completing the task and
-  satisfying its dependent; the Diff view and changed paths measuring from the target after
-  the old branch is deleted on origin; reset preview, the contract and the Pull Request
-  action naming the target; a backlog task's edit still storing origin's default as null.
+  target, a failed origin fetch); a successful move storing the target by name and the record,
+  onto origin's default and onto another branch (`toDefault` false), from a running, cancelled
+  or failed task, and to the newest of several merged pull requests; after the move, a merge
+  into the target completing the task and satisfying its dependent; the Diff view and changed
+  paths measuring from the target after the old branch is deleted on origin; reset preview,
+  the contract and the Pull Request action naming the target; a backlog task's edit still
+  storing origin's default as null.
 - `e2e/specs/task-base-branch-move.spec.ts`: dispatch a task on a base branch, press **move
   base** and read the refusal, then script the fake `gh` to report the base branch's pull
   request merged into `main`, delete the branch on origin, press again, and read the flash, the
-  control's disappearance and the stored move.
+  control's disappearance and the stored move; and a move onto a non-default branch, after
+  which the control stays and names the new base.
 
 ## Out of scope
 

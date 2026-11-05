@@ -93,3 +93,38 @@ test("a running task's base moves to where its base branch merged, from the sess
   expect(task.baseBranch).toBe("main");
   expect(task.baseBranchMove).toMatchObject({ from: "feat/base", to: "main", toDefault: true, prUrl: BASE_PR });
 });
+
+test("a base moved onto a non-default branch keeps the control, naming the new base", async ({ dashboard, daemon }) => {
+  // A stack of three: this task sits on `feat/base`, which merged into `feat/mid`, which has
+  // not merged yet. The control stays so the next merge can be followed the same way.
+  for (const branch of ["feat/base", "feat/mid"]) {
+    execFileSync("git", ["-C", daemon.repo, "push", "-q", "origin", `main:refs/heads/${branch}`], { stdio: "pipe" });
+  }
+  const filed = await api<TaskReply>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title: TITLE, intent: "Build on the base branch.", kind: "ship",
+    backlog: true, workflowId: null, baseBranch: "feat/base",
+  });
+  await api(daemon, `/api/tasks/${filed.id}/dispatch`, {});
+  await expect.poll(async () => (await taskById(daemon, filed.id))?.status, { timeout: 60_000 }).toBe("running");
+  writeGhPullRequests(daemon.home, [{
+    cwd: daemon.repo, url: BASE_PR, number: 41, state: "MERGED",
+    createdAt: "2026-11-01T09:00:00Z", mergedAt: "2026-11-01T10:00:00Z",
+    headRefOid: "a".repeat(40), baseRefName: "feat/mid",
+  }]);
+
+  const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: TITLE });
+  await expect(row).toHaveCount(1, { timeout: 60_000 });
+  await row.click();
+  const card = dashboard.locator(".console-detail");
+  const move = card.getByRole("button", { name: "move base" });
+  await expect(move).toHaveAccessibleDescription(/^Move this task's base from feat\/base /);
+  await move.click();
+  await expect(card.locator(".action-flash")).toHaveText("base moved from feat/base to feat/mid");
+  await expect(move).toBeVisible();
+  await expect(move).toHaveAccessibleDescription(/^Move this task's base from feat\/mid /);
+  await shoot(dashboard, "03-moved-onto-mid", card);
+
+  const task = (await taskById(daemon, filed.id))!;
+  expect(task.baseBranch).toBe("feat/mid");
+  expect(task.baseBranchMove).toMatchObject({ from: "feat/base", to: "feat/mid", toDefault: false });
+});
