@@ -2487,6 +2487,12 @@ export interface Task {
    * row the daemon reads carries it, and an absent value means null.
    */
   baseBranch?: string | null;
+  /**
+   * The base branch this task started from, when the daemon later moved it to the branch that
+   * one merged into (`moveMergedBaseBranches`), or null for a task whose base never moved.
+   * `baseBranch` is then the new base. Optional on the type for the reason `baseBranch` is.
+   */
+  baseBranchMovedFrom?: string | null;
   /** Isolated Git worktree (realpath). Null before provisioning and for repo-less residents. */
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
