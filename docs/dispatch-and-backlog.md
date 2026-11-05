@@ -193,6 +193,22 @@ one starts from origin's default branch and targets it, exactly as before.
 - **The merge watcher counts only a merge into the base.** The task completes, and its declared
   dependents unblock, when its pull request merges into its base branch. The same pull request
   merged into any other branch is not recorded as the task's merge.
+- **Moving the base after it merges.** A task stacked on another feature's branch is stranded
+  once that branch's pull request merges: its own pull request can then only merge into the
+  branch the base merged into, which does not count. The session footer's **move base**
+  control (`POST /api/tasks/:id/base-branch/move`, no body) moves a running, cancelled or
+  failed task's base to that branch. The daemon reads the target from `gh` (the newest merged
+  pull request whose head is the base branch), checks it exists on origin and fetches origin,
+  then stores it by name, origin's default included, and records the move on the task
+  (`baseBranchMove`: from, to, whether `to` was the default, the pull request, when). From
+  then on the merge watcher counts a merge into the new base, the Diff view, captured evidence
+  and affected-tests selection measure from it even if the old branch was deleted, resets land
+  on it, and the task contract and Pull Request action name it. A base whose pull request has
+  not merged, and a backlog, dispatching or done task, are refused with the reason; a backlog
+  task's base is still changed by editing it. The control is shown only while a move is
+  possible, so it disappears once the base has moved onto origin's default. The move is
+  always the operator's: Mission Control does not move a base on its own when it sees the
+  merge ([plan](plans/base-branch-move/plan.md)).
 - **Primary repository only.** On a multi-repo task the attached repositories start from, and
   open their pull requests against, their own default branch.
 

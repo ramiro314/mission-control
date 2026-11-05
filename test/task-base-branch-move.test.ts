@@ -1,0 +1,333 @@
+import { after, beforeEach, test } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { mkTask } from "./helpers/session-fixture.ts";
+import { trackedTaskManagers } from "./helpers/task-manager.ts";
+import type { QueueManager } from "../src/server/queue.ts";
+import type { ReviewManager } from "../src/server/reviews.ts";
+import type { Task } from "../src/shared/types.ts";
+
+// Moving an in-flight task's base branch to where its base branch merged (#771). Every fixture
+// is a stack: `feat/base` cut from `main`, and the task's worktree `feat/stacked` cut from
+// `feat/base`. Then `feat/base` merges into `main` from another clone and is deleted on origin,
+// which is exactly the state a stacked task is stranded in.
+
+const home = mkdtempSync(join(tmpdir(), "mission-base-move-home-"));
+const repos = mkdtempSync(join(tmpdir(), "mission-base-move-repos-"));
+const bin = mkdtempSync(join(tmpdir(), "mission-base-move-bin-"));
+process.env.HARNESS_HOME = home;
+process.env.HARNESS_WORKSPACE_DIRS = repos;
+// `gh` answers `pr list` with whatever `gh-prs.json` holds, fails when `gh-fail` exists, and
+// records every argv to `gh-calls`.
+writeFileSync(join(bin, "gh"), [
+  "#!/bin/sh",
+  `echo "$@" >> "${bin}/gh-calls"`,
+  `if [ -f "${bin}/gh-fail" ]; then echo "gh: not logged in" >&2; exit 1; fi`,
+  `cat "${bin}/gh-prs.json"`,
+  "",
+].join("\n"));
+chmodSync(join(bin, "gh"), 0o755);
+process.env.MISSION_GH_BIN = join(bin, "gh");
+
+const { openDb, getTask, taskWorkEpisodeForTask } = await import("../src/server/db.ts");
+const { Registry } = await import("../src/server/registry.ts");
+const { TaskManager } = await import("../src/server/tasks.ts");
+const taskManager = trackedTaskManagers(TaskManager);
+const { buildApp } = await import("../src/server/routes.ts");
+const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
+const { setShippingConfig } = await import("../src/server/shipping/config.ts");
+const { changedPathsSince, computeSessionDiff } = await import("../src/server/diff.ts");
+const { withTaskKindContract } = await import("../src/server/task-contract.ts");
+const { renderSessionAction } = await import("../src/server/workflows/feedback.ts");
+const { prBaseBranchFor } = await import("../src/server/workflows/context.ts");
+const SELECTABLE_WORKFLOWS = {
+  workflowSelectionBlock: () => null,
+  localPlanPublication: () => null,
+} as unknown as import("../src/server/workflows/manager.ts").WorkflowManager;
+
+after(() => {
+  for (const dir of [home, repos, bin]) rmSync(dir, { recursive: true, force: true });
+  delete process.env.MISSION_GH_BIN;
+});
+
+beforeEach(() => {
+  openDb().exec("DELETE FROM tasks;");
+  rmSync(join(bin, "gh-fail"), { force: true });
+  rmSync(join(bin, "gh-calls"), { force: true });
+  ghReports([]);
+});
+
+const git = (dir: string, ...args: string[]): string =>
+  execFileSync("git", ["-C", dir, "-c", "user.email=t@test", "-c", "user.name=t", ...args], { stdio: "pipe" })
+    .toString()
+    .trim();
+
+function ghReports(prs: Array<{ url: string; state: string; mergedAt: string | null; baseRefName: string | null }>): void {
+  writeFileSync(join(bin, "gh-prs.json"), JSON.stringify(prs));
+}
+
+const ghCalls = (): string[] =>
+  existsSync(join(bin, "gh-calls")) ? readFileSync(join(bin, "gh-calls"), "utf8").trim().split("\n") : [];
+
+const BASE_PR = "https://github.com/mc-test/stack/pull/7";
+
+/**
+ * The stranded stack. `origin` reads as a GitHub repository, so `gh` gets a `--repo`, while
+ * `insteadOf` sends git's own traffic to the bare repository. The checkout's `origin/main` is
+ * left behind the merge, so measuring from it proves the move fetched.
+ */
+function strandedStack(name: string): { repo: string; wt: string } {
+  const repo = join(repos, name);
+  mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  writeFileSync(join(repo, "file.txt"), "main\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "main");
+  const origin = join(repos, `${name}.git`);
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  const url = `https://github.com/mc-test/${name}.git`;
+  git(repo, "config", `url.${origin}.insteadOf`, url);
+  git(repo, "remote", "add", "origin", url);
+  git(repo, "push", "-qu", "origin", "main");
+  git(origin, "symbolic-ref", "HEAD", "refs/heads/main");
+  git(repo, "checkout", "-qb", "feat/base");
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "base");
+  git(repo, "push", "-q", "origin", "feat/base");
+  git(repo, "checkout", "-q", "main");
+  git(repo, "fetch", "-q", "origin");
+  git(repo, "remote", "set-head", "origin", "main");
+
+  const wt = join(repos, `${name}-wt`);
+  git(repo, "worktree", "add", "-q", "-b", "feat/stacked", wt, "origin/feat/base");
+  writeFileSync(join(wt, "stacked.txt"), "stacked\n");
+  git(wt, "add", "-A");
+  git(wt, "commit", "-qm", "stacked");
+
+  // `feat/base`'s pull request merges into `main` elsewhere, and its branch is deleted.
+  const other = join(repos, `${name}-other`);
+  execFileSync("git", ["clone", "-q", origin, other]);
+  git(other, "fetch", "-q", "origin", "feat/base");
+  git(other, "merge", "-q", "--no-ff", "-m", "Merge feat/base", "FETCH_HEAD");
+  git(other, "push", "-q", "origin", "main", ":feat/base");
+  git(repo, "update-ref", "-d", "refs/remotes/origin/feat/base");
+  return { repo: realpathSync(repo), wt: realpathSync(wt) };
+}
+
+function baseMerged(baseRefName: string | null = "main"): void {
+  ghReports([
+    { url: BASE_PR, state: "MERGED", mergedAt: "2026-11-01T10:00:00Z", baseRefName },
+  ]);
+}
+
+function appFor(registry = new Registry()) {
+  const tasks = new TaskManager(registry);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager, workflows: SELECTABLE_WORKFLOWS });
+  const move = (id: string) => app.request(`/api/tasks/${encodeURIComponent(id)}/base-branch/move`, {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317" },
+  });
+  const get = (path: string) => app.request(path, { headers: { host: "127.0.0.1:7317" } });
+  return { app, move, get, registry, tasks };
+}
+
+/** A running task on `feat/base` whose session stands in the stacked worktree. */
+function runningStack(name: string) {
+  const { repo, wt } = strandedStack(name);
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: name, agent: "claude", name, nameSource: "process", cwd: wt,
+    gitBranch: "feat/stacked", gitRoot: wt, repoRoot: repo, pid: 301, tty: null, terminals: [], startedAt: Date.now(),
+  }]);
+  const session = registry.snapshot().sessions.find((s) => s.name === name)!;
+  registry.upsertTask(mkTask({
+    id: `task-${name}`, kind: "ship", status: "running", repoRoot: repo, baseBranch: "feat/base",
+    sessionId: session.id, worktreePath: wt, branch: "feat/stacked",
+  }));
+  return { repo, wt, session, taskId: `task-${name}`, ...appFor(registry) };
+}
+
+test("a stacked task's base moves to where its base branch merged, and is recorded on the task", async () => {
+  const f = runningStack("moves");
+  baseMerged();
+  const res = await f.move(f.taskId);
+  assert.equal(res.status, 200, await res.clone().text());
+  const moved = (await res.json()) as Task;
+  assert.equal(moved.baseBranch, "main", "the target is stored by name, origin's default included");
+  assert.deepEqual(
+    { ...moved.baseBranchMove, movedAt: 0 },
+    { from: "feat/base", to: "main", toDefault: true, prUrl: BASE_PR, movedAt: 0 },
+  );
+  const stored = getTask(f.taskId)!;
+  assert.equal(stored.baseBranch, "main");
+  assert.deepEqual(stored.baseBranchMove, moved.baseBranchMove, "the move is persisted on the row");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running", "nothing else about the task changes");
+  // `gh` was asked about the base branch's own merged pull requests, on the GitHub repository.
+  assert.match(ghCalls().join("\n"), /pr list --repo mc-test\/moves --head feat\/base --state merged/);
+  // The session card carries it, for the footer's control.
+  const card = f.registry.snapshot().sessions.find((s) => s.id === f.session.id)!;
+  assert.equal(card.task?.baseBranch, "main");
+  assert.equal(card.task?.baseBranchMove?.toDefault, true);
+});
+
+test("after the move the Diff view, evidence diff and affected-tests base measure from the new base, though the old branch is gone", async () => {
+  const f = runningStack("measures");
+  const diffOf = async () => (await (await f.get(`/api/sessions/${f.session.id}/diff`)).json()) as {
+    ok: boolean; base: string | null; filesChanged: number; patch: string; error: string | null;
+  };
+  const before = await diffOf();
+  assert.equal(before.ok, false, "the deleted base fails rather than falling back");
+  assert.match(before.error ?? "", /feat\/base is not in this repository's remote-tracking refs/);
+
+  baseMerged();
+  assert.equal((await f.move(f.taskId)).status, 200);
+
+  const after = await diffOf();
+  assert.equal(after.ok, true, after.error ?? "");
+  assert.equal(after.base, "main");
+  assert.equal(after.filesChanged, 1, "the merged base's own change is not this task's");
+  assert.match(after.patch, /stacked\.txt/);
+  assert.doesNotMatch(after.patch, /base\.txt/);
+
+  // The two followers read the same base, through the binding's own resolution.
+  const base = prBaseBranchFor(getTask(f.taskId)!, "");
+  assert.equal(base, "main");
+  const evidence = await computeSessionDiff(f.wt, undefined, base);
+  assert.equal(evidence.ok && evidence.filesChanged, 1);
+  assert.deepEqual(await changedPathsSince(f.wt, base), { ok: true, repoRoot: f.wt, paths: ["stacked.txt"] });
+});
+
+test("after the move resets, the task contract and the Pull Request action name the new base", async () => {
+  const f = runningStack("names");
+  baseMerged();
+  assert.equal((await f.move(f.taskId)).status, 200);
+  const moved = getTask(f.taskId)!;
+
+  const preview = (await (await f.get(`/api/sessions/${f.session.id}/reset/preview`)).json()) as {
+    ok: boolean; target: string | null; error: string | null;
+  };
+  assert.equal(preview.ok, true, preview.error ?? "");
+  assert.equal(preview.target, "origin/main");
+
+  assert.match(withTaskKindContract(moved, "Build it"), /This task's base branch is `main`/);
+  const action = renderSessionAction({
+    origin: { kind: "run", workflowName: "Review", workflowVersion: 1, runId: "run-1", repoRoot: null },
+    actionName: "Pull Request", promptMarkdown: "Open the PR.", skillCommand: null,
+    workflowEvidence: false, pullRequestGrant: true, baseBranch: prBaseBranchFor(moved, ""),
+  });
+  assert.ok(action.ok);
+  assert.match(action.payload, /Base branch: main /);
+  assert.match(action.payload, /-f base=main /);
+});
+
+test("a move is refused, with nothing written, unless the task is in flight on a base whose pull request merged", async () => {
+  const f = runningStack("refusals");
+  const refusal = async (id: string, status: number, pattern: RegExp) => {
+    const res = await f.move(id);
+    assert.equal(res.status, status, await res.clone().text());
+    assert.match(((await res.json()) as { error: string }).error, pattern);
+  };
+
+  await refusal("no-such-task", 404, /no such task/);
+  await refusal(f.taskId, 409, /feat\/base has no merged pull request/);
+  ghReports([{ url: BASE_PR, state: "OPEN", mergedAt: null, baseRefName: "main" }]);
+  await refusal(f.taskId, 409, /no merged pull request/);
+  writeFileSync(join(bin, "gh-fail"), "");
+  await refusal(f.taskId, 502, /could not ask GitHub for feat\/base's pull request: gh: not logged in/);
+  rmSync(join(bin, "gh-fail"));
+  baseMerged(null);
+  await refusal(f.taskId, 502, /did not say which branch .* merged into/);
+  baseMerged("release/gone");
+  await refusal(f.taskId, 409, /base branch release\/gone does not exist on .*'s origin/);
+  assert.equal(getTask(f.taskId)?.baseBranch, "feat/base");
+  assert.equal(getTask(f.taskId)?.baseBranchMove, null);
+
+  baseMerged();
+  for (const [id, status, baseBranch, pattern] of [
+    ["shelved", "backlog", "feat/base", /in the backlog; edit its base branch instead/],
+    ["finished", "done", "feat/base", /task is done/],
+    ["launching", "dispatching", "feat/base", /still dispatching/],
+    ["plain", "running", null, /no base branch to move/],
+  ] as const) {
+    f.registry.upsertTask(mkTask({ id, status, repoRoot: f.repo, baseBranch }));
+    await refusal(id, 409, pattern);
+    assert.equal(getTask(id)?.baseBranchMove ?? null, null);
+  }
+});
+
+test("a backlog task still changes its base through the edit, which stores origin's default as null", async () => {
+  const f = runningStack("backlog-edit");
+  f.registry.upsertTask(mkTask({ id: "shelved", status: "backlog", repoRoot: f.repo, baseBranch: "feat/base" }));
+  const res = await f.app.request("/api/tasks/shelved/update", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ baseBranch: "main" }),
+  });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(getTask("shelved")?.baseBranch, null);
+  assert.equal(getTask("shelved")?.baseBranchMove ?? null, null);
+});
+
+// --- the merge watcher, after the move ---
+
+test("after the move a merge into the new base completes the task and satisfies its dependent", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const { repo } = strandedStack("lands");
+  const registry = new Registry();
+  const tasks = taskManager(registry);
+  const id = "lands";
+  const cwd = `/repo/${id}`;
+  const taskId = `task-${id}`;
+  registry.applyDiscovery([{
+    syntheticId: id, agent: "claude", name: `agent-${id}`, nameSource: "process", cwd,
+    gitBranch: "feat/stacked", gitRoot: "/repo", repoRoot: "/repo", pid: 100, tty: null, terminals: [], startedAt: 0,
+  }]);
+  registry.applyHook({ agent: "claude", event: "Stop", sessionId: `${id}-episode`, cwd, transcriptPath: null, env: {} });
+  registry.upsertTask(mkTask({
+    id: taskId, title: "Stacked", status: "running", sessionId: id, worktreePath: cwd, homeName: "Stacked",
+    repoRoot: repo, baseBranch: "feat/base",
+  }));
+  registry.bindTaskToWorkEpisode(taskId, id);
+  registry.upsertTask(mkTask({
+    id: `${id}-dependent`, title: "Next", status: "backlog", repoRoot: repo,
+    dependencies: [{
+      type: "task", taskId, title: "Stacked", sessionId: null, episodeId: null, agentSessionId: null,
+      branch: null, prUrl: null, selectedAt: 1, satisfiedAt: null,
+    }],
+  }));
+  const episode = registry.workEpisodeForSession(id)!;
+  const url = "https://github.com/mc-test/lands/pull/8";
+  registry.reconcilePrs(new Map([[id, {
+    url, number: 8, state: "open" as const, checks: "passing" as const, branch: "feat/stacked",
+    agentSessionId: `${id}-episode`, episodeId: episode.episodeId, createdAt: episode.startedAt,
+    mergedAt: null, headSha: "head", worktreeHeadSha: "head", baseRef: "feat/base",
+  }]]), new Set());
+  registry.applyDiscovery([]);
+  registry.emit("event", { type: "session_remove", id });
+  const urlPoll = () => pollAndReconcilePrs(
+    registry,
+    async () => null,
+    async (candidate) => (candidate === url ? { state: "merged" as const, mergedAt: 5_000_000, baseRef: "main" } : null),
+  );
+  const dependent = () => registry.getTask(`${id}-dependent`)!;
+
+  // GitHub retargeted the stacked pull request to `main` and it merged there: not yet the task's.
+  await urlPoll();
+  assert.equal(taskWorkEpisodeForTask(taskId)?.mergedAt, null);
+  assert.equal(dependent().dependencies[0]?.satisfiedAt, null);
+
+  baseMerged();
+  const moved = await tasks.moveBaseBranch(taskId);
+  assert.ok(moved.ok, moved.ok ? "" : moved.error);
+
+  await urlPoll();
+  const done = registry.getTask(taskId)!;
+  assert.equal(done.status, "done");
+  assert.equal(done.outcomeUrl, url);
+  assert.notEqual(dependent().dependencies[0]?.satisfiedAt, null, "stamped on the edge");
+  assert.deepEqual(tasks.dependencyBlockers(dependent()), []);
+});

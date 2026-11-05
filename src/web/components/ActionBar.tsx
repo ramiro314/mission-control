@@ -191,6 +191,14 @@ export function ActionBar({
   // disabled Retro anywhere in this row - a greyed-out button for the whole
   // life of a session would say "you could have retrospected" rather than "now is the time".
   const retro = retroOffer(session, workflowRun);
+  // A stacked task whose base branch can still move: one past the backlog and not done, whose
+  // base did not already move onto origin's default. The daemon checks the rest.
+  const movableBase =
+    session.task?.baseBranch &&
+    !["backlog", "dispatching", "done"].includes(session.task.status) &&
+    !session.task.baseBranchMove?.toDefault
+      ? session.task.baseBranch
+      : null;
 
   // Written once so every control tells the same story about the click.
   const completeLabel = session.task
@@ -324,6 +332,20 @@ export function ActionBar({
    * not be - and a live session is not a promise of delivery, so the outcome is REPORTED
    * rather than assumed from a 200.
    */
+  /**
+   * Move this task's base branch to where its base branch's pull request merged.
+   *
+   * One click, no confirm: the daemon picks the target from GitHub and refuses unless the base
+   * branch's pull request has merged, so there is no choice here to get wrong. The outcome is
+   * flashed either way, because the target is something the operator did not type.
+   */
+  async function moveBase(): Promise<void> {
+    if (!session.task) return;
+    const result = await run("base", () => api.moveTaskBaseBranch(session.task!.id));
+    const move = result.ok ? result.baseBranchMove : null;
+    if (move) showFlash({ text: `base moved from ${move.from} to ${move.to}`, ok: true }, 6000);
+  }
+
   async function runRetro(): Promise<void> {
     const result = await run("retro", () => api.runRetro(session.id));
     if (result.ok) showFlash({ text: retroOutcome(result), ok: true }, 6000);
@@ -576,6 +598,13 @@ export function ActionBar({
                 disabled={busy === "retro"}
               >
                 {busy === "retro" ? "sending…" : "retro"}
+              </button>
+            </Tooltip>
+          )}
+          {movableBase && (
+            <Tooltip label={`Move this task's base from ${movableBase} to the branch its pull request merged into`}>
+              <button className="act act-base" onClick={() => void moveBase()} disabled={busy === "base"}>
+                {busy === "base" ? "moving…" : "move base"}
               </button>
             </Tooltip>
           )}

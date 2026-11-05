@@ -17,6 +17,8 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
+import { mergedPullRequestForBranch } from "./pr.ts";
+import { fetchOrigin, resolveBaseBranch } from "./git/remote-default.ts";
 import type {
   AgentType,
   AssignRefusalScope,
@@ -4187,6 +4189,68 @@ export class TaskManager {
     }
     this.registry.upsertTask(prepared.task);
     return { ok: true, task: prepared.task };
+  }
+
+  /**
+   * Move an in-flight task's base branch to the branch its base branch's pull request merged
+   * into, and record the move on the task.
+   *
+   * The edit path above refuses any base change once a task leaves the backlog, because the
+   * base is what dispatch provisioned from. A stacked task outlives that: its base branch's
+   * pull request merges, and from then on only a merge into the branch it merged into can land
+   * the task. This is the one in-flight base change, and the daemon picks the target from
+   * `gh`, so the operator who asks for it cannot point a running task at an arbitrary branch.
+   *
+   * The target is stored BY NAME, origin's default included - the one exception to "the
+   * default is stored as NULL". Every reader then follows it without a change of its own: the
+   * merge watcher counts only a merge into it, diffs and checks measure from
+   * `origin/<target>`, resets land there, and every instruction names it. A NULL would instead
+   * let a merge into any branch complete the task. `origin` is fetched first so
+   * `origin/<target>` already carries the base branch's merge when anything measures from it.
+   */
+  async moveBaseBranch(
+    id: string,
+    lookup: typeof mergedPullRequestForBranch = mergedPullRequestForBranch,
+  ): Promise<{ ok: true; task: Task } | { ok: false; error: string; status: 404 | 409 | 502 }> {
+    const t = this.registry.getTask(id);
+    if (!t) return { ok: false, error: "no such task", status: 404 };
+    const refused = this.baseBranchMoveRefusal(t);
+    if (refused) return { ok: false, error: refused, status: 409 };
+    const from = t.baseBranch!;
+    const merged = await lookup(t.repoRoot, from);
+    if (!merged.ok) return { ok: false, error: merged.error, status: 502 };
+    if (!merged.pr) {
+      return { ok: false, error: `base branch ${from} has no merged pull request, so it has nowhere to move yet`, status: 409 };
+    }
+    const to = merged.pr.baseRef;
+    const target = await resolveBaseBranch(t.repoRoot, to);
+    if (!target.ok) return { ok: false, error: target.error, status: 409 };
+    const fetched = await fetchOrigin(t.repoRoot);
+    if (!fetched.ok) return { ok: false, error: `could not fetch origin: ${fetched.reason}`, status: 502 };
+    // The awaits above leave the row free to change. Write only over the row this was asked of.
+    const live = this.registry.getTask(id);
+    if (!live || live.baseBranch !== from || this.baseBranchMoveRefusal(live)) {
+      return { ok: false, error: "task changed while its base branch was moving; retry", status: 409 };
+    }
+    const now = Date.now();
+    const next: Task = {
+      ...live,
+      baseBranch: to,
+      baseBranchMove: { from, to, toDefault: target.baseBranch === null, prUrl: merged.pr.url, movedAt: now },
+      updatedAt: now,
+    };
+    this.registry.upsertTask(next);
+    return { ok: true, task: next };
+  }
+
+  /** Why `moveBaseBranch` may not move this task's base, or null when it may. */
+  private baseBranchMoveRefusal(t: Task): string | null {
+    if (t.status === "backlog") return "task is in the backlog; edit its base branch instead";
+    if (t.status === "dispatching") return "task is still dispatching";
+    if (t.status === "done") return "task is done";
+    if (this.assigningTasks.has(t.id)) return "task is being assigned";
+    if (!t.baseBranch) return "task has no base branch to move";
+    return null;
   }
 
   /**

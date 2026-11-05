@@ -197,6 +197,48 @@ function parsePrCandidate(value: unknown, worktreeHeadSha: string | null): PrCan
     baseRef: typeof baseRefName === "string" ? baseRefName : null };
 }
 
+/** A merged pull request, as `mergedPullRequestForBranch` reports it. */
+export type MergedPullRequest = { url: string; baseRef: string; mergedAt: number };
+
+/**
+ * The newest merged pull request whose head is `branch`, on the repository `cwd` names, or
+ * null when `gh` lists none. Asked when an in-flight task's base branch moves to where that
+ * branch merged, so a pull request `gh` reports without a base, or any `gh` failure, is a
+ * refusal with its reason rather than a guess.
+ */
+export async function mergedPullRequestForBranch(
+  cwd: string,
+  branch: string,
+): Promise<{ ok: true; pr: MergedPullRequest | null } | { ok: false; error: string }> {
+  const repo = await checkoutGitHubRepository(cwd);
+  if (!repo.ok) return { ok: false, error: repo.error };
+  const res = await run(ghBin(), [
+    "pr", "list", "--repo", repo.repo, "--head", branch, "--state", "merged",
+    "--json", "url,state,mergedAt,baseRefName", "--limit", "20",
+  ], { cwd, timeoutMs: 8000 });
+  if (res.code !== 0) {
+    return { ok: false, error: `could not ask GitHub for ${branch}'s pull request: ${res.stderr.trim() || `exit ${res.code}`}` };
+  }
+  let rows: unknown;
+  try { rows = JSON.parse(res.stdout || "[]"); } catch { rows = null; }
+  if (!Array.isArray(rows)) return { ok: false, error: `GitHub's answer for ${branch}'s pull request was not a list` };
+  const merged = rows
+    .map((row) => row as { url?: unknown; state?: unknown; mergedAt?: unknown; baseRefName?: unknown })
+    .filter((row) => row.state === "MERGED" && typeof row.url === "string")
+    .map((row) => ({
+      url: row.url as string,
+      baseRef: typeof row.baseRefName === "string" && row.baseRefName ? row.baseRefName : null,
+      mergedAt: typeof row.mergedAt === "string" ? Date.parse(row.mergedAt) : Number.NaN,
+    }))
+    .sort((a, b) => (Number.isFinite(b.mergedAt) ? b.mergedAt : 0) - (Number.isFinite(a.mergedAt) ? a.mergedAt : 0));
+  const newest = merged[0];
+  if (!newest) return { ok: true, pr: null };
+  if (!newest.baseRef || !Number.isFinite(newest.mergedAt)) {
+    return { ok: false, error: `GitHub did not say which branch ${newest.url} merged into` };
+  }
+  return { ok: true, pr: { url: newest.url, baseRef: newest.baseRef, mergedAt: newest.mergedAt } };
+}
+
 function preferredPr(result: PrLookup): Exclude<PrLookup, PrCandidate[]> {
   if (!Array.isArray(result)) return result;
   return result.find(pr => pr.state === "open") ?? result.find(pr => pr.state === "merged") ?? result[0] ?? null;
