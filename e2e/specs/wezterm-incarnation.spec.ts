@@ -54,14 +54,14 @@ test("a stale WezTerm action reports refusal and fresh discovery restores delive
     };
     await working();
     state.freezeDiscovery = true; save();
-    // Wait until the session holds the original pane. From here every tick replays it: the
-    // fixture discards a listing that straddles the freeze, so replacing the socket below
-    // cannot drop the handle the stale action has to be refused through.
+    // The fixture holds this handle, including across any poll already in flight.
     await expect.poll(async () => (await session())?.terminals[0]?.incarnation).toBe(original.terminals[0]!.incarnation);
     await stop(); await start();
     const failed = dashboard.waitForResponse((r) => r.url().endsWith("/interrupt") && r.request().method() === "POST");
     await dashboard.keyboard.press("Control+c");
-    expect((await failed).ok()).toBe(false);
+    const refusal = await failed;
+    expect(refusal.ok()).toBe(false);
+    expect((await refusal.json()).error).toBe("WezTerm pane identity is stale or unavailable; wait for fresh discovery");
     await expect(dashboard.getByText("WezTerm pane identity is stale or unavailable; wait for fresh discovery", { exact: true })).toBeVisible();
     expect(received).toEqual([]);
     if (process.env.MC_E2E_EVIDENCE) {

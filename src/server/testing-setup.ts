@@ -275,8 +275,8 @@ export type SetAffectedTestsCommandResult =
  * cannot become a general way for an agent to
  * change what Checks run.
  *
- * Every other override and the slot's default and run budget are carried over unchanged, under
- * the slot's current revision. A concurrent edit is retried once against the new revision rather
+ * Every other override and the slot's default, run budget, timeout and failure policies are
+ * carried over unchanged, under the slot's current revision. A concurrent edit is retried once against the new revision rather
  * than overwritten.
  */
 export function setAffectedTestsCommand(
@@ -320,6 +320,9 @@ export function setAffectedTestsCommand(
       expectedRevision: view.revision,
       defaultCommand: view.defaultCommand,
       maxRuns: view.maxRuns,
+      timeoutMs: view.timeoutMs,
+      onUnavailable: view.onUnavailable,
+      onBudgetExhausted: view.onBudgetExhausted,
       overrides: [...others, { repoRoot, command }],
     });
     if (result.ok) return { ok: true, repoRoot, view: result.view, replayed: false };

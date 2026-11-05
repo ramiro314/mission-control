@@ -84,7 +84,8 @@ name: CI
 # With about 50 s for `changes` and `dependencies-node-24` before the shards and 25 s for
 # `flake report` and `CI result` after them, the critical path is about 8 minutes, the plan's
 # target. The Node 26 matrix runs off pull requests, outside this budget, and keeps six shards.
-# `MISSION_TEST_SHARDS`, the shard lists and `test/init-script.test.ts` change together. That
+# Every unit and E2E denominator is `strategy.job-total`, derived from its matrix list, so the
+# shard lists and `test/init-script.test.ts` change together. That
 # test derives the peak from this file's job graph and pins it at 19, so a new job that runs
 # beside the shards on a pull request fails it until it is counted against the 20-job cap. See
 # docs/plans/ci-time-to-green/plan.md, sections 5 and 8.
@@ -476,7 +477,7 @@ jobs:
   # Three shards on a pull request; see "Shard budget" above. Node 26 keeps six, since it runs
   # only off pull requests.
   unit-node-24:
-    name: unit (node 24, shard ${{ matrix.shard }}/3)
+    name: unit (node 24, shard ${{ matrix.shard }}/${{ strategy.job-total }})
     needs: [changes, dependencies-node-24]
     if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'
     runs-on: ubuntu-latest
@@ -489,7 +490,6 @@ jobs:
     env:
       # Keep CI concurrency explicit instead of inheriting changes to the local fallback.
       MISSION_TEST_CONCURRENCY: '4'
-      MISSION_TEST_SHARDS: '3'
 
     steps:
       - name: Checkout
@@ -500,10 +500,10 @@ jobs:
         with:
           node-version: '24'
           shard: ${{ matrix.shard }}
-          shard-total: 3
+          shard-total: ${{ strategy.job-total }}
 
   unit-node-26:
-    name: unit (node 26, shard ${{ matrix.shard }}/6)
+    name: unit (node 26, shard ${{ matrix.shard }}/${{ strategy.job-total }})
     needs: dependencies-node-26
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -516,7 +516,6 @@ jobs:
     env:
       # Keep CI concurrency explicit instead of inheriting changes to the local fallback.
       MISSION_TEST_CONCURRENCY: '4'
-      MISSION_TEST_SHARDS: '6'
 
     steps:
       - name: Checkout
@@ -527,7 +526,7 @@ jobs:
         with:
           node-version: '26'
           shard: ${{ matrix.shard }}
-          shard-total: 6
+          shard-total: ${{ strategy.job-total }}
 
   # Browser-level end-to-end tests, sharded. This suite drives the BUILT dashboard served
   # by the BUILT daemon - `dist/web` and `dist/server/index.mjs` both have to exist, which

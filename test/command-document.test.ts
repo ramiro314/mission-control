@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   COMMAND_DOCUMENT_LIMITS,
+  COMMAND_DOCUMENT_SLOTS,
   CommandDocumentSchema,
   commandDocumentChangeSummary,
   parseCommandDocumentText,
   type CommandDocument,
 } from "../src/shared/command-document.ts";
-import { emptyWorkflowCommandView, WORKFLOW_CHECK_SLOTS, WORKFLOW_LIMITS, type WorkflowCheckSlot } from "../src/shared/workflow.ts";
+import { emptyWorkflowCommandView, WORKFLOW_LIMITS, type WorkflowCheckSlot } from "../src/shared/workflow.ts";
 import type { TestingSettingsView } from "../src/shared/testing-config.ts";
 import {
   exportCommandDocument,
@@ -177,7 +178,7 @@ function state(
   testing: TestingSettingsView[] = [],
   revisions: Partial<Record<WorkflowCheckSlot, number>> = {},
 ): CommandDocumentState {
-  const slots = new Map(WORKFLOW_CHECK_SLOTS.map((slot) => {
+  const slots = new Map(COMMAND_DOCUMENT_SLOTS.map((slot) => {
     const overrides = (rows[slot] ?? []).map(([repoRoot, command]) => ({ repoRoot, command }));
     const view = { ...emptyWorkflowCommandView(slot), defaultCommand: ["default"], maxRuns: 3, overrides, revision: revisions[slot] ?? 1 };
     const mine = new Map(overrides

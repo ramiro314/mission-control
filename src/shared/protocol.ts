@@ -2,6 +2,7 @@ import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from 
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
+import { ModelIdSchema } from "./model-id.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "./wait-for-ci.ts";
@@ -11,13 +12,16 @@ import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
-  TASK_KIND_BACKLOG_REFUSAL,
+  RESIDENT_TASK_REFUSAL,
   TASK_KIND_SCHEDULE_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
   taskKindAllowsBacklog,
   taskKindAllowsSchedule,
+  taskKindBacklogRefusal,
+  taskKindCreator,
 } from "./task.ts";
+import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
 import type { HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
@@ -74,6 +78,7 @@ import {
   isArchiveRepoSlot,
 } from "./archives.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS, scoutReportSlug } from "./scouts.ts";
+import { DEFAULT_SKIN, SKIN_IDS } from "./skins.ts";
 import { EMULATOR_IDS, TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import type { EmulatorId, MultiplexerId } from "./terminal.ts";
 import { SetupRowIdSchema } from "./setup-catalog.ts";
@@ -93,15 +98,17 @@ import {
   SESSION_RUNTIMES,
   TASK_KINDS,
   THINKING_LEVELS,
+  ADVISOR_CHOICES,
 } from "./types.ts";
 import type {
+  AdvisorChoice,
   AgentType,
   InspectorComment,
   InspectorInspection,
   SessionRuntime,
   Task,
 } from "./types.ts";
-import { supportsEffort } from "./harness-capabilities.ts";
+import { supportsAdvisor, supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
 import { INSPECTOR_LIMITS, INSPECTOR_POSTURES } from "./inspector.ts";
 import {
@@ -123,6 +130,12 @@ import {
   AFFECTED_TESTS_LIMITS,
   AFFECTED_TESTS_PARTITION_STATUSES,
   WORKFLOW_CHECK_STATUSES,
+  WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY,
+  WORKFLOW_COMMAND_ARTIFACT_KINDS,
+  WORKFLOW_COMMAND_FAILURE_POLICIES,
+  WORKFLOW_COMMAND_OUTPUT_LIMITS,
+  WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  WORKFLOW_COMMAND_TIMEOUT_MIN_MS,
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
@@ -213,6 +226,8 @@ import {
 } from "./schedules.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
+/** An advisor pin. Inherit is not a value: it is an omitted field, or `null` on an update. */
+const AdvisorChoiceSchema = z.enum(ADVISOR_CHOICES);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
   EffortLevelSchema.refine((level) => supportsEffort(agent, level), {
     message: "reasoning effort is not supported by this harness",
@@ -536,6 +551,32 @@ export const PlanDecisionSchema = z.object({
 export type PlanDecisionInput = z.infer<typeof PlanDecisionSchema>;
 
 /**
+ * Why a `request_input` ask could not be answered on its dashboard card, or null when it can.
+ *
+ * The card is the human's only way to answer, so an ask it cannot carry is refused before a
+ * review exists rather than shown as something nobody can act on: a blank question has nothing
+ * to read, a blank option label is a radio with no name, and two options with the same label
+ * cannot be told apart - neither by the person choosing nor by the agent, which receives the
+ * chosen option back as its LABEL. Shared by the MCP tool, which explains the refusal to the
+ * agent in its own words, and by `CreateReviewSchema`, which holds the line for any client.
+ */
+export function inputQuestionProblem(
+  question: string,
+  options: ReadonlyArray<{ label: string }> | undefined,
+): string | null {
+  if (!question.trim()) return "the question is empty";
+  const seen = new Set<string>();
+  for (const [index, option] of (options ?? []).entries()) {
+    const label = option.label.trim();
+    if (!label) return `option ${index + 1} has an empty label`;
+    const key = label.toLowerCase();
+    if (seen.has(key)) return `more than one option is labelled "${label}", so the answer could not say which was chosen`;
+    seen.add(key);
+  }
+  return null;
+}
+
+/**
  * An MCP-driven agent creating a review item bound to its session's pane.
  *
  * A `plan-decisions` review must carry at least one decision: the whole point of the
@@ -572,6 +613,12 @@ export const CreateReviewSchema = z
   .refine((r) => r.kind !== "input" || (r.decisions?.length ?? 0) <= 1, {
     message: "kind 'input' carries at most one decision",
     path: ["decisions"],
+  })
+  .superRefine((r, ctx) => {
+    if (r.kind !== "input") return;
+    const decision = r.decisions?.[0];
+    const problem = inputQuestionProblem(decision ? decision.question : r.body.trim() || r.title, decision?.options);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `This question cannot be answered on its card: ${problem}`, path: ["decisions"] });
   })
   .refine((r) => r.kind === "plan-decisions" || r.kind === "input" || !r.decisions?.length, {
     message: "only kinds 'plan-decisions' and 'input' can carry decisions",
@@ -985,6 +1032,8 @@ export const PlanDecisionAnswerSchema = z.object({
   other: z.string().nullable().optional().default(null),
   /** The "Other" text is Foreman's draft, submitted unchanged - see `PlanDecisionAnswer`. */
   foremanDraftAccepted: z.literal(true).optional(),
+  note: z.string().nullable().optional(),
+  chat: z.boolean().optional(),
 });
 export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
 
@@ -1007,6 +1056,12 @@ export const ResolveReviewSchema = z.object({
   response: z.string().nullable().optional().default(null),
   selections: z.array(PlanDecisionAnswerSchema).nullable().optional().default(null),
   by: AnswerActorSchema,
+  /**
+   * "Approve all future bundles for this task", ticked on a managed plan's final-bundle form.
+   * Only a submitted answer grants it: a dismissal decided nothing, so the route reads it
+   * only beside `action: "answer"`.
+   */
+  approveFutureBundles: z.boolean().optional(),
 }).transform((resolution) => ({
   ...resolution,
   response: resolution.action === "dismiss" ? null : resolution.response,
@@ -1077,34 +1132,11 @@ const TaskDependenciesSchema = z
   });
 
 /**
- * A model id, in the only shape that is safe to hand to a harness CLI.
- *
- * Terminal backends preserve argv boundaries, but the value still passes through each
- * harness's option parser. Requiring an alphanumeric first character rejects flag- and
- * path-shaped inputs, while the restricted remainder excludes whitespace and control
- * characters before the id is stored. Real Claude and Codex ids fit that alphabet
- * (`claude-opus-4-8`, `gpt-5.6-sol`). Note this deliberately excludes Claude's `[1m]`
- * long-context marker: the CLI takes the bare id and picks the window itself.
+ * The model id vocabulary. Defined in `model-id.ts`, a leaf module, so browser-safe shared
+ * modules that `protocol.ts` itself imports (the resident profile schema) can use it without
+ * an import cycle; re-exported here for every existing reader.
  */
-export const ModelIdSchema = z
-  .string()
-  .max(80)
-  // `/` and `:` are allowed only in the INTERIOR, never as the first character, so a
-  // provider-qualified id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the
-  // provider) passes while a path such as `../../etc/passwd` or a bare `-rf` still fails on
-  // the leading-char class.
-  //
-  // `:` is here because Amazon Bedrock's own ids carry a version suffix - measured against
-  // Pi 0.85.1, 41 of the 121 models it lists for `amazon-bedrock` are of the shape
-  // `anthropic.claude-sonnet-4-5-20250929-v1:0`. Excluding it did not reject those ids at
-  // the edge, it dropped a third of that provider's catalog silently: the row never reached
-  // the picker, so the model simply did not exist as far as an operator could tell. It is
-  // no weaker than the rest of the class - not whitespace, not a control character, not a
-  // path separator, and not able to start the string.
-  //
-  // Terminal adapters own argv preservation; this schema owns the persisted id vocabulary.
-  // Test: `dispatch-model.test.ts`.
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/:-]*$/, "model id must be alphanumeric with . _ - / : only");
+export { ModelIdSchema };
 
 /** Bounds for the aggregate harness model catalog carried over HTTP. */
 export const HARNESS_MODEL_CATALOG_LIMITS = {
@@ -1222,6 +1254,9 @@ export const DispatchSchema = z
     model: ModelIdSchema.optional(),
     /** Reasoning-effort override; omitted follows the harness default at launch time. */
     effort: EffortLevelSchema.optional(),
+    // No advisor field: the advisor is a harness setting chosen per launch model
+    // (`HarnessesConfig.advisor`), not something a task pins. An `advisorModel` sent by an
+    // older client is stripped like any other unknown key.
     /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
      * plan and shape tasks, Bug Fix Review for bugfix tasks, Documentation Review for document
@@ -1248,19 +1283,28 @@ export const DispatchSchema = z
     message: "reasoning effort is not supported by this harness",
   })
   .superRefine((o, ctx) => {
+    // A resident is created only by its profile's launch, which reserves the run first.
+    if (taskKindCreator(o.kind) === "resident-launch") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["kind"],
+        message: RESIDENT_TASK_REFUSAL,
+      });
+      return;
+    }
     if (taskKindAllowsBacklog(o.kind)) return;
     if (o.backlog) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["backlog"],
-        message: TASK_KIND_BACKLOG_REFUSAL,
+        message: taskKindBacklogRefusal(o.kind),
       });
     }
     if (o.dependencies.length > 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["dependencies"],
-        message: TASK_KIND_BACKLOG_REFUSAL,
+        message: taskKindBacklogRefusal(o.kind),
       });
     }
   });
@@ -1401,6 +1445,33 @@ export const RescheduleTaskSchema = z.object({}).strict();
 export const RequeueTaskSchema = z.object({}).strict();
 
 /**
+ * Dismiss open launch failures (`POST /api/launch-failures/dismiss`). A list, because a failed
+ * tile stands for every attempt of the same work that failed the same way, and one Dismiss on
+ * it answers all of them. Bounded as a request body, not as a product limit.
+ */
+export const DismissLaunchFailuresSchema = z
+  .object({ taskIds: z.array(z.string().min(1)).min(1).max(100) })
+  .strict();
+
+/**
+ * Start a report session for one launch failure (`POST /api/launch-failures/report`).
+ *
+ * The daemon builds the session's brief from `taskId` alone, so the browser never carries the
+ * failure's facts. `repoRoot` is only where the report session runs: every session kind but a
+ * resident needs a checkout, and a failed resident has none of its own to offer.
+ */
+export const ReportLaunchFailureSchema = z
+  .object({ taskId: z.string().min(1), repoRoot: z.string().min(1) })
+  .strict();
+
+/**
+ * Try a failed launch again (`POST /api/launch-failures/retry`): a backlog kind is re-filed and
+ * dispatched as the same task, a chat is filed again as a new one. A resident is launched again
+ * from its profile instead, through the one resident launch call.
+ */
+export const RetryLaunchFailureSchema = z.object({ taskId: z.string().min(1) }).strict();
+
+/**
  * Move one backlog task in the operator's order - the ONE route that writes
  * `Task.backlogRank`, and the only way the order ever changes by hand.
  *
@@ -1454,6 +1525,10 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * alone, while an explicit `null` takes it back off - which is the only way to say
  * "follow the harness default again" about a row that already names an override.
  *
+ * `advisorModel` accepts ONLY `null`. A task can no longer pin an advisor - that moved to
+ * `HarnessesConfig.advisor` - but a task filed before the move may still carry one, and the
+ * dispatch form's "Use Settings" action is how an operator takes it back off.
+ *
  * `enabled` is the backlog's enable/disable toggle, and it is deliberately NOT
  * annotation: it only means anything while the task is in the backlog, so it falls
  * under the same status guard as the provisioning fields. Exempting it would let a
@@ -1478,7 +1553,7 @@ const UpdateTaskFieldsSchema = z
     title: z.string().optional(),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
       .optional(),
     agent: z.enum(AGENT_TYPES).optional(),
     enabled: z.boolean().optional(),
@@ -1486,6 +1561,7 @@ const UpdateTaskFieldsSchema = z
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
     effort: EffortLevelSchema.nullable().optional(),
+    advisorModel: z.null().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
@@ -1499,13 +1575,17 @@ export const UpdateTaskSchema = UpdateTaskFieldsSchema
   );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
 
-/** MCP and dashboard task configuration use the same field validators. */
+/**
+ * MCP and dashboard task configuration use the same field validators. No `advisorModel`: a
+ * new task cannot pin one, and this schema is strict, so a caller still sending it is told.
+ */
 export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
   title: true,
   intent: true,
   planInputs: true,
+  advisorModel: true,
 }).strict();
 
 /**
@@ -1585,7 +1665,7 @@ export const BulkUpdateTasksSchema = z
       .object({
         kind: z
           .enum(TASK_KINDS)
-          .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+          .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
           .optional(),
         agent: z.enum(AGENT_TYPES).optional(),
         enabled: z.boolean().optional(),
@@ -2918,6 +2998,33 @@ const taskKindDefaultsPatchShape = Object.fromEntries(
   HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, TaskKindDefaultPatchSchema.optional()]),
 ) as Record<HarnessLaunchedTaskKind, z.ZodOptional<typeof TaskKindDefaultPatchSchema>>;
 
+/** One harness's advisor defaults AS STORED. See `HarnessesConfigSchema.advisor`. */
+const HarnessAdvisorDefaultsSchema = z
+  .object({
+    default: z.string().nullable().default(null),
+    overrides: z.record(z.string(), z.string()).default({}),
+  })
+  .default({});
+
+/**
+ * One harness's advisor defaults as a PATCH. `default` replaces the stored one; `overrides`
+ * merges per model, and a `null` there removes that model's override.
+ */
+const HarnessAdvisorPatchSchema = z
+  .object({
+    default: AdvisorChoiceSchema.nullable().optional(),
+    overrides: z.record(ModelIdSchema, AdvisorChoiceSchema.nullable()).optional(),
+  })
+  .strict();
+
+/** The choices one advisor patch writes, for the capability check below. */
+function advisorPatchChoices(patch: z.infer<typeof HarnessAdvisorPatchSchema> | undefined): AdvisorChoice[] {
+  if (!patch) return [];
+  return [patch.default, ...Object.values(patch.overrides ?? {})].filter(
+    (choice): choice is AdvisorChoice => choice != null,
+  );
+}
+
 /**
  * Defaults the harness applies to the sessions IT dispatches - never to the
  * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
@@ -3009,8 +3116,37 @@ export const HarnessesConfigSchema = z.object({
    * added but can never come to mean a different kind later.
    */
   kindDefaults: z.object(taskKindDefaultsShape).default({}),
+  /**
+   * The advisor each harness's dispatched sessions launch with, chosen by the model the
+   * launch resolved. `overrides` is keyed by bare model id (`claude-opus-5-5`); a launch
+   * whose model has no override, or that names no model at all, gets `default`.
+   *
+   * `null` is Inherit: nothing is rendered and the operator's own Claude settings decide,
+   * which is the shipped value, so this key changes no launch until it is set. Only a harness
+   * that declares `advisor` can hold anything else - the patch refuses the rest.
+   *
+   * Stored loosely for the reason `sessionRuntime` is: this blob is parsed on every dispatch,
+   * so a choice a newer build wrote must not throw. `resolveLaunchAdvisor` narrows every read
+   * through `supportsAdvisor`, and nothing may read these values raw.
+   */
+  advisor: z
+    .object({
+      claude: HarnessAdvisorDefaultsSchema,
+      codex: HarnessAdvisorDefaultsSchema,
+      pi: HarnessAdvisorDefaultsSchema,
+    })
+    .default({}),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
+/** One harness's stored advisor defaults, as read. */
+export type HarnessAdvisorDefaults = HarnessesConfig["advisor"][AgentType];
+
+/** Every harness on Inherit with no overrides - what an untouched installation holds. */
+export function emptyHarnessAdvisorDefaults(): HarnessesConfig["advisor"] {
+  return Object.fromEntries(
+    AGENT_TYPES.map((agent) => [agent, { default: null, overrides: {} }]),
+  ) as HarnessesConfig["advisor"];
+}
 /** One task kind's stored launch defaults, as read. */
 export type TaskKindDefault = HarnessesConfig["kindDefaults"][HarnessLaunchedTaskKind];
 
@@ -3473,9 +3609,50 @@ export const HarnessesConfigPatchSchema = z
      * blank the agent beside it.
      */
     kindDefaults: z.object(taskKindDefaultsPatchShape).strict().optional(),
+    /** Merged per harness and then per model by `setHarnessesConfig`. */
+    advisor: z
+      .object({
+        claude: HarnessAdvisorPatchSchema.optional(),
+        codex: HarnessAdvisorPatchSchema.optional(),
+        pi: HarnessAdvisorPatchSchema.optional(),
+      })
+      .strict()
+      .optional(),
   })
-  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
+  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" })
+  // Read off the capability, so a harness that gains an advisor is settable with no edit here.
+  .refine(
+    (o) =>
+      AGENT_TYPES.every((agent) =>
+        advisorPatchChoices(o.advisor?.[agent]).every((choice) => supportsAdvisor(agent, choice)),
+      ),
+    { path: ["advisor"], message: "this harness has no advisor to set" },
+  );
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
+
+/**
+ * What a harness's OWN configuration says about its advisor, which is what Inherit resolves
+ * to. Read by the daemon from the operator's settings so the Harnesses panel can say whether
+ * a dispatched session will actually consult one. Null for a harness with no advisor.
+ */
+export const AdvisorEnvironmentSchema = z.object({
+  /** The advisor the operator's user settings name, as written there (`opus`), or null. */
+  inherited: z.string().nullable(),
+  /** Where `inherited` was read from, shown beside it. */
+  source: z.string(),
+  /**
+   * Why no advisor can run in a dispatched session whatever is chosen, as one sentence, or
+   * null. An Off choice needs no reason; this is for a pin that will not take effect.
+   */
+  blocked: z.string().nullable(),
+});
+export type AdvisorEnvironment = z.infer<typeof AdvisorEnvironmentSchema>;
+export const HarnessAdvisorEnvironmentsSchema = z.object({
+  claude: AdvisorEnvironmentSchema.nullable(),
+  codex: AdvisorEnvironmentSchema.nullable(),
+  pi: AdvisorEnvironmentSchema.nullable(),
+});
+export type HarnessAdvisorEnvironments = z.infer<typeof HarnessAdvisorEnvironmentsSchema>;
 
 /**
  * One stored per-multiplexer terminal preference. Loose for the reason
@@ -3731,6 +3908,12 @@ export const LineDensitySchema = z.enum(LINE_DENSITIES);
 export type LineDensity = (typeof LINE_DENSITIES)[number];
 
 /**
+ * Which skin paints the dashboard. The registry, its append-only rule and the reason a stored
+ * id is never renamed live in `./skins.ts`; this is only the validator over its ids.
+ */
+export const SkinIdSchema = z.enum(SKIN_IDS);
+
+/**
  * How the console's conversation header marks a task session's kind (`TaskKindMark`).
  *
  * Every kind is marked, `ship` included, because a kind printed only when it is not the
@@ -3930,6 +4113,8 @@ export const UI_CONFIG_DEFAULTS = {
    * which is a hover or a click away. That trade was put to the operator and taken.
    */
   lineDensity: "condensed",
+  /** Today's look. A skin is opt-in; nothing an install already shows changes on upgrade. */
+  skin: DEFAULT_SKIN,
   taskKindHeader: "badge",
   taskKindCard: "tab",
   keybindings: {},
@@ -4008,8 +4193,17 @@ export const UI_CONFIG_DEFAULTS = {
    * the board spent those pixels on the columns that hold sessions.
    */
   showEmptyColumnStash: true,
+  /** Show every state group in the Board drill-in sidebar. */
+  boardSidebarAllSessions: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
+  /**
+   * Empty, both of them: the bar ships the way its predecessor drew it - every item present
+   * and every control at full size, with the measured ladder still shedding labels when the
+   * window narrows. See `src/web/lib/topbar-items.ts` for which ids each list may hold.
+   */
+  hiddenTopbarItems: [] as readonly string[],
+  compactTopbarItems: [] as readonly string[],
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -4026,6 +4220,14 @@ export const UiConfigSchema = z.object({
    * state costs nothing.
    */
   lineDensity: LineDensitySchema.default(UI_CONFIG_DEFAULTS.lineDensity),
+  /**
+   * The skin. `.catch` rather than `.default`, so an id written by a build that shipped a skin
+   * this one does not (a downgrade) reads as Default instead of failing the whole `ui` record.
+   * A missing key lands in the same place, so no migration is owed. Tolerant on READ only:
+   * `UiConfigPatchSchema` validates this field strictly, so a bad write is a 400 and the
+   * dashboard's optimistic store rolls the skin back rather than storing "default" by accident.
+   */
+  skin: SkinIdSchema.catch(UI_CONFIG_DEFAULTS.skin),
   taskKindHeader: TaskKindHeaderStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindHeader),
   taskKindCard: TaskKindCardStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindCard),
   /**
@@ -4150,6 +4352,7 @@ export const UiConfigSchema = z.object({
    * something needs you.
    */
   showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
+  boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.
    *
@@ -4162,6 +4365,26 @@ export const UiConfigSchema = z.object({
    * failing the whole config. An unknown id simply matches no column.
    */
   collapsedBoardColumns: z.array(z.string().min(1)).default([]),
+  /**
+   * The topbar's optional items the operator has hidden - the session counts, search, the cost
+   * estimate, product feedback, and alerts and away mode.
+   *
+   * A list of HIDDEN ids for the reasons `hiddenDisplayItems` gives: an item a later build
+   * adds is drawn for everyone until they say otherwise, and a retired or unknown id is inert
+   * rather than a parse error. Not validated against the id set, which is a web-only concept
+   * owned by `src/web/lib/topbar-items.ts`.
+   *
+   * Its own key rather than more entries in `hiddenDisplayItems`, because that array carries
+   * a seed ladder whose marker counts its builds, and none of these ids ever ships hidden.
+   */
+  hiddenTopbarItems: z.array(z.string().min(1)).default([...UI_CONFIG_DEFAULTS.hiddenTopbarItems]),
+  /**
+   * The topbar controls the operator wants ALWAYS drawn minimized - glyph only, as the ladder
+   * draws them when the bar runs out of room. These controls cannot be hidden; the page
+   * segments, Recurring missions and Foreman are how anyone gets anywhere. Absent means
+   * expanded, with the ladder still free to minimize it on a narrow window.
+   */
+  compactTopbarItems: z.array(z.string().min(1)).default([...UI_CONFIG_DEFAULTS.compactTopbarItems]),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
@@ -4172,7 +4395,11 @@ export type UiConfig = z.infer<typeof UiConfigSchema>;
  * field wholesale is what the caller means. Nothing merges per-key, so nothing can be
  * blanked by a patch that didn't mention it.
  */
-export const UiConfigPatchSchema = UiConfigSchema.partial().refine(
+export const UiConfigPatchSchema = UiConfigSchema.partial().extend({
+  // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
+  // `{ skin: "nope" }` into a successful write of Default.
+  skin: SkinIdSchema.optional(),
+}).refine(
   (o) => Object.keys(o).length > 0,
   { message: "empty config update" },
 );
@@ -6386,6 +6613,17 @@ export const WorkflowCheckEvidenceSchema = z.object({
   omittedBytes: z.number().int().nonnegative(),
   headSha: z.string().max(100).nullable(),
   note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+  artifacts: z.array(z.object({
+    id: z.string().min(1).max(200),
+    kind: z.enum(WORKFLOW_COMMAND_ARTIFACT_KINDS),
+    retainedBytes: z.number().int().nonnegative(),
+    observedBytes: z.number().int().nonnegative(),
+    droppedBytes: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    captureState: z.enum(["complete", "partial"]),
+    availability: z.enum(WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY),
+    unavailableReason: z.string().max(2_000).nullable(),
+  })).max(3).optional(),
 });
 
 const WorkflowIntentSourceSchema = z.object({
@@ -6414,6 +6652,10 @@ const WorkflowSteeringContextSchema = z.union([
   }),
 ]);
 
+export const CodeRabbitConfigSnapshotSchema = z.object({
+  source: z.literal(".coderabbit.yaml"), committed: z.boolean().optional(), digest: z.string().length(64).nullable(), enabled: z.boolean(),
+  state: z.enum(["enabled", "disabled", "missing", "invalid", "unreadable"]), diagnostic: z.string().max(1000),
+});
 const WorkflowContextSnapshotInputSchema = z.object({
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
@@ -6465,8 +6707,10 @@ const WorkflowContextSnapshotInputSchema = z.object({
     branch: z.string().max(1_000).nullable(),
   }),
   evidence: z.object({
+    coderabbit: CodeRabbitConfigSnapshotSchema.optional(),
     headSha: z.string().max(100).nullable(),
     contentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    reviewCommit: CommitOidSchema.nullable().optional().default(null),
     diffFingerprint: z.string().min(1).max(200),
     diff: z.string(),
     diffTruncated: z.boolean(),
@@ -6918,14 +7162,28 @@ export const WorkflowCheckCommandSchema = z.object({
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   command: WorkflowCommandArgvSchema,
 }).superRefine((value, ctx) => {
+  if (value.slot === "coderabbit") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "CodeRabbit uses typed repository-root tuning, not legacy argv" });
+    return;
+  }
   const problem = commandTemplateProblem(value.slot, value.command);
   if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["command"], message: problem });
 });
 
 /** One repository or subdirectory exception, inside the slot that owns it. */
+export const CodeRabbitTuningSchema = z.object({
+  kind: z.literal("coderabbit"),
+  baseRef: z.string().min(1).max(500).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/).nullable(),
+  severity: z.enum(["critical", "major", "minor", "trivial", "info"]),
+}).strict();
+
 export const WorkflowCommandOverrideSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
-  command: WorkflowCommandArgvSchema,
+  command: z.union([WorkflowCommandArgvSchema, z.tuple([])]),
+  review: CodeRabbitTuningSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.review ? value.command.length !== 0 : value.command.length === 0)
+    ctx.addIssue({ code: "custom", message: "Use either typed review tuning or a nonempty argv" });
 });
 
 /**
@@ -6953,6 +7211,12 @@ export const UpdateWorkflowCommandSchema = z.object({
     .int()
     .min(WORKFLOW_LIMITS.commandMaxRunsMin)
     .max(WORKFLOW_LIMITS.commandMaxRunsMax),
+  timeoutMs: z.number().int()
+    .min(WORKFLOW_COMMAND_TIMEOUT_MIN_MS)
+    .max(WORKFLOW_COMMAND_TIMEOUT_MAX_MS)
+    .nullable(),
+  onUnavailable: z.enum(WORKFLOW_COMMAND_FAILURE_POLICIES),
+  onBudgetExhausted: z.enum(WORKFLOW_COMMAND_FAILURE_POLICIES),
   overrides: z
     .array(WorkflowCommandOverrideSchema)
     .max(WORKFLOW_LIMITS.commandOverrides)
@@ -7254,17 +7518,56 @@ export const WorkflowAffectedTestsReportSchema = z.object({
   unrun: z.array(AffectedTestPathSchema).optional(),
 });
 
+export const CodeRabbitComparisonSchema = z.object({
+  interpreterVersion: z.literal(1), yaml: CodeRabbitConfigSnapshotSchema,
+  baseRef: z.string().max(500).nullable(), baseTip: CommitOidSchema.nullable(), mergeBase: CommitOidSchema.nullable(), head: CommitOidSchema.nullable(),
+  empty: z.boolean(), severity: z.enum(["critical", "major", "minor", "trivial", "info"]), ruleRevision: z.number().int(),
+  timeoutMs: z.number().int(), maxRuns: z.number().int(), error: z.string().max(2000).nullable(),
+});
+export const CodeRabbitReviewSummarySchema = z.object({
+  comparison: CodeRabbitComparisonSchema, status: z.enum(["complete", "incomplete", "skipped"]),
+  counts: z.object({critical: z.number(), major: z.number(), minor: z.number(), trivial: z.number(), info: z.number(), none: z.number()}),
+  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
+});
+
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
 export const WorkflowCheckOutcomeSchema = z.object({
+  review: CodeRabbitReviewSummarySchema.optional(),
+  warning: z.string().max(2000).optional(),
+  diagnosticError: z.string().max(2000).optional(),
   status: z.enum(WORKFLOW_CHECK_STATUSES),
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   command: z.array(z.string()).nullable(),
   exitCode: z.number().int().nullable(),
   output: z.string().max(WORKFLOW_EXECUTION_LIMITS.checkOutput),
   truncatedBytes: z.number().int().min(0),
+  artifacts: z.array(z.object({
+    id: z.string().min(1).max(200),
+    kind: z.enum(WORKFLOW_COMMAND_ARTIFACT_KINDS),
+    retainedBytes: z.number().int().nonnegative(),
+    observedBytes: z.number().int().nonnegative(),
+    droppedBytes: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    captureState: z.enum(["complete", "partial"]),
+    availability: z.enum(WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY),
+    unavailableReason: z.string().max(2_000).nullable(),
+  })).max(3).optional().default([]),
+  timeoutMs: z.number().int().min(WORKFLOW_COMMAND_TIMEOUT_MIN_MS)
+    .max(WORKFLOW_COMMAND_TIMEOUT_MAX_MS).nullable().optional().default(null),
   note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   affected: WorkflowAffectedTestsReportSchema.optional(),
 });
+
+export const ReadWorkflowCommandOutputSchema = z.object({
+  runId: z.string().min(1).max(500),
+  attemptId: z.string().min(1).max(500),
+  artifactId: z.string().min(1).max(500),
+  cursor: z.string().max(WORKFLOW_COMMAND_OUTPUT_LIMITS.cursorChars).nullable().optional(),
+  limit: z.number().int()
+    .min(WORKFLOW_COMMAND_OUTPUT_LIMITS.readBytesMin)
+    .max(WORKFLOW_COMMAND_OUTPUT_LIMITS.readBytesMax)
+    .optional(),
+}).strict();
 
 /**
  * Foreman's proof that a completion episode is verified, offered to whatever workflow is
@@ -8244,7 +8547,7 @@ const ScheduleTemplateSchema = z
     repoRoot: z.string().min(1),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
       .refine(taskKindAllowsSchedule, TASK_KIND_SCHEDULE_REFUSAL)
       .default("ship"),
     /**
@@ -8844,3 +9147,37 @@ export const SessionControlRequestSchema = z.object({
   command: SessionControlActionSchema,
 }).strict();
 export type SessionControlAction = z.infer<typeof SessionControlActionSchema>;
+
+// ---- resident profiles ----
+
+/** `POST /api/residents/profiles`: revision 1 of a new profile. */
+export const CreateResidentProfileSchema = z
+  .object({ settings: ResidentProfileRevisionRequestSchema })
+  .strict();
+export type CreateResidentProfile = z.infer<typeof CreateResidentProfileSchema>;
+
+/** `PATCH /api/residents/profiles/:id`: a new revision, refused unless it follows `expectedRevision`. */
+export const UpdateResidentProfileSchema = z
+  .object({
+    expectedRevision: z.number().int().positive(),
+    settings: ResidentProfileRevisionRequestSchema,
+  })
+  .strict();
+export type UpdateResidentProfile = z.infer<typeof UpdateResidentProfileSchema>;
+
+/** `DELETE /api/residents/profiles/:id`: archive, compare-and-set on the revision the editor read. */
+export const ArchiveResidentProfileSchema = z
+  .object({ expectedRevision: z.number().int().positive() })
+  .strict();
+export type ArchiveResidentProfile = z.infer<typeof ArchiveResidentProfileSchema>;
+
+/** `POST /api/residents/profiles/:id/launch`. Restart IDs belong only to the restart route. */
+export const LaunchResidentRequestSchema = LaunchResidentSchema.refine(
+  (input) => !input.requestId.startsWith("resident-restart:"),
+  { message: "This request ID is reserved for profile restarts.", path: ["requestId"] },
+);
+
+export { ScheduleNextIterationSchema as ScheduleNextIterationRequestSchema } from "./residents.ts";
+/** Skill-source mutations share one validated config contract. */
+export { UpdateResidentSkillSourcesSchema } from "./resident-skills.ts";
+export const RescanResidentSkillsSchema = z.object({}).strict();

@@ -156,7 +156,7 @@ test("an app-server whose scope was not OOM-stopped, or whose verdict is unknown
 test("connect awaits the session scope's ready() before it spawns, and wraps under the session's label", { timeout: 15_000 }, async (t) => {
   reset();
   const { scope, calls } = fakeScope(UNIT);
-  const transport = await createCodexSdkDeps(scope).connect(["-c", "b=2"], root, root, "sdk:connected");
+  const transport = await createCodexSdkDeps(scope).connect(["-c", "b=2"], root, root, { sessionLabel: "sdk:connected" });
   t.after(() => transport.close());
   await waitForArgv();
   assert.equal(calls.ready, 1);

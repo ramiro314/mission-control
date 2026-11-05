@@ -404,6 +404,8 @@ export interface CheckTreeAcquireInput {
   onClaimStart?: () => void;
   /** Stops the acquisition's dependency claim, whether it is running or has yet to start. */
   signal?: AbortSignal;
+  /** False takes the tree without the repository's dependency claim. See `acquireForAttempt`. */
+  runClaim?: boolean;
 }
 
 /** A tree a provider took, and what its dependency claim said, when one ran inside the take. */
@@ -660,7 +662,7 @@ export class MissionCheckTreeProvider implements CheckTreeProvider {
       awaitingDomainRecord: true,
       // The pool's claim runs inside this lease under the same rules as a task's: skipped on a
       // matching fingerprint, handed over with a warning when it fails.
-      runClaim: true,
+      runClaim: input.runClaim ?? true,
       ...(input.onClaimStart ? { onClaimStart: input.onClaimStart } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     });
@@ -997,8 +999,15 @@ export class CheckLeaseManager {
      * its first step. Either way the attempt ends with the dependency failure a stop produces.
      */
     signal?: AbortSignal;
+    /**
+     * False for a Command that installs and runs nothing from the tree's dependencies - a
+     * CodeRabbit review reads the commit only - so neither the pool slot nor the cold fallback
+     * runs the repository's claim for it. Defaults to true.
+     */
+    runClaim?: boolean;
   }): Promise<string> {
     const { attemptId, repoRoot } = input;
+    const runClaim = input.runClaim ?? true;
     // Claimed SYNCHRONOUSLY, before the first await, and this ordering is the guard rather
     // than a detail. Every check below reads state that a concurrent call for the same
     // attempt could still change: two callers that both got past `store.get` would each
@@ -1045,6 +1054,7 @@ export class CheckLeaseManager {
           baseSha,
           ...(onClaimStart ? { onClaimStart } : {}),
           ...(signal ? { signal } : {}),
+          runClaim,
         });
       } catch (error) {
         if (!(error instanceof NativeCheckNotAcquiredError)) throw error;
@@ -1095,7 +1105,7 @@ export class CheckLeaseManager {
           // tree, once that tree is recorded and pinned: a failure or a stop in it then unwinds
           // through the same hand-back below as any other preparation failure.
           let claimFailure = taken.claimFailure;
-          if (provider === this.git) {
+          if (provider === this.git && runClaim) {
             const claimed = await this.missionManager.claimDisposableTree({
               repositoryPath: repoRoot,
               path,

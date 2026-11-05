@@ -54,6 +54,9 @@ The tool blocks until the human submits or dismisses the round, then returns the
 
 - **Submitted:** record each answer, including any Other text, as settled, and compute the
   next frontier.
+- **A question marked `→ Chat about it`:** the human moved it to chat, so it is not settled.
+  Explain it in your next message and end the turn; do not ask it again in a form until the
+  conversation has settled what was unclear, and never answer it with your recommendation.
 - **Dismissed:** stop the session. A dismissed round is not an answer. Never infer a
   selection from it, never fall back to your recommendations, and never continue to a plan.
   Say that the interview was dismissed and end the turn.

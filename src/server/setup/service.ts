@@ -1,6 +1,8 @@
+import { enableMcpTrust } from "./mcp-trust.ts";
 import {
   SETUP_SERVICE_INFO,
   type SetupServiceId,
+  type SetupServicePrerequisite,
 } from "@shared/setup-catalog.ts";
 
 import { binUnsupportedReason } from "../terminal/bin.ts";
@@ -37,9 +39,13 @@ export interface SetupServiceResult {
   outcome: SetupServiceOutcome;
   label: string;
   detail: string;
+  /** A different named repair this start needs first; see `SETUP_SERVICE_PREREQUISITES`. */
+  prerequisite?: SetupServicePrerequisite;
 }
 
-export type SetupServiceStarters = Record<SetupServiceId, () => Promise<TerminalResult>>;
+export type SetupServiceStartResult = TerminalResult & { prerequisite?: SetupServicePrerequisite };
+
+export type SetupServiceStarters = Record<SetupServiceId, () => Promise<SetupServiceStartResult>>;
 
 /**
  * A cmux repair, refused before it runs on a host cmux does not support. The Setup row never
@@ -61,6 +67,8 @@ export function setupServiceStarters(
   platform: NodeJS.Platform = process.platform,
 ): SetupServiceStarters {
   return {
+    "claude-mcp-trust": async () => enableMcpTrust("claude"),
+    "codex-mcp-trust": async () => enableMcpTrust("codex"),
     "herdr-server": () => herdrServerStart(),
     "cmux-app": cmuxStarter(() => cmuxAppStart(), platform),
     "cmux-socket-control": cmuxStarter(async () => {
@@ -95,7 +103,7 @@ export async function startSetupService(
         service,
         outcome: "started",
         label,
-        // The service's own sentence, because only two of the three start a process and a
+        // The service's own sentence, because configuration repairs start no process and a
         // sentence built around the label claimed all of them did.
         detail: started,
       },
@@ -113,6 +121,7 @@ export async function startSetupService(
       outcome: unknown ? "unknown" : "refused",
       label,
       detail: result.error ?? refused,
+      ...(result.prerequisite ? { prerequisite: result.prerequisite } : {}),
     },
   };
 }

@@ -28,6 +28,8 @@ const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const AFFECTED = ["yarn", "test:affected", "--junit-file={junit}", "{files}"];
+/** A slot's shipped timeout and failure policies, for a `replace` that sets neither. */
+const POLICIES = { timeoutMs: null, onUnavailable: "skip", onBudgetExhausted: "skip" } as const;
 
 /** A real, canonical main checkout with an app folder in it, because the routes resolve through git. */
 function repository(): string {
@@ -75,13 +77,16 @@ test("preview lists every add, change and removal, and apply writes them, leavin
   const { commands, testing, emitted, post } = fixture();
   const repo = repository();
   const other = repository();
-  // What is stored: a default and a run budget the document must not touch, this repository's
-  // rows, and another repository's row in the same slot.
+  // What is stored: a default, a run budget, a timeout and failure policies the document must
+  // not touch, this repository's rows, and another repository's row in the same slot.
   const lint = slot(commands, "lint");
   assert.equal(commands.replace("lint", {
     expectedRevision: lint.revision,
     defaultCommand: ["npm", "run", "lint"],
     maxRuns: 4,
+    timeoutMs: 120_000,
+    onUnavailable: "block",
+    onBudgetExhausted: "block",
     overrides: [
       { repoRoot: repo, command: ["old", "lint"] },
       { repoRoot: `${repo}/apps/api`, command: ["api", "lint"] },
@@ -93,6 +98,7 @@ test("preview lists every add, change and removal, and apply writes them, leavin
     expectedRevision: test_.revision,
     defaultCommand: null,
     maxRuns: 1,
+    ...POLICIES,
     overrides: [{ repoRoot: `${repo}/apps/web`, command: ["web", "test"] }],
   }).ok, true);
   assert.equal(testing.replace({ repoRoot: `${repo}/apps/api`, expectedRevision: 0, settings: { tests: { smokeSet: ["s.ts"] } } }).ok, true);
@@ -134,6 +140,9 @@ test("preview lists every add, change and removal, and apply writes them, leavin
   const after = slot(commands, "lint");
   assert.deepEqual(after.defaultCommand, ["npm", "run", "lint"]);
   assert.equal(after.maxRuns, 4);
+  assert.equal(after.timeoutMs, 120_000);
+  assert.equal(after.onUnavailable, "block");
+  assert.equal(after.onBudgetExhausted, "block");
   assert.deepEqual(after.overrides, [
     { repoRoot: repo, command: ["yarn", "lint"] },
     { repoRoot: `${repo}/apps/api`, command: ["api", "lint"] },
@@ -162,7 +171,7 @@ test("a preview gone stale is refused with 409 and the recomputed preview, and w
 
   // Another window saves the lint slot (in a slot the document only adds to), after the preview.
   const lint = slot(commands, "lint");
-  commands.replace("lint", { expectedRevision: lint.revision, defaultCommand: null, maxRuns: 1, overrides: [{ repoRoot: `${repo}/apps/web`, command: ["theirs"] }] });
+  commands.replace("lint", { expectedRevision: lint.revision, defaultCommand: null, maxRuns: 1, ...POLICIES, overrides: [{ repoRoot: `${repo}/apps/web`, command: ["theirs"] }] });
 
   const stale = await post("/api/command-documents/apply", { repoRoot: repo, document, basis: preview.basis });
   assert.equal(stale.status, 409);
@@ -305,6 +314,7 @@ test("export then import round-trips: the preview changes nothing and apply writ
     expectedRevision: affected.revision,
     defaultCommand: null,
     maxRuns: 1,
+    ...POLICIES,
     overrides: [{ repoRoot: `${repo}/apps/web`, command: AFFECTED }, { repoRoot: repo, command: AFFECTED }],
   });
   testing.replace({ repoRoot: `${repo}/apps/web`, expectedRevision: 0, settings: { tests: { smokeSet: ["smoke/*.ts"], patterns: ["src/**/*.test.ts"] } } });
@@ -330,6 +340,46 @@ test("export then import round-trips: the preview changes nothing and apply writ
   assert.equal(applied.status, 200);
   assert.deepEqual({ lint: slot(commands, "affected-tests").revision, rows: testing.list().map((view) => view.revision) }, before);
   assert.deepEqual(emitted, []);
+});
+
+test("CodeRabbit tuning is never part of a document: export leaves it out, a document cannot name it, apply keeps it", async () => {
+  const { commands, request, post } = fixture();
+  const repo = repository();
+  const coderabbit = slot(commands, "coderabbit");
+  const tuning = { repoRoot: repo, command: [], review: { kind: "coderabbit" as const, baseRef: "main", severity: "minor" as const } };
+  assert.equal(commands.replace("coderabbit", {
+    expectedRevision: coderabbit.revision,
+    defaultCommand: null,
+    maxRuns: coderabbit.maxRuns,
+    timeoutMs: null,
+    onUnavailable: coderabbit.onUnavailable,
+    onBudgetExhausted: coderabbit.onBudgetExhausted,
+    overrides: [tuning],
+  }).ok, true);
+  const tuned = slot(commands, "coderabbit");
+
+  const exported = await (await request(`/api/command-documents/export?repoRoot=${encodeURIComponent(repo)}`)).json() as { document: { commands: Record<string, unknown> } };
+  assert.deepEqual(exported.document.commands, {}, "the export named the CodeRabbit slot");
+
+  const named = await post("/api/command-documents/preview", {
+    repoRoot: repo,
+    document: { version: 1, commands: { coderabbit: [{ path: "", remove: true }] } },
+  });
+  assert.equal(named.status, 400);
+  const refusal = await named.json() as { problems: string[] };
+  assert.ok(refusal.problems.some((line) => /Unrecognized key\(s\) in object: 'coderabbit'/.test(line)), refusal.problems.join("\n"));
+
+  // A document over every argv slot applies, and the CodeRabbit row is exactly as it was.
+  const document = {
+    version: 1,
+    commands: { lint: [{ path: "", argv: ["yarn", "lint"] }], "affected-tests": [{ path: "", argv: AFFECTED }] },
+  };
+  const preview = await (await post("/api/command-documents/preview", { repoRoot: repo, document })).json() as CommandDocumentPreview;
+  assert.deepEqual(Object.keys(preview.basis.commands).sort(), ["affected-tests", "lint"]);
+  assert.equal((await post("/api/command-documents/apply", { repoRoot: repo, document, basis: preview.basis })).status, 200);
+  const after = slot(commands, "coderabbit");
+  assert.equal(after.revision, tuned.revision);
+  assert.deepEqual(after.overrides, [tuning]);
 });
 
 test("an invalid document is refused with every problem in words, before and after the merge", async () => {

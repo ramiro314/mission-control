@@ -72,8 +72,8 @@ export const MISSION_MCP_SERVER_NAME = "mission-control";
 export const MISSION_MCP_TOOLS = [
   "list_workflow_runs",
   "get_workflow_run",
+  "read_workflow_command_output",
   "trigger_workflow_action",
-  "share_plan",
   "read_sessions",
   "control_session",
   PLAN_DECISIONS_TOOL,
@@ -88,7 +88,6 @@ export const MISSION_MCP_TOOLS = [
   "publish_plan",
   "get_pull_request_policy",
   "request_input",
-  "report_product_feedback",
   "report_product_issue",
   "report_status",
   "list_backlog_tasks",
@@ -110,6 +109,7 @@ export const MISSION_MCP_TOOLS = [
   // `PROPOSE_COMMAND_DOCUMENT_TOOL` in `command-document-proposals.ts`, spelled as a literal for
   // the smoke script's reason above.
   "propose_command_document",
+  "schedule_next_iteration",
 ] as const;
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];
@@ -177,6 +177,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   // open tasks a ticket may adopt instead, and `push_task` mirrors each filed ticket when the
   // breakdown chose to.
   shape: [...PLANNING_MISSION_MCP_TOOLS, BACKLOG_LIST_TOOL, PUSH_TASK_TOOL],
+  resident: ["schedule_next_iteration"],
 };
 
 /**

@@ -1,20 +1,21 @@
 import { realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
+  COMMAND_DOCUMENT_SLOTS,
   COMMAND_DOCUMENT_VERSION,
   canonicalTestingSettings,
+  isCommandDocumentSlot,
   commandDocumentPathLabel,
   type CommandDocument,
   type CommandDocumentBasis,
   type CommandDocumentCommandChange,
   type CommandDocumentPreview,
+  type CommandDocumentSlot,
   type CommandDocumentTestingChange,
 } from "@shared/command-document.ts";
 import { storedTestingSettingsKeys, type StoredTestingSettings, type TestingSettingsView } from "@shared/testing-config.ts";
 import {
-  WORKFLOW_CHECK_SLOTS,
   WORKFLOW_LIMITS,
-  type WorkflowCheckSlot,
   type WorkflowCommandOverride,
   type WorkflowCommandView,
 } from "@shared/workflow.ts";
@@ -36,6 +37,9 @@ import {
 // A repository's rows are found the way the gate finds them: a row is this repository's when it
 // is keyed at the main checkout or a folder below it (under either spelling of the root) and no
 // folder on the way holds a `.git`, because a nested repository or submodule owns its own rows.
+//
+// Only argv slots are read or written (`COMMAND_DOCUMENT_SLOTS`). CodeRabbit's rows are review
+// tuning, so the state below never holds that slot and a document can never rewrite them.
 
 /** One of this repository's rows in a slot: the folder it applies to and the key it is stored under. */
 interface CommandRow {
@@ -52,7 +56,7 @@ interface SlotState {
 /** What is stored for one repository, as a document is merged against it. */
 export interface CommandDocumentState {
   repoRoot: string;
-  slots: Map<WorkflowCheckSlot, SlotState>;
+  slots: Map<CommandDocumentSlot, SlotState>;
   /** Every testing row of this repository, by path, including rows that set no key. */
   testing: Map<string, TestingSettingsView>;
 }
@@ -84,14 +88,16 @@ export function commandDocumentState(
   testing: Pick<TestingSettingsCatalog, "rowsForRepository">,
 ): CommandDocumentState {
   const roots = [...new Set([repoRoot, realpathOr(repoRoot)])];
-  const slots = new Map<WorkflowCheckSlot, SlotState>();
+  const slots = new Map<CommandDocumentSlot, SlotState>();
   for (const view of commands.list()) {
+    const slot = view.slot;
+    if (!isCommandDocumentSlot(slot)) continue;
     const rows = new Map<string, CommandRow>();
     for (const override of view.overrides) {
       const scope = scopeOf(roots, override.repoRoot);
       if (scope !== null && !rows.has(scope)) rows.set(scope, { key: override.repoRoot, command: override.command });
     }
-    slots.set(view.slot, { view, rows });
+    slots.set(slot, { view, rows });
   }
   return {
     repoRoot,
@@ -144,7 +150,7 @@ export function planCommandDocument(
     if (problem) problems.push(`${where} · ${commandDocumentPathLabel(path)}: ${problem}`);
   };
 
-  for (const slot of WORKFLOW_CHECK_SLOTS) {
+  for (const slot of COMMAND_DOCUMENT_SLOTS) {
     const entries = document.commands?.[slot];
     if (entries === undefined) continue;
     const slotState = state.slots.get(slot);
@@ -256,7 +262,7 @@ export function repositoryFolderProblem(repoRoot: string): FolderProblem {
 /** A repository's stored rows as a document: importing it back changes nothing. */
 export function exportCommandDocument(state: CommandDocumentState): CommandDocument {
   const commands: NonNullable<CommandDocument["commands"]> = {};
-  for (const slot of WORKFLOW_CHECK_SLOTS) {
+  for (const slot of COMMAND_DOCUMENT_SLOTS) {
     const rows = [...(state.slots.get(slot)?.rows ?? new Map<string, CommandRow>())]
       .map(([path, row]) => ({ path, argv: [...row.command] }))
       .sort(byPath);

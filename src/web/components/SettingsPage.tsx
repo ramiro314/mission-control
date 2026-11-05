@@ -28,6 +28,7 @@ import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { LineDensityPanel } from "./LineDensityPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
+import { TopbarPanel } from "./TopbarPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { UpdateSettingsPanel } from "./UpdateSettingsPanel.tsx";
 import { IntegrationsSettingsPanel } from "./IntegrationsSettingsPanel.tsx";
@@ -585,6 +586,9 @@ export function SettingsPage({
                 live card, so it belongs at the bottom of the scroll rather than pushing
                 the three one-line choices below the fold. */}
             <BoardCardPanel />
+            {/* After the card, because it is the one panel here about the chrome around every
+                page rather than about sessions - and it carries a whole bar as its preview. */}
+            <TopbarPanel />
           </>
         );
       case "keyboard":

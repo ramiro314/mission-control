@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { flattenProcessText, processInspector } from "../process-inspection/index.ts";
+import { darwinCheckIdentity } from "../../../scripts/darwin-process-identity.mjs";
 
 // "This exact process, not a recycled pid" - the one question every signal a check sends has
 // to answer first.
@@ -119,7 +120,9 @@ function linuxIdentity(pid: number): string | null {
 function darwinIdentity(pid: number): string | null {
   const read = processInspector().readStartAndCommandSync(pid);
   if (!read) return null;
-  return `${process.platform}${HALF}${read.start}${HALF}${condense(read.command)}`;
+  // Formatted by the update helper's own function, so the identity the daemon persists and
+  // the one the detached helper computes for the same process cannot drift apart.
+  return darwinCheckIdentity(`${read.start} ${read.command}`);
 }
 
 export interface CheckRuntimeSupport {

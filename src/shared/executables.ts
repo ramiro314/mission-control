@@ -36,6 +36,8 @@ export const EXECUTABLE_IDS = [
   "systemd-run",
   "systemctl",
   "choom",
+  "coderabbit",
+  "acli",
 ] as const;
 
 export type ExecutableId = (typeof EXECUTABLE_IDS)[number];

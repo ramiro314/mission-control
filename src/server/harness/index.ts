@@ -1,3 +1,4 @@
+import { claudeAdvisorEnvironment } from "./claude/advisor-environment.ts";
 import { piHooks } from "./pi/hooks.ts";
 import { claudeResumeTools, codexResumeTools, piResumeTools } from "./resume-tools.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
@@ -132,6 +133,10 @@ export const HARNESSES: Record<AgentType, Harness> = {
     },
     // Session History's reader over `~/.claude/projects`. See `HistorySpec`.
     history: claudeHistory,
+
+    // Non-null exactly because `HARNESS_CAPABILITIES.claude.advisor` is: the panel reads
+    // what Inherit resolves to here (`harness-capabilities.test.ts` pins the pairing).
+    advisorEnvironment: claudeAdvisorEnvironment,
   },
   // `hooks` was null here, as a statement rather than a gap - "Codex pushes nothing at
   // us". The spike that was supposed to test that claim did, and refuted it: Codex takes
@@ -192,6 +197,8 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // No Codex rollouts exist on any machine this was built on, so there is nothing to test a
     // reader against yet. Implementing this slot is all Codex needs to appear in History.
     history: null,
+
+    advisorEnvironment: null,
   },
   // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image
   // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process
@@ -246,6 +253,8 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // No Pi sessions exist on any machine this was built on, so there is nothing to test a
     // reader against yet. Implementing this slot is all Pi needs to appear in History.
     history: null,
+
+    advisorEnvironment: null,
   },
 };
 

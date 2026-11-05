@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isSetupInstallArgv } from "../src/server/setup/install.ts";
+import { isSetupInstallArgv, setupSignInCommand } from "../src/server/setup/install.ts";
 import {
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
@@ -89,13 +89,50 @@ test("the setup install grammar accepts only the catalog's complete invocation s
   }
 });
 
-test("every catalog command fits the grammar, and Homebrew commands exist only under darwin", () => {
+test("every catalog command fits its grammar, and Homebrew commands exist only under darwin", () => {
   for (const platform of ["darwin", "linux"] as const) {
     for (const id of SETUP_DEPENDENCY_IDS) {
       const remedy = setupRemedy(SETUP_DEPENDENCY_INFO[id], platform);
       if (remedy.kind !== "command") continue;
-      assert.equal(isSetupInstallArgv(remedy.argv), true, `${platform} ${id}`);
+      if (remedy.purpose === "install") assert.equal(isSetupInstallArgv(remedy.argv), true, `${platform} ${id}`);
+      else assert.notEqual(setupSignInCommand(remedy.argv), null, `${platform} ${id}`);
       if (remedy.argv[0] === "brew") assert.equal(platform, "darwin", id);
     }
   }
+});
+
+test("a brew formula may be qualified by its tap, and by nothing looser", () => {
+  // `brew install owner/tap/formula` taps and installs in one step, which is how a
+  // third-party CLI such as acli stays a single catalog argv.
+  assert.equal(isSetupInstallArgv(["brew", "install", "atlassian/acli/acli"]), true);
+  rejects([
+    ["brew", "install", "atlassian/acli"],
+    ["brew", "install", "a/b/c/d"],
+    ["brew", "install", "/acli/acli"],
+    ["brew", "install", "atlassian//acli"],
+    ["brew", "install", "Atlassian/acli/acli"],
+    ["brew", "install", "../acli/acli"],
+    ["brew", "install", "https://example.invalid/acli.rb"],
+    ["npm", "install", "-g", "atlassian/acli/acli"],
+  ]);
+});
+
+test("sign-in commands are a closed list of exact argvs, never a grammar", () => {
+  assert.deepEqual(setupSignInCommand(["acli", "jira", "auth", "login", "--web"]), {
+    executable: "acli",
+    argv: ["acli", "jira", "auth", "login", "--web"],
+  });
+  for (const argv of [
+    ["acli", "jira", "auth", "login"],
+    ["acli", "jira", "auth", "login", "--web", "--site", "x.atlassian.net"],
+    ["acli", "jira", "auth", "logout"],
+    ["/opt/homebrew/bin/acli", "jira", "auth", "login", "--web"],
+    ["gh", "auth", "login"],
+    [],
+  ]) {
+    assert.equal(setupSignInCommand(argv), null, JSON.stringify(argv));
+  }
+  // An install argv is not a sign-in, and a sign-in is not an install.
+  assert.equal(setupSignInCommand(["brew", "install", "gh"]), null);
+  assert.equal(isSetupInstallArgv(["acli", "jira", "auth", "login", "--web"]), false);
 });

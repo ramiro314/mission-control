@@ -543,7 +543,7 @@ order is left alone; a page reordered to match a tour would be the tour dictatin
    and node palette.
 10. **Draft and published** spotlights the Pipeline/Graph toggle, then the **disabled**
     Publish button - the draft-versus-published lesson without a draft existing.
-11. **No-Mistakes Review** walks the five stages on the authored pipeline strip.
+11. **No-Mistakes Review** walks the six stages on the authored pipeline strip, including optional CodeRabbit.
 12. **Binding it** spotlights **Bind to a session…** and names the postures version 10 ships.
 13. **A run, moving** opens `#/runs/:id` on one run that has already ended and spotlights its
     pipeline strip, then its review worklist.
@@ -560,7 +560,7 @@ model call. Terminal means any of the three ends a run can reach - `completed`, 
 moving, which all three share; a cancelled run draws the same pipeline strip, worklist and stage
 ladder that a completed one does, and the selector rejects only a run that is still open. The
 workflow match is exact, so an operator's own duplicate of No-Mistakes does not qualify: a run
-of another workflow need not carry any of the five stages stop 11 just walked.
+of another workflow need not carry the stages stop 11 just walked.
 
 **The version has to agree too.** Published versions are immutable and older ones are kept, so
 the newest terminal run on a machine can easily be a run of version 9 while the built-in has
@@ -684,8 +684,9 @@ The last three are what Mission Control MAY do on the operator's behalf, and whe
 6. **One table, four grants** selects Trust and spotlights the whole matrix - a row per
    repository, a column per grant - rather than a cell or a column, because which grants a
    machine needs depends on which repositories it works in.
-7. **Add a repository, then grant it** spotlights the add row and finishes, on the same
-   "adding is configuration; enabling is consent" line the panel itself draws.
+7. **Add the repositories you work in** spotlights the add pane and finishes. It says what an
+   add grants - Foreman, Workflows and GitHub Inspector, with YOLO merges left off - and
+   that every grant is one click to revoke.
 
 **It ends on Trust and stays there.** Every other tour replays the route it snapshotted;
 this one declares an `exit` route on its entry and hands the panel over instead, because
@@ -694,8 +695,9 @@ selection, Board drill-in, filter, and the open Line drawer are still restored, 
 route applies however the tour ends - Exit at stop one lands on Trust too. Focus goes back to
 the control that started the tour when it survived the move, and to the **Trust** rail row
 when it did not, which includes a startup-picker launch without an invoker. The rail row rather than the add
-field: a spotlight may be any element, but a landing control has to be focusable, and the add
-field is a combobox that opens a dropdown the moment it takes focus. Those two never compete:
+pane: a spotlight may be any element, but a landing control has to be focusable, and the add
+pane's first focusable control is its search field, which would put the caret in a box the
+operator never asked to type in. Those two never compete:
 the landing pass waits for a focus vacuum, and a vacuum is also what an ordinary click on a
 non-focusable area leaves, so it is not started at all when the invoker took focus back.
 
@@ -835,7 +837,8 @@ available:
 - **You choose what a session draws.** **Settings → Display → Session display** is a
   checklist of every optional item a session states about itself. Under **Board card** sit
   the card's own - jump shortcut, goal, live activity, workflow, model, context meter,
-  reasoning effort, permission mode, cost, branch, worktree and last seen - and unchecking
+  reasoning effort, permission mode, cost, branch, worktree, last seen and the resident
+  marker - and unchecking
   one applies to every card in every column immediately. A live preview card sits in the
   panel and redraws as you toggle, so you can see what you are trading without
   leaving Settings. Two things are deliberately not on the list. The **attention flags** -
@@ -893,7 +896,10 @@ available:
   scheduled task and a multi-repo task each keep it. The panel says so where you choose.
   These two switches are separate from the card's **Branch** and **Worktree** items on
   purpose: you can keep the path on the card and drop it from the console, have it in both
-  places, or have it in neither.
+  places, or have it in neither. The group has a preview of its own beside it, a console
+  header for the same sample session, which redraws as you pick a **Task type** style or
+  toggle either cell. Where Settings is too narrow to hold a preview beside its checklist,
+  each group's preview moves under the group's heading instead, above its controls.
 - **And the working indicator.** Under **Working indicator**, with a preview of its own beside
   it, sit two marks a conversation can add while its session works: **Pin the working row**,
   which keeps the log's "what it is doing now" row on the bottom edge while you scroll back,
@@ -986,6 +992,13 @@ available:
   backlog drag: dropping a card
   hands work over by resetting the agent, and a held agent's next turn belongs to its run - so
   during a drag the card lights up only over agents that are genuinely free.
+- **Residents glow and lead their column.** A [resident](residents.md#finding-a-resident)'s card
+  has an outline and soft glow in its profile's color and a short label chip, and, when its
+  profile pins it, it sorts first in its column ahead of free and held sessions. The Console rail
+  draws the same chip and leads with the same sessions, and a resident's Console header gains a
+  band naming its profile and the revision it launched from. The tone spine is untouched: the
+  glow says *which* agent, the spine still says *what state*. The **Residents** button beside
+  Foreman in the top bar opens a dock of live residents and the profiles you can launch.
 - **Killing a session closes its detail** once shutdown is accepted, without waiting for an
   Agent SDK subprocess and event stream to finish draining. The board goes straight back to
   its columns, and the console empties its pane. The session reads **stopping** during that drain, then **exited** until its ordinary
@@ -1128,6 +1141,38 @@ strip in Console and Board. Both renderings are the same panel over the
 same transcript, so find, the Observed activity rail, scroll-back, attachments and the
 reply box behave identically in either. See
 [Reading a conversation as a terminal](sessions.md#reading-a-conversation-as-a-terminal).
+
+## Skins
+
+**Settings → Display → Appearance → Skin** chooses how the whole dashboard is painted. Each
+tile shows a small preview in that skin's own colours. Picking one repaints everything at
+once, including the dashboard behind the settings page, with no Save button and no reload.
+The choice persists per machine, not per browser, and the next load paints in
+it from the first frame, in any browser or desktop window, because the daemon serves the page
+with the skin already applied. The desktop app opens in the skin's background, including its
+"Starting Mission Control" page, so a light skin opens without a dark flash. That holds even
+when the skin was chosen in a browser tab and the desktop app has never run.
+
+| Skin | Scheme | What it is |
+|------|--------|-----------|
+| **Default** | dark | The original dark theme: graphite surfaces and bright state colours. It stays the default for every install. |
+| **Daylight** | light | A clean, neutral light theme for bright rooms and daytime work. Its state colours are deepened so each still reads on white. |
+| **Paper** | light | Warm cream and ink, tuned for long reading. Headings, card titles and the Line's stage names are set in a serif. |
+| **Blueprint** | dark | An engineering drawing: deep cobalt surfaces with a faint 20px drafting grid behind the panels, crisp light linework, and headings in upper-case monospace. |
+| **Neon Dusk** | dark | A late-night synth palette: violet surfaces on a violet-to-indigo backdrop, and a magenta glow on the board's keyboard cursor, on a session tile or Line stage that needs you, and on a focused text field. Some tiles keep what they already draw in place of it: a resident's tile its own marker glow, selected or not; an expanded workflow tile that needs you its ring; and the tile a drag is aimed at its drop highlight. The Dispatch button is a magenta-to-cyan gradient. Foreman, cost and held sessions read magenta. |
+
+A skin is CSS only. It changes how the dashboard looks, never what it shows: no skin adds,
+hides or reorders a control, and every session-state colour keeps its meaning. A skin never
+changes a size, a padding or a line height either, so the fixed chrome - the top bar, the Line
+and the Dispatch button - keeps Default's geometry exactly in every skin. A skin that changes
+the face of titles can still reflow the text inside them: Blueprint's monospace is wider than
+the default face, so a long backlog card title can wrap onto one more line and make that card
+taller. Agent brand
+colours and repository colours are the same in every skin. The OS light or dark setting is
+not followed; a skin is always an explicit choice. A skin chosen in one browser tab reaches
+another open tab on its next reload. Every skin's text and state colours meet WCAG contrast
+on the surfaces they are drawn on; [Adding a skin](agent-guides/change-contracts.md#adding-a-skin)
+states the contract.
 
 ## Message formatting
 
@@ -1361,6 +1406,10 @@ tab loaded, so clicking a line re-reads the file first and the comment anchors t
 is on disk now. If the agent has rewritten that line since, the click says so instead of opening
 the box, and the line stops being clickable until you reload the diff. There is no Preview here;
 a diff is source, so every comment made from it is a line comment.
+
+Diff loading runs independent Git reads together and reads untracked files in batches of
+at most eight. The list keeps Git's file order, and each tab entry reads fresh checkout
+contents. The existing patch-size and untracked-file limits still apply.
 
 The control says why when a file takes no comment, and stays focusable so the reason is
 reachable from the keyboard: a **single-commit** diff (its new side is that commit, not the

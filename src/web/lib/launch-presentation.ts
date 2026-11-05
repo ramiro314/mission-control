@@ -32,7 +32,7 @@ export function projectLaunchPresentation(
   const projected: TranscriptMessage[] = [];
   for (const message of messages) {
     const presentation = message.presentation;
-    if (presentation?.kind !== "launch") {
+    if (presentation?.kind !== "launch" && presentation?.kind !== "resident") {
       projected.push(message);
       continue;
     }

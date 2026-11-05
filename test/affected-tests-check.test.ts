@@ -419,7 +419,7 @@ test("each partition writes its own JUnit file and reruns only its own failed fi
   assert.match(outcome.note, /Ran 7 selected test files in 3 partitions; 1 partition failed \(apps\/web\); 1 test failed twice; 1 test flaked and passed on rerun\.$/);
   // The gate's exit code is the failed partition's.
   assert.equal(outcome.exitCode, 1);
-  const verdict = checkVerdict(outcome, "attempt-1");
+  const verdict = checkVerdict(outcome, "run-1", "attempt-1");
   assert.equal(verdict?.verdict, "fail");
   if (verdict?.verdict === "fail") {
     assert.equal(verdict.requestedChanges[0]!.title, "Fix the failing test \"adds\" in apps/web/src/a.test.ts");
@@ -586,7 +586,7 @@ test("a partition that times out ends the gate there, unrun partitions after it,
   // apps/web, which would have run third, was never spawned.
   assert.deepEqual(h.runs.map((run) => run.workingSubpath), ["", "apps/api"]);
   // The supervisor's own outcome, not a verdict built from the partitions that did finish.
-  assert.deepEqual(result, { kind: "infrastructure", reason: timedOut });
+  assert.deepEqual(result, { kind: "infrastructure", reason: timedOut, artifacts: [] });
   // A proven-empty group hands the tree back; a command did run, so the budget stays spent.
   assert.equal(h.released(), 1);
   assert.equal(h.handedOff(), 0);
@@ -619,7 +619,7 @@ test("a rerun that leaves its process group running ends the gate before the nex
   assert.equal(result.kind, "infrastructure");
   if (result.kind !== "infrastructure") return;
   // The rerun's own exit is what the reason carries, and the tree is kept for reclamation.
-  assert.match(result.reason, /ran and exited 0, but that result is not reported/);
+  assert.match(result.reason, /ran and exited 0, but its result is withheld/);
   assert.match(result.reason, /could not be proven empty \(not-empty\)/);
   assert.equal(h.handedOff(), 1);
   assert.equal(h.released(), 0);
@@ -787,7 +787,7 @@ test("a pass runs only the selection, one argv element per file, and records the
     { path: "test/a.test.ts", reason: "changed" },
     { path: "test/smoke.test.ts", reason: "smoke" },
   ]);
-  assert.equal(checkVerdict(outcome, "attempt-1")?.verdict, "pass");
+  assert.equal(checkVerdict(outcome, "run-1", "attempt-1")?.verdict, "pass");
 });
 
 test("a test that fails and then passes on the rerun is a local flake, and the check passes", async () => {
@@ -827,7 +827,7 @@ test("a test that fails twice fails the check, with one requested change naming 
     name: "adds numbers",
     message: "1 !== 2\n\nstack for adds numbers",
   }]);
-  const verdict = checkVerdict(outcome, "attempt-1");
+  const verdict = checkVerdict(outcome, "run-1", "attempt-1");
   assert.equal(verdict?.verdict, "fail");
   if (verdict?.verdict !== "fail") return;
   assert.equal(verdict.requestedChanges.length, 1);
@@ -872,7 +872,7 @@ test("many failing tests with long messages still make a valid failing verdict t
     name: `case ${index} keeps its invariant`,
     message: LONG_MESSAGE,
   }));
-  const verdict = checkVerdict(failedOutcome(failures), "attempt-1");
+  const verdict = checkVerdict(failedOutcome(failures), "run-1", "attempt-1");
   assert.equal(verdict?.verdict, "fail");
   if (verdict?.verdict !== "fail") return;
   assertWithinBudget(verdict);
@@ -899,7 +899,7 @@ test("failures that cannot all fit the verdict budget are listed in part, saying
     name: `case ${index} ${"名".repeat(AFFECTED_TESTS_LIMITS.testName - 20)}`,
     message: LONG_MESSAGE,
   }));
-  const verdict = checkVerdict(failedOutcome(failures), "attempt-1");
+  const verdict = checkVerdict(failedOutcome(failures), "run-1", "attempt-1");
   assert.equal(verdict?.verdict, "fail");
   if (verdict?.verdict !== "fail") return;
   assertWithinBudget(verdict);
@@ -920,7 +920,7 @@ test("a failing test too large for any verdict falls back to the output tail, ne
     name: "\"".repeat(AFFECTED_TESTS_LIMITS.testName),
     message: "\\".repeat(AFFECTED_TESTS_LIMITS.failureMessage),
   }]);
-  const verdict = checkVerdict(outcome, "attempt-1");
+  const verdict = checkVerdict(outcome, "run-1", "attempt-1");
   assert.equal(verdict?.verdict, "fail");
   if (verdict?.verdict !== "fail") return;
   assertWithinBudget(verdict);
@@ -936,7 +936,7 @@ test("missing JUnit results fail with the output tail rather than guessing", asy
   assert.equal(outcome.status, "failed");
   assert.equal(h.runs.length, 1);
   assert.match(outcome.note, /JUnit results could not be read/);
-  const verdict = checkVerdict(outcome, "attempt-1");
+  const verdict = checkVerdict(outcome, "run-1", "attempt-1");
   assert.equal(verdict?.verdict, "fail");
   if (verdict?.verdict === "fail") assert.match(verdict.requestedChanges[0]!.rationale, /run 1/);
 });
@@ -1001,7 +1001,7 @@ test("a rerun whose JUnit results cannot be read fails, keeping both runs' outpu
   assert.match(outcome.output, /run 1\n[\s\S]*rerunning 1 file once[\s\S]*run 2\n/);
   assert.deepEqual(outcome.affected?.failures, []);
   // No test is named, so the repair packet falls back to the output tail.
-  const verdict = checkVerdict(outcome, "attempt-1");
+  const verdict = checkVerdict(outcome, "run-1", "attempt-1");
   assert.equal(verdict?.verdict, "fail");
   if (verdict?.verdict === "fail") {
     assert.equal(verdict.requestedChanges.length, 1);
@@ -1075,7 +1075,7 @@ test("more failures than the cap are counted in full, on the outcome and in the 
   assert.equal(outcome.affected?.failures.length, 20);
   assert.equal(outcome.affected?.flakeCount, 0);
   assert.match(outcome.note, /25 tests failed twice/);
-  const verdict = checkVerdict(outcome, "attempt-1");
+  const verdict = checkVerdict(outcome, "run-1", "attempt-1");
   assert.equal(verdict?.verdict, "fail");
   if (verdict?.verdict !== "fail") return;
   assert.equal(verdict.requestedChanges.length, 20);

@@ -9,7 +9,7 @@
 // never meant to touch it. The API takes a patch for exactly this reason: an omitted key
 // means "leave it alone" (see `UpdateTaskSchema`).
 
-import type { Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
+import type { AdvisorChoice, Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { normalizeLabels } from "@shared/task.ts";
@@ -68,6 +68,12 @@ export type DispatchDraft = {
   /** Effort override, or "" to follow the configured default for `agent`. */
   effort: ThinkingLevel | "";
   /**
+   * An advisor pin the task was saved with before the advisor moved to Settings -> Harnesses,
+   * or "". Never chosen on the form: it is seeded from the task, and the form's "Use Settings"
+   * action sets it back to "", which an update sends as `null`. A new dispatch never sends it.
+   */
+  advisorModel: AdvisorChoice | "";
+  /**
    * After-work Workflow choice. Undefined follows the task kind's dispatch default on a fresh
    * task, null explicitly opts out, and an id selects that published Workflow.
    */
@@ -100,6 +106,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   labels: "",
   model: "",
   effort: "",
+  advisorModel: "",
   workflowId: undefined,
   enabled: true,
   dependencies: [],
@@ -148,6 +155,7 @@ export function draftFromTask(t: Task): DispatchDraft {
     // picked from - so reopening a shelved task shows "Default", not overrides it never chose.
     model: t.model ?? "",
     effort: t.effort ?? "",
+    advisorModel: t.advisorModel ?? "",
     workflowId: t.workflowId,
     enabled: t.enabled,
     dependencies: t.dependencies.map(dependencyInputOf),
@@ -184,6 +192,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.labels === b.labels &&
     a.model === b.model &&
     a.effort === b.effort &&
+    a.advisorModel === b.advisorModel &&
     a.workflowId === b.workflowId &&
     a.enabled === b.enabled &&
     dependencyInputsEqual(a.dependencies, b.dependencies) &&
@@ -255,6 +264,9 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (model !== task.model) patch.model = model;
   const effort = draft.effort || null;
   if (effort !== task.effort) patch.effort = effort;
+  // A pin can only be taken OFF now - the advisor is chosen on Settings -> Harnesses - so the
+  // one change a draft can carry is a cleared legacy pin.
+  if (task.advisorModel !== null && !draft.advisorModel) patch.advisorModel = null;
   if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
     patch.workflowId = draft.workflowId;
   }

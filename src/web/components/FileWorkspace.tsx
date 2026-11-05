@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import {
   memo,
   useCallback,
@@ -2250,7 +2251,7 @@ function FileWorkspaceBody({
   return (
     <section ref={workspaceRef} className={`file-workspace${extracted ? " is-extracted" : ""}`} aria-label={`Files for ${session.name}`}>
       <aside ref={fileNavRef} className="file-nav">
-        {!readOnlyWorkspace && <ManagedPlanLinks key={session.id} sessionId={session.id} />}
+        {!readOnlyWorkspace && taskHasRepository(session.task ?? {}) && <ManagedPlanLinks key={session.id} sessionId={session.id} />}
         <div className="file-nav-tools">
           <input
             className="file-filter"

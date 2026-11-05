@@ -127,7 +127,7 @@ export class ReviewManager {
   private continuationText(review: ReviewItem): string {
     const result = reviewToolResult(review);
     return (
-      `Mission Control review ${review.id} was answered after its MCP wait ended. ` +
+      `Mission Control review ${review.id} was ${review.status === "dismissed" ? "dismissed" : "answered"} after its MCP wait ended. ` +
       `Treat this as the result of your earlier review tool call:\n\n${result.text}`
     );
   }
@@ -255,7 +255,7 @@ export class ReviewManager {
    * writes the status off the item, and the item is already `answered`, so the half-written
    * row reads `answered` with a null `resolved_by` and null `selections`. Nothing restores
    * it as a question (`loadPendingReviews` filters on `pending`) and nothing shows it as an
-   * answer (`loadHumanResolvedReviews` requires `resolved_by = 'human'`), so it is inert -
+   * answer (`loadHumanResolvedReviews` requires a human or standing-approval actor), so it is inert -
    * today. It is still worth not writing. It is indistinguishable from a row that predates
    * the actor column, it accumulates where nothing will ever collect it, and its harmlessness
    * is a property of two queries in another module rather than of this write: the first
@@ -299,6 +299,8 @@ export class ReviewManager {
    * into a 409 - the operator would answer a question the agent is no longer blocked on.
    */
   record(o: {
+    /** Supplied when the caller must bind other state to the id before the row is published. */
+    id?: string;
     sessionId: string;
     kind: ReviewKind;
     title: string;
@@ -324,7 +326,7 @@ export class ReviewManager {
     }
     const now = o.at;
     const review: ReviewItem = {
-      id: randomUUID(),
+      id: o.id ?? randomUUID(),
       sessionId: o.sessionId,
       kind: o.kind,
       title: o.title,
@@ -413,6 +415,12 @@ export class ReviewManager {
     response: string | null,
     by: ReviewActor = "human",
     selections: PlanDecisionAnswer[] | null = null,
+    /**
+     * Durable state that must commit with this resolution or not at all - the standing plan
+     * bundle grant. Runs in the same transaction as the status write, before anything is
+     * published or any waiter is woken, so a failure leaves the review pending to retry.
+     */
+    persistWith?: () => void,
   ): ReviewItem | null {
     const cur = this.registry.getReview(id);
     if (!cur) return null;
@@ -449,7 +457,7 @@ export class ReviewManager {
         }
       }
     }
-    const settled = this.settle(cur, status, storedResponse, by, storedSelections);
+    const settled = this.settle(cur, status, storedResponse, by, storedSelections, persistWith);
     if (status === "answered") this.recordShapeFollowUp(settled);
     return settled;
   }
@@ -541,9 +549,12 @@ export class ReviewManager {
      */
     resolvedBy: ReviewActor | null = null,
     selections: PlanDecisionAnswer[] | null = null,
+    persistWith?: () => void,
   ): ReviewItem {
     const resolvedAt = Date.now();
-    updateReviewStatus(cur.id, status, response, resolvedAt, selections, resolvedBy);
+    const write = () => updateReviewStatus(cur.id, status, response, resolvedAt, selections, resolvedBy);
+    if (persistWith) inTransaction(() => { write(); persistWith(); });
+    else write();
     const updated: ReviewItem = { ...cur, status, response, resolvedAt, resolvedBy, selections };
     this.registry.upsertReview(updated);
 

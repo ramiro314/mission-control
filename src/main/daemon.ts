@@ -34,7 +34,12 @@ import {
 export interface DaemonController {
   /** True when an existing daemon was reused rather than spawned by us. */
   adopted: boolean;
-  stop: () => void;
+  /**
+   * Resolves once a daemon we spawned has run its own shutdown and exited - which is where its
+   * workflow checks' process groups are torn down through the lease path. An adopted daemon is
+   * not ours to stop, so that resolves at once.
+   */
+  stop: () => Promise<void>;
 }
 
 const HEALTH_URL = `${BASE_URL}/api/health`;
@@ -96,7 +101,7 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
   const start = await decideDaemonStart(compatibility, deps);
   if (start === "incompatible") throw new Error(INCOMPATIBLE_DAEMON);
   if (start === "unit-unresponsive") opts.onUnitUnresponsive?.();
-  if (start !== "supervise") return { adopted: true, stop: () => {} };
+  if (start !== "supervise") return { adopted: true, stop: async () => {} };
 
   const controller = superviseUtilityProcess({
     entry: opts.serverEntry,

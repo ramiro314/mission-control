@@ -151,6 +151,10 @@ upstream already pins. The fork's `package.json` differs from upstream's only by
 | `scripts["test:run"]` | Flake-aware testing: the shared `node --test` invocation with optional JUnit output. |
 | `scripts["build:flake-report-action"]` | Regenerates `.github/actions/mission-flake-report/`. |
 | `devDependencies.esbuild` | Used by `scripts/build-flake-report-action.ts`; pinned to the version upstream's lockfile already resolves. |
+| `scripts["docs:links"]` | Docs-only CI: the link check the `docs checks` job runs. |
+| `scripts["test:timings"]` | CI time-to-green: regenerates `test/shard-timings.json` from a CI run. |
+| `scripts.package`, `scripts["prerecover:database"]` (`node scripts/require-macos.mjs && ...`) | Linux support: both are macOS-only and refuse cleanly elsewhere. |
+| `scripts["dev:electron"]` (the `Frame latency is negative` filter) | Drops a Chromium log line that floods the dev console on Linux. |
 
 When `package.json` or `package-lock.json` conflicts, do not resolve it hunk by hunk:
 

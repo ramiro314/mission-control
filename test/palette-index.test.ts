@@ -453,6 +453,7 @@ test("the fixed commands include one row per registered tour beside existing aff
     "browse-tours",
     "dispatch",
     "report-product-issue",
+    "residents-dock",
     "route",
     "route",
     "route",

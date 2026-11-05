@@ -16,11 +16,16 @@ const PLATFORMS: readonly SetupPlatform[] = ["darwin", "linux"];
 
 test("the setup catalog is exhaustive, append-only, and carries usable remedies", () => {
   assert.deepEqual(Object.keys(SETUP_DEPENDENCY_INFO), [...SETUP_DEPENDENCY_IDS]);
-  assert.deepEqual(SETUP_DEPENDENCY_IDS.slice(-2), ["node-runtime", "lsof"], "new persisted ids append after existing entries");
+  assert.deepEqual(
+    SETUP_DEPENDENCY_IDS.slice(-7),
+    ["node-runtime", "lsof", "coderabbit-cli", "claude-mcp-trust", "codex-mcp-trust", "acli-cli", "acli-auth"],
+    "new persisted ids append after existing entries",
+  );
   assert.equal(SETUP_DEPENDENCY_INFO["gh-cli"].requirement, "required");
   assert.equal(SETUP_DEPENDENCY_INFO["gh-auth"].requirement, "required");
   assert.deepEqual(setupRemedy(SETUP_DEPENDENCY_INFO.iterm, "darwin"), {
     kind: "command",
+    purpose: "install",
     argv: ["brew", "install", "--cask", "iterm2"],
     note: "Install iTerm2 with Homebrew.",
   });
@@ -53,14 +58,17 @@ test("macOS keeps its Homebrew remedies, unchanged", () => {
     "gh-cli": "brew install gh",
     iterm: "brew install --cask iterm2",
     "node-runtime": "brew install node",
+    "acli-cli": "brew install atlassian/acli/acli",
+    "acli-auth": "acli jira auth login --web",
   });
 });
 
-test("Linux is offered no Homebrew command and no cask, and keeps its npm rows", () => {
+test("Linux is offered no Homebrew command and no cask, and keeps its npm and sign-in rows", () => {
   for (const id of SETUP_DEPENDENCY_IDS) {
     const linux = setupRemedy(SETUP_DEPENDENCY_INFO[id], "linux");
     if (linux.kind === "command") {
-      assert.equal(linux.argv[0], "npm", id);
+      // A sign-in runs the installed tool itself, so it is the same command on every host.
+      if (linux.purpose === "install") assert.equal(linux.argv[0], "npm", id);
       assert.deepEqual(linux, setupRemedy(SETUP_DEPENDENCY_INFO[id], "darwin"), id);
     }
     assert.doesNotMatch(JSON.stringify(linux), /brew|--cask/, id);
@@ -76,6 +84,7 @@ test("Linux is offered no Homebrew command and no cask, and keeps its npm rows",
     "gh-cli": "gh",
     "node-runtime": "nodejs",
     lsof: "lsof",
+    "acli-cli": "acli",
   });
 });
 

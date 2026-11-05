@@ -3,8 +3,9 @@ import type { PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
-import { DecisionForm, decisionChoiceKey } from "./PlanDecisions.tsx";
-import { decisionLead } from "@shared/review-item.ts";
+import { ChatGlyph, DecisionForm, decisionChoiceKey } from "./PlanDecisions.tsx";
+import { CHAT_ABOUT_IT, decisionLead, formatResponse } from "@shared/review-item.ts";
+import { PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { reviewDecisions, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -19,6 +20,7 @@ import {
 } from "../lib/foreman-review.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { useTourTaskTargetRef } from "../tour/target-context.tsx";
+import { clearReviewDraft, useReviewDraft } from "../lib/review-drafts.ts";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -36,10 +38,13 @@ export function ReviewModal({
   session,
   reviews,
   onClose,
+  onMovedToChat,
 }: {
   session: Session;
   reviews: ReviewItem[];
   onClose: () => void;
+  /** A question was moved to the conversation; the caller takes the operator there. */
+  onMovedToChat?: (sessionId: string) => void;
 }): React.JSX.Element {
   const tourTargetRef = useTourTaskTargetRef<HTMLElement>("see-work:review-modal", session.task?.id);
   // Close automatically once the session has no more pending reviews.
@@ -70,7 +75,7 @@ export function ReviewModal({
       </header>
       <div className="modal-body">
         {reviews.map((r) => (
-          <ReviewCard key={r.id} review={r} note={session.note} />
+          <ReviewCard key={r.id} review={r} note={session.note} onMovedToChat={onMovedToChat} />
         ))}
       </div>
     </Overlay>
@@ -88,17 +93,32 @@ export function ReviewModal({
 export function ReviewCard({
   review,
   note: sessionNote,
+  onMovedToChat,
 }: {
   review: ReviewItem;
   note?: SessionNoteSummary | null;
+  /**
+   * Called once an answer that moved at least one question to chat has been delivered, so the
+   * surface can close and focus the session's message box: the conversation is where the
+   * operator goes next.
+   */
+  onMovedToChat?: (sessionId: string) => void;
 }): React.JSX.Element {
-  const [note, setNote] = useState("");
-  const [answer, setAnswer] = useState("");
+  // Everything typed or picked lives in the review-draft map, not in this mount, so closing
+  // the modal, folding the inbox or reloading the page brings it back on the next open.
+  const [draft, updateDraft] = useReviewDraft(review.id);
+  const { note, answer, approveFuture } = draft;
+  const setNote = (next: string) => updateDraft((d) => ({ ...d, note: next }));
+  const setAnswer = (next: string) => updateDraft((d) => ({ ...d, answer: next }));
+  const setApproveFuture = (next: boolean) => updateDraft((d) => ({ ...d, approveFuture: next }));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [foremanOpen, setForemanOpen] = useState(false);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
+  // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
+  const finalBundle = review.standingApprovalEligible === true
+    && (decisions?.some((d) => d.id === PLAN_APPROVAL_DECISION) ?? false);
   const foremanNote = foremanNoteForReview(review, sessionNote);
   const recommendationChoices: RecommendationChoice[] =
     decisions?.flatMap((decision) =>
@@ -131,9 +151,36 @@ export function ReviewCard({
   ) {
     setBusy(true);
     setErr(null);
-    const r = await api.resolveReview(review.id, action, response, selections);
+    const r = await api.resolveReview(
+      review.id,
+      action,
+      response,
+      selections,
+      // Granted only alongside an approval of this bundle, never with "Needs revision".
+      action === "answer" && finalBundle && approveFuture && approvesFinalBundle(selections),
+    );
     setBusy(false);
-    if (!r.ok) setErr(r.error ?? "failed");
+    if (!r.ok) {
+      setErr(r.error ?? "failed");
+      return;
+    }
+    // Delivered: the draft has nothing left to come back for. A failed resolve keeps it.
+    clearReviewDraft(review.id);
+    if (selections?.some((a) => a.chat)) onMovedToChat?.(review.sessionId);
+  }
+
+  /**
+   * "Chat about it" on an open-ended question. Built through `formatResponse`, like a form's
+   * answer, so the agent reads the same instruction either way; anything already typed goes
+   * along as the note, which is usually what is unclear.
+   */
+  function chatAboutQuestion(): void {
+    const typed = answer.trim();
+    const selections: PlanDecisionAnswer[] = [
+      { decisionId: "q", selected: [], other: null, chat: true, ...(typed ? { note: typed } : {}) },
+    ];
+    const asked = [{ id: "q", question: review.body || review.title, options: [] }];
+    void resolve("answer", formatResponse(asked, selections, decisionLead(review.kind)), selections);
   }
 
   const dismissButton = (
@@ -203,6 +250,11 @@ export function ReviewCard({
           busy={busy}
           lead={decisionLead(review.kind)}
           hideQuestions={review.kind === "input"}
+          // Only `request_plan_decisions` returns the formatted answer to the agent for every
+          // form it draws. An option-carrying `input` also serves the product-issue
+          // confirmation, which acts on the selection alone and would drop a note.
+          allowNote={review.kind === "plan-decisions"}
+          allowChat
           // Review ids are unique, and every pending review of a session - or, in the
           // attention inbox, of the WHOLE FLEET - is drawn into one document. Without
           // `namePrefix` two option-carrying `input` reviews share a radio group and answering
@@ -212,6 +264,25 @@ export function ReviewCard({
           // Only a plan-decisions form takes a draft: Foreman answers an `input` review
           // itself, through the modes, and a draft there would be a second path to the same ask.
           foremanDraft={review.kind === "plan-decisions" ? foremanNote?.draft : null}
+          answers={draft.decisions}
+          onAnswersChange={(change) =>
+            updateDraft((d) => ({ ...d, decisions: change(d.decisions) }))
+          }
+          besideSubmit={
+            finalBundle && (
+              <label className="decisions-standing-approval">
+                <Tooltip label="When you approve this bundle, also approve every later bundle for this task without asking; each is logged in this session">
+                  <input
+                    type="checkbox"
+                    checked={approveFuture}
+                    disabled={busy}
+                    onChange={(e) => setApproveFuture(e.target.checked)}
+                  />
+                </Tooltip>
+                <span>Approve all future bundles for this task</span>
+              </label>
+            )
+          }
           onDismiss={() => void resolve("dismiss", null)}
           onSubmit={(response, selections) => void resolve("answer", response, selections)}
         />
@@ -225,6 +296,12 @@ export function ReviewCard({
             rows={2}
           />
           {dismissButton}
+          <Tooltip label="Skip answering for now: the agent explains this question in the conversation and waits for you">
+            <button className="btn btn-chat" disabled={busy} onClick={chatAboutQuestion}>
+              <ChatGlyph />
+              {CHAT_ABOUT_IT}
+            </button>
+          </Tooltip>
           <Tooltip
             label={answer.trim() ? "Send this answer back to the agent" : "Write an answer first"}
           >

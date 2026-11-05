@@ -304,6 +304,9 @@ test("an apply that is refused leaves the proposal pending and writes nothing", 
     expectedRevision: lint.revision,
     defaultCommand: lint.defaultCommand,
     maxRuns: lint.maxRuns,
+    timeoutMs: lint.timeoutMs,
+    onUnavailable: lint.onUnavailable,
+    onBudgetExhausted: lint.onBudgetExhausted,
     overrides: [other],
   }).ok, true);
   const framesBefore = f.frames.length;

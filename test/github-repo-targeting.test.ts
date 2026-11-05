@@ -77,9 +77,10 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
   ],
   "src/server/inspector/github.ts": [
     { fn: "authenticatedLogin", argv: '["api", "user", "--jq", ".login"]', how: "none", why: "the token's own login" },
-    { fn: "fetchPr", argv: '["api", "graphql", "-f", `query=${PR_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
+    { fn: "fetchPr", argv: '["api", "graphql", "-f", `query=${PR_QUERY(includeCodeRabbitComments)}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "fetchReviewPage", argv: '["api", "graphql", "-f", `query=${REVIEW_PAGE_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `before=${before}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "fetchThreadPage", argv: '["api", "graphql", "-f", `query=${THREAD_PAGE_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `after=${after}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
+    { fn: "fetchIssueCommentPage", argv: '["api", "graphql", "-f", `query=${ISSUE_COMMENT_PAGE_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `after=${after}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "readDiffResource", argv: '["api", `repos/${owner}/${repo}/${resource}`, "-H", "Accept: application/vnd.github.v3.diff"]', how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "fetchCompareRange", argv: `["api", \`repos/\${owner}/\${repo}/pulls/\${number}\`, "--jq", '.base.sha + "..." + .head.sha']`, how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "fetchHeadSha", argv: '["api", `repos/${owner}/${repo}/pulls/${number}`, "--jq", ".head.sha"]', how: "explicit", why: "owner and name parsed from the PR URL" },
@@ -89,6 +90,7 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
     { fn: "mergePr", argv: '["api", "--method", "PUT", `repos/${owner}/${repo}/pulls/${number}/merge`, "--input", "-"]', how: "explicit", why: "owner and name parsed from the PR URL" },
   ],
   "src/server/pr.ts": [
+    { fn: "queryPr", argv: "prListArgs(branch, repo.repo, search)", how: "resolver", why: "the episode search; `--repo` from `checkoutGitHubRepository`, no gh call when it fails" },
     { fn: "queryPr", argv: "prListArgs(branch, repo.repo)", how: "resolver", why: "`--repo` from `checkoutGitHubRepository`; no gh call when it fails" },
     { fn: "queryPrUrl", argv: '["pr", "view", url, "--json", "state,mergedAt,mergeable,baseRefName,headRefOid"]', how: "url", why: "the adopted PR's URL" },
   ],
@@ -137,9 +139,17 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
   // shell reader takes for a command. The real call goes through `$mission_gh` (a mention below).
   "scripts/install-bootstrap.sh": [
     { fn: "<shell>", argv: "gh authentication and connectivity", how: "explicit", why: "not a call: prose in `fail`; `download` runs `api --hostname github.com` on a `repos/@REPO@/...` endpoint" },
+    { fn: "<shell>", argv: "gh release list --repo @REPO@", how: "explicit", why: "not a call: a hint in a release-selection failure message, naming the release repository" },
+    { fn: "<shell>", argv: "gh release list --repo @REPO@", how: "explicit", why: "not a call: a hint in a release-selection failure message, naming the release repository" },
+    { fn: "<shell>", argv: "gh release list --repo @REPO@", how: "explicit", why: "not a call: a hint in a release-selection failure message, naming the release repository" },
+    { fn: "<shell>", argv: "gh release list --repo @REPO@", how: "explicit", why: "not a call: a hint in a release-selection failure message, naming the release repository" },
   ],
   "scripts/install.sh": [
     { fn: "<shell>", argv: "gh authentication and connectivity", how: "explicit", why: "not a call: prose in `fail`; `download` runs `api --hostname github.com` on a `repos/teamupstart/mission-control/...` endpoint" },
+    { fn: "<shell>", argv: "gh release list --repo teamupstart/mission-control", how: "explicit", why: "not a call: a hint in a release-selection failure message, naming the release repository" },
+    { fn: "<shell>", argv: "gh release list --repo teamupstart/mission-control", how: "explicit", why: "not a call: a hint in a release-selection failure message, naming the release repository" },
+    { fn: "<shell>", argv: "gh release list --repo teamupstart/mission-control", how: "explicit", why: "not a call: a hint in a release-selection failure message, naming the release repository" },
+    { fn: "<shell>", argv: "gh release list --repo teamupstart/mission-control", how: "explicit", why: "not a call: a hint in a release-selection failure message, naming the release repository" },
   ],
   "scripts/ci-tree-reuse.sh": [
     { fn: "<shell>", argv: 'gh api "repos/$REPO/commits/$SHA/pulls"', how: "explicit", why: "`REPO` is the workflow's `github.repository`" },
