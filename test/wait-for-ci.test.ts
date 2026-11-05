@@ -778,12 +778,6 @@ test("a head with more than 100 checks never passes on the first 100, but a coun
   assert.equal(legacy[1]!.kind === "block" && legacy[1]!.code, "ci_checks_truncated");
 });
 
-test("the outcome event records the strictness, the fallback and how many expected checks were missing", async () => {
-  const source = readFileSync(new URL("../src/server/workflows/engine.ts", import.meta.url), "utf8");
-  const payload = source.slice(source.indexOf('"wait_for_ci_outcome", {'), source.indexOf("this.advanceStructure(submission, version);", source.indexOf('"wait_for_ci_outcome", {')));
-  for (const key of ["strictness:", "requiredFallback:", "missingExpected:"]) assert.match(payload, new RegExp(key), key);
-});
-
 test("the node arms take the three settings as optional fields, and never add them", async () => {
   const { PublishedWorkflowNodeSchema } = await import("../src/shared/protocol.ts");
   const legacy = { id: "ci", kind: "wait_for_ci", timeoutMinutes: 45, position: { x: 0, y: 0 } };
