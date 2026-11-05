@@ -6435,10 +6435,6 @@ function rowToTask(
   };
 }
 
-/**
- * A stored `source_parent` blob, or null. A malformed one reads as no parent rather than
- * throwing: it is display data, and one bad row must not take out `listTasks`.
- */
 /** A stored base-branch move, or null for none or for a row no build of this shape wrote. */
 function parseBaseBranchMove(raw: string | null): TaskBaseBranchMove | null {
   if (!raw) return null;
@@ -6453,6 +6449,10 @@ function parseBaseBranchMove(raw: string | null): TaskBaseBranchMove | null {
   }
 }
 
+/**
+ * A stored `source_parent` blob, or null. A malformed one reads as no parent rather than
+ * throwing: it is display data, and one bad row must not take out `listTasks`.
+ */
 function parseSourceParent(raw: string | null): TaskSourceRef | null {
   if (!raw) return null;
   try {
