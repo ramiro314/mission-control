@@ -52,8 +52,9 @@ refused. Automatic moving can be added later on the same server path if stacks b
    old merged pull requests while it still has work of its own. Two checks follow the fetch.
    First, the pull request must be the merge of the branch this task was stacked on: its head
    commit (`headRefOid`) has to carry the commit the task's base was taken at (`commitCarries`;
-   a head missing locally is fetched by id once). For the base dispatch started from, that is
-   `Task.baseSha`. For a base an earlier move put there, it is that move's `toSha`, the fetched
+   a head missing locally is fetched by id once, and a fetch that fails is a 502 with
+   git's reason, never a verdict on the pull request). For the base dispatch started from,
+   that is `Task.baseSha`. For a base an earlier move put there, it is that move's `toSha`, the fetched
    tip of the new base, which already holds the previous merge: a squash leaves `baseSha` out
    of the next branch's history, so anchoring every hop on it would strand a squash-merged
    stack at its second move. An older pull request on a reused name predates its anchor, and

@@ -416,7 +416,9 @@ export async function trackingBranchSha(
  * may be an older use of a reused branch name, and only one that carries the task's own start
  * commit is the merge of the base the task was stacked on. A head missing locally - a
  * squash-merged branch deleted before this checkout fetched its last commit - is fetched by id
- * once (GitHub keeps every pull request's head); one that still cannot be found does not count.
+ * once (GitHub keeps every pull request's head). Only a fetch that succeeded and still left it
+ * missing reads as "does not carry"; a failed or interrupted fetch or `cat-file` is a failure
+ * with its reason, which the caller reports as one rather than as a verdict on the pull request.
  */
 export async function commitCarries(
   root: string,
@@ -424,12 +426,26 @@ export async function commitCarries(
   descendant: string,
   execute: Run = run,
 ): Promise<RemoteProbe<boolean>> {
-  const present = async () =>
-    (await execute("git", ["-C", root, "cat-file", "-e", `${descendant}^{commit}`], { timeoutMs: LOCAL_TIMEOUT_MS }))
-      .code === 0;
-  if (!(await present())) {
-    await execute("git", ["-C", root, "fetch", "-q", "origin", descendant], { timeoutMs: NETWORK_TIMEOUT_MS });
-    if (!(await present())) return { ok: true, value: false };
+  // Present, absent, or unknown. A killed or overflowed `cat-file` answered nothing, and an
+  // absent head must not be read off it: that would turn an interrupted probe into a refusal.
+  const present = async (): Promise<RemoteProbe<boolean>> => {
+    const listed = await execute("git", ["-C", root, "cat-file", "-e", `${descendant}^{commit}`], {
+      timeoutMs: LOCAL_TIMEOUT_MS,
+    });
+    if (listed.outcomeUnknown || listed.overflowed) return failure(`git cat-file ${descendant}`, listed, LOCAL_TIMEOUT_MS);
+    return { ok: true, value: listed.code === 0 };
+  };
+  const local = await present();
+  if (!local.ok) return local;
+  if (!local.value) {
+    // Only a fetch that SUCCEEDED and still left the head missing says it is not there; a failed
+    // or interrupted one says nothing about the pull request, and a retry may well work.
+    const fetched = await execute("git", ["-C", root, "fetch", "-q", "origin", descendant], {
+      timeoutMs: NETWORK_TIMEOUT_MS,
+    });
+    if (failed(fetched)) return failure(`git fetch origin ${descendant}`, fetched, NETWORK_TIMEOUT_MS);
+    const after = await present();
+    if (!after.ok || !after.value) return after;
   }
   const carried = await execute("git", ["-C", root, "merge-base", "--is-ancestor", ancestor, descendant], {
     timeoutMs: LOCAL_TIMEOUT_MS,

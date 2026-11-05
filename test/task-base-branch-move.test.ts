@@ -44,6 +44,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { changedPathsSince, computeSessionDiff } = await import("../src/server/diff.ts");
+const { commitCarries } = await import("../src/server/git/remote-default.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { renderSessionAction } = await import("../src/server/workflows/feedback.ts");
 const { prBaseBranchFor } = await import("../src/server/workflows/context.ts");
@@ -283,7 +284,8 @@ test("a base still on origin moves once its tip is in the target", async () => {
 test("a squash-merged base still on origin moves while its tip is the merged pull request's head", async () => {
   const f = runningStack("kept-squashed", { landing: "squash", keepBase: true });
   // A squash leaves the base's tip outside `main`, so only the pull request's head vouches for it.
-  baseMerged("main", "f".repeat(40));
+  // A real head that is some other commit - here `main`'s first - vouches for nothing.
+  baseMerged("main", git(f.repo, "rev-parse", "main"));
   const unvouched = await f.move(f.taskId);
   assert.equal(unvouched.status, 409, await unvouched.clone().text());
   baseMerged("main", f.mergedHead);
@@ -320,9 +322,17 @@ test("a base deleted unmerged is not moved by an older merged pull request on th
   };
   baseMerged("feat/mid", earlierHead);
   await refused(/^https:\/\/github\.com\/mc-test\/stack\/pull\/7 does not carry the feat\/base this task was stacked on/);
-  // A head nobody can produce, even fetched by id, is not evidence either.
+  // A head the checkout lacks and origin will not serve by id is a failed check, with git's
+  // reason, rather than a verdict that the pull request is someone else's.
   baseMerged("feat/mid", "e".repeat(40));
-  await refused(/does not carry the feat\/base this task was stacked on/);
+  const unfetchable = await f.move(f.taskId);
+  assert.equal(unfetchable.status, 502, await unfetchable.clone().text());
+  assert.match(
+    ((await unfetchable.json()) as { error: string }).error,
+    /^could not check https:\/\/github\.com\/mc-test\/stack\/pull\/7's head: git fetch origin e{40} failed: /,
+  );
+  assert.equal(getTask(f.taskId)?.baseBranch, "feat/base");
+  assert.equal(getTask(f.taskId)?.baseBranchMove, null);
   // Nor is any pull request, for a task that recorded no start commit to compare.
   f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, baseSha: null });
   baseMerged("feat/mid", f.mergedHead);
@@ -403,6 +413,44 @@ test("a squash-merged stack of three is walked down one merge at a time", async 
       prUrl: "https://github.com/mc-test/walk-down/pull/8", movedAt: 0,
     },
   );
+});
+
+test("a head the probe could not read is a failure, and only a fetch that succeeded can say it is absent", async () => {
+  const head = "d".repeat(40);
+  type Answer = { code: number; stderr?: string; outcomeUnknown?: boolean };
+  /** A fake `git` answering `cat-file` from `catFile` in turn and `fetch` with `fetch`. */
+  const gitAnswering = (catFile: Answer[], fetch: Answer) => {
+    const calls: string[] = [];
+    const execute = async (_bin: string, args: string[]) => {
+      const verb = args[2]!;
+      calls.push(verb);
+      const answer = verb === "cat-file" ? catFile.shift()! : verb === "fetch" ? fetch : { code: 0 };
+      return { stdout: "", stderr: answer.stderr ?? "", code: answer.code, outcomeUnknown: answer.outcomeUnknown ?? false, overflowed: false };
+    };
+    return { calls, execute: execute as unknown as Parameters<typeof commitCarries>[3] };
+  };
+  const missing: Answer = { code: 128, stderr: `fatal: Not a valid object name ${head}^{commit}` };
+
+  const interruptedLookup = gitAnswering([{ code: 1, outcomeUnknown: true }], { code: 0 });
+  const lookup = await commitCarries("/repo", "a".repeat(40), head, interruptedLookup.execute);
+  assert.equal(lookup.ok, false, "a killed cat-file is not an absent head");
+  assert.match(!lookup.ok ? lookup.reason : "", /^git cat-file d{40} was stopped before it finished/);
+  assert.deepEqual(interruptedLookup.calls, ["cat-file"], "nothing is fetched on an unknown answer");
+
+  const timedOut = gitAnswering([missing], { code: 1, outcomeUnknown: true });
+  const stopped = await commitCarries("/repo", "a".repeat(40), head, timedOut.execute);
+  assert.equal(stopped.ok, false);
+  assert.match(!stopped.ok ? stopped.reason : "", /^git fetch origin d{40} was stopped before it finished/);
+
+  const refusedFetch = gitAnswering([missing], { code: 128, stderr: "fatal: unable to access origin: Could not resolve host" });
+  const unreachable = await commitCarries("/repo", "a".repeat(40), head, refusedFetch.execute);
+  assert.equal(unreachable.ok, false);
+  assert.equal(!unreachable.ok && unreachable.reason, `git fetch origin ${head} failed: fatal: unable to access origin: Could not resolve host`);
+  assert.deepEqual(refusedFetch.calls, ["cat-file", "fetch"], "a failed fetch is not followed by a second lookup");
+
+  const fetchedNothing = gitAnswering([missing, missing], { code: 0 });
+  assert.deepEqual(await commitCarries("/repo", "a".repeat(40), head, fetchedNothing.execute), { ok: true, value: false });
+  assert.deepEqual(fetchedNothing.calls, ["cat-file", "fetch", "cat-file"]);
 });
 
 // --- the footer's offer ---
