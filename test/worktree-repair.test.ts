@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { promises as fsPromises } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { dirname, join, relative } from "node:path";
 import { after, afterEach, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
@@ -2576,4 +2578,180 @@ test("leftover repair staging with no intent is removed, and staging whose inten
 
   assert.deepEqual(readdirSync(root).sort(), ["broken", "stranger"]);
   assert.equal(readFileSync(join(stranger, "entries", "kept.txt"), "utf8"), "someone's\n");
+});
+
+/** Where a slot's `.git` file points. */
+function gitFileTarget(path: string): string {
+  return readFileSync(join(path, ".git"), "utf8").trim();
+}
+
+test("a name the slot already holds is never overwritten: the staged copy stays, and the outcome is unknown", async () => {
+  class WritesIntoTheSlot extends NativeWorktreeGit {
+    override async add(...args: Parameters<NativeWorktreeGit["add"]>) {
+      const added = await super.add(...args);
+      // Something writes into the folder between Git's add and the move back.
+      if (args[3]?.checkout === false) writeFileSync(join(args[1], ".gitignore"), "the slot's own copy\n");
+      return added;
+    }
+  }
+  const m = managerWith(new WritesIntoTheSlot());
+  const slot = await unregisteredSlot(m, "mission-reregister-collide-");
+  const inodes = slot.inodes();
+  const staged = readFileSync(join(slot.path, ".gitignore"), "utf8");
+
+  const result = await m.repairSlot({ slotId: slot.slotId, reregister: true });
+  assert.equal(result.outcome, "outcomeUnknown");
+  assert.match((result as { reason: string }).reason, /some of the slot's files are still in .*\.repair-staging/);
+  assert.equal((result as { repair?: string }).repair, "attempted");
+  assert.equal(readFileSync(join(slot.path, ".gitignore"), "utf8"), "the slot's own copy\n", "the slot's copy is untouched");
+  assert.deepEqual(slot.inodes(), inodes, "every other entry came back");
+  const [id] = repairStaging(m, slot.slotId);
+  assert.ok(id);
+  const root = join(dirname(dirname(slot.path)), ".repair-staging", id);
+  assert.deepEqual(readdirSync(join(root, "entries")), [".gitignore"]);
+  assert.equal(readFileSync(join(root, "entries", ".gitignore"), "utf8"), staged, "the staged copy is kept");
+
+  // Reconcile never overwrites it either, and leaves the staging for whoever reads the log.
+  await m.reconcile();
+  assert.equal(readFileSync(join(slot.path, ".gitignore"), "utf8"), "the slot's own copy\n");
+  assert.equal(readFileSync(join(root, "entries", ".gitignore"), "utf8"), staged);
+});
+
+test("a cut-off re-registration whose slot already holds a staged name keeps that staging through reconcile", async () => {
+  const first = managerWith();
+  const slot = await unregisteredSlot(first, "mission-reregister-collide-cutoff-");
+  const inodes = slot.inodes();
+  const root = join(repairStagingRoot(first.store.poolForSlot(slot.slotId)!.poolPath), "cut-off");
+  await stageSlotEntries(root, { slotId: slot.slotId, path: slot.path, commit: slot.sha, startedAt: Date.now() });
+  writeFileSync(join(slot.path, ".gitignore"), "written after the cut-off\n");
+
+  await managerWith().reconcile();
+
+  assert.equal(readFileSync(join(slot.path, ".gitignore"), "utf8"), "written after the cut-off\n");
+  assert.deepEqual(readdirSync(join(root, "entries")), [".gitignore"]);
+  assert.deepEqual(slot.inodes(), inodes);
+});
+
+test("an add whose outcome is unknown keeps the .git Git wrote, puts every file back, and reads attempted", async () => {
+  class UnansweredAdd extends NativeWorktreeGit {
+    override async add(...args: Parameters<NativeWorktreeGit["add"]>) {
+      const added = await super.add(...args);
+      if (args[3]?.checkout !== false) return added;
+      return { ok: false as const, reason: "git worktree add timed out after 60 s", outcomeUnknown: true };
+    }
+  }
+  const m = managerWith(new UnansweredAdd());
+  const slot = await unregisteredSlot(m, "mission-reregister-unknown-add-");
+  const inodes = slot.inodes();
+  // Git reuses the administrative directory's name, so the file itself tells them apart.
+  const oldDotGit = statSync(join(slot.path, ".git")).ino;
+
+  assert.deepEqual(await m.repairSlot({ slotId: slot.slotId, reregister: true }), {
+    outcome: "outcomeUnknown", reason: "git worktree add timed out after 60 s", repair: "attempted",
+  });
+  assert.deepEqual(slot.inodes(), inodes);
+  assert.notEqual(statSync(join(slot.path, ".git")).ino, oldDotGit, "the .git Git wrote is kept, not the stale one");
+  assert.equal(existsSync(gitFileTarget(slot.path).replace(/^gitdir: /, "")), true);
+  assert.equal(registered(slot.clone, slot.path), true);
+  assert.deepEqual(repairStaging(m, slot.slotId), []);
+});
+
+test("an add that throws before Git wrote anything puts the old .git back and reads attempted", async () => {
+  class ThrowingAdd extends NativeWorktreeGit {
+    override async add(...args: Parameters<NativeWorktreeGit["add"]>) {
+      if (args[3]?.checkout !== false) return super.add(...args);
+      throw new Error("spawn git EAGAIN");
+    }
+  }
+  const m = managerWith(new ThrowingAdd());
+  const slot = await unregisteredSlot(m, "mission-reregister-throwing-add-");
+  const inodes = slot.inodes();
+  const oldDotGit = gitFileTarget(slot.path);
+
+  const result = await m.repairSlot({ slotId: slot.slotId, reregister: true });
+  assert.equal(result.outcome, "outcomeUnknown");
+  assert.match((result as { reason: string }).reason, /spawn git EAGAIN/);
+  assert.equal((result as { repair?: string }).repair, "attempted");
+  assert.deepEqual(slot.inodes(), inodes);
+  assert.equal(gitFileTarget(slot.path), oldDotGit);
+  assert.equal(registered(slot.clone, slot.path), false);
+  assert.deepEqual(repairStaging(m, slot.slotId), []);
+});
+
+test("a read-tree that fails after Git registered the folder reads unknown, with the files back and no index", async () => {
+  class FailingReadIndex extends NativeWorktreeGit {
+    override async readIndex() {
+      return { ok: false as const, reason: "git read-tree HEAD failed: fatal: index file corrupt", outcomeUnknown: false };
+    }
+  }
+  const m = managerWith(new FailingReadIndex());
+  const slot = await unregisteredSlot(m, "mission-reregister-readindex-");
+  const inodes = slot.inodes();
+  const row = m.store.slot(slot.slotId)!;
+
+  assert.deepEqual(await m.repairSlot({ slotId: slot.slotId, reregister: true }), {
+    outcome: "outcomeUnknown", reason: "git read-tree HEAD failed: fatal: index file corrupt", repair: "attempted",
+  });
+  assert.equal(registered(slot.clone, slot.path), true);
+  const administrative = (await slotGitDirectory(slot.path, slot.common))!;
+  assert.equal(existsSync(join(administrative, "index")), false, "the index was never written");
+  assert.deepEqual(slot.inodes(), inodes);
+  assert.deepEqual(repairStaging(m, slot.slotId), []);
+  assert.deepEqual(m.store.slot(slot.slotId), row, "the slot stays quarantined as it was");
+});
+
+test("a move aside that fails partway puts back what moved and refuses, leaving no staging", async (t) => {
+  const m = managerWith();
+  const slot = await unregisteredSlot(m, "mission-reregister-move-fails-");
+  const inodes = slot.inodes();
+  const listing = readdirSync(slot.path).sort();
+  assert.ok(listing.length > 2);
+  const rename = fsPromises.rename;
+  let moves = 0;
+  t.mock.method(fsPromises, "rename", async (from: string, to: string) => {
+    // The second entry to leave the slot fails, after the first has already moved.
+    if (String(to).includes(`${join("entries", "")}`) && dirname(String(from)) === slot.path && ++moves === 2) {
+      throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+    }
+    return rename(from, to);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+
+  const result = await m.repairSlot({ slotId: slot.slotId, reregister: true });
+  t.mock.restoreAll();
+  syncBuiltinESMExports();
+
+  assert.equal(moves, 2, "one entry had moved before the failure");
+  assert.equal(result.outcome, "refused");
+  assert.match((result as { reason: string }).reason, /^the slot's files could not be moved aside: .*EXDEV/);
+  assert.equal((result as { repair?: string }).repair, undefined);
+  assert.deepEqual(readdirSync(slot.path).sort(), listing);
+  assert.deepEqual(slot.inodes(), inodes);
+  assert.equal(registered(slot.clone, slot.path), false);
+  assert.deepEqual(repairStaging(m, slot.slotId), []);
+});
+
+test("a Repair preview whose commit to register at cannot be read is blocked, and names why", async () => {
+  class UnreadableDefault extends NativeWorktreeGit {
+    override async observedDefaultSha() {
+      return { ok: false as const, reason: "git rev-parse timed out after 15 s", outcomeUnknown: true };
+    }
+  }
+  const m = managerWith(new UnreadableDefault());
+  const service = operationsFor(m);
+  const slot = await unregisteredSlot(m, "mission-reregister-preview-blocked-");
+  db.prepare("UPDATE worktree_slots SET current_head_sha = NULL WHERE id = ?").run(slot.slotId);
+
+  const preview = await service.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal(preview.allowed, false);
+  assert.ok(preview.blockers.includes(
+    "The commit to register the slot at could not be read; try again: origin's default could not be read: git rev-parse timed out after 15 s.",
+  ), preview.blockers.join("\n"));
+  assert.equal(preview.consequences.some((line) => line.startsWith("No Git registration names")), false);
+  await assert.rejects(service.execute(preview.token, []), /The commit to register the slot at could not be read/);
+  assert.equal(registered(slot.clone, slot.path), false);
 });
