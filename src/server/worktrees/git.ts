@@ -90,6 +90,16 @@ export interface WorktreeGit {
 }
 
 /**
+ * Global options for a Git read that observation uses, placed before the subcommand.
+ *
+ * Without it `git status` may take `index.lock` to write back a refreshed index, and a status
+ * killed mid-refresh can leave that lock behind: the slot's next reset then fails with "File
+ * exists". A read never needs the lock, so none of them takes it. Mutations (`worktree add`,
+ * `worktree remove`, `checkout`, `reset`, `clean`, `fetch`) never carry it.
+ */
+export const OBSERVATION_GIT_OPTIONS = ["--no-optional-locks"] as const;
+
+/**
  * Whether a recorded branch name can be handed to Git as one. A transcript records whatever
  * Git printed, so this refuses anything that could read as an option or as a detached `HEAD`,
  * and leaves the rest to `check-ref-format` through the reads that follow.
@@ -192,7 +202,7 @@ export class NativeWorktreeGit implements WorktreeGit {
 
   async list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>> {
     const listed = await this.observe(
-      ["-C", identity.mainCheckoutRoot, "worktree", "list", "--porcelain"],
+      ["-C", identity.mainCheckoutRoot, ...OBSERVATION_GIT_OPTIONS, "worktree", "list", "--porcelain"],
       30_000,
       (result): GitResult<string> =>
         commandFailed(result) ? failure("git worktree list", result) : { ok: true, value: result.stdout },
@@ -215,7 +225,7 @@ export class NativeWorktreeGit implements WorktreeGit {
    * transition and "we did not find out" must not read as "detached".
    */
   private async detachedAt(path: string): Promise<GitResult<boolean>> {
-    return this.observe(["-C", path, "symbolic-ref", "--quiet", "HEAD"], 15_000, (probe) => {
+    return this.observe(["-C", path, ...OBSERVATION_GIT_OPTIONS, "symbolic-ref", "--quiet", "HEAD"], 15_000, (probe) => {
       if (probe.outcomeUnknown || probe.overflowed) return failure("git symbolic-ref HEAD", probe);
       if (probe.code === 0 && probe.stdout.trim().length > 0) return { ok: true, value: false };
       if (probe.code === 1 && probe.stdout.trim().length === 0 && probe.stderr.trim().length === 0) {
@@ -227,7 +237,7 @@ export class NativeWorktreeGit implements WorktreeGit {
 
   private async status(path: string): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
     return this.observe(
-      ["-C", path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      ["-C", path, ...OBSERVATION_GIT_OPTIONS, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
       15_000,
       (status) => commandFailed(status) ? failure("git status", status) : this.statusOf(path, status),
     );
@@ -271,7 +281,7 @@ export class NativeWorktreeGit implements WorktreeGit {
       return { ok: false, reason: `${path} is not a provable linked worktree`, outcomeUnknown: false };
     }
     const [head, status, detached] = await Promise.all([
-      this.observe(["-C", path, "rev-parse", "HEAD"], 15_000, (result): GitResult<string> =>
+      this.observe(["-C", path, ...OBSERVATION_GIT_OPTIONS, "rev-parse", "HEAD"], 15_000, (result): GitResult<string> =>
         commandFailed(result)
           ? failure("git rev-parse HEAD", result)
           : { ok: true, value: result.stdout.trim() }),
@@ -392,13 +402,15 @@ export class NativeWorktreeGit implements WorktreeGit {
   }
 
   async observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>> {
-    const target = await remoteDefaultRef(identity.mainCheckoutRoot);
+    const root = identity.mainCheckoutRoot;
+    const target = await remoteDefaultRef(root, (args) =>
+      this.execute("git", ["-C", root, ...OBSERVATION_GIT_OPTIONS, ...args], { timeoutMs: 15_000 }));
     if (!target) {
       return { ok: false, reason: "no remote default branch is available", outcomeUnknown: false };
     }
     const resolved = await this.execute(
       "git",
-      ["-C", identity.mainCheckoutRoot, "rev-parse", target],
+      ["-C", root, ...OBSERVATION_GIT_OPTIONS, "rev-parse", target],
       { timeoutMs: 15_000 },
     );
     if (commandFailed(resolved)) return failure(`git rev-parse ${target}`, resolved);
@@ -426,7 +438,7 @@ export class NativeWorktreeGit implements WorktreeGit {
   async mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>> {
     const result = await this.execute(
       "git",
-      ["-C", path, "merge-base", "--is-ancestor", "HEAD", targetSha],
+      ["-C", path, ...OBSERVATION_GIT_OPTIONS, "merge-base", "--is-ancestor", "HEAD", targetSha],
       { timeoutMs: 15_000 },
     );
     if (result.outcomeUnknown || result.overflowed) {
@@ -497,7 +509,7 @@ export class NativeWorktreeGit implements WorktreeGit {
 
   async branchTips(identity: WorktreeRepositoryIdentity, branch: string): Promise<GitResult<BranchTips>> {
     const tip = (ref: string) => this.observe(
-      ["-C", identity.mainCheckoutRoot, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+      ["-C", identity.mainCheckoutRoot, ...OBSERVATION_GIT_OPTIONS, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
       15_000,
       (result): GitResult<string | null> => {
         if (result.outcomeUnknown || result.overflowed) return failure(`git rev-parse ${ref}`, result);
@@ -529,7 +541,7 @@ export class NativeWorktreeGit implements WorktreeGit {
   async unbranchedCommits(path: string): Promise<GitResult<boolean>> {
     // One commit is enough to answer, so the walk stops at the first.
     return this.observe(
-      ["-C", path, "rev-list", "--max-count=1", "HEAD", "--not", "--branches", "--tags", "--remotes"],
+      ["-C", path, ...OBSERVATION_GIT_OPTIONS, "rev-list", "--max-count=1", "HEAD", "--not", "--branches", "--tags", "--remotes"],
       15_000,
       (result): GitResult<boolean> =>
         commandFailed(result) ? failure("git rev-list HEAD --not --branches --tags --remotes", result) : { ok: true, value: result.stdout.trim() !== "" },

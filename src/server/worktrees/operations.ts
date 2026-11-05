@@ -65,6 +65,7 @@ import {
   type WorktreeGit,
 } from "./git.ts";
 import {
+  SLOT_SETTLE_MS,
   WorktreeManager,
   observedIdleRefusal,
   type NativePoolStatus,
@@ -764,6 +765,7 @@ export class WorktreeOperationsService {
             // saturating disk and holding the page for seconds. A destructive preview
             // measures only the fixed paths it is about to show.
             diskBytes: null,
+            busy: entry.busy,
             quarantineReason: compact(entry.slot.quarantineReason),
             diagnostic: compact(splitObservationFailure(entry.slot.lastError).rest),
             observationFailure: compact(splitObservationFailure(entry.slot.lastError).failure),
@@ -1160,6 +1162,7 @@ export class WorktreeOperationsService {
       }),
       diskBytes: null,
     });
+    if (slot.busy) blockers.push(`Slot ${slot.slot.ordinal} is busy with ${slot.busy}; preview again once it finishes.`);
     if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
     else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
     if (slot.mergedIntoDefault === false) {
@@ -1591,6 +1594,7 @@ export class WorktreeOperationsService {
       blockers.push(`Slot ${ordinal} already has an operation queued; wait for it to finish.`);
     }
     if (this.manager.claims.has(slot.slot.id)) blockers.push(`A dependency claim is running in slot ${ordinal}.`);
+    else if (slot.busy) blockers.push(`Slot ${ordinal} is busy with ${slot.busy}; preview again once it finishes.`);
     if (slot.occupancy.status === "unknown") {
       risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
       blockers.push(slot.occupancy.reason);
@@ -1675,6 +1679,7 @@ export class WorktreeOperationsService {
     }
     if (observed.pending.has(path)) blockers.push(`Slot ${ordinal} already has an operation queued; wait for it to finish.`);
     if (this.manager.claims.has(slot.slot.id)) blockers.push(`A dependency claim is running in slot ${ordinal}.`);
+    else if (slot.busy) blockers.push(`Slot ${ordinal} is busy with ${slot.busy}; preview again once it finishes.`);
     risks.push(risk("quarantined", "The slot is quarantined", false));
     if (read === null) blockers.push("The pool's repository identity cannot be proven.");
     else if (!read.ok) blockers.push(`The slot's Git registration could not be read; try again: ${read.reason}.`);
@@ -2251,6 +2256,10 @@ export class WorktreeOperationsService {
     const startedAt = this.deps.now();
     const progress: OperationProgress = { finished: new Set(), moved: false, uncertain: false, settled: null };
     try {
+      await this.manager.slotsSettled(
+        held.preview.affected.filter((target) => target.provider === "mission").map((target) => target.id),
+        SLOT_SETTLE_MS,
+      );
       const observed = await this.observe();
       const rebuilt = await this.buildPreview(held.preview.request, observed, operationId);
       const currentFingerprint = previewFingerprint(rebuilt);
@@ -2536,7 +2545,10 @@ export class WorktreeOperationsService {
       entry.slots.some((slot) => slot.slot.id === slotId));
     if (!pool || !pool.identityValid || !pool.markerValid) return null;
     const slot = pool.slots.find((entry) => entry.slot.id === slotId);
-    return slot?.nativePath && slot.registered === true && slot.repositoryMatches === true
+    // A busy slot's own Git is not read, so its repository match is unknown. Opening a shell
+    // writes nothing, and its exact pool path and Git registration still prove the folder.
+    const repositoryProven = slot?.repositoryMatches === true || (slot?.busy != null && slot.repositoryMatches === null);
+    return slot?.nativePath && slot.registered === true && repositoryProven
       ? slot.slot.path
       : null;
   }

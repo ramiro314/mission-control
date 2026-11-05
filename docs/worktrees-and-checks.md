@@ -708,6 +708,19 @@ this order:
   [Dependency claims](#dependency-claims). Each slot carries its exact manager path, observed HEAD, relationship to the remote
   default, cleanliness, process count, disk estimate, and owner, and in a pool with a claim, its
   dependency state. **Copy path** stays in the browser.
+  A slot that an operation or a dependency claim holds when the page looks is marked **busy**,
+  and its card names the holder: a running dependency claim and its step, or the lease
+  acquisition, seed source lease, Warm, Return, Recover, Repair, Forget, Destroy or
+  reconciliation holding its slot lock. The inventory runs no Git in a busy slot, so it never races that operation for the
+  index: the card shows the slot's last recorded state, owner and HEAD, and its cleanliness and
+  default relationship read unknown until the slot is free. A preview that names a busy slot is
+  blocked until it is free. Execute's own recheck, and a manual lease's return, wait up to 10
+  seconds for a slot's current holder to let go first, so a maintenance pass passing over the
+  slot is not read as a change or as unknown cleanliness; a running claim is not waited for, and
+  a return refused for a holder that stays names it. **Open terminal** still works on a busy slot
+  that is leased or quarantined, from its exact pool path and Git registration, because opening a
+  shell writes nothing. A slot its claim is still provisioning is not idle, so it is refused by
+  its state, as any slot that is neither idle nor leased is.
   **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
   manager-known path. On an available slot it first takes a manual lease, so acquisition cannot
   hand out a slot with an unowned shell in it. The lease takes the slot exactly as it stands, with
@@ -924,7 +937,11 @@ The operations have deliberately narrow meanings:
   Recover is the
   way out of the stale-lock quarantine: a Git command that dies holding `index.lock` makes the
   next reset fail with Git's "Unable to create '...index.lock': File exists", and the slot is
-  quarantined with that text as its last error.
+  quarantined with that text as its last error. Watching a slot never takes that lock: every Git
+  read the allocator observes with (`status`, `rev-parse`, `rev-list`, `symbolic-ref`, `worktree
+  list`, `merge-base` and the remote-default reads) passes `--no-optional-locks` before its subcommand,
+  so a read killed mid-way cannot leave `index.lock` behind. The mutations (`worktree add` and
+  `remove`, `checkout`, `reset`, `clean` and Return's `fetch`) take their locks as usual.
 
   Each maintenance pass also runs Recover's automatic half, with no operator, on every quarantine
   that a fresh read can disprove: one whose last error is that lock text, one whose reason is a
