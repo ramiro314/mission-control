@@ -37,7 +37,7 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method
   return (await response.json()) as T;
 }
 
-test("the Pipeline editor adds Wait for CI after a Pull Request action, with its timeout", async ({
+test("the Pipeline editor adds Wait for CI after a Pull Request action, with its timeout and settings", async ({
   dashboard,
   daemon,
 }) => {
@@ -57,11 +57,23 @@ test("the Pipeline editor adds Wait for CI after a Pull Request action, with its
 
   const row = pipeline.locator("li.wf-pipeline-reviewer", { hasText: "Wait for CI" });
   await expect(row).toBeVisible();
-  await expect(row).toContainText("Waits for the pull request's CI · blocks after 45 min");
+  // A new node writes the new-node settings, and the row says them.
+  await expect(row).toContainText("All checks · quiet 3 min · blocks after 45 min");
+  await expect(pipeline.getByRole("radio", { name: "All checks must pass" })).toBeChecked();
+  await expect(pipeline.getByRole("radio", { name: "Required checks must pass" })).not.toBeChecked();
+  await expect(pipeline.getByLabel("Quiet period (minutes)")).toHaveValue("3");
+  await expect(pipeline.getByRole("textbox", { name: /^Expected checks/ })).toHaveValue("");
+  await expect(pipeline).toContainText(
+    "Passes once every counted check has settled and stayed unchanged this long. Set 0 to pass as soon as they settle.",
+  );
+  await pipeline.getByRole("radio", { name: "Required checks must pass" }).check();
+  await expect(row).toContainText("Required checks · quiet 3 min · blocks after 45 min");
+  await pipeline.getByRole("textbox", { name: /^Expected checks/ }).fill("deploy\n\n  e2e  \n");
+  await expect(row).toContainText("Required checks · quiet 3 min · blocks after 45 min · expects 2 checks");
   const timeout = pipeline.getByLabel("Timeout (minutes)");
   await expect(timeout).toHaveValue("45");
   await timeout.fill("60");
-  await expect(row).toContainText("blocks after 60 min");
+  await expect(row).toContainText("Required checks · quiet 3 min · blocks after 60 min · expects 2 checks");
   // A Wait for CI stage holds nothing else, so it has no "add a reviewer" control.
   await expect(pipeline.getByLabel("Add a reviewer or Command to Stage 2")).toHaveCount(0);
 
@@ -78,7 +90,7 @@ test("the Pipeline editor adds Wait for CI after a Pull Request action, with its
     };
   }>(daemon, `/api/workflows/${created.workflow.id}/versions/1`);
   const ci = version.graph.nodes.find((node) => node.kind === "wait_for_ci");
-  expect(ci?.timeoutMinutes).toBe(60);
+  expect(ci).toMatchObject({ timeoutMinutes: 60, strictness: "required", quietMinutes: 3, expectedChecks: ["deploy", "e2e"] });
   const action = version.graph.nodes.find((node) => node.kind === "session_action")!;
   expect(version.graph.edges).toContainEqual(expect.objectContaining({
     source: action.id,
@@ -88,8 +100,61 @@ test("the Pipeline editor adds Wait for CI after a Pull Request action, with its
   await shoot(dashboard, "01-editor-wait-for-ci");
 });
 
-test("the Graph palette adds a Wait for CI node with pass and fail ports", async ({ dashboard, daemon }) => {
-  await api(daemon, "/api/workflows", { name: "E2E wait for CI graph" });
+test("Publish refuses a quiet period at or above the timeout, said on the node, and publishes once it fits", async ({
+  dashboard,
+  daemon,
+}) => {
+  const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", { name: "E2E wait for CI quiet" });
+  await dashboard.goto(`${daemon.baseURL}/#/workflows`);
+  await dashboard.getByRole("button", { name: /E2E wait for CI quiet/ }).click();
+  const pipeline = dashboard.locator(".wf-pipeline-strip");
+  await pipeline.getByLabel("Add the first stage").selectOption({ label: "Pull Request" });
+  await pipeline.getByLabel("Insert a stage after Stage 1").click();
+  await pipeline.getByLabel("Insert a stage after Stage 1").selectOption({ label: "Wait for CI" });
+  const publish = dashboard.getByRole("button", { name: "Publish" });
+  await expect(publish).toBeEnabled();
+
+  await pipeline.getByLabel("Timeout (minutes)").fill("10");
+  const quiet = pipeline.getByLabel("Quiet period (minutes)");
+  await quiet.fill("10");
+  // Inline, on the node, in place of the hint; and in the validation list beside Publish.
+  const message = "The quiet period must be shorter than the timeout.";
+  await expect(quiet.locator("xpath=..")).toContainText(message);
+  await expect(quiet).toHaveAttribute("aria-invalid", "true");
+  await expect(dashboard.getByRole("complementary", { name: "Workflow settings and validation" })).toContainText(message);
+  await expect(publish).toBeDisabled();
+  await shoot(dashboard, "01b-editor-quiet-period-diagnostic");
+  // The publish route refuses it too, with the node diagnostic.
+  await expect.poll(async () => (await api<{ workflow: { draft: { nodes: Array<{ kind: string; quietMinutes?: number }> } } }>(
+    daemon, `/api/workflows/${created.workflow.id}`)).workflow.draft.nodes.find((node) => node.kind === "wait_for_ci")?.quietMinutes,
+  ).toBe(10);
+  const refused = await fetch(`${daemon.baseURL}/api/workflows/${created.workflow.id}/publish`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedDraftRevision: (await api<{ workflow: { draftRevision: number } }>(daemon, `/api/workflows/${created.workflow.id}`)).workflow.draftRevision }),
+  });
+  expect(refused.ok).toBe(false);
+  expect(await refused.text()).toContain("wait_for_ci_quiet_period");
+
+  await quiet.fill("0");
+  await expect(quiet.locator("xpath=..")).not.toContainText(message);
+  await expect(publish).toBeEnabled();
+  await publish.click();
+  await expect
+    .poll(async () => (await api<unknown[]>(daemon, `/api/workflows/${created.workflow.id}/versions`)).length)
+    .toBe(1);
+  const version = await api<{ graph: { nodes: Array<Record<string, unknown>> } }>(
+    daemon, `/api/workflows/${created.workflow.id}/versions/1`);
+  expect(version.graph.nodes.find((node) => node.kind === "wait_for_ci")).toMatchObject({
+    timeoutMinutes: 10,
+    strictness: "all",
+    quietMinutes: 0,
+    expectedChecks: [],
+  });
+});
+
+test("the Graph palette adds a Wait for CI node with pass and fail ports, and the rail edits its settings", async ({ dashboard, daemon }) => {
+  const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", { name: "E2E wait for CI graph" });
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.getByRole("button", { name: /E2E wait for CI graph/ }).click();
   await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
@@ -102,8 +167,26 @@ test("the Graph palette adds a Wait for CI node with pass and fail ports", async
   await node.click();
   const rail = dashboard.getByRole("complementary", { name: "Workflow properties and validation" });
   await expect(rail.getByLabel("Timeout (minutes)")).toHaveValue("45");
+  await expect(rail.getByRole("radio", { name: "All checks must pass" })).toBeChecked();
+  await expect(rail.getByLabel("Quiet period (minutes)")).toHaveValue("3");
+  await expect(rail.getByRole("textbox", { name: /^Expected checks/ })).toHaveValue("");
+  await expect(rail).toContainText("Only checks GitHub marks required, plus any expected checks, count.");
+  await expect(rail).toContainText("It blocks the run when CI times out, never appears, or an expected check never appears.");
   // Unconnected, it says where it belongs.
   await expect(rail).toContainText("Wait for CI must follow a Pull Request session action's complete route");
+
+  await rail.getByRole("radio", { name: "Required checks must pass" }).check();
+  await rail.getByLabel("Quiet period (minutes)").fill("5");
+  await rail.getByRole("textbox", { name: /^Expected checks/ }).fill("deploy\ndeploy");
+  // A repeated name is said on the node, and Publish refuses it.
+  await expect(rail).toContainText("Expected checks must be unique, and there can be at most 20.");
+  await expect(rail.locator("code.workflow-diagnostic-code", { hasText: "wait_for_ci_expected_checks" })).toBeVisible();
+  await shoot(dashboard, "01c-graph-rail-wait-for-ci");
+  await rail.getByRole("textbox", { name: /^Expected checks/ }).fill("deploy\ne2e");
+  await expect(rail.locator("code.workflow-diagnostic-code", { hasText: "wait_for_ci_expected_checks" })).toHaveCount(0);
+  await expect.poll(async () => (await api<{ workflow: { draft: { nodes: Array<Record<string, unknown>> } } }>(
+    daemon, `/api/workflows/${created.workflow.id}`)).workflow.draft.nodes.find((item) => item.kind === "wait_for_ci"),
+  ).toMatchObject({ timeoutMinutes: 45, strictness: "required", quietMinutes: 5, expectedChecks: ["deploy", "e2e"] });
 });
 
 // ---- a run -------------------------------------------------------------------------------
@@ -166,7 +249,12 @@ type RunDetail = {
 };
 
 /** Dispatch, publish Session -> Pull Request -> Wait for CI -> End, and run it to the wait. */
-async function runToCiWait(page: Page, daemon: DaemonHandle, name: string): Promise<CiWait> {
+async function runToCiWait(
+  page: Page,
+  daemon: DaemonHandle,
+  name: string,
+  settings: Record<string, unknown> = {},
+): Promise<CiWait> {
   await api(daemon, "/api/workflows/config", { liveEnabled: true, repoAllowlist: [daemon.repo] }, "PUT");
   await page.goto(`${daemon.baseURL}/#/fleet`);
   const sessionId = await dispatch(page, daemon, `e2e/${name}`);
@@ -184,7 +272,7 @@ async function runToCiWait(page: Page, daemon: DaemonHandle, name: string): Prom
       nodes: [
         { id: "session-node", kind: "session", position: { x: 0, y: 0 } },
         { id: "action-node", kind: "session_action", sessionActionId: action.id, position: { x: 240, y: 0 } },
-        { id: "ci-node", kind: "wait_for_ci", timeoutMinutes: 45, position: { x: 480, y: 0 } },
+        { id: "ci-node", kind: "wait_for_ci", timeoutMinutes: 45, position: { x: 480, y: 0 }, ...settings },
         { id: "end-node", kind: "end", outcome: "Approved", position: { x: 720, y: 0 } },
       ],
       edges: [
@@ -245,10 +333,11 @@ function seedCi(
   checkRuns: unknown[],
   flakeReport: unknown = null,
   observedAt = Date.now(),
+  totalCount: number | null = null,
 ): void {
   withDaemonDb(daemon, (db) => {
     const changed = db.prepare("UPDATE inspector_prs SET observed_ci_json = ? WHERE key = ?")
-      .run(JSON.stringify({ headSha: head, observedAt, checkRuns, flakeReport }), PR_KEY);
+      .run(JSON.stringify({ headSha: head, observedAt, checkRuns, flakeReport, totalCount }), PR_KEY);
     if (Number(changed.changes) !== 1) throw new Error("the adopted pull request row is missing");
   });
 }
@@ -484,4 +573,122 @@ test("a run an older build blocked for a missing Flaky tests check says so, and 
     timeout: 60_000,
   }).toBe("completed");
   await expect(ciRow).toContainText("CI passed");
+});
+
+// ---- node settings in a run --------------------------------------------------------------
+
+/** Open the run, then the Wait for CI card, and return the card with the given state. */
+async function ciCard(page: Page, daemon: DaemonHandle, runId: string, chip: string, kind: "verdict" | "attempt") {
+  await page.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const ciRow = page.locator('[aria-label="Workflow run pipeline"]').locator("li.wf-pipeline-reviewer", { hasText: "Wait for CI" });
+  await expect(ciRow).toContainText(chip);
+  await ciRow.click();
+  return page.locator(`article.wf-run-${kind}`, { hasText: "Wait for CI" });
+}
+
+async function runStatus(daemon: DaemonHandle, runId: string, status: string, message: string): Promise<void> {
+  await expect.poll(async () => (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status, {
+    message,
+    timeout: 60_000,
+  }).toBe(status);
+}
+
+test("Required checks pass over a failing check that is not required, which the panel tags", async ({ dashboard, daemon }) => {
+  test.setTimeout(360_000);
+  const { runId, head } = await runToCiWait(dashboard, daemon, "ci-required", { strictness: "required", quietMinutes: 3, expectedChecks: [] });
+  const checks = [
+    check("build", "passing", { required: true }),
+    check("SonarQube", "passing", { required: true }),
+    check("preview deploy", "failing"),
+  ];
+  const firstSeen = Date.now() - QUIET_MS - 60_000;
+  seedCi(daemon, head, checks, null, firstSeen);
+  await quietStarted(daemon, firstSeen);
+  seedCi(daemon, head, checks);
+  await runStatus(daemon, runId, "completed", "required checks passing did not complete the run");
+
+  const card = await ciCard(dashboard, daemon, runId, "CI passed", "verdict");
+  await expect(card).toContainText("CI passed on PR #77");
+  await expect(card).toContainText("Required checks · quiet 3 min · limit 45 min");
+  await card.getByText("Checks on the head commit (3)").click();
+  const list = card.getByRole("list", { name: "CI checks" });
+  await expect(list.locator("li", { hasText: "preview deploy" })).toContainText("Not required");
+  await expect(list.locator("li", { hasText: "build" })).toContainText("Required");
+  await expect(card).not.toContainText("Failing checks");
+  await shoot(dashboard, "06-run-ci-required");
+  if (process.env.MC_E2E_EVIDENCE) await card.screenshot({ path: `${EVIDENCE}06-ci-required-card.png` });
+});
+
+test("Required checks with none marked wait out the quiet period, then judge every check and say so", async ({ dashboard, daemon }) => {
+  test.setTimeout(360_000);
+  const { runId, head } = await runToCiWait(dashboard, daemon, "ci-fallback", { strictness: "required", quietMinutes: 3, expectedChecks: [] });
+  const checks = [check("unit (node 24)", "passing"), check("lint", "passing")];
+  const firstSeen = Date.now() - QUIET_MS - 60_000;
+  seedCi(daemon, head, checks, null, firstSeen);
+  await quietStarted(daemon, firstSeen);
+  seedCi(daemon, head, checks);
+  await runStatus(daemon, runId, "completed", "the fallback did not pass green CI");
+
+  const card = await ciCard(dashboard, daemon, runId, "CI passed", "verdict");
+  await expect(card).toContainText("No check on this head is marked required, so every check was judged.");
+  await expect(card).toContainText("No check was marked required, so every check was judged.");
+  await shoot(dashboard, "07-run-ci-fallback");
+  if (process.env.MC_E2E_EVIDENCE) await card.screenshot({ path: `${EVIDENCE}07-ci-fallback-card.png` });
+});
+
+test("an expected check that never appears blocks the run at the timeout, by name, and offers to wait again", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(360_000);
+  const { runId, head } = await runToCiWait(dashboard, daemon, "ci-expected", { strictness: "all", quietMinutes: 3, expectedChecks: ["deploy"] });
+  seedCi(daemon, head, [check("unit (node 24)", "passing")]);
+  await expect.poll(() => waitingCiState(daemon)?.state.missingExpected ?? null, {
+    message: "the node never noticed the expected check was missing",
+    timeout: 60_000,
+  }).toEqual(["deploy"]);
+  // Green CI without the expected check keeps waiting; past the timeout it blocks.
+  expect((await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status).toBe("running");
+  const waiting = waitingCiState(daemon)!;
+  withDaemonDb(daemon, (db) => {
+    const state = { ...waiting.state, waitingSince: Number(waiting.state.waitingSince) - 46 * 60_000 };
+    db.prepare("UPDATE workflow_node_attempts SET output_json = ? WHERE id = ?").run(JSON.stringify(state), waiting.id);
+  });
+  await expect.poll(async () => (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.currentPhase, {
+    message: "the missing expected check never blocked the run",
+    timeout: 60_000,
+  }).toBe("ci_expected_missing");
+
+  const card = await ciCard(dashboard, daemon, runId, "Blocked", "attempt");
+  await expect(card.locator(".wf-run-ci-headline")).toHaveText(
+    'These expected checks never appeared on the head commit before the timeout: "deploy". Check that '
+    + "the workflows producing them run on pull requests, or correct the names in a new version, then "
+    + "wait for CI again.",
+  );
+  await expect(card).toContainText('All checks · expects "deploy" · quiet 3 min · limit 45 min');
+  await card.getByText("Checks on the head commit (1)").click();
+  await expect(card.getByRole("list", { name: "CI checks" }).locator("li", { hasText: "deploy" })).toContainText("Not reported yet");
+  await expect(dashboard.getByRole("button", { name: "Wait for CI again" })).toBeVisible();
+  await shoot(dashboard, "08-run-ci-expected-missing");
+  if (process.env.MC_E2E_EVIDENCE) await card.screenshot({ path: `${EVIDENCE}08-ci-expected-missing-card.png` });
+});
+
+test("green CI on a head with more than 100 checks blocks rather than pass on the first 100", async ({ dashboard, daemon }) => {
+  test.setTimeout(360_000);
+  const { runId, head } = await runToCiWait(dashboard, daemon, "ci-truncated", { strictness: "all", quietMinutes: 0, expectedChecks: [] });
+  seedCi(daemon, head, [check("unit (node 24)", "passing"), check("lint", "passing")], null, Date.now(), 140);
+  await expect.poll(async () => (await api<RunDetail>(daemon, `/api/workflow-runs/${runId}`)).run.currentPhase, {
+    message: "a truncated green head did not block the run",
+    timeout: 60_000,
+  }).toBe("ci_checks_truncated");
+
+  const card = await ciCard(dashboard, daemon, runId, "Blocked", "attempt");
+  await expect(card.locator(".wf-run-ci-headline")).toHaveText(
+    "GitHub reported 140 checks; only the first 100 were read, so this node cannot confirm CI passed. "
+    + "Check the rest on GitHub; if they pass, an operator can disable this node for the run.",
+  );
+  await expect(card.locator("p.wf-run-meta", { hasText: /^GitHub reported 140 checks; only the first 100 were read\.$/ })).toBeVisible();
+  await expect(dashboard.getByText("over 100 checks").first()).toBeVisible();
+  await shoot(dashboard, "09-run-ci-truncated");
+  if (process.env.MC_E2E_EVIDENCE) await card.screenshot({ path: `${EVIDENCE}09-ci-truncated-card.png` });
 });

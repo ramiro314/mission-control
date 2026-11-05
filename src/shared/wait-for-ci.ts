@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { FLAKY_TESTS_CHECK_NAME, FlakeReportSchema, type FlakeReport } from "./flake-report.ts";
-import { classifyCheckEntry } from "./ci-checks.ts";
+import { CI_STRICTNESS, classifyCheckEntry, requiredChecksRollup, type CiStrictness } from "./ci-checks.ts";
 import type { PrMergeable } from "./types.ts";
 
 // The Wait for CI node: what it reads, what it records, and how it decides.
@@ -16,16 +16,92 @@ import type { PrMergeable } from "./types.ts";
 /** The timeout a new node gets, and the range an author may choose, in minutes. */
 export const WAIT_FOR_CI_TIMEOUT_MINUTES = { default: 45, min: 5, max: 240 } as const;
 
+/** The quiet period a new node gets, and the range an author may choose, in minutes. */
+export const WAIT_FOR_CI_QUIET_MINUTES = { default: 3, min: 0, max: 30 } as const;
+
 /**
- * What every Wait for CI node judges under: all checks count, a 3-minute quiet period, and no
- * expected checks. Literals, frozen for ever: a node or attempt that names no setting means
- * exactly this, never whatever a later default becomes.
+ * How many expected check names a node may list, and how long one may be. `max` is enforced at
+ * Publish, so the editor can show it on the node; `schemaMax` only bounds what can be stored.
+ */
+export const WAIT_FOR_CI_EXPECTED_CHECKS = { max: 20, nameMax: 500, schemaMax: 100 } as const;
+
+/** The three settings a Wait for CI node judges under. */
+export interface WaitForCiSettings {
+  strictness: CiStrictness;
+  quietMinutes: number;
+  expectedChecks: readonly string[];
+}
+
+/** The settings as a node or an attempt stores them: each one absent until it is written. */
+export interface WaitForCiStoredSettings {
+  strictness?: CiStrictness;
+  quietMinutes?: number;
+  expectedChecks?: string[];
+}
+
+/**
+ * What a node or attempt that names no setting judges under: all checks count, a 3-minute quiet
+ * period, and no expected checks. Literals, frozen for ever: absence means exactly this, never
+ * whatever a later default becomes, so they deliberately do not read the defaults above.
  */
 export const WAIT_FOR_CI_LEGACY_SETTINGS = {
   strictness: "all",
   quietMinutes: 3,
   expectedChecks: [],
-} as const;
+} as const satisfies WaitForCiSettings;
+
+/** What a node added in the editor writes, built from the defaults. */
+export const WAIT_FOR_CI_NEW_NODE_SETTINGS: WaitForCiSettings = {
+  strictness: CI_STRICTNESS[0],
+  quietMinutes: WAIT_FOR_CI_QUIET_MINUTES.default,
+  expectedChecks: [],
+};
+
+/**
+ * The one resolver for a node's or an attempt's settings: a stored field wins, and an absent
+ * one takes `WAIT_FOR_CI_LEGACY_SETTINGS`. Every reader goes through it.
+ */
+export function waitForCiSettings(stored: Partial<WaitForCiSettings>): WaitForCiSettings {
+  return {
+    strictness: stored.strictness ?? WAIT_FOR_CI_LEGACY_SETTINGS.strictness,
+    quietMinutes: stored.quietMinutes ?? WAIT_FOR_CI_LEGACY_SETTINGS.quietMinutes,
+    expectedChecks: stored.expectedChecks ?? WAIT_FOR_CI_LEGACY_SETTINGS.expectedChecks,
+  };
+}
+
+/**
+ * The settings exactly as stored: each present field, and nothing for an absent one, so a legacy
+ * node round-trips through the editor, and a legacy attempt through "Wait for CI again", still
+ * reading as legacy.
+ */
+export function storedWaitForCiSettings(stored: Partial<WaitForCiSettings>): WaitForCiStoredSettings {
+  return {
+    ...(stored.strictness !== undefined ? { strictness: stored.strictness } : {}),
+    ...(stored.quietMinutes !== undefined ? { quietMinutes: stored.quietMinutes } : {}),
+    ...(stored.expectedChecks !== undefined ? { expectedChecks: [...stored.expectedChecks] } : {}),
+  };
+}
+
+/**
+ * Whether a quiet period fits inside the node's timeout. The one predicate behind the Publish
+ * diagnostic and the editor's inline message, so the two cannot disagree.
+ */
+export function waitForCiQuietFits(settings: Pick<WaitForCiSettings, "quietMinutes">, timeoutMinutes: number): boolean {
+  return settings.quietMinutes < timeoutMinutes;
+}
+
+/** What Publish and the editor say when the quiet period does not fit inside the timeout. */
+export const WAIT_FOR_CI_QUIET_PERIOD_MESSAGE = "The quiet period must be shorter than the timeout.";
+
+/** What Publish and the editor say when an expected-checks list would be refused. */
+export const WAIT_FOR_CI_EXPECTED_CHECKS_MESSAGE =
+  `Expected checks must be unique, and there can be at most ${WAIT_FOR_CI_EXPECTED_CHECKS.max}.`;
+
+/** Whether an expected-checks list would pass Publish: unique trimmed names, at most `max`. */
+export function waitForCiExpectedChecksValid(expectedChecks: readonly string[]): boolean {
+  const names = expectedChecks.map((name) => name.trim());
+  return names.length <= WAIT_FOR_CI_EXPECTED_CHECKS.max && new Set(names).size === names.length;
+}
 
 /**
  * How long a quiet period still running at the timeout may wait for the observation that
@@ -162,6 +238,13 @@ export const WAIT_FOR_CI_BLOCK_CODES = [
   "ci_timeout",
   /** The node has no pull request to watch: the action before it recorded none. */
   "ci_pull_request_unknown",
+  /** Every counted check settled, but an expected check never appeared before the timeout. */
+  "ci_expected_missing",
+  /**
+   * CI would have passed on the checks read, but GitHub reported more than the
+   * `CI_CHECK_RUNS_MAX` the query reads, so the node cannot confirm the rest passed.
+   */
+  "ci_checks_truncated",
 ] as const;
 export type WaitForCiBlockCode = (typeof WAIT_FOR_CI_BLOCK_CODES)[number];
 
@@ -184,6 +267,14 @@ export const WaitForCiStateSchema = z.object({
   reportedHeadOid: z.string().nullable().optional(),
   waitingSince: z.number(),
   timeoutMinutes: z.number().int(),
+  /**
+   * The node's settings, copied at activation like `timeoutMinutes`. Absent on attempts
+   * written before they existed, which read as `WAIT_FOR_CI_LEGACY_SETTINGS`.
+   */
+  strictness: z.enum(CI_STRICTNESS).optional(),
+  quietMinutes: z.number().int().min(0).optional(),
+  expectedChecks: z.array(z.string().max(WAIT_FOR_CI_EXPECTED_CHECKS.nameMax))
+    .max(WAIT_FOR_CI_EXPECTED_CHECKS.schemaMax).optional(),
   /** When the Inspector last read CI for the expected head; null until it has. */
   observedAt: z.number().nullable(),
   /** The expected head's checks as last read. */
@@ -199,6 +290,15 @@ export const WaitForCiStateSchema = z.object({
    * seen settled; absent on attempts written before the quiet period existed.
    */
   quietSince: z.number().nullable().optional(),
+  /**
+   * True on a verdict reached in Required mode with no check marked required, which judged
+   * every check instead.
+   */
+  requiredFallback: z.boolean().optional(),
+  /** The expected checks the last observation did not report. */
+  missingExpected: z.array(z.string()).optional(),
+  /** How many checks GitHub reported on the head at the last observation, when it said. */
+  checksTotal: z.number().int().nullable().optional(),
   outcome: z.enum(["pass", "fail", "blocked"]).nullable(),
   /** The flake report of a passing run, when the "Flaky tests" check carried one. */
   flakeReport: FlakeReportSchema.nullable(),
@@ -217,7 +317,7 @@ export function initialWaitForCiState(input: {
   reportedHeadOid?: string | null;
   timeoutMinutes: number;
   now: number;
-}): WaitForCiState {
+} & Partial<WaitForCiSettings>): WaitForCiState {
   return {
     kind: "wait_for_ci",
     pullRequestKey: input.pullRequestKey,
@@ -227,6 +327,7 @@ export function initialWaitForCiState(input: {
     reportedHeadOid: input.reportedHeadOid ?? null,
     waitingSince: input.now,
     timeoutMinutes: input.timeoutMinutes,
+    ...storedWaitForCiSettings(input),
     observedAt: null,
     checkRuns: [],
     greenWithoutReportSince: null,
@@ -274,9 +375,12 @@ function sameHead(expected: string, observed: string): boolean {
   return expected.toLowerCase() === observed.toLowerCase();
 }
 
-/** A check as the quiet period compares it: what it is called and what it concluded. */
+/**
+ * A check as the quiet period compares it: what it is called, what it concluded, and whether
+ * GitHub marks it required, so marking or unmarking a check changes the set.
+ */
 function checkKey(run: CiCheckRun): string {
-  return JSON.stringify([run.name, run.state, run.conclusion]);
+  return JSON.stringify([run.name, run.state, run.conclusion, run.required === true]);
 }
 
 /** Whether two observations saw the same checks, in any order. */
@@ -288,28 +392,69 @@ function sameChecks(a: readonly CiCheckRun[], b: readonly CiCheckRun[]): boolean
 }
 
 /**
+ * The checks a node counts on one observation, under its settings.
+ *
+ * - All: every check.
+ * - Required, with checks marked: the marked checks, plus every check whose name is expected.
+ * - Required, with nothing marked: every check, and `fallback` says so. A verdict reached this
+ *   way records it.
+ */
+export function countedChecks(
+  runs: readonly CiCheckRun[],
+  settings: WaitForCiSettings,
+): { counted: CiCheckRun[]; fallback: boolean } {
+  if (settings.strictness === "all") return { counted: [...runs], fallback: false };
+  if (requiredChecksRollup(runs) === null) return { counted: [...runs], fallback: true };
+  const expected = new Set(settings.expectedChecks);
+  return { counted: runs.filter((run) => run.required === true || expected.has(run.name)), fallback: false };
+}
+
+/** The expected names no check on this observation carries, in the order the node lists them. */
+export function missingExpectedChecks(runs: readonly CiCheckRun[], settings: WaitForCiSettings): string[] {
+  const present = new Set(runs.map((run) => run.name));
+  return [...new Set(settings.expectedChecks)].filter((name) => !present.has(name));
+}
+
+/** Whether GitHub reported more checks on the head than the node read. */
+export function waitForCiTruncated(state: Pick<WaitForCiState, "checksTotal">): boolean {
+  return state.checksTotal != null && state.checksTotal > CI_CHECK_RUNS_MAX;
+}
+
+/** Names as the block details and summaries quote them: `"e2e", "build"`. */
+export function quotedNames(names: readonly string[]): string {
+  return names.map((name) => `"${name}"`).join(", ");
+}
+
+/**
  * One observation of a waiting node, decided. Pure: the caller supplies the stored
- * observation and the time. Every node judges under `WAIT_FOR_CI_LEGACY_SETTINGS`.
+ * observation and the time. The node judges under its own settings (`waitForCiSettings`), and
+ * the checks it counts are `countedChecks`'.
  *
  * - The pull request conflicts with its base on the expected head: fail, before anything else.
  *   GitHub runs no `pull_request` checks on a conflicting pull request, so waiting for them
  *   would only end in `ci_missing`. A conflict observed on another head waits like any other
  *   observation of another head.
  * - Another head, or no observation yet: wait. The node never judges a head it was not given.
- * - Any check still pending: wait, and clear the quiet period.
- * - Every check settled, one failing: fail, naming every failing check. "Flaky tests" is a
- *   check like any other.
- * - Every check passed: the quiet period. Its clock starts at the `observedAt` of the
- *   observation that first saw this set, and the node passes on an observation at least the
- *   quiet period later that saw the same set. A changed set restarts it. The clock reads
- *   observations, never `now`, so the manager's fifteen-second sweep re-deciding one
- *   observation cannot pass the node on its own. The pass carries the flake report, when CI
- *   published one.
+ * - Any counted check still pending: wait, and clear the quiet period.
+ * - Every counted check settled, one failing: fail, naming every counted failure and any
+ *   expected check not reported. "Flaky tests" is a check like any other. In Required mode
+ *   with nothing marked, the failure waits out the quiet period first, like a pass would.
+ * - Every counted check passed, an expected check not reported yet: wait for it.
+ * - Every counted check passed, every expected check reported: pass at once. Otherwise pass at
+ *   once with a quiet period of 0, or run the quiet period. Its clock starts at the
+ *   `observedAt` of the observation that first saw this counted set, and the node passes on an
+ *   observation at least the quiet period later that saw the same set. A changed set restarts
+ *   it. The clock reads observations, never `now`, so the manager's fifteen-second sweep
+ *   re-deciding one observation cannot pass the node on its own. The pass carries the flake
+ *   report, when CI published one.
+ * - A pass on a head where GitHub reported more checks than were read blocks
+ *   `ci_checks_truncated` instead: the node never passes on a partial list.
  * - At the timeout: a quiet period already running may still finish on its first new
  *   observation, unchanged, but never starts or restarts. It blocks `ci_timeout` when the set
  *   changes, or when no new observation arrives within `WAIT_FOR_CI_QUIET_GRACE_MS` of the
- *   period's end. Otherwise it blocks `ci_missing` when no check ever appeared, and
- *   `ci_timeout`, naming the checks still running, when one did.
+ *   period's end. Otherwise it blocks, in order: `ci_missing` when no check ever appeared,
+ *   `ci_timeout` naming the counted checks still running, `ci_expected_missing` naming the
+ *   expected checks never reported, and `ci_timeout` when the set kept changing.
  */
 export function decideWaitForCi(
   state: WaitForCiState,
@@ -340,27 +485,48 @@ export function decideWaitForCi(
       state: { ...next, outcome: "fail", quietSince: null },
     };
   }
-  const quietMs = WAIT_FOR_CI_LEGACY_SETTINGS.quietMinutes * 60_000;
+  const settings = waitForCiSettings(next);
+  const quietMs = settings.quietMinutes * 60_000;
   if (observation && sameHead(next.expectedHeadOid, observation.headSha)) {
-    const previous = next.checkRuns;
     const runs = observation.checkRuns;
-    next = { ...next, observedAt: observation.observedAt, checkRuns: runs };
-    const settled = runs.length > 0 && runs.every((run) => run.state !== "pending");
-    if (!settled) {
+    const missing = missingExpectedChecks(runs, settings);
+    const previous = countedChecks(next.checkRuns, settings).counted;
+    const { counted, fallback } = countedChecks(runs, settings);
+    next = {
+      ...next,
+      observedAt: observation.observedAt,
+      checkRuns: runs,
+      missingExpected: missing,
+      checksTotal: observation.totalCount ?? null,
+    };
+    const settled = counted.length > 0 && counted.every((run) => run.state !== "pending");
+    const failing = counted.filter((run) => run.state === "failing");
+    if (!settled || (failing.length === 0 && missing.length > 0)) {
       next = { ...next, quietSince: null };
     } else {
-      const failing = runs.filter((run) => run.state === "failing");
-      if (failing.length > 0) {
-        return { kind: "fail", failing, state: { ...next, outcome: "fail", quietSince: null } };
-      }
-      const since = next.quietSince ?? null;
-      if (since !== null && sameChecks(previous, runs)) {
-        if (observation.observedAt - since >= quietMs) {
-          return {
-            kind: "pass",
-            state: { ...next, outcome: "pass", flakeReport: observation.flakeReport },
-          };
+      const verdict = (): WaitForCiDecision => {
+        const decided = { ...next, ...(fallback ? { requiredFallback: true } : {}) };
+        if (failing.length > 0) {
+          return { kind: "fail", failing, state: { ...decided, outcome: "fail", quietSince: null } };
         }
+        if (waitForCiTruncated(decided)) {
+          const blocked = {
+            code: "ci_checks_truncated" as const,
+            detail: `GitHub reported ${decided.checksTotal} checks; only the first ${CI_CHECK_RUNS_MAX} were read.`,
+          };
+          return { kind: "block", ...blocked, state: { ...decided, outcome: "blocked", blocked } };
+        }
+        return { kind: "pass", state: { ...decided, outcome: "pass", flakeReport: observation.flakeReport } };
+      };
+      // A counted failure is decided at once, unless nothing is marked required: then the
+      // quiet period runs first, in case GitHub marks the required checks late.
+      if (failing.length > 0 && !fallback) return verdict();
+      // Every expected check reported and settled: nothing more to wait for.
+      if (settings.expectedChecks.length > 0 && missing.length === 0) return verdict();
+      if (quietMs === 0) return verdict();
+      const since = next.quietSince ?? null;
+      if (since !== null && sameChecks(previous, counted)) {
+        if (observation.observedAt - since >= quietMs) return verdict();
         if (timedOut(next, now) && now - since >= quietMs + WAIT_FOR_CI_QUIET_GRACE_MS) {
           return timeoutBlock(next, "No new CI observation arrived to finish the quiet period "
             + `within ${WAIT_FOR_CI_QUIET_GRACE_MS / 60_000} minutes of its end.`);
@@ -368,7 +534,7 @@ export function decideWaitForCi(
         return { kind: "wait", state: next };
       }
       if (timedOut(next, now)) {
-        return timeoutBlock(next, `CI had not stayed settled for the ${quietMs / 60_000}-minute quiet `
+        return timeoutBlock(next, `CI had not stayed settled for the ${settings.quietMinutes}-minute quiet `
           + `period after ${next.timeoutMinutes} minutes.`);
       }
       return { kind: "wait", state: { ...next, quietSince: observation.observedAt } };
@@ -382,11 +548,26 @@ export function decideWaitForCi(
       };
       return { kind: "block", ...blocked, state: { ...next, outcome: "blocked", blocked } };
     }
-    const pending = next.checkRuns.filter((run) => run.state === "pending").map((run) => `"${run.name}"`);
-    return timeoutBlock(next, pending.length > 0
-      ? `Still running after ${next.timeoutMinutes} minutes: ${pending.join(", ")}.`
-      : `CI had not stayed settled for the ${quietMs / 60_000}-minute quiet period after `
-        + `${next.timeoutMinutes} minutes.`);
+    const pending = countedChecks(next.checkRuns, settings).counted
+      .filter((run) => run.state === "pending")
+      .map((run) => run.name);
+    if (pending.length > 0) {
+      return timeoutBlock(next, `Still running after ${next.timeoutMinutes} minutes: ${quotedNames(pending)}.`);
+    }
+    const missing = missingExpectedChecks(next.checkRuns, settings);
+    if (missing.length > 0) {
+      const blocked = {
+        code: "ci_expected_missing" as const,
+        detail: `Never reported within ${next.timeoutMinutes} minutes: ${quotedNames(missing)}.`,
+      };
+      return {
+        kind: "block",
+        ...blocked,
+        state: { ...next, missingExpected: missing, outcome: "blocked", blocked },
+      };
+    }
+    return timeoutBlock(next, `CI had not stayed settled for the ${settings.quietMinutes}-minute quiet period `
+      + `after ${next.timeoutMinutes} minutes.`);
   }
   return { kind: "wait", state: next };
 }

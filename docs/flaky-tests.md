@@ -228,8 +228,8 @@ the head commit's check runs with the pull request. `parseFlakeSummary` parses t
 the full summary before anything is trimmed, so the marker at its end survives.
 
 - **[Wait for CI](workflows.md#wait-for-ci)** treats "Flaky tests" as an ordinary check: it
-  is not required, and a repository without it passes once every check has passed and stayed
-  settled for the quiet period. When the check is present, the node records its flake list on
+  is not required, and a repository without it passes once every counted check has passed and
+  stayed settled for the node's quiet period. When the check is present, the node records its flake list on
   a pass and shows it on the run.
 - **The Inspector's review** lists the flakes and raises one only when the pull request touched
   the flaky test's file or plausibly introduced the flakiness. See

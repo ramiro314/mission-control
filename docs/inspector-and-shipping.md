@@ -229,7 +229,9 @@ with the snapshot; a snapshot stored before they existed reads as nothing marked
 things read the snapshot:
 
 - A workflow's [Wait for CI](workflows.md#wait-for-ci) node, which decides from it whether the
-  pull request's CI passed, failed, or never reported.
+  pull request's CI passed, failed, or never reported. A node set to Required checks counts the
+  checks marked required, and every node blocks rather than pass when the total says checks
+  were left unread.
 - Foreman, when **Which failures count** is set to Required checks
   ([Keeping a PR on track](work-queues.md#keeping-a-pr-on-track)). It reads only the head the
   snapshot was taken on and the required checks' rollup, through the session's Inspector

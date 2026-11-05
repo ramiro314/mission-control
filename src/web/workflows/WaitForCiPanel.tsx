@@ -1,8 +1,20 @@
 import type { WorkflowNodeAttempt } from "@shared/workflow.ts";
-import type { CiCheckRun } from "@shared/wait-for-ci.ts";
+import {
+  countedChecks,
+  quotedNames,
+  waitForCiSettings,
+  waitForCiTruncated,
+  type CiCheckRun,
+  type WaitForCiSettings,
+} from "@shared/wait-for-ci.ts";
 import { ClockText } from "../components/ClockText.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
-import { waitForCiHeadline, waitForCiStateOf } from "./run-model.ts";
+import {
+  waitForCiHeadline,
+  waitForCiSettingsLine,
+  waitForCiStateOf,
+  waitForCiTruncationNote,
+} from "./run-model.ts";
 
 const CHECK_STATE_WORDS: Record<CiCheckRun["state"], string> = {
   pending: "Running",
@@ -11,10 +23,22 @@ const CHECK_STATE_WORDS: Record<CiCheckRun["state"], string> = {
 };
 
 /**
+ * Why a check does or does not count, in Required mode only. "Not required" is said only once
+ * GitHub has marked some check required: with none marked, every check counts.
+ */
+function checkTag(run: CiCheckRun, settings: WaitForCiSettings, anyMarked: boolean): string | null {
+  if (settings.strictness !== "required") return null;
+  if (run.required === true) return "Required";
+  if (settings.expectedChecks.includes(run.name)) return "Expected";
+  return anyMarked ? "Not required" : null;
+}
+
+/**
  * What a Wait for CI attempt is waiting for, or what it decided: the pull request and head,
- * elapsed time against the limit, each check with its state, the failing checks on a fail,
- * the flakes on a pass when CI published a flake report, and the block sentence when it
- * blocked. Renders nothing for any other
+ * the settings it judges under, each check with its state (tagged in Required mode, with a row
+ * for each expected check not reported yet), the counted failing checks on a fail, the flakes on
+ * a pass when CI published a flake report, and the block sentence when it blocked. Renders
+ * nothing for any other
  * attempt, so the attempt and verdict cards can include it unconditionally.
  */
 export function WaitForCiPanel({
@@ -26,7 +50,12 @@ export function WaitForCiPanel({
 }): React.JSX.Element | null {
   const state = waitForCiStateOf(attempt);
   if (!state) return null;
-  const failing = state.checkRuns.filter((run) => run.state === "failing");
+  const settings = waitForCiSettings(state);
+  // The panel lists only what the node counted, so a failure that is not required never reads
+  // as the reason it failed.
+  const failing = countedChecks(state.checkRuns, settings).counted.filter((run) => run.state === "failing");
+  const anyMarked = state.checkRuns.some((run) => run.required === true);
+  const unreported = state.observedAt === null ? [] : (state.missingExpected ?? []);
   const flakes = state.flakeReport?.flakes ?? [];
   const issues = new Map((state.flakeReport?.issues ?? []).map((issue) => [issue.key, issue]));
   return (
@@ -44,9 +73,13 @@ export function WaitForCiPanel({
             </a>
           </Tooltip>
           {state.expectedHeadOid ? ` · head ${state.expectedHeadOid.slice(0, 12)}` : ""}
-          {` · limit ${state.timeoutMinutes} min`}
         </p>
       )}
+      <p className="wf-run-meta">{waitForCiSettingsLine(state)}</p>
+      {state.requiredFallback && (
+        <p className="wf-run-meta">No check on this head is marked required, so every check was judged.</p>
+      )}
+      {waitForCiTruncated(state) && <p className="wf-run-meta">{waitForCiTruncationNote(state)}</p>}
       {state.outcome === "fail" && failing.length > 0 && (
         <>
           <h5>Failing checks</h5>
@@ -67,6 +100,9 @@ export function WaitForCiPanel({
               </li>
             ))}
           </ul>
+          {unreported.length > 0 && (
+            <p className="wf-run-meta">{`Not reported when CI failed: ${quotedNames(unreported)}.`}</p>
+          )}
         </>
       )}
       {state.outcome === "pass" && state.flakeReport && (
@@ -96,21 +132,32 @@ export function WaitForCiPanel({
           })}
         </ul>
       )}
-      {state.checkRuns.length > 0 && (
+      {(state.checkRuns.length > 0 || unreported.length > 0) && (
         <details open={state.outcome === null}>
           <Tooltip label="Show every check GitHub reported on the head commit">
             <summary>{`Checks on the head commit (${state.checkRuns.length})`}</summary>
           </Tooltip>
           <ul className="wf-run-ci-checks" aria-label="CI checks">
-            {state.checkRuns.map((run, index) => (
-              <li key={`${index}:${run.name}`} className={`is-${run.state}`}>
-                <span>{run.name}</span> <span className="wf-run-meta">{CHECK_STATE_WORDS[run.state]}</span>
+            {state.checkRuns.map((run, index) => {
+              const tag = checkTag(run, settings, anyMarked);
+              return (
+                <li key={`${index}:${run.name}`} className={`is-${run.state}`}>
+                  <span>{run.name}</span>
+                  {tag && <> <span className="wf-run-ci-tag">{tag}</span></>}
+                  {" "}<span className="wf-run-meta">{CHECK_STATE_WORDS[run.state]}</span>
+                </li>
+              );
+            })}
+            {unreported.map((name) => (
+              <li key={`expected:${name}`} className="is-pending">
+                <span>{name}</span> <span className="wf-run-ci-tag">Expected</span>
+                {" "}<span className="wf-run-meta">Not reported yet</span>
               </li>
             ))}
           </ul>
         </details>
       )}
-      {state.outcome === null && state.checkRuns.length === 0 && (
+      {state.outcome === null && state.checkRuns.length === 0 && unreported.length === 0 && (
         <p className="wf-run-meta">
           {state.observedAt === null
             ? "GitHub Inspector has not read CI for this head yet."

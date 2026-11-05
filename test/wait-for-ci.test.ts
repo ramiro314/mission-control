@@ -60,11 +60,14 @@ const { fetchPr } = await import("../src/server/inspector/github.ts");
 const {
   CI_CHECK_SUMMARY_CHARS,
   WAIT_FOR_CI_LEGACY_SETTINGS,
+  WAIT_FOR_CI_NEW_NODE_SETTINGS,
+  WAIT_FOR_CI_QUIET_MINUTES,
   WAIT_FOR_CI_QUIET_GRACE_MS,
   WaitForCiStateSchema,
   ciCheckRunsFromRollup,
   decideWaitForCi,
   initialWaitForCiState,
+  waitForCiSettings,
 } = await import("../src/shared/wait-for-ci.ts");
 const waitForCiModule = await import("../src/shared/wait-for-ci.ts");
 const { z } = await import("zod");
@@ -475,6 +478,304 @@ test("the verdicts cite the attempt and carry each failing check's own words", (
   assert.match(waitForCiVerdict(passing, "attempt-2")?.summary ?? "", /1 flaky test that passed on rerun/);
 });
 
+// ---- node settings: strictness, quiet period, expected checks -------------------------------
+
+const req = (name: string, runState: CiCheckRun["state"]): CiCheckRun => ({ ...run(name, runState), required: true });
+const configured = (
+  settings: { strictness?: "all" | "required"; quietMinutes?: number; expectedChecks?: string[] },
+  over: Partial<ReturnType<typeof initialWaitForCiState>> = {},
+) => state({ strictness: "all", quietMinutes: 3, expectedChecks: [], ...settings, ...over });
+const at = (checkRuns: CiCheckRun[], observedAt: number, totalCount?: number | null): CiObservation => ({
+  headSha: HEAD,
+  observedAt,
+  checkRuns,
+  flakeReport: null,
+  ...(totalCount === undefined ? {} : { totalCount }),
+});
+/** Decide a sequence of observations, each at its own `observedAt`, and return every decision. */
+function observe(from: ReturnType<typeof state>, ...observations: CiObservation[]) {
+  const decisions = [];
+  let current = from;
+  for (const observation of observations) {
+    const decision = decideWaitForCi(current, observation, observation.observedAt);
+    decisions.push(decision);
+    current = decision.state;
+  }
+  return decisions;
+}
+
+test("settings resolve field by field, absent ones to the frozen legacy settings, and new nodes write all three", () => {
+  assert.deepEqual(waitForCiSettings({}), WAIT_FOR_CI_LEGACY_SETTINGS);
+  assert.deepEqual(waitForCiSettings({ quietMinutes: 0 }), { strictness: "all", quietMinutes: 0, expectedChecks: [] });
+  assert.deepEqual(
+    waitForCiSettings({ strictness: "required", expectedChecks: ["deploy"] }),
+    { strictness: "required", quietMinutes: 3, expectedChecks: ["deploy"] },
+  );
+  assert.deepEqual(WAIT_FOR_CI_NEW_NODE_SETTINGS, { strictness: "all", quietMinutes: 3, expectedChecks: [] });
+  assert.deepEqual(WAIT_FOR_CI_QUIET_MINUTES, { default: 3, min: 0, max: 30 });
+  // The attempt copies what it is given, and "Wait for CI again" carries it through its spread.
+  const copied = initialWaitForCiState({
+    pullRequestKey: null, pullRequestUrl: null, pullRequestNumber: null, expectedHeadOid: HEAD,
+    timeoutMinutes: 45, now: T0, strictness: "required", quietMinutes: 5, expectedChecks: ["deploy"],
+  });
+  const decided = { ...copied, quietSince: T0, missingExpected: ["deploy"], requiredFallback: true, checksTotal: 140 };
+  const rewait = initialWaitForCiState({ ...decided, now: T0 + 1 });
+  assert.deepEqual(waitForCiSettings(rewait), { strictness: "required", quietMinutes: 5, expectedChecks: ["deploy"] });
+  assert.equal(rewait.quietSince, null);
+  for (const key of ["missingExpected", "requiredFallback", "checksTotal"]) assert.equal(key in rewait, false, key);
+  // A legacy attempt waited again stays legacy: nothing is invented for it.
+  const legacy = initialWaitForCiState({ ...state(), now: T0 + 1 });
+  for (const key of ["strictness", "quietMinutes", "expectedChecks"]) assert.equal(key in legacy, false, key);
+});
+
+test("a quiet period of 0 passes on the first settled observation", () => {
+  const [first] = observe(configured({ quietMinutes: 0 }), at([run("unit", "passing")], T0 + 10));
+  assert.equal(first!.kind, "pass");
+  assert.equal(observe(configured({ quietMinutes: 0 }), at([run("unit", "pending")], T0 + 10))[0]!.kind, "wait");
+});
+
+test("Required mode counts marked checks only: a failure that is not required never fails the node or reaches the packet", () => {
+  const required = configured({ strictness: "required" });
+  // Waits out the quiet period over a non-required failure, and passes.
+  const [first, second] = observe(
+    required,
+    at([req("build", "passing"), run("lint", "failing")], T0 + 10),
+    at([req("build", "passing"), run("lint", "failing")], T0 + 10 + QUIET_MS),
+  );
+  assert.equal(first!.kind, "wait");
+  assert.equal(first!.state.quietSince, T0 + 10);
+  assert.equal(second!.kind, "pass");
+  assert.equal(second!.state.requiredFallback, undefined);
+  // A non-required check still running never holds it up.
+  assert.equal(observe(required, at([req("build", "passing"), run("e2e", "pending")], T0 + 10))[0]!.state.quietSince, T0 + 10);
+  // A required failure fails at once, and only counted failures become requested changes.
+  const [failed] = observe(required, at([req("build", "failing"), run("lint", "failing")], T0 + 10));
+  assert.equal(failed!.kind, "fail");
+  if (failed!.kind !== "fail") return;
+  assert.deepEqual(failed!.failing.map((check) => check.name), ["build"]);
+  const verdict = waitForCiVerdict(failed!, "attempt-1");
+  if (verdict?.verdict !== "fail") return assert.fail("expected a fail verdict");
+  assert.deepEqual(verdict.requestedChanges.map((change) => change.title), ['Fix the failing CI check "build"']);
+  assert.doesNotMatch(verdict.summary, /lint/);
+});
+
+test("marking or unmarking a check required resets the quiet clock, and other non-required changes do not (D4)", () => {
+  const [first, marked, unmarked] = observe(
+    configured({ strictness: "required" }),
+    at([req("build", "passing"), run("lint", "passing")], T0 + 10),
+    at([req("build", "passing"), req("lint", "passing")], T0 + 10 + 60_000),
+    at([req("build", "passing"), run("lint", "passing")], T0 + 10 + 2 * 60_000),
+  );
+  assert.equal(first!.state.quietSince, T0 + 10);
+  assert.equal(marked!.state.quietSince, T0 + 10 + 60_000, "marking a check required did not reset the clock");
+  assert.equal(unmarked!.state.quietSince, T0 + 10 + 2 * 60_000, "unmarking a check did not reset the clock");
+  // A non-required check that changes, or appears, is not part of the counted set.
+  const [, changed, passed] = observe(
+    configured({ strictness: "required" }),
+    at([req("build", "passing"), run("lint", "failing")], T0 + 10),
+    at([req("build", "passing"), run("lint", "passing"), run("docs", "pending")], T0 + 10 + 60_000),
+    at([req("build", "passing"), run("lint", "passing")], T0 + 10 + QUIET_MS),
+  );
+  assert.equal(changed!.state.quietSince, T0 + 10);
+  assert.equal(passed!.kind, "pass");
+  // In All mode the flag is part of the set too.
+  const [allFirst, allMarked] = observe(
+    configured({}),
+    at([run("build", "passing")], T0 + 10),
+    at([req("build", "passing")], T0 + 10 + QUIET_MS),
+  );
+  assert.equal(allFirst!.kind, "wait");
+  assert.equal(allMarked!.kind, "wait");
+  assert.equal(allMarked!.state.quietSince, T0 + 10 + QUIET_MS);
+});
+
+test("Required mode with nothing marked waits out the quiet period, then judges every check and records the fallback (D1)", () => {
+  const required = configured({ strictness: "required" });
+  // A failure is not decided at once: GitHub may mark the required checks late.
+  const [first, later] = observe(
+    required,
+    at([run("build", "passing"), run("lint", "failing")], T0 + 10),
+    at([run("build", "passing"), run("lint", "failing")], T0 + 10 + QUIET_MS),
+  );
+  assert.equal(first!.kind, "wait");
+  assert.equal(first!.state.quietSince, T0 + 10);
+  assert.equal(later!.kind, "fail");
+  assert.equal(later!.state.requiredFallback, true);
+  if (later!.kind === "fail") {
+    assert.deepEqual(later!.failing.map((check) => check.name), ["lint"]);
+    assert.match(waitForCiVerdict(later!, "a")?.summary ?? "", /No check was marked required, so every check was judged\.$/);
+  }
+  // Checks marked before the period ends take over, and the clock restarts on them.
+  const [, rescued] = observe(
+    required,
+    at([run("build", "passing"), run("lint", "failing")], T0 + 10),
+    at([req("build", "passing"), run("lint", "failing")], T0 + 10 + 60_000),
+  );
+  assert.equal(rescued!.kind, "wait");
+  assert.equal(rescued!.state.quietSince, T0 + 10 + 60_000);
+  // A pass through the fallback records it too.
+  const [, green] = observe(required, at([run("build", "passing")], T0 + 10), at([run("build", "passing")], T0 + 10 + QUIET_MS));
+  assert.equal(green!.kind, "pass");
+  assert.equal(green!.state.requiredFallback, true);
+  assert.match(waitForCiVerdict(green as never, "a")?.summary ?? "", /every check was judged/);
+  // A quiet period of 0 decides at once.
+  const [now] = observe(configured({ strictness: "required", quietMinutes: 0 }), at([run("lint", "failing")], T0 + 10));
+  assert.equal(now!.kind, "fail");
+  assert.equal(now!.state.requiredFallback, true);
+  // D1: every expected check reported and settled skips the period, and decides the fallback.
+  const [skipped] = observe(
+    configured({ strictness: "required", expectedChecks: ["deploy"] }),
+    at([run("build", "passing"), run("deploy", "passing")], T0 + 10),
+  );
+  assert.equal(skipped!.kind, "pass");
+  assert.equal(skipped!.state.requiredFallback, true);
+});
+
+test("expected checks must appear and pass in both modes, and all of them settled skips the quiet period", () => {
+  for (const strictness of ["all", "required"] as const) {
+    const node = configured({ strictness, expectedChecks: ["deploy"] });
+    const marked = strictness === "required" ? req : run;
+    const missing = observe(
+      node,
+      at([marked("build", "passing")], T0 + 10),
+      at([marked("build", "passing")], T0 + 10 + QUIET_MS),
+      at([marked("build", "passing")], T0 + 10 + 2 * QUIET_MS),
+    );
+    for (const decision of missing) {
+      assert.equal(decision.kind, "wait", `${strictness}: passed without its expected check`);
+      assert.deepEqual(decision.state.missingExpected, ["deploy"]);
+      assert.equal(decision.state.quietSince, null);
+    }
+    // Pending is never skipped.
+    assert.equal(observe(node, at([marked("build", "passing"), run("deploy", "pending")], T0 + 10))[0]!.kind, "wait");
+    // Present and settled: pass at once, not merely marked required.
+    const [skipped] = observe(node, at([marked("build", "passing"), run("deploy", "passing")], T0 + 10));
+    assert.equal(skipped!.kind, "pass", strictness);
+    assert.deepEqual(skipped!.state.missingExpected, []);
+    assert.equal(skipped!.state.requiredFallback, undefined);
+    // An expected check that fails fails the node, required or not.
+    const [failed] = observe(node, at([marked("build", "passing"), run("deploy", "failing")], T0 + 10));
+    assert.equal(failed!.kind, "fail", strictness);
+  }
+  // A name matches every check of that name: present once one exists, settled when all have,
+  // passing when all pass.
+  const node = configured({ expectedChecks: ["deploy"] });
+  assert.equal(observe(node, at([run("deploy", "passing"), run("deploy", "pending")], T0 + 10))[0]!.kind, "wait");
+  assert.equal(observe(node, at([run("deploy", "passing"), run("deploy", "passing")], T0 + 10))[0]!.kind, "pass");
+  assert.equal(observe(node, at([run("deploy", "passing"), run("deploy", "failing")], T0 + 10))[0]!.kind, "fail");
+});
+
+test("a counted failure while an expected check is missing fails now and names the missing check", () => {
+  const [failed] = observe(configured({ expectedChecks: ["deploy", "e2e"] }), at([run("unit", "failing"), run("e2e", "passing")], T0 + 10));
+  assert.equal(failed!.kind, "fail");
+  assert.deepEqual(failed!.state.missingExpected, ["deploy"]);
+  if (failed!.kind !== "fail") return;
+  assert.equal(
+    waitForCiVerdict(failed!, "a")?.summary,
+    `CI failed on ${HEAD.slice(0, 12)}: "unit". Not reported when CI failed: "deploy".`,
+  );
+});
+
+test("the timeout blocks in order: missing CI, counted checks still running, then expected checks never reported (D3)", () => {
+  const node = configured({ strictness: "required", expectedChecks: ["deploy", "e2e"] });
+  const nothing = decideWaitForCi(node, null, LIMIT);
+  assert.equal(nothing.kind === "block" && nothing.code, "ci_missing");
+  const running = decideWaitForCi(node, at([req("build", "pending"), run("e2e", "pending"), run("lint", "pending")], T0 + 10), LIMIT);
+  assert.equal(running.kind === "block" && running.code, "ci_timeout");
+  assert.equal(running.kind === "block" && running.detail, 'Still running after 45 minutes: "build", "e2e".');
+  const absent = decideWaitForCi(node, at([req("build", "passing"), run("e2e", "passing"), run("lint", "pending")], T0 + 10), LIMIT);
+  assert.equal(absent.kind === "block" && absent.code, "ci_expected_missing");
+  assert.equal(absent.kind === "block" && absent.detail, 'Never reported within 45 minutes: "deploy".');
+  assert.deepEqual(absent.state.missingExpected, ["deploy"]);
+  assert.equal(absent.state.outcome, "blocked");
+  // The same, decided by the sweep on the last observation after the timeout passes.
+  const waited = decideWaitForCi(node, at([req("build", "passing"), run("e2e", "passing")], T0 + 10), T0 + 10);
+  assert.equal(waited.kind, "wait");
+  const swept = decideWaitForCi(waited.state, null, LIMIT);
+  assert.equal(swept.kind === "block" && swept.code, "ci_expected_missing");
+});
+
+test("a head with more than 100 checks never passes on the first 100, but a counted failure among them still fails", () => {
+  for (const strictness of ["all", "required"] as const) {
+    const [, quiet] = observe(
+      configured({ strictness }),
+      at([req("build", "passing")], T0 + 10, 140),
+      at([req("build", "passing")], T0 + 10 + QUIET_MS, 140),
+    );
+    assert.equal(quiet!.kind === "block" && quiet!.code, "ci_checks_truncated", strictness);
+    assert.equal(quiet!.kind === "block" && quiet!.detail, "GitHub reported 140 checks; only the first 100 were read.");
+    assert.equal(quiet!.state.checksTotal, 140);
+    const [skipped] = observe(configured({ strictness, expectedChecks: ["build"] }), at([req("build", "passing")], T0 + 10, 140));
+    assert.equal(skipped!.kind === "block" && skipped!.code, "ci_checks_truncated", strictness);
+    const [zero] = observe(configured({ strictness, quietMinutes: 0 }), at([req("build", "passing")], T0 + 10, 140));
+    assert.equal(zero!.kind === "block" && zero!.code, "ci_checks_truncated", strictness);
+    const [failed] = observe(configured({ strictness }), at([req("build", "failing")], T0 + 10, 140));
+    assert.equal(failed!.kind, "fail", strictness);
+  }
+  // Exactly 100, or a total GitHub did not give, is the whole list.
+  assert.equal(observe(configured({ quietMinutes: 0 }), at([run("build", "passing")], T0 + 10, 100))[0]!.kind, "pass");
+  assert.equal(observe(configured({ quietMinutes: 0 }), at([run("build", "passing")], T0 + 10, null))[0]!.kind, "pass");
+  // A legacy node blocks too: it never names a quiet period of 0, but its pass is the same pass.
+  assert.equal(settle([run("unit", "passing")], null, state()).kind, "pass");
+  const legacy = observe(state(), at([run("unit", "passing")], T0 + 10, 101), at([run("unit", "passing")], T0 + 10 + QUIET_MS, 101));
+  assert.equal(legacy[1]!.kind === "block" && legacy[1]!.code, "ci_checks_truncated");
+});
+
+test("the outcome event records the strictness, the fallback and how many expected checks were missing", async () => {
+  const source = readFileSync(new URL("../src/server/workflows/engine.ts", import.meta.url), "utf8");
+  const payload = source.slice(source.indexOf('"wait_for_ci_outcome", {'), source.indexOf("this.advanceStructure(submission, version);", source.indexOf('"wait_for_ci_outcome", {')));
+  for (const key of ["strictness:", "requiredFallback:", "missingExpected:"]) assert.match(payload, new RegExp(key), key);
+});
+
+test("the node arms take the three settings as optional fields, and never add them", async () => {
+  const { PublishedWorkflowNodeSchema } = await import("../src/shared/protocol.ts");
+  const legacy = { id: "ci", kind: "wait_for_ci", timeoutMinutes: 45, position: { x: 0, y: 0 } };
+  for (const schema of [WorkflowDraftNodeSchema, PublishedWorkflowNodeSchema]) {
+    assert.deepEqual(schema.parse(legacy), legacy);
+    assert.equal(JSON.stringify(schema.parse(legacy)), JSON.stringify(legacy), "a legacy node changed bytes");
+    const configuredNode = { ...legacy, strictness: "required", quietMinutes: 0, expectedChecks: ["deploy", "e2e"] };
+    assert.deepEqual(schema.parse(configuredNode), configuredNode);
+    assert.deepEqual(
+      (schema.parse({ ...legacy, expectedChecks: ["  deploy "] }) as { expectedChecks?: string[] }).expectedChecks,
+      ["deploy"],
+    );
+    for (const bad of [
+      { quietMinutes: 31 },
+      { quietMinutes: -1 },
+      { quietMinutes: 1.5 },
+      { strictness: "some" },
+      { expectedChecks: ["   "] },
+      { expectedChecks: ["x".repeat(501)] },
+      { expectedChecks: Array.from({ length: 101 }, (_, index) => `c${index}`) },
+    ]) {
+      assert.equal(schema.safeParse({ ...legacy, ...bad }).success, false, JSON.stringify(bad));
+    }
+  }
+});
+
+test("Publish refuses a quiet period at or above the timeout, and duplicate or more than 20 expected checks, on the node", () => {
+  const withCi = (fields: Record<string, unknown>): WorkflowDraftGraph => {
+    const graph = shippingGraph({ node: "pr", port: "complete" });
+    return { ...graph, nodes: graph.nodes.map((node) => node.kind === "wait_for_ci" ? { ...node, ...fields } as never : node) };
+  };
+  const codes = (fields: Record<string, unknown>) => validateWorkflowGraph({
+    graph: withCi(fields),
+    sessionActions: [action("pull_request")],
+    completionPolicy: { kind: "none" },
+  }).diagnostics.map((item) => [item.code, item.nodeId, item.message, item.severity]);
+  // A legacy node, and a new node, produce neither.
+  assert.deepEqual(codes({}), []);
+  assert.deepEqual(codes({ ...WAIT_FOR_CI_NEW_NODE_SETTINGS }), []);
+  assert.deepEqual(codes({ timeoutMinutes: 5, quietMinutes: 4 }), []);
+  const quiet = ["wait_for_ci_quiet_period", "ci", "The quiet period must be shorter than the timeout.", "error"];
+  assert.deepEqual(codes({ timeoutMinutes: 5, quietMinutes: 5 }), [quiet]);
+  assert.deepEqual(codes({ timeoutMinutes: 10, quietMinutes: 30 }), [quiet]);
+  const expected = ["wait_for_ci_expected_checks", "ci", "Expected checks must be unique, and there can be at most 20.", "error"];
+  assert.deepEqual(codes({ expectedChecks: ["deploy", "e2e", "deploy"] }), [expected]);
+  assert.deepEqual(codes({ expectedChecks: Array.from({ length: 21 }, (_, index) => `c${index}`) }), [expected]);
+  assert.deepEqual(codes({ expectedChecks: Array.from({ length: 20 }, (_, index) => `c${index}`) }), []);
+});
+
 // ---- legacy states and downgrade ---------------------------------------------------------
 
 /** `WaitForCiStateSchema` exactly as it shipped before the quiet period, kept as a fixture. */
@@ -520,6 +821,17 @@ test("every state the node writes carries a null greenWithoutReportSince and par
     decideWaitForCi(legacy, null, LIMIT).state,
     decideWaitForCi(legacy, null, T0 + 2, conflict()).state,
     decideWaitForCi(state({ expectedHeadOid: null, greenWithoutReportSince: T0 }), null, T0 + 2).state,
+    // The node settings and what they record: the fallback, missing expected checks, the total.
+    decideWaitForCi(
+      state({ strictness: "required", quietMinutes: 0, expectedChecks: ["deploy"], greenWithoutReportSince: T0 }),
+      { ...seen([run("unit", "failing")]), totalCount: 140 },
+      T0 + 2,
+    ).state,
+    decideWaitForCi(
+      state({ strictness: "required", quietMinutes: 3, expectedChecks: ["deploy"] }),
+      seen([{ ...run("unit", "passing"), required: true }]),
+      T0 + 2,
+    ).state,
   ];
   assert.equal(quiet.state.quietSince, T0 + 1);
   for (const written of states) {

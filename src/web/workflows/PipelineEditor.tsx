@@ -36,8 +36,8 @@ import {
   type StageMember,
   type StagePipeline,
 } from "@shared/workflow-stages.ts";
-import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "@shared/wait-for-ci.ts";
-import { WaitForCiTimeoutField } from "./WaitForCiFields.tsx";
+import { WAIT_FOR_CI_NEW_NODE_SETTINGS, WAIT_FOR_CI_TIMEOUT_MINUTES } from "@shared/wait-for-ci.ts";
+import { WaitForCiNodeFieldset, waitForCiSummary, type WaitForCiNodeFields } from "./WaitForCiFields.tsx";
 import { waitForCiMayFollow } from "@shared/workflow-graph.ts";
 import {
   InspectorFooter,
@@ -116,7 +116,13 @@ const seededStage = (seed: StageSeed): Stage => seed.kind === "session_action"
     ? {
         kind: "evaluation",
         joinId: null,
-        members: [{ nodeId: null, kind: "wait_for_ci", timeoutMinutes: WAIT_FOR_CI_TIMEOUT_MINUTES.default }],
+        members: [{
+          nodeId: null,
+          kind: "wait_for_ci",
+          timeoutMinutes: WAIT_FOR_CI_TIMEOUT_MINUTES.default,
+          ...WAIT_FOR_CI_NEW_NODE_SETTINGS,
+          expectedChecks: [...WAIT_FOR_CI_NEW_NODE_SETTINGS.expectedChecks],
+        }],
       }
     : { kind: "evaluation", joinId: null, members: [seeded(seed)] };
 
@@ -232,18 +238,23 @@ export function setMemberExecutionOverride(
     : stage));
 }
 
-/** Set how long one Wait for CI member waits before it blocks the run. */
-export function setMemberTimeout(
+/**
+ * Set one Wait for CI member's timeout and settings. The editor hands back all of them on any
+ * edit, so a legacy member's absent settings are written together on its first edit.
+ */
+export function setWaitForCiMember(
   pipeline: StagePipeline,
   ref: MemberRef,
-  timeoutMinutes: number,
+  fields: WaitForCiNodeFields,
 ): StagePipeline {
   const target = evaluationStage(pipeline, ref.stage);
   const member = target?.members[ref.member];
-  if (!target || member?.kind !== "wait_for_ci" || member.timeoutMinutes === timeoutMinutes) return pipeline;
+  if (!target || member?.kind !== "wait_for_ci") return pipeline;
+  const next = { ...member, ...fields };
+  if (JSON.stringify(next) === JSON.stringify(member)) return pipeline;
   return withStages(pipeline, pipeline.stages.map((stage, index) => index === ref.stage
     ? { ...target, members: target.members.map((candidate, position) =>
-        position === ref.member ? { ...member, timeoutMinutes } : candidate) }
+        position === ref.member ? next : candidate) }
       : stage));
 }
 
@@ -1163,7 +1174,7 @@ export function PipelineEditor({
                     const meta = member.kind === "check"
                       ? "Deterministic gate · passes when no command is configured here"
                       : member.kind === "wait_for_ci"
-                        ? `Waits for the pull request's CI · blocks after ${member.timeoutMinutes} min`
+                        ? waitForCiSummary(member)
                       : persona
                         ? `${nodeRoutingLabel(override, personaRoutingLabel(persona))}${persona.archivedAt === null ? "" : " · archived"}`
                         : override
@@ -1194,12 +1205,12 @@ export function PipelineEditor({
                         kind={member.kind}
                         name={member.kind === "check" ? member.slot : label}
                         panel={member.kind === "wait_for_ci" ? (
-                          <WaitForCiTimeoutField
-                            value={member.timeoutMinutes}
+                          <WaitForCiNodeFieldset
+                            node={member}
                             readOnly={readOnly}
-                            onChange={(timeoutMinutes) => apply(
-                              setMemberTimeout(pipeline, ref, timeoutMinutes),
-                              `${label} now blocks after ${timeoutMinutes} minutes`,
+                            onChange={(fields) => apply(
+                              setWaitForCiMember(pipeline, ref, fields),
+                              `${label}: ${waitForCiSummary(fields)}`,
                             )}
                           />
                         ) : routingOpen && member.kind === "persona" && (

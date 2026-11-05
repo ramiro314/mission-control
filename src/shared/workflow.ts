@@ -19,6 +19,7 @@ import type { TestingSettingsSource } from "./testing-config.ts";
 import { AFFECTED_TESTS_FILES_PLACEHOLDER, AFFECTED_TESTS_JUNIT_PLACEHOLDER } from "./command-template.ts";
 import { repoAllowlisted } from "./allowlist.ts";
 import { parseBuiltinWorkflowVersionId } from "./builtin-workflow.ts";
+import type { WaitForCiStoredSettings } from "./wait-for-ci.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
 // the daemon persists and executes these records, while the dashboard renders the same wire
@@ -2088,7 +2089,7 @@ export type WorkflowDraftNode =
   // Appended: node kinds are persisted identifiers. Byte-identical in draft and published form,
   // like `check`, because it snapshots nothing - it reads the pull request's CI through the
   // Inspector's own snapshot. See `src/shared/wait-for-ci.ts`.
-  | { id: string; kind: "wait_for_ci"; timeoutMinutes: number; position: Point };
+  | ({ id: string; kind: "wait_for_ci"; timeoutMinutes: number; position: Point } & WaitForCiStoredSettings);
 
 export interface WorkflowEdge {
   id: string;
@@ -2429,6 +2430,8 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "evidence_readiness_not_enforced",
   "wait_for_ci_placement",
   "unsupported_effort",
+  "wait_for_ci_quiet_period",
+  "wait_for_ci_expected_checks",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 

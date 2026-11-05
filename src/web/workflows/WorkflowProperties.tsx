@@ -1,4 +1,4 @@
-import { WAIT_FOR_CI_EXPLANATION, WaitForCiTimeoutField } from "./WaitForCiFields.tsx";
+import { WAIT_FOR_CI_EXPLANATION, WaitForCiNodeFieldset } from "./WaitForCiFields.tsx";
 import type {
   PersonaView,
   SessionAction,
@@ -537,10 +537,10 @@ export function WorkflowProperties({
           )}
           {selectedNode.kind === "wait_for_ci" && (
             <>
-              <WaitForCiTimeoutField
-                value={selectedNode.timeoutMinutes}
+              <WaitForCiNodeFieldset
+                node={selectedNode}
                 readOnly={readOnly}
-                onChange={(timeoutMinutes) => replaceNode({ ...selectedNode, timeoutMinutes })}
+                onChange={(fields) => replaceNode({ ...selectedNode, ...fields })}
               />
               <p>{WAIT_FOR_CI_EXPLANATION} Connect it only after a Pull Request action's complete route.</p>
             </>
