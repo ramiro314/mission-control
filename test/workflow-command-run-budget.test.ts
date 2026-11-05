@@ -8,6 +8,7 @@ import {
   DEFAULT_WORKFLOW_POLICY,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+  defaultWorkflowCommandMaxRuns,
   WORKFLOW_LIMITS,
   checkOutcomePasses,
   checkRunBudgetSpent,
@@ -453,7 +454,17 @@ test("an upgrading catalog gains the column, keeps its commands, and adopts the 
     .all() as unknown as Array<{ name: string }>).map((column) => column.name);
   assert.deepEqual(
     columns,
-    ["slot", "default_command_json", "revision", "created_at", "updated_at", "max_runs"],
+    [
+      "slot",
+      "default_command_json",
+      "revision",
+      "created_at",
+      "updated_at",
+      "max_runs",
+      "timeout_ms",
+      "on_unavailable",
+      "on_budget_exhausted",
+    ],
   );
 
   const store = new WorkflowStore(db);
@@ -465,7 +476,7 @@ test("an upgrading catalog gains the column, keeps its commands, and adopts the 
 
   // Every slot the catalog projects carries a budget, including the ones nobody has written.
   for (const slot of WORKFLOW_CHECK_SLOTS) {
-    assert.equal(store.getWorkflowCommand(slot)?.maxRuns, WORKFLOW_COMMAND_DEFAULT_MAX_RUNS);
+    assert.equal(store.getWorkflowCommand(slot)?.maxRuns, defaultWorkflowCommandMaxRuns(slot));
   }
 });
 
@@ -534,7 +545,7 @@ test("a released reservation stops counting, so a gate that ran nothing spent no
   const store = new WorkflowStore(db);
   seedRun(store, "released", 1);
   assert.equal(store.reserveCheckRun("run-released", "attempt-released-1-a", "affected-tests", 1, null).granted, true);
-  store.releaseCheckRun("attempt-released-1-a");
+  store.releaseCheckRun("attempt-released-1-a", "affected-tests");
   assert.equal(store.checkRunsSpent("run-released", "affected-tests", null), 0);
   assert.deepEqual(
     store.reserveCheckRun("run-released", "attempt-released-1-b", "affected-tests", 1, null),

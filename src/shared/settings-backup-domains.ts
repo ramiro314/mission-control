@@ -37,6 +37,13 @@ export const SETTINGS_BACKUP_DOMAINS = [
   // Database backup counts and interval, edited in Settings > Storage. Added after format
   // v1 shipped.
   { id: "database-backups", surface: "settings" },
+  // Resident profiles and their current revisions, authored on the Residents page. Added after
+  // the first published format, so a snapshot written before it carries no such domain and
+  // restores without touching profiles (see `SETTINGS_BACKUP_CATALOGS`).
+  { id: "resident-profiles", surface: "residents" },
+  { id: "resident-skill-sources", surface: "residents" },
+  // Custom MCP server definitions, without their secret values.
+  { id: "resident-mcp-servers", surface: "residents" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

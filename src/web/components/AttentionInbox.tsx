@@ -16,6 +16,7 @@ import { ClockText } from "./ClockText.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { AgentDot, EnsembleProgressDots } from "./session-bits.tsx";
 import { ReviewCard } from "./ReviewModal.tsx";
+import { requestComposerFocus } from "../lib/composer-focus.ts";
 
 /**
  * One place to drain everything that is waiting on a person.
@@ -217,7 +218,15 @@ function InboxItem({
             </Tooltip>
           </div>
           {item.reviews.map((review) => (
-            <ReviewCard key={review.id} review={review} note={item.session.note} />
+            <ReviewCard
+              key={review.id}
+              review={review}
+              note={item.session.note}
+              onMovedToChat={(sessionId) => {
+                onOpenSession(sessionId);
+                requestComposerFocus(sessionId);
+              }}
+            />
           ))}
         </section>
       );

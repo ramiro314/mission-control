@@ -38,11 +38,17 @@ async function shoot(page: Page, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/trust-testing-setup/${name}.png`);
 }
 
+/** Add one repository through the Add pane's typed path, as upstream's batch add takes it. */
+async function addByPath(page: Page, repo: string): Promise<void> {
+  const addPane = page.getByRole("group", { name: "Add repositories" });
+  await addPane.getByRole("textbox", { name: "Repository path" }).fill(repo);
+  await addPane.getByRole("button", { name: "Add 1 repository" }).click();
+}
+
 async function openTrustWith(page: Page, repo: string): Promise<void> {
   await page.goto(`${page.url().split("#")[0]}#/settings/trust`);
   await expect(page.getByText(/Every grant that lets Mission Control act outside/).first()).toBeVisible();
-  await page.getByRole("combobox", { name: /search repos or type a path/i }).fill(repo);
-  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await addByPath(page, repo);
   await expect(
     page.getByRole("table", { name: "Repository trust grants" }).locator(".trust-repo-path"),
   ).toHaveText(basename(repo));
@@ -210,8 +216,7 @@ test("a request in flight on one row leaves every other row's action usable and 
   const other = realpathSync(mkdtempSync(join(tmpdir(), "mc-e2e-setup-other-")));
   execFileSync("git", ["-C", other, "init", "-q"]);
   await openTrustWith(dashboard, daemon.repo);
-  await dashboard.getByRole("combobox", { name: /search repos or type a path/i }).fill(other);
-  await dashboard.getByRole("button", { name: "Add", exact: true }).click();
+  await addByPath(dashboard, other);
   await expect(setupAction(dashboard, other)).toBeVisible();
 
   // Hold the first row's request open until the second row has been used.

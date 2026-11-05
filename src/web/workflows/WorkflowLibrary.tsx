@@ -466,8 +466,11 @@ export function WorkflowLibrary({
     const restoring = restoringId.current;
     restoringId.current = undefined;
     if (restoring !== undefined && selectedId === null) return;
+    // Before the catalog arrives, null means selection has not been restored yet. Reporting
+    // it would erase the deep link that the restore effect still needs from the parent.
+    if (!hasSnapshot && selectedId === null) return;
     onSelectionChange?.(selectedId);
-  }, [onSelectionChange, selectedId]);
+  }, [hasSnapshot, onSelectionChange, selectedId]);
   useEffect(() => {
     if (removalTarget === undefined) return;
     const next = workflowSelectionAfterRemoval(

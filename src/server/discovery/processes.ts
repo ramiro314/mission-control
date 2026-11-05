@@ -1,6 +1,7 @@
 import { unansweredOutcome, type RunResult } from "../util/exec.ts";
 import type { ReadOptions } from "../process-inspection/contract.ts";
 import { processInspector } from "../process-inspection/index.ts";
+import { createPosixProcessInspector, defaultCommandRunner, type CommandRunner } from "../process-inspection/posix.ts";
 import { normTty } from "./tty.ts";
 import { allHarnesses, harnessFor } from "../harness/index.ts";
 import type { Harness } from "../harness/types.ts";
@@ -306,8 +307,11 @@ export interface ProcessSnapshot {
  * The process snapshot plus the health of the two underlying reads. Discovery may use the
  * partial rows, but destructive worktree decisions must treat `unknownReason` as a refusal.
  */
-export async function listProcessesSnapshot(options?: ReadOptions): Promise<ProcessSnapshot> {
-  const table = await processInspector().listProcesses(options);
+export async function listProcessesSnapshot(source?: ReadOptions | CommandRunner["run"]): Promise<ProcessSnapshot> {
+  // A function is a test's command runner: the POSIX inspector's reads, issued through it.
+  const table = typeof source === "function"
+    ? await createPosixProcessInspector({ ...defaultCommandRunner, run: source }).listProcesses()
+    : await processInspector().listProcesses(source);
   const procs: Proc[] = [];
   const cwdScopePids: number[] = [];
   const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;

@@ -54,7 +54,7 @@ test("the POSIX inspector issues exactly the commands its call sites issued befo
   assert.deepEqual(calls, [
     // discovery/processes.ts: two system-wide passes, joined on pid.
     { sync: false, bin: "ps", args: ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="], opts: { timeoutMs: 30_000 } },
-    { sync: false, bin: "ps", args: ["-Ao", "pid=,command="], opts: { timeoutMs: 30_000 } },
+    { sync: false, bin: "ps", args: ["-ww", "-A", "-o", "pid=,command="], opts: { timeoutMs: 30_000 } },
     // discovery/proc-cwd.ts
     { sync: false, bin: "lsof", args: ["-a", "-d", "cwd", "-p", "11,12", "-Fpn"], opts: { timeoutMs: 30_000 } },
     // discovery/codex-rollouts.ts
@@ -79,7 +79,7 @@ test("the process listing joins both ps passes on pid and reports the first inco
       }),
       childPid: 901,
     },
-    "ps -Ao pid=,command=": { ...failed, stdout: "  100 /bin/zsh -l\n" },
+    "ps -ww -A -o pid=,command=": { ...failed, stdout: "  100 /bin/zsh -l\n" },
   });
   const table = await createPosixProcessInspector(runner).listProcesses();
   assert.deepEqual(table.rows, [

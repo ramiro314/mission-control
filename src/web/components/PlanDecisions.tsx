@@ -1,22 +1,37 @@
 import { useEffect, useRef, useState } from "react";
 import type { PlanDecision, PlanDecisionAnswer } from "@shared/types.ts";
-import { formatResponse, selectedOptions } from "@shared/review-item.ts";
+import { CHAT_ABOUT_IT, formatResponse, selectedOptions } from "@shared/review-item.ts";
 import { isAnswered } from "../lib/reviews.ts";
 import { ForemanPickMark } from "./ForemanRecommendation.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import type { DecisionAnswer, DecisionAnswers } from "../lib/review-drafts.ts";
 
 /**
- * Per-decision answer state: chosen option ids plus any free-text "Other".
+ * Per-decision answer state: the review draft's shape (`DecisionAnswer`), with `note`
+ * optional because the opening state never has one.
  *
  * `otherChosen` means something only on a single-choice question, where Other is one more
  * radio in the group: true when Other is the choice, in which case `selected` is empty. The
  * text is kept when a listed option is chosen instead, so switching back does not lose it,
- * but it is not sent. A multi-choice question's Other is additive and ignores the flag.
+ * but it is not sent. A multi-choice question's Other is additive and ignores the flag. A
+ * draft parked before the flag existed reads Other as chosen when nothing listed is and the
+ * box has text - see `otherIsChosen`.
  */
-type Answer = { selected: string[]; other: string; otherChosen: boolean };
+type Answer = Omit<DecisionAnswer, "note"> & { note?: string };
 type Answers = Record<string, Answer>;
 
-const EMPTY: Answer = { selected: [], other: "", otherChosen: false };
+const EMPTY: Answer = { selected: [], other: "", note: "", otherChosen: false };
+
+function otherIsChosen(a: Answer): boolean {
+  return a.otherChosen ?? (a.selected.length === 0 && a.other.trim() !== "");
+}
+
+/** Mirrors the review-draft store's emptiness rule: an answer map it would forget. */
+function isUntouched(answers: Answers): boolean {
+  return Object.values(answers).every(
+    (a) => a.selected.length === 0 && !a.other && !a.note && !a.chat && !a.otherChosen,
+  );
+}
 
 /** Stable inside one review form, shared with its Foreman recommendation matcher. */
 export function decisionChoiceKey(decisionId: string, optionId: string): string {
@@ -30,8 +45,8 @@ export function decisionChoiceKey(decisionId: string, optionId: string): string 
  * form indexes by decision id on every keystroke, which a map does well and an array does
  * not. Every decision is emitted, answered or not - an unanswered one is a real fact about
  * a submission, and dropping it would make a form that could not have been submitted look
- * like one that never asked. Blank "Other" text normalizes to null so "typed nothing" and
- * "typed and cleared it" are the same record.
+ * like one that never asked. Blank "Other" text normalizes to null and a blank note is
+ * omitted, so "typed nothing" and "typed and cleared it" are the same record.
  */
 export function toDecisionAnswers(
   decisions: PlanDecision[],
@@ -40,15 +55,23 @@ export function toDecisionAnswers(
 ): PlanDecisionAnswer[] {
   return decisions.map((d) => {
     const a = answers[d.id] ?? EMPTY;
+    const note = a.note?.trim() ?? "";
+    // Moved to chat: nothing picked before the move is an answer, only the note travels.
+    if (a.chat) {
+      return { decisionId: d.id, selected: [], other: null, chat: true, ...(note ? { note } : {}) };
+    }
     // Single choice: Other is a radio of its own, so its text goes out only while it is the
     // choice, and then alone. Kept text beside a listed option is not an answer.
     const single = !d.multiSelect;
+    const chosen = single && otherIsChosen(a);
     const text = a.other.trim();
-    const other = text && (!single || a.otherChosen) ? text : null;
+    const other = text && (!single || chosen) ? text : null;
     return {
       decisionId: d.id,
-      selected: single && a.otherChosen ? [] : a.selected,
+      selected: chosen ? [] : a.selected,
       other,
+      // Present only when typed, so an answer without one keeps the shape it always had.
+      ...(note ? { note } : {}),
       // Provenance: this Other text is still exactly Foreman's draft. Edited by a single
       // character, it is the human's words, and it goes out unmarked.
       ...(other !== null && draftOthers.get(d.id) === other ? { foremanDraftAccepted: true } : {}),
@@ -98,6 +121,8 @@ function sameAnswers(decisions: PlanDecision[], a: Answers, b: Answers): boolean
     const y = pb[i]!;
     return (
       x.other === y.other &&
+      x.note === y.note &&
+      x.chat === y.chat &&
       x.selected.length === y.selected.length &&
       x.selected.every((id) => y.selected.includes(id))
     );
@@ -130,6 +155,7 @@ export function recommendedAnswers(decisions: PlanDecision[]): Answers {
 function selectionSummary(decisions: PlanDecision[], payload: PlanDecisionAnswer[]): string | null {
   const parts = decisions.flatMap((d, i) => {
     const a = payload[i];
+    if (a?.chat) return [CHAT_ABOUT_IT];
     const labels = selectedOptions(d, a).map((o) => o.label);
     if (a?.other) labels.push(`Other: ${a.other}${a.foremanDraftAccepted ? " (Foreman's draft)" : ""}`);
     return labels.length ? [labels.join(", ")] : [];
@@ -287,8 +313,27 @@ export function DecisionForm({
    * because the decision id itself must stay untouched - it is echoed in the response payload.
    */
   namePrefix = "d",
+  /**
+   * Draw an optional note box under every decision, so the human can pick an option AND send
+   * instructions with it. Off by default: a form whose resolution never reaches an agent as
+   * prose - the product-issue confirmation, which acts on the selection alone - must not
+   * offer a box whose text would go nowhere.
+   */
+  allowNote = false,
+  /**
+   * Offer "Chat about it" on every question, plus "Chat about all" when there are several.
+   *
+   * A moved question counts as answered, so the human can submit what they know and take the
+   * rest to the conversation in one go; `formatResponse` tells the agent to explain those and
+   * wait rather than decide them. Off by default, like the note: a form rendered on its own
+   * has no conversation to move anything into.
+   */
+  allowChat = false,
   foremanRecommended,
   foremanDraft,
+  besideSubmit,
+  answers: heldAnswers,
+  onAnswersChange,
 }: {
   decisions: PlanDecision[];
   busy: boolean;
@@ -302,6 +347,8 @@ export function DecisionForm({
   lead?: string;
   hideQuestions?: boolean;
   namePrefix?: string;
+  allowNote?: boolean;
+  allowChat?: boolean;
   /**
    * Exact decision-option keys Foreman's prose names.
    *
@@ -316,21 +363,43 @@ export function DecisionForm({
    * "Foreman's draft", with a revert - and never submitted by anything but Submit.
    */
   foremanDraft?: readonly PlanDecisionAnswer[] | null;
+  /** A control drawn next to Submit, such as the final-bundle form's standing approval. */
+  besideSubmit?: React.ReactNode;
+  /**
+   * The answers, held by the caller instead of by this mount.
+   *
+   * A review card passes its parked draft here so picks and typed text survive the form
+   * unmounting - the modal closing, the inbox folding, the page reloading. Left out, the form
+   * keeps its own state, as a standalone form with nothing to outlive has always done.
+   *
+   * Only the human's edits are written here. Until the first one, the form shows its opening
+   * state - the recommendation, or Foreman's draft over it - derived on every render, so a
+   * draft landing later never has to overwrite anything the store holds.
+   */
+  answers?: DecisionAnswers;
+  onAnswersChange?: (change: (prev: DecisionAnswers) => DecisionAnswers) => void;
 }): React.JSX.Element {
-  const [answers, setAnswers] = useState<Answers>(() => draftedAnswers(decisions, foremanDraft));
-  const [draft, setDraft] = useState<DraftState>(() => openingDraftState(foremanDraft));
+  const [ownAnswers, setOwnAnswers] = useState<Answers>({});
+  const held: Answers = heldAnswers ?? ownAnswers;
+  // Edited here, or by another card showing the same review: the held answers are the form.
+  const [touched, setTouched] = useState(false);
+  const handled = touched || !isUntouched(held);
+  const [draft, setDraft] = useState<DraftState>(() => {
+    const opening = openingDraftState(foremanDraft);
+    // Answers already held were the human's, from before a close or a reload.
+    return isUntouched(held) ? opening : draftAfterEdit(opening);
+  });
   // By content, so a re-render carrying the same draft is not a new one.
   const draftKey = foremanDraft?.length ? JSON.stringify(foremanDraft) : null;
 
   // Foreman's review takes minutes, so its draft usually lands on a form already open, and
   // an invite withdrawn takes it away again. `draftOnChange` decides what that does to the
-  // form; see its rules.
+  // form; see its rules. The answers follow from the state: an untouched form shows its
+  // opening state, and a touched one keeps the held answers.
   useEffect(() => {
-    const step = draftOnChange(draft, foremanDraft);
-    if (!step) return;
-    if (step.answers === "drafted") setAnswers(draftedAnswers(decisions, foremanDraft));
-    if (step.answers === "recommended") setAnswers(recommendedAnswers(decisions));
-    setDraft(step.next);
+    const current = handled ? draftAfterEdit(draft) : draft;
+    const step = draftOnChange(current, foremanDraft);
+    setDraft(step ? step.next : current);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the draft's content
   }, [draftKey]);
 
@@ -339,26 +408,49 @@ export function DecisionForm({
     (activeDraft ?? []).flatMap((d) => (d.other?.trim() ? [[d.decisionId, d.other.trim()] as const] : [])),
   );
   const recommended = recommendedAnswers(decisions);
+  const opening = activeDraft ? draftedAnswers(decisions, activeDraft) : recommended;
+  const answers = handled ? held : opening;
   const draftChangesSomething =
     activeDraft != null && !sameAnswers(decisions, draftedAnswers(decisions, activeDraft), recommended);
 
-  /** The human changed something by hand. */
-  function edited(): void {
+  /** Write to whoever holds the answers, in the store's shape. */
+  function store(change: (prev: Answers) => Answers): void {
+    if (!onAnswersChange) {
+      setOwnAnswers(change);
+      return;
+    }
+    onAnswersChange((prev) =>
+      Object.fromEntries(
+        Object.entries(change(prev)).map(([id, a]) => [id, { ...a, note: a.note ?? "" }]),
+      ),
+    );
+  }
+
+  /**
+   * The human changed something by hand. The first edit starts from what the form shows - the
+   * opening state - rather than from the empty store behind it.
+   */
+  function edit(change: (prev: Answers) => Answers): void {
+    const wasHandled = handled;
+    setTouched(true);
     setDraft(draftAfterEdit);
+    store((prev) => change(wasHandled || !isUntouched(prev) ? prev : opening));
   }
 
   function revert(): void {
     // Only the decisions Foreman's draft touched go back to the recommendation. An answer
     // you gave to any other question is yours, and undoing Foreman must not undo it.
     const drafted = new Set((activeDraft ?? []).map((d) => d.decisionId));
-    setAnswers((prev) => {
-      const next = { ...prev };
-      for (const id of drafted) {
-        if (recommended[id]) next[id] = recommended[id];
-        else delete next[id];
-      }
-      return next;
-    });
+    if (handled) {
+      store((prev) => {
+        const next = { ...prev };
+        for (const id of drafted) {
+          if (recommended[id]) next[id] = recommended[id];
+          else delete next[id];
+        }
+        return next;
+      });
+    }
     setDraft({ kind: "set-aside" });
   }
 
@@ -367,8 +459,7 @@ export function DecisionForm({
   }
 
   function choose(d: PlanDecision, optionId: string, checked: boolean): void {
-    edited();
-    setAnswers((prev) => {
+    edit((prev) => {
       const cur = prev[d.id] ?? EMPTY;
       let selected: string[];
       if (d.multiSelect) {
@@ -379,22 +470,43 @@ export function DecisionForm({
         selected = [optionId]; // radio: single choice replaces
       }
       // Picking a listed radio deselects Other; its text stays in the box, unsent.
-      return { ...prev, [d.id]: { ...cur, selected, otherChosen: false } };
+      return { ...prev, [d.id]: { ...cur, selected, otherChosen: false, chat: false } };
     });
   }
 
   /** Single choice: make Other the choice, clearing the listed option. */
   function chooseOther(d: PlanDecision): void {
-    if (get(d.id).otherChosen) return;
-    edited();
-    setAnswers((prev) => ({ ...prev, [d.id]: { ...(prev[d.id] ?? EMPTY), selected: [], otherChosen: true } }));
+    const cur = get(d.id);
+    if (otherIsChosen(cur) && !cur.chat) return;
+    edit((prev) => ({
+      ...prev,
+      [d.id]: { ...(prev[d.id] ?? EMPTY), selected: [], otherChosen: true, chat: false },
+    }));
   }
 
-  function setOther(d: PlanDecision, other: string): void {
-    edited();
-    // Typing into a single-choice Other chooses it, as a pointer click in the box does.
-    const choosing = d.multiSelect ? {} : { selected: [], otherChosen: true };
-    setAnswers((prev) => ({ ...prev, [d.id]: { ...(prev[d.id] ?? EMPTY), other, ...choosing } }));
+  function moveToChat(id: string, chat: boolean): void {
+    edit((prev) => {
+      const cur = prev[id] ?? EMPTY;
+      return {
+        ...prev,
+        [id]: chat ? { ...cur, selected: [], other: "", otherChosen: false, chat: true } : { ...cur, chat: false },
+      };
+    });
+  }
+
+  function setText(d: PlanDecision, field: "other" | "note", text: string): void {
+    edit((prev) => {
+      const cur = prev[d.id] ?? EMPTY;
+      if (field === "note") return { ...prev, [d.id]: { ...cur, note: text } };
+      // Typing an answer outside the options is answering, so non-blank text leaves chat. On a
+      // single-choice question it also chooses Other, as a pointer click in the box does; blank
+      // text on a question moved to chat is no answer, so the question stays in chat.
+      const leaves = !cur.chat || text.trim() !== "";
+      const next = d.multiSelect || !leaves
+        ? { ...cur, other: text, chat: leaves ? false : cur.chat }
+        : { ...cur, other: text, selected: [], otherChosen: true, chat: false };
+      return { ...prev, [d.id]: next };
+    });
   }
 
   // Built once per render and used for both the completeness test and the submit, so the
@@ -402,6 +514,15 @@ export function DecisionForm({
   const payload = toDecisionAnswers(decisions, answers, draftOthers);
   const complete = decisions.length > 0 && decisions.every((d, i) => isAnswered(d, payload[i]));
   const summary = selectionSummary(decisions, payload);
+  const chatCount = allowChat ? payload.filter((a) => a.chat).length : 0;
+
+  function chatAboutAll(): void {
+    const all = toDecisionAnswers(
+      decisions,
+      Object.fromEntries(decisions.map((d) => [d.id, { ...get(d.id), chat: true }])),
+    );
+    onSubmit(formatResponse(decisions, all, lead), all);
+  }
 
   return (
     <div className="decisions">
@@ -433,15 +554,18 @@ export function DecisionForm({
               key={o.id}
               className={`decision-option${foremanPick ? " decision-foreman-pick" : ""}`}
             >
-              <Tooltip label={o.detail ?? o.label}>
-                <input
-                  type={d.multiSelect ? "checkbox" : "radio"}
-                  name={`${namePrefix}-${d.id}`}
-                  checked={get(d.id).selected.includes(o.id)}
-                  onChange={(e) => choose(d, o.id, e.target.checked)}
-                  disabled={busy}
-                />
-              </Tooltip>
+              {/*
+                No `Tooltip`: it repeated the detail printed below, and picking an option
+                focuses the radio, so the bubble stayed up over the question until blur. The
+                enclosing label already names the radio. "Chat about it" keeps its bubble.
+              */}
+              <input
+                type={d.multiSelect ? "checkbox" : "radio"}
+                name={`${namePrefix}-${d.id}`}
+                checked={get(d.id).selected.includes(o.id)}
+                onChange={(e) => choose(d, o.id, e.target.checked)}
+                disabled={busy}
+              />
               <span className="decision-option-body">
                 <span className="decision-option-label">
                   {o.label}
@@ -457,10 +581,10 @@ export function DecisionForm({
             <OtherChoice
               name={`${namePrefix}-${d.id}`}
               value={get(d.id).other}
-              chosen={get(d.id).otherChosen}
+              chosen={otherIsChosen(get(d.id)) && !get(d.id).chat}
               busy={busy}
               onChoose={() => chooseOther(d)}
-              onText={(text) => setOther(d, text)}
+              onText={(text) => setText(d, "other", text)}
             />
           )}
           {d.allowOther && d.multiSelect && (
@@ -468,12 +592,42 @@ export function DecisionForm({
               className="decision-other"
               placeholder="Other…"
               value={get(d.id).other}
-              onChange={(e) => setOther(d, e.target.value)}
+              onChange={(e) => setText(d, "other", e.target.value)}
               disabled={busy}
             />
           )}
           {payload[i]?.foremanDraftAccepted && (
             <span className="decision-other-draft">◆ Foreman&apos;s draft</span>
+          )}
+          {allowChat && (
+            <label className={`decision-option decision-chat${get(d.id).chat ? " is-chat" : ""}`}>
+              <Tooltip label="Skip choosing for now: the agent explains this question in the conversation and waits for you">
+                <input
+                  type={d.multiSelect ? "checkbox" : "radio"}
+                  name={`${namePrefix}-${d.id}`}
+                  checked={get(d.id).chat === true}
+                  onChange={(e) => moveToChat(d.id, e.target.checked)}
+                  disabled={busy}
+                />
+              </Tooltip>
+              <span className="decision-option-body">
+                <span className="decision-option-label">
+                  <ChatGlyph />
+                  {CHAT_ABOUT_IT}
+                </span>
+              </span>
+            </label>
+          )}
+          {allowNote && (
+            <textarea
+              className="decision-note"
+              aria-label={`Note to the agent: ${d.question}`}
+              placeholder="Optional note to the agent…"
+              rows={3}
+              value={get(d.id).note ?? ""}
+              onChange={(e) => setText(d, "note", e.target.value)}
+              disabled={busy}
+            />
           )}
         </fieldset>
       ))}
@@ -490,8 +644,26 @@ export function DecisionForm({
             {summary}
           </p>
         )}
+        {besideSubmit}
+        {allowChat && decisions.length > 1 && (
+          <Tooltip label="Move every question to the conversation: the agent explains them and waits for you">
+            <button
+              className={`btn btn-chat${besideSubmit ? "" : " decisions-chat-all"}`}
+              disabled={busy}
+              onClick={chatAboutAll}
+            >
+              Chat about all
+            </button>
+          </Tooltip>
+        )}
         <Tooltip
-          label={complete ? "Send these decisions back to the agent" : "Answer every decision above first"}
+          label={
+            !complete
+              ? `Answer every decision above${allowChat ? ", or move it to chat," : ""} first`
+              : chatCount
+                ? "Send these answers, and ask the agent to discuss the rest in the conversation"
+                : "Send these decisions back to the agent"
+          }
         >
           <button
             className="btn btn-approve"
@@ -499,10 +671,24 @@ export function DecisionForm({
             aria-describedby={summary ? `${namePrefix}-selected` : undefined}
             onClick={() => onSubmit(formatResponse(decisions, payload, lead), payload)}
           >
-            Submit
+            {chatCount ? `Submit & chat (${chatCount})` : "Submit"}
           </button>
         </Tooltip>
       </div>
     </div>
+  );
+}
+
+export function ChatGlyph(): React.JSX.Element {
+  return (
+    <svg className="chat-glyph" viewBox="0 0 16 14" aria-hidden="true" focusable="false">
+      <path
+        d="M2 1.5h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7l-3.5 2.7V10.5H2a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }

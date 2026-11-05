@@ -37,6 +37,7 @@ export interface SetupSkillsRead {
 export interface SetupDeps {
   /** The host whose remedies and rows are offered. Defaults to `process.platform`. */
   platform?: NodeJS.Platform;
+  mcpTrust?(agent: "claude" | "codex"): SetupStatus;
   runtime?(): SetupRuntimeView;
   canInstallPiExtension?(): boolean;
   /** One fresh login-shell PATH snapshot for this explicit machine inspection. */
@@ -52,8 +53,11 @@ export interface SetupDeps {
   /** Whether the cmux app is open AND admitting the daemon, neither of which installation answers. */
   cmuxControl(): Promise<CmuxControl>;
   ghBin(): string;
+  /** Jira sites the configured acli task sources read, as bare hosts. */
+  acliSourceSites?(): string[];
   resolveBinPath(bin: string): Promise<string | null>;
-  runCommand(bin: string, argv: string[]): Promise<RunResult>;
+  /** `timeoutMs` overrides the unmanaged default, for a probe that shares another caller's budget. */
+  runCommand(bin: string, argv: string[], managedEnv?: NodeJS.ProcessEnv, timeoutMs?: number): Promise<RunResult>;
   installedPlugins(): Promise<InstalledPluginsRead>;
   skills(): SetupSkillsRead;
   conductorProbe(): Promise<PipelineProbe>;

@@ -55,12 +55,13 @@ export function showsBody(review: ReviewItem): boolean {
 
 /**
  * A decision is answered once it has a selected option, or free text when the decision
- * allows it. Submit stays disabled until every decision clears this bar, and an empty
- * decision set is "nothing to submit" rather than vacuously complete, so the agent never
- * unblocks on a half-filled or content-free form.
+ * allows it, or the human moved it to chat. Submit stays disabled until every decision clears
+ * this bar, and an empty decision set is "nothing to submit" rather than vacuously complete,
+ * so the agent never unblocks on a half-filled or content-free form.
  */
 export function isAnswered(decision: PlanDecision, answer: PlanDecisionAnswer | undefined): boolean {
   if (!answer) return false;
+  if (answer.chat) return true;
   if (answer.selected.length > 0) return true;
   return Boolean(decision.allowOther && answer.other?.trim());
 }
@@ -90,6 +91,8 @@ export function answeredDecisions(
  * that called both "you reviewed" would leave the reader unable to tell which.
  */
 export function reviewAnswerVerb(review: ReviewItem): string {
+  // Never in the human's voice: nobody was asked. Their earlier standing approval answered.
+  if (review.resolvedBy === "standing-approval") return "auto-approved (all future bundles for this task)";
   const who = review.resolvedBy?.startsWith("session:") ? `session ${review.resolvedBy.slice(8)}` : "you";
   switch (review.status) {
     case "approved":

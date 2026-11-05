@@ -64,6 +64,8 @@ export const STATE_DENY_FILES = [
   "update-outcome.json",
   // The operator's own statusline command, saved when the integrations wrap it.
   "statusline-inner",
+  // The dashboard skin's window background, read by the desktop shell.
+  "window-background.json",
   "foreman-spend-outbox.*",
   "foreman-spend-quarantine.*",
 ] as const;
@@ -88,6 +90,10 @@ export const STATE_DENY_DIRS = [
   "headless",
   "plans",
   "update-helper.lock.d",
+  // Retained Command output, which can carry the operator's environment and paths.
+  "workflow-command-output",
+  // Resident run workspaces and `residents/mcp`, which holds owner-only MCP credentials.
+  "residents",
   // Warm logs (`logs/worktree-warm/`): claim step output, which is the operator's, not the
   // reviewed worktree's.
   "logs",

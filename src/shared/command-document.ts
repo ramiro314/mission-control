@@ -13,8 +13,10 @@ import {
   type WorkflowCheckSlot,
 } from "./workflow.ts";
 
-// A Command document: one repository's Command overrides, for every slot, and its stored testing
-// settings, as one versioned JSON file an operator can paste, upload, export and import again.
+// A Command document: one repository's Command overrides, for every argv slot, and its stored
+// testing settings, as one versioned JSON file an operator can paste, upload, export and import
+// again. CodeRabbit is not an argv slot: its overrides are review tuning, so a document never
+// names that slot and never rewrites its rows (`COMMAND_DOCUMENT_SLOTS`).
 //
 // It describes ROWS, never the catalog around them. A document cannot name a slot's global
 // default, its run budget, or anything about worktree pools: the top level and every entry are
@@ -45,6 +47,20 @@ export const COMMAND_DOCUMENT_LIMITS = {
 /** Why a document path cannot name a folder in the repository. */
 export const COMMAND_DOCUMENT_PATH_RULE =
   "must be repository-relative with forward slashes, no leading or trailing slash, and no . or .. segments (\"\" is the root)";
+
+/**
+ * The slots a document can name: every built-in slot whose overrides are argv. CodeRabbit's
+ * overrides carry review tuning and an empty argv, so a document that listed them could only
+ * read as commands or wipe the tuning on apply - it is left out of export, preview and apply.
+ */
+export type CommandDocumentSlot = Exclude<WorkflowCheckSlot, "coderabbit">;
+
+export function isCommandDocumentSlot(slot: WorkflowCheckSlot): slot is CommandDocumentSlot {
+  return slot !== "coderabbit";
+}
+
+/** `WORKFLOW_CHECK_SLOTS` without CodeRabbit, in the same order. */
+export const COMMAND_DOCUMENT_SLOTS: readonly CommandDocumentSlot[] = WORKFLOW_CHECK_SLOTS.filter(isCommandDocumentSlot);
 
 const DocumentPathSchema = z
   .string()
@@ -91,7 +107,7 @@ const TestingEntrySchema = z
 
 const CommandEntriesSchema = z.array(CommandEntrySchema).max(COMMAND_DOCUMENT_LIMITS.commandEntries).optional();
 
-/** One optional entry list per built-in slot, and no other key. */
+/** One optional entry list per argv slot, and no other key: `coderabbit` is refused. */
 const CommandsSchema = z.object({
   test: CommandEntriesSchema,
   lint: CommandEntriesSchema,
@@ -100,13 +116,14 @@ const CommandsSchema = z.object({
   documentation: CommandEntriesSchema,
   "affected-tests": CommandEntriesSchema,
 }).strict();
-// Every built-in slot has a key above, and nothing else does: a slot added to
-// `WORKFLOW_CHECK_SLOTS` fails typecheck here until a document can name it.
+// Every argv slot has a key above, and nothing else does: a slot added to
+// `WORKFLOW_CHECK_SLOTS` fails typecheck here until a document can name it, or is excluded from
+// `CommandDocumentSlot` the way CodeRabbit is.
 type CommandsSlots = keyof z.infer<typeof CommandsSchema>;
-const commandsCoverEverySlot: [CommandsSlots] extends [WorkflowCheckSlot]
-  ? [WorkflowCheckSlot] extends [CommandsSlots] ? true : never
+const commandsCoverEveryArgvSlot: [CommandsSlots] extends [CommandDocumentSlot]
+  ? [CommandDocumentSlot] extends [CommandsSlots] ? true : never
   : never = true;
-void commandsCoverEverySlot;
+void commandsCoverEveryArgvSlot;
 
 function duplicatePaths(entries: ReadonlyArray<{ path: string }>): string[] {
   const seen = new Set<string>();
@@ -131,7 +148,7 @@ export const CommandDocumentSchema = z
   })
   .strict()
   .superRefine((document, ctx) => {
-    for (const slot of WORKFLOW_CHECK_SLOTS) {
+    for (const slot of COMMAND_DOCUMENT_SLOTS) {
       const entries = document.commands?.[slot] ?? [];
       // One path is one row in a slot, so two entries for it would be two answers and only one
       // that can win - refused, like the Command editor's save, rather than picking one.
@@ -211,7 +228,7 @@ export function canonicalTestingSettings(settings: StoredTestingSettings): Store
 export type CommandDocumentChangeKind = "add" | "change" | "remove";
 
 export interface CommandDocumentCommandChange {
-  slot: WorkflowCheckSlot;
+  slot: CommandDocumentSlot;
   /** Repository-relative, `""` for the root. */
   path: string;
   kind: CommandDocumentChangeKind;
@@ -234,7 +251,7 @@ export interface CommandDocumentTestingChange {
  * when any has moved, so what is written is exactly what the operator reviewed.
  */
 export interface CommandDocumentBasis {
-  commands: Partial<Record<WorkflowCheckSlot, number>>;
+  commands: Partial<Record<CommandDocumentSlot, number>>;
   testing: Record<string, number>;
 }
 
@@ -314,7 +331,7 @@ export interface CommandDocumentExport {
  * says it covers before anyone has previewed it against what is stored.
  */
 export function commandDocumentEntryCount(document: CommandDocument): number {
-  const commands = WORKFLOW_CHECK_SLOTS.reduce((sum, slot) => sum + (document.commands?.[slot]?.length ?? 0), 0);
+  const commands = COMMAND_DOCUMENT_SLOTS.reduce((sum, slot) => sum + (document.commands?.[slot]?.length ?? 0), 0);
   return commands + (document.testing?.length ?? 0);
 }
 

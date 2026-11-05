@@ -1,6 +1,7 @@
 import { AGENT_TYPES, SESSION_RUNTIMES } from "./types.ts";
-import { THINKING_LEVELS } from "./types.ts";
+import { ADVISOR_CHOICES, THINKING_LEVELS } from "./types.ts";
 import type {
+  AdvisorChoice,
   AgentType,
   PermissionMode,
   Session,
@@ -98,6 +99,28 @@ export interface PermissionModeSpec {
    * renderer bridges the two (see Claude's spec).
    */
   launchArgs: ((mode: PermissionMode) => readonly string[]) | null;
+}
+
+/** A measured launch control that loads exactly an immutable skill snapshot on every start. */
+export interface SkillSelectionSpec {
+  mechanism: "config-overlay" | "native-discovery-disabled";
+}
+
+/**
+ * A measured launch control that starts exactly a resident run's MCP snapshot, plus Mission
+ * Control's own server, on every start and resume (`scripts/probe-resident-mcp.ts`).
+ *
+ * - `strict-mcp-config`: the SDK's `strictMcpConfig` with the snapshot in `mcpServers`, so no
+ *   user, local, project or plugin configuration is read for the run.
+ * - `codex-home-overlay`: a per-run `CODEX_HOME` whose generated `config.toml` holds only the
+ *   snapshot, verified before every thread start against every other configuration layer.
+ *
+ * `secrets` is how a secret-bearing or global server reaches only its own process: Mission's
+ * scoped launcher, which redeems a single-use ticket for that one server's definition.
+ */
+export interface McpSelectionSpec {
+  mechanism: "strict-mcp-config" | "codex-home-overlay";
+  secrets: "scoped-launcher";
 }
 
 /**
@@ -305,6 +328,44 @@ export interface EffortSpec {
     | null;
 }
 
+/**
+ * Pinning a launch's advisor (a stronger model the executor may consult) without touching
+ * the operator's settings files.
+ *
+ * Every helper takes a NON-NULL choice. Inherit is `null` on the task and never reaches
+ * them: a caller holding `null` renders no argv, no env and no settings, which is what
+ * keeps an Inherit launch byte-identical to one from before this capability existed.
+ */
+export interface AdvisorSpec {
+  /** The choices a dispatch may pin, besides Inherit. */
+  values: readonly AdvisorChoice[];
+  /** Terminal argv for one choice. Empty when the choice is carried by env alone. */
+  launchArgs(choice: AdvisorChoice): readonly string[];
+  /** Extra environment for one choice, on either runtime. */
+  launchEnv(choice: AdvisorChoice): Readonly<Record<string, string>>;
+  /** Keys merged into the SDK's flag-layer `Options.settings` for one choice. */
+  sdkSettings(choice: AdvisorChoice): Readonly<Record<string, string>>;
+  /**
+   * Whether an advisor named by `advisor` (a choice alias or a raw id read from a settings
+   * file) is less capable than the session model `executor`, which the CLI's pairing rule
+   * says it will not consult on the main conversation. False when either side is unknown:
+   * a guess here would print a warning about a pairing nobody can judge.
+   */
+  weakerThan(advisor: string, executor: string): boolean;
+}
+
+/**
+ * A Claude model family's place in the capability order the advisor pairing rule compares,
+ * read from an alias (`opus`) or an id (`claude-opus-5-5[1m]`). Null for anything else.
+ * Family, not version: the `opus` alias names the newest Opus, so an Opus advisor is never
+ * weaker than an Opus session, whichever generation the session runs.
+ */
+const CLAUDE_FAMILY_ORDER = ["haiku", "sonnet", "opus", "fable"] as const;
+function claudeFamilyRank(model: string): number | null {
+  const m = /^(?:claude-)?(haiku|sonnet|opus|fable)(?:\b|-)/i.exec(model.trim());
+  return m ? CLAUDE_FAMILY_ORDER.indexOf(m[1]!.toLowerCase() as (typeof CLAUDE_FAMILY_ORDER)[number]) : null;
+}
+
 const CLAUDE_PICKER_VISIBLE = /◉\s+(?:xhigh|medium|high|max|low)\s+effort[\s\S]*use this session only/i;
 
 function claudeComposerReady(paneText: string): boolean {
@@ -494,6 +555,8 @@ export type ModelDiscoverySpec =
  * vocabulary to learn.
  */
 interface HarnessCapabilitiesBase {
+  /** Measured resident maintenance layers. Claude native threshold failed the 2.1.310 probe. */
+  residentCompaction: { betweenIterations: boolean; nativeBackstop: boolean } | null;
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
   id: AgentType;
   /**
@@ -541,6 +604,10 @@ interface HarnessCapabilitiesBase {
   readsHistory: boolean;
   permissionModes: PermissionModeSpec | null;
   skills: SkillsSpec | null;
+  /** Null until exact isolation, including native additions on resume, has passed a real probe. */
+  skillSelection: SkillSelectionSpec | null;
+  /** Null until a real probe shows a launch starts exactly a run's MCP snapshot. */
+  mcpSelection: McpSelectionSpec | null;
   extensions: ExtensionsSpec | null;
   workQueue: WorkQueueSpec | null;
   clearContext: ClearContextSpec | null;
@@ -548,6 +615,8 @@ interface HarnessCapabilitiesBase {
   missionTools: MissionToolsSpec | null;
   /** Null only for a harness with no launch-time reasoning-effort control. */
   effort: EffortSpec | null;
+  /** Null for a harness with no advisor tool to pin at launch. */
+  advisor: AdvisorSpec | null;
   /** Null for a harness whose write scope could not be widened past cwd at launch. */
   multiRepoDispatch: MultiRepoDispatchSpec | null;
   /** Null for a harness whose running turn cannot be stopped on any runtime. */
@@ -631,11 +700,16 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     },
     extensions: null,
     skills: CLAUDE_SKILLS,
+    skillSelection: null, // 2.1.310: overlay and launch settings still expose project skills.
+    // 2.1.310 and SDK 0.3.310: `strictMcpConfig` excluded user, local, project and plugin
+    // fixtures; only the passed servers started, each with exactly its passed definition.
+    mcpSelection: { mechanism: "strict-mcp-config", secrets: "scoped-launcher" },
     workQueue: {
       uninstrumentedWhy:
         "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Install the Claude integrations to queue work here.",
     },
     clearContext: { command: "/clear" },
+    residentCompaction: { betweenIterations: true, nativeBackstop: false },
     mcp: { cli: "claude", scope: "user", envFlag: "-e", serverName: "mission-control", migration: { kind: "jsonc", homeFile: ".claude.json", key: "mcpServers" } },
     missionTools: { mechanism: "mcp-client", scope: "launch" },
     effort: {
@@ -652,6 +726,31 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         visible: CLAUDE_PICKER_VISIBLE,
         selected: claudePickerSelection,
         commit: "s",
+      },
+    },
+    // Measured against Claude Code 2.1.317 with `--model sonnet`: `--settings
+    // '{"advisorModel":"opus"}'` made `/advisor` mark Opus 5.5 as the current choice,
+    // where the same launch without it marked "No advisor", and `~/.claude/settings.json`
+    // was byte-identical afterwards. `--settings` is the session-scoped flag layer, which
+    // sits above user, project and local settings - the hidden `--advisor` flag is not
+    // used. With `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` the same launch answered "Unknown
+    // command: /advisor", so Off is the env variable, the one switch that also beats an
+    // inherited user setting. The SDK takes the same key through `Options.settings`.
+    //
+    // Pairing (the advisor must be at least as capable as the executor) and account
+    // availability are the CLI's to enforce; Mission Control never refuses a pin over them.
+    // `weakerThan` only lets the Harnesses panel warn about a pairing the CLI documents it
+    // will not consult.
+    advisor: {
+      values: ADVISOR_CHOICES,
+      launchArgs: (choice) => (choice === "off" ? [] : ["--settings", JSON.stringify({ advisorModel: choice })]),
+      launchEnv: (choice): Readonly<Record<string, string>> =>
+        choice === "off" ? { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" } : {},
+      sdkSettings: (choice): Readonly<Record<string, string>> => (choice === "off" ? {} : { advisorModel: choice }),
+      weakerThan: (advisor, executor) => {
+        const a = claudeFamilyRank(advisor);
+        const e = claudeFamilyRank(executor);
+        return a !== null && e !== null && a < e;
       },
     },
     // Verified against the pinned `@anthropic-ai/claude-agent-sdk@0.3.220` and the shipped
@@ -765,6 +864,10 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // typed at a running session. `skillsAgents()` therefore excludes it from the pane
     // broadcast.
     extensions: null,
+    skillSelection: null, // 0.160.0: native sources admit additions beyond a path-disable list.
+    // 0.160.0: an overlay alone still loads a trusted project's servers and merges its fields,
+    // so every start also verifies the layers and disables foreign servers before they load.
+    mcpSelection: { mechanism: "codex-home-overlay", secrets: "scoped-launcher" },
     skills: {
       reloadCommand: null,
       reloadIdleSource: null,
@@ -788,6 +891,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // Measured against 0.144.x, where `/clear` is Codex's own slash command and not, as
     // this said while the value was null, a line that would land in the prompt as text.
     clearContext: { command: "/clear" },
+    residentCompaction: { betweenIterations: true, nativeBackstop: true },
     // `codex mcp add <name> --env K=V -- <cmd>`: a different CLI and a different config
     // file from Claude's, which is what `cli` and `envFlag` carry. `scope: null` is the
     // real difference - Codex writes one registration and has no `-s user|project` to
@@ -822,6 +926,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         raise: "shift-up",
       },
     },
+    advisor: null,
     // Measured against codex-cli 0.145.0 rather than read off documentation, because the
     // answer is not the obvious one. `sandbox_workspace_write.writable_roots` is the key,
     // and it rides as a `-c` TOML override, which is the one grammar BOTH Codex runtimes
@@ -898,6 +1003,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // with pi's OWN dir so `skillsDirs()` does not have to reconcile a directory it shares with
     // Codex. pi has no skills-dir watcher. A dispatched session's exact launch identity
     // makes its transcript an attributable idle source for the verified command.
+    skillSelection: null,
+    mcpSelection: null, // No MCP client.
     skills: {
       reloadCommand: "/reload",
       reloadIdleSource: "transcript",
@@ -930,6 +1037,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which
     // summarises rather than clears). Hookless sessions have no attributable transcript path.
     clearContext: { command: "/new" },
+    residentCompaction: null,
     // Null: pi has no MCP client at all - it extends via in-process TS extensions, not MCP - so
     // the installer says so rather than shelling out to a registration CLI that does not exist.
     mcp: null,
@@ -950,6 +1058,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // `minimal`, so neither existing live-picker shape can drive it faithfully.
       sessionPicker: null,
     },
+    advisor: null,
     multiRepoDispatch: {
       kind: "no-boundary",
       why: "Pi has no sandbox or directory write boundary: measured against 0.85.1, its write tool wrote an absolute path in a sibling directory without a flag, grant or refusal.",
@@ -1047,6 +1156,11 @@ export function portableEffortLevels(): readonly ThinkingLevel[] {
 
 export function supportsEffort(agent: AgentType, level: ThinkingLevel): boolean {
   return HARNESS_CAPABILITIES[agent].effort?.levels.includes(level) ?? false;
+}
+
+/** Whether a harness can pin this advisor choice at launch. Inherit (`null`) never asks. */
+export function supportsAdvisor(agent: AgentType, choice: AdvisorChoice): boolean {
+  return HARNESS_CAPABILITIES[agent].advisor?.values.includes(choice) ?? false;
 }
 
 /** Whether an effort is selectable for one live session's currently selected model. */

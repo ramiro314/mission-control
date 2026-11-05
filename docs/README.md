@@ -13,6 +13,7 @@ Mission Control's product reference is organized by feature below.
 - [Dispatch, backlog, and task sources](dispatch-and-backlog.md)
 - [Recurring missions](recurring-missions.md)
 - [Multi-agent ensembles](ensembles.md)
+- [Residents](residents.md): long-running agents launched from resident profiles.
 - [Pipelines (external SDLC engines)](pipelines.md)
 - [Archives](archives.md)
 - [Session History](history.md): every agent session on this machine, listed from the agents' own transcript stores.

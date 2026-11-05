@@ -198,7 +198,8 @@ ephemeral GitHub-hosted `ubuntu-latest` runners so pull request jobs remain isol
 self-hosted infrastructure. A pull request's run peaks at nineteen concurrent jobs, one under
 GitHub Free's per-account cap of twenty: `gates`, `docs checks`, three Node.js 24 unit shards and
 fourteen E2E shards, with `build-smoke-node-24` finished before E2E starts. The "Shard budget"
-comment in `ci.yml` holds the arithmetic, and `test/init-script.test.ts` pins it. The shared unit
+comment in `ci.yml` holds the arithmetic, and `test/init-script.test.ts` pins it. Every unit and
+E2E shard total is derived from its matrix (`strategy.job-total`). The shared unit
 steps live in `.github/actions/run-unit-shard/action.yml`, and each unit shard takes its files from
 `scripts/unit-shard.mjs`, balanced by the generated `test/shard-timings.json` (regenerate it with
 `npm run test:timings -- <run-id>`; see [flaky tests in CI](docs/flaky-tests.md)). Unit and E2E shards rerun or read retries for

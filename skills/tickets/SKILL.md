@@ -133,6 +133,9 @@ The tool blocks until the human submits or dismisses:
 - **Submitted with Other text on any ticket:** that is a change request, not an approval. Revise
   the breakdown and ask again with a fresh breakdown review. Nothing is filed from a form that
   asked for changes.
+- **Submitted with any question marked `→ Chat about it`:** that is not an approval either.
+  File nothing; explain the moved questions in your next message and end the turn, then ask
+  again with a fresh breakdown review once the conversation has settled them.
 - **Submitted with one backlog task adopted by two tickets:** ask again; a task stands in for one
   ticket.
 - **Submitted:** the breakdown is approved as shown. Go on.

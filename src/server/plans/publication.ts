@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { PLAN_APPROVAL_DECISION, PLAN_APPROVAL_OPTION, type PlanIdentity, type PlanPublicationReceipt, type PlanReadiness } from "@shared/managed-plans.ts";
 import type { PlanDecision, PlanDecisionAnswer, Task } from "@shared/types.ts";
 import { isLocalPlanningTask } from "@shared/task.ts";
+import { decisionLead, formatResponse, STANDING_APPROVAL_NOTE } from "@shared/review-item.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { WorkflowBinding, WorkflowSubmission, WorkflowVersion } from "@shared/workflow.ts";
 import { openDb, loadHumanResolvedReviews } from "../db.ts";
@@ -25,6 +26,68 @@ export const finalBundleDecision: PlanDecision = {
   options: [{ id: PLAN_APPROVAL_OPTION, label: "Approve final bundle" }, { id: "revise", label: "Needs revision" }],
   multiSelect: false, allowOther: false,
 };
+
+/** The task a final-bundle review belongs to, or a refusal when it cannot carry a standing approval. */
+function standingApprovalTask(reviewId: string): string {
+  const row = openDb().prepare("SELECT task_id FROM managed_plan_reviews WHERE review_id = ?").get(reviewId) as { task_id: string | null } | undefined;
+  if (!row) throw new PlanStoreError("Only a managed plan's final-bundle approval can approve future bundles", 400);
+  if (!row.task_id) throw new PlanStoreError("This plan session has no task to remember future approvals for", 400);
+  return row.task_id;
+}
+
+/** Refuses before the review is resolved, so a grant that cannot be kept leaves the question open. */
+export function assertStandingApprovalGrantable(reviewId: string): void {
+  standingApprovalTask(reviewId);
+}
+
+/** "Approve all future bundles for this task": recorded from the human answer that ticked it. */
+export function grantStandingBundleApproval(reviewId: string): void {
+  openDb().prepare("INSERT OR IGNORE INTO managed_plan_standing_approvals VALUES (?, ?, ?)").run(standingApprovalTask(reviewId), reviewId, Date.now());
+}
+
+export function hasStandingBundleApproval(taskId: string | null): boolean {
+  return Boolean(taskId && openDb().prepare("SELECT 1 FROM managed_plan_standing_approvals WHERE task_id = ?").get(taskId));
+}
+
+/**
+ * The auto-approval to reuse when the agent asks again for the same exact bundle - a client
+ * timeout retries the identical request. Reused only while it is still the latest settled
+ * answer for that bundle identity, so a later human decision is never papered over.
+ */
+export function reusableStandingApproval(authority: PlanAuthority, input: PlanIdentity, workflows: WorkflowManager): string | null {
+  const context = workflows.planPublicationContext(authority.sessionId);
+  if (context.owner === "unavailable") return null;
+  const latest = openDb().prepare(`SELECT r.id, r.resolved_by FROM managed_plan_reviews m JOIN reviews r ON r.id = m.review_id
+    WHERE m.plan_id = ? AND m.revision = ? AND m.session_id = ? AND m.task_id IS ? AND m.episode_id IS ?
+      AND m.binding_id IS ? AND m.workflow_version_id IS ? AND m.manifest_hash = ? AND r.status != 'pending'
+    ORDER BY r.resolved_at DESC, r.created_at DESC LIMIT 1`)
+    .get(input.planId, input.revision, authority.sessionId, authority.taskId, authority.episodeId,
+      context.owner === "workflow" ? context.bindingId : null, context.owner === "workflow" ? context.workflowVersionId : null,
+      planRevisionRecord(input.planId, input.revision).manifest_hash) as { id: string; resolved_by: string | null } | undefined;
+  return latest?.resolved_by === "standing-approval" ? latest.id : null;
+}
+
+/** The answer a standing approval gives to the final-bundle question. */
+export function standingBundleAnswer(): { decisions: PlanDecision[]; selections: PlanDecisionAnswer[]; response: string } {
+  const decisions = [finalBundleDecision];
+  const selections = [{ decisionId: PLAN_APPROVAL_DECISION, selected: [PLAN_APPROVAL_OPTION], other: null }];
+  return { decisions, selections, response: `${STANDING_APPROVAL_NOTE}\n\n${formatResponse(decisions, selections, decisionLead("plan-decisions"))}` };
+}
+
+/**
+ * The bundle was approved automatically, but the agent asked other questions beside it; those
+ * go to the operator as their own review. Recorded so the agent's answer says the bundle is
+ * already approved, since that review no longer carries the approval question.
+ */
+export const STANDING_FOLLOW_UP_NOTE = "The final bundle was approved automatically: the operator chose to approve all future plan bundles for this task. Answers to the remaining decisions follow.";
+
+export function recordStandingFollowUp(reviewId: string, approvalReviewId: string): void {
+  openDb().prepare("INSERT OR IGNORE INTO managed_plan_standing_follow_ups VALUES (?, ?)").run(reviewId, approvalReviewId);
+}
+
+export function isStandingFollowUp(reviewId: string): boolean {
+  return Boolean(openDb().prepare("SELECT 1 FROM managed_plan_standing_follow_ups WHERE review_id = ?").get(reviewId));
+}
 
 /** Both selection and pinned bindings require review-only completion. */
 function localWorkflowCompatible(version: WorkflowVersion): boolean {
@@ -118,14 +181,15 @@ export function carriedPlanApproval(authority: PlanAuthority, input: PlanIdentit
   const latest = loadHumanResolvedReviews(authority.sessionId).filter((review) => bound.some((row) => row.review_id === review.id)).at(-1);
   const answers = latest?.status === "answered" ? latest.selections ?? [] : [];
   const approved = answers.find((answer) => answer.decisionId === PLAN_APPROVAL_DECISION);
-  if (!latest || !approved || approved.other || approved.selected.length !== 1 || approved.selected[0] !== PLAN_APPROVAL_OPTION) return null;
+  if (!latest || !approved || approved.other || approved.note || approved.chat || approved.selected.length !== 1 || approved.selected[0] !== PLAN_APPROVAL_OPTION) return null;
   const sameQuestion = (a: PlanDecision, b: PlanDecision) => a.question === b.question
     && a.options.map((option) => option.id).join("\n") === b.options.map((option) => option.id).join("\n");
   const carried: PlanDecisionAnswer[] = [];
   for (const decision of decisions.filter((d) => d.id !== PLAN_APPROVAL_DECISION)) {
     const before = latest.decisions?.find((d) => d.id === decision.id);
     const answer = answers.find((a) => a.decisionId === decision.id);
-    if (!before || !answer || !sameQuestion(before, decision)) return null;
+    // A note or a chat answer is something the human said; carrying the selection alone would drop it.
+    if (!before || !answer || answer.note || answer.chat || !sameQuestion(before, decision)) return null;
     carried.push({ decisionId: answer.decisionId, selected: answer.selected, other: answer.other });
   }
   return { revision: bound.find((row) => row.review_id === latest.id)!.revision, selections: [...carried, approved] };

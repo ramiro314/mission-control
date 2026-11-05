@@ -16,6 +16,7 @@ playwright-report/
 e2e/.probe/
 e2e/.artifacts/
 .evidence/
+/docs/reports/resident-skill-isolation-wider/
 .pipeline/
 
 # Per-checkout override of .mission/testing.json (see docs/workflows.md)

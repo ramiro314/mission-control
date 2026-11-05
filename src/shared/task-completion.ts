@@ -215,6 +215,7 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
   plan: PLAN_CONTRACT,
   pipeline: null,
   chat: null,
+  resident: null,
   shape: SHAPE_CONTRACT,
 };
 

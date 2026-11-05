@@ -176,6 +176,15 @@ bundle smoke tests, and the browser suite. Pull request jobs run on ephemeral Gi
 runners. Review `.github/workflows/ci.yml` before changing runner labels, worker counts, or shard
 counts.
 
+This fork sizes CI for GitHub Free's cap of twenty concurrent jobs rather than upstream's
+four-minute job target: three Node.js 24 unit shards and fourteen browser shards on a pull
+request, six Node.js 26 unit shards on `main`, with build and smoke in their own
+`build-smoke` jobs and one shared `dist/` for every browser shard. Every shard keeps four
+workers and derives its denominator from the matrix. The "Shard budget" comment in
+`.github/workflows/ci.yml` holds the arithmetic and `test/init-script.test.ts` pins it.
+Compiler mutation tests live in separate files so a single serial file cannot dominate a
+unit shard. Keep the clean-copy probe and every negative compiler assertion when regrouping.
+
 Use the pull request template. Its human-facing section explains why, what changed,
 tradeoffs, known gaps, proof of work, and follow-up work. Its agent-facing section
 records the goal, design decisions, implementation details, tests, and deliberate

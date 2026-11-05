@@ -37,6 +37,12 @@ noun:
 | Actions | What can a run tell the session to do? | [Session action](workflows.md#session-actions) cards - required skill and what proves completion |
 | Ensembles | Not sure of the best approach? | Strategy launchers (Best of N, Panel vote, Consensus) that open Dispatch already in Ensemble mode on that strategy |
 
+The top-bar filter narrows cards across all six shelves as you type. It matches names,
+descriptions, tags, and the facts printed on cards, ignoring case and surrounding spaces.
+Fixed cards such as Foreman and Task sources, ensemble launchers, and New cards follow the
+same filter. Shelves stay in place and show **No matching cards.** when nothing matches.
+Clear the filter with its clear button or Escape to restore every card.
+
 The four authoring surfaces mount one level deeper at bookmarkable hashes:
 
 | Hash | Surface |
@@ -75,12 +81,16 @@ against any repository. This shelf is where *this machine* says what each slot r
   so, and CI is what still runs the command against the merge commit.
   [Workflows](workflows.md#command-nodes) describes what spends a run and what starts the
   count over.
+- **timeout** - either the shipped slot default, or a configured value from one minute through
+  two hours;
+- **if unavailable** and **when the run budget is exhausted** - skip with a note by default,
+  or block for operator action until the operator corrects the condition and retries.
 
 A slot with neither passes with a note rather than failing, which is what lets a shipped
 workflow name `typecheck` on a machine that has never configured one.
 
-Saving replaces a slot's default, its complete override list and its run budget in one
-compare-and-swap, so the parts can never be stored apart, and a second window's save is refused
+Saving replaces a slot's default, complete override list, run budget, timeout, and both
+skip-or-block policies in one compare-and-swap, so the parts can never be stored apart, and a second window's save is refused
 rather than silently overwriting your unsaved typing. Commands are stored as argv and executed without a
 shell: there are no pipes, no redirection, no environment interpolation and no shell-mode
 toggle, and the editor shows the exact split under every rule before you save.
@@ -98,10 +108,10 @@ revision, never with the Command. See
 
 #### Command documents
 
-A **Command document** configures one repository's Command overrides, in every slot, and its
+A **Command document** configures one repository's Command overrides, in every argv slot, and its
 stored testing settings from one versioned JSON file. **Import document** and **Export document**
-sit at the foot of the Commands rail, because a document spans every slot rather than the one that
-is open.
+sit at the foot of the Commands rail, because a document spans every argv slot rather than the one
+that is open.
 
 ```json
 {
@@ -126,8 +136,11 @@ is open.
   entry has `settings` or `"remove": true`. A testing entry's `settings` takes the same three
   `tests.*` keys as a Testing settings row and must set at least one.
 - **A document describes rows, never the catalog around them.** It cannot name a slot's global
-  default, its run budget, `flakes`, or any worktree pool setting: an unknown key anywhere is
-  refused, not ignored.
+  default, its run budget, timeout or failure policies, `flakes`, or any worktree pool setting: an
+  unknown key anywhere is refused, not ignored. Applying one keeps all of those as stored.
+- **CodeRabbit tuning is not part of a document.** The `coderabbit` slot's rows are review tuning
+  rather than an argv, so an export never lists them, a document naming `coderabbit` is refused,
+  and applying a document never changes them. Tune CodeRabbit in its own slot.
 - **Each entry meets its catalog's own rules.** An `affected-tests` argv needs `{files}` as a whole
   argument and `{junit}` somewhere, exactly as the editor requires. A path listed twice in one slot,
   or twice under `testing`, is refused, and a slot that would end up with more than 200 overrides,
@@ -389,7 +402,7 @@ palette use, so the three cannot disagree. The slot's purpose has moved off the 
 row's tooltip, and it opens the workspace's execution note - so it is read once for the slot
 you opened, rather than identically down every row. A note below the list says why the
 catalog is closed, and **Import document** and **Export document** end the rail (see
-[Command documents](#command-documents)): a document spans every slot, so its controls belong
+[Command documents](#command-documents)): a document spans every argv slot, so its controls belong
 to the rail rather than to the open slot's header.
 
 **The workspace header** carries the slot name and a `built-in slot` tag with the revision line
@@ -413,8 +426,10 @@ it was offered only for the rule you were already reading back as you typed it.
 
 ![The Command detail screen: the closed rail carrying each slot's stored state, the default pinned as the first rule of the table, two saved overrides with their parsed argv, and the add row below them](images/library-commands.png)
 
-Nothing about how a Command runs is decided here. Resolution order, the machine-wide switch,
-the Trust grant and the compare-and-swap save are exactly as described above.
+The policy controls sit above the rule table because they belong to the slot, not to one
+repository rule. Saving them still runs nothing and grants no execution authority. Resolution
+order, the machine-wide switch, the Trust grant and the compare-and-swap save are exactly as
+described above.
 
 ### The Ship log
 
@@ -467,3 +482,11 @@ put them out of step about which pull requests exist.
 Reach it with `⌘K` (search for "shipped", "merged" or "pull request"), by opening the hash, or
 from the Line: clicking ⚑ **Shipped** opens the [Shipped drawer](ui.md#the-stage-drawers) over the
 fleet, and its **Ship log →** header action lands here.
+
+The built-in `coderabbit` Command uses typed repository-root tuning in the existing Commands
+editor. YAML owns enablement: `.coderabbit.yaml` must explicitly contain boolean
+`reviews.auto_review.enabled: true`; no override is required. Tuning changes base ref/severity,
+not enablement, and removing it restores defaults. The editor previews the committed-review
+argv and shows derived policies: enabled unavailability blocks; exhausted allowance warns and
+skips. The initial allowance is ten executions shared across nodes per workflow run. See
+[local CodeRabbit Command](workflows.md#local-coderabbit-command) for scope and retained findings.

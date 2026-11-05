@@ -326,6 +326,27 @@ test("a repository the pool cannot identify still runs its claim in the cold fal
   assert.deepEqual(await leases.releaseForAttempt(ref.attemptId), { outcome: "returned" });
 });
 
+for (const pooled of [true, false]) {
+  test(`an attempt that asks for no claim runs none (${pooled ? "pool slot" : "cold fallback"})`, async () => {
+    const { clone, sha } = repository(`mission-check-claim-none-${pooled}-`);
+    const fake = steps(() => ok);
+    const leases = checkLeases(worktrees(LOCK_CLAIM, fake.runClaimStep, pooled));
+    const ref = attempt();
+    let starts = 0;
+    await leases.acquireForAttempt({
+      ...ref,
+      repoRoot: clone,
+      headSha: sha,
+      runClaim: false,
+      onClaimStart: () => { starts += 1; },
+    });
+    assert.equal(leaseRows.get(ref.attemptId)?.provider, pooled ? "mission" : "git");
+    assert.deepEqual(fake.ran, [], "a claim ran for an attempt that asked for none");
+    assert.equal(starts, 0, "an attempt that runs no claim must keep its check slot");
+    assert.deepEqual(await leases.releaseForAttempt(ref.attemptId), { outcome: "returned" });
+  });
+}
+
 // ---- run cancel stops the claim ------------------------------------------------------------
 
 for (const pooled of [true, false]) {

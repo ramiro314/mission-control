@@ -881,12 +881,12 @@ test("the Inspector's deny rules render exactly, per platform", () => {
     ...[
       "harness.db*", "token*", "scout-submission.key*", "scout-producer.json*",
       "install-receipt.json*", "pi-extension.json*", "daemon.lock*", "daemon.log*", "foreman.log*",
-      "update.log*", "update-outcome.json*", "statusline-inner*", "foreman-spend-outbox.*", "foreman-spend-quarantine.*",
+      "update.log*", "update-outcome.json*", "statusline-inner*", "window-background.json*", "foreman-spend-outbox.*", "foreman-spend-quarantine.*",
       "backups", "archives", "uploads", "workflow-evidence", "scouts",
       "scout-submission-credentials", "ask-channel", "installers", "bin",
       "check-worktrees", "pi-extension.lock.d", "integrations", "app-src",
       "staged-install-*", ".pi-extension-*", "database-recovery", "headless", "plans", "update-helper.lock.d",
-      "logs",
+      "workflow-command-output", "residents", "logs",
     ].flatMap((entry) => [`${state}/${entry}`, `${state}/${entry}/**`]),
   ]);
   for (const rendered of [darwin, linux]) {

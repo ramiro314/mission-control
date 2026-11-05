@@ -263,11 +263,35 @@ test("a saved round limit whose version refresh fails is reported as saved, with
   await dashboard.getByRole("button", { name: BUILTIN_BUTTON }).click();
   const rail = dashboard.getByRole("complementary", { name: "Workflow settings and validation" });
   await rail.getByRole("spinbutton", { name: "Maximum repair rounds" }).fill(String(shipped + 4));
-  await rail.getByRole("button", { name: "Save rounds" }).click();
+  // Let the owned save's SSE summary arrive before its HTTP acknowledgement. It
+  // must not start a competing detail reload that can erase the stale-history flag.
+  let stored = false, competingReads = 0;
+  let release!: () => void;
+  const acknowledgement = new Promise<void>((resolve) => { release = resolve; });
+  await dashboard.route(/\/api\/workflows\/[^/]+$/, async (route) => {
+    competingReads++;
+    await route.continue();
+  });
+  await dashboard.route("**/round-limit", async (route) => {
+    const response = await route.fetch();
+    stored = true;
+    await acknowledgement;
+    await route.fulfill({ response });
+  });
+  try {
+    await rail.getByRole("button", { name: "Save rounds" }).click();
+    await expect.poll(() => stored).toBe(true);
+    // This is injected acknowledgement latency, giving the real SSE update time to render.
+    await dashboard.waitForTimeout(250);
+    expect(competingReads, "an owned round-limit save must not reload its own SSE update").toBe(0);
+  } finally { release(); }
+  await dashboard.unroute(/\/api\/workflows\/[^/]+$/);
 
   // The save landed, and says so; the stale history is named rather than reported as a failed save.
   const notice = dashboard.getByRole("alert").filter({ hasText: "Repair rounds saved, but the version history could not be refreshed." });
   await expect(notice).toBeVisible();
+  await expect(notice.getByRole("button", { name: "Retry" })).toBeVisible();
+  await shoot(notice, "saved-with-history-retry");
   await expect(rail).toContainText(`Changed from the ${shipped} this build ships.`);
   expect((await builtinDetail(daemon)).workflow.bindingDefaults.maxRepairRounds).toBe(shipped + 4);
 
@@ -307,9 +331,10 @@ test("a saved round limit whose version refresh fails is reported as saved, with
 });
 
 /**
- * The save's own server event reloads the detail while the version refresh runs. Holding that
- * load until the refresh has failed is the order that used to take the Retry away while its
- * notice stayed on screen, which was the intermittent failure of the test above.
+ * A detail reload already in flight when the save starts, here begun by another writer's
+ * server event, can land after the save's version refresh has failed. That order used to take
+ * the Retry away while its notice stayed on screen. The save's own event no longer reloads
+ * (the test above pins that), so this load is started before the click instead.
  */
 test("a detail load that lands after the failed version refresh keeps the notice's Retry", async ({
   dashboard,
@@ -340,8 +365,17 @@ test("a detail load that lands after the failed version refresh keeps the notice
   await expect(rounds).toBeEnabled();
 
   holding = true;
+  const isDetail = (url: string) => /\/api\/workflows\/[^/?]+$/.test(new URL(url).pathname);
+  const requested = dashboard.waitForRequest((request) => request.method() === "GET" && isDetail(request.url()));
   const reloaded = dashboard.waitForResponse((response) =>
-    response.request().method() === "GET" && /\/api\/workflows\/[^/?]+$/.test(new URL(response.url()).pathname));
+    response.request().method() === "GET" && isDetail(response.url()));
+  // Another writer changes the round limit; its server event starts a detail load, held above.
+  const other = await fetch(
+    `${daemon.baseURL}/api/workflows/${encodeURIComponent(before.workflow.id)}/round-limit`,
+    { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxRepairRounds: shipped + 2 }) },
+  );
+  expect(other.status).toBe(200);
+  await requested;
   await rounds.fill(String(shipped + 3));
   await rail.getByRole("button", { name: "Save rounds" }).click();
   await reloaded;

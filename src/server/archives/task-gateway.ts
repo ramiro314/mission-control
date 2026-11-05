@@ -337,6 +337,7 @@ const CAPTURE_KIND: Record<TaskKind, ArchiveKind | null> = {
   chat: null,
   // A shape task's deliverable is a plan, so it is preserved as one.
   shape: "plan",
+  resident: null,
 };
 
 /**

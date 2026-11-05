@@ -530,6 +530,7 @@ test("global overlays stay mounted on every page, and only one page body renders
     scouts: "scouts body",
     history: "history body",
     settings: "settings body",
+    residents: "residents body",
   };
   const pages = Object.keys(bodies) as MissionRoute["page"][];
   for (const page of pages) {
@@ -543,6 +544,7 @@ test("global overlays stay mounted on every page, and only one page body renders
       scouts: createElement("main", null, bodies.scouts),
       history: createElement("main", null, bodies.history),
       settings: createElement("main", null, bodies.settings),
+      residents: createElement("main", null, bodies.residents),
       overlays: createElement("aside", null, "global overlays"),
     }));
     assert.match(html, new RegExp(`${page} body`));
@@ -639,4 +641,15 @@ test("the runs page links to its settings category rather than hosting a drawer"
   assert.match(runsSlot, /Workflow settings/);
   assert.match(runsSlot, /navigate\(\{ page: "settings", category: "workflows" \}\)/);
   assert.doesNotMatch(app, /WorkflowConfigPanel/, "the drawer is gone, not merely hidden");
+});
+
+test("resident skill sources have their own route and return to the profile rail", () => {
+  assert.deepEqual(parseMissionRoute("#/residents/skill-sources"), { page: "residents", skillSources: true });
+  assert.equal(missionRouteHash({ page: "residents", skillSources: true }), "#/residents/skill-sources");
+  assert.deepEqual(parseMissionRoute("#/residents"), { page: "residents" });
+});
+
+test("resident custom MCP servers have their own route beside skill sources", () => {
+  assert.deepEqual(parseMissionRoute("#/residents/mcp-servers"), { page: "residents", mcpServers: true });
+  assert.equal(missionRouteHash({ page: "residents", mcpServers: true }), "#/residents/mcp-servers");
 });

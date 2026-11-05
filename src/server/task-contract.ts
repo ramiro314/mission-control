@@ -1,4 +1,4 @@
-import type { PlanningTaskKind } from "@shared/task.ts";
+import { taskHasRepository, type PlanningTaskKind } from "@shared/task.ts";
 import type { Task, TaskKind } from "@shared/types.ts";
 import { openPullRequestCommand } from "@shared/pr-command.mjs";
 import {
@@ -135,6 +135,9 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   // A tickets follow-up (a row in `shape_ticket_followups`) gets the tickets-only variant.
   shape: planningContract("shape", (skills, workflowBound, task) =>
     shapeContractAppendix(skills, workflowBound, shapeTicketsFollowupFacts(task.id), task.planPolicy?.storage)),
+  // A resident's role travels as standing instructions, and it has no completion boundary of
+  // its own: it ends only when a human chooses Complete & close.
+  resident: () => null,
 };
 
 /**
@@ -214,11 +217,11 @@ export function withTaskKindContract(
   inputs: TaskContractInputs = {},
 ): string {
   const appendices = [
-    executionAuthorizationContract({
+    taskHasRepository(task) ? executionAuthorizationContract({
       workflowEvidence: false,
       workflowContinuation: false,
       pullRequestGrant: false,
-    }),
+    }) : null,
     baseBranchContract(task),
     inputs.planDiscovery ?? null,
     KIND_CONTRACT[task.kind](task, inputs),

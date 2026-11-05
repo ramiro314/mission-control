@@ -33,6 +33,11 @@ export const SETUP_DEPENDENCY_IDS = [
   "herdr",
   "node-runtime",
   "lsof",
+  "coderabbit-cli",
+  "claude-mcp-trust",
+  "codex-mcp-trust",
+  "acli-cli",
+  "acli-auth",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -42,6 +47,7 @@ export const SETUP_FAMILY_IDS = [
   "agents",
   "terminals",
   "github",
+  "jira",
   "extensions",
   "pipelines",
   "runtime",
@@ -70,6 +76,11 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
     id: "github",
     label: "GitHub",
     description: "The GitHub CLI carries pull requests, reviews, issues, and repository reads.",
+  },
+  jira: {
+    id: "jira",
+    label: "Jira",
+    description: "Jira task sources that read through the Atlassian CLI need it installed and signed in to their site.",
   },
   extensions: {
     id: "extensions",
@@ -108,7 +119,7 @@ export interface SetupGuideLink {
  * fact about this machine right now, and it is the one an operator with Herdr installed is
  * far more likely to be missing.
  */
-export const SETUP_SERVICE_IDS = ["herdr-server", "cmux-app", "cmux-socket-control"] as const;
+export const SETUP_SERVICE_IDS = ["herdr-server", "cmux-app", "cmux-socket-control", "claude-mcp-trust", "codex-mcp-trust"] as const;
 
 export type SetupServiceId = (typeof SETUP_SERVICE_IDS)[number];
 
@@ -119,24 +130,42 @@ export type SetupServiceId = (typeof SETUP_SERVICE_IDS)[number];
  * `The ${label} is running.` is true of a server and false of everything else. It produced
  * "The cmux socket control is running." for a repair that writes one value into a config
  * file and starts no process at all, which tells an operator nothing they can check.
+ * `retry` is the panel's next step after a refusal, for the same reason: "start it yourself in
+ * a terminal" is advice about a server, and wrong for a configuration write.
  */
 export const SETUP_SERVICE_INFO: Record<
   SetupServiceId,
-  { id: SetupServiceId; label: string; started: string; refused: string }
+  { id: SetupServiceId; label: string; started: string; refused: string; retry: string }
 > = {
+  "claude-mcp-trust": {
+    id: "claude-mcp-trust",
+    label: "Claude Code Mission Control MCP trust",
+    started: "Mission Control MCP is allowed by default in Claude Code. Explicit restrictions still apply. Restart sessions to apply.",
+    refused: "The Claude Code MCP trust setting could not be written.",
+    retry: "Fix the file named above as described, then press Re-check.",
+  },
+  "codex-mcp-trust": {
+    id: "codex-mcp-trust",
+    label: "Codex Mission Control MCP trust",
+    started: "Mission Control MCP is allowed by default in Codex. Explicit restrictions still apply. Restart sessions to apply.",
+    refused: "The Codex MCP trust setting could not be written.",
+    retry: "Fix the file named above as described, then press Re-check.",
+  },
   "herdr-server": {
     id: "herdr-server",
     label: "Herdr server",
     started: "The Herdr server is running.",
     refused: "The Herdr server could not be started.",
+    retry: "Start it yourself in a terminal, then press Re-check.",
   },
   "cmux-app": {
     id: "cmux-app",
     label: "cmux app",
     started: "cmux is open, and its control socket is answering.",
     refused: "cmux could not be opened.",
+    retry: "Open cmux yourself, then press Re-check.",
   },
-  // Not a process, and the only entry here that is not. It is in this union because it is
+  // A configuration repair belongs in this union because it is
   // the same shape of promise: a named repair the daemon owns end to end, carrying no argv
   // and no path the browser could influence. See `CMUX_SOCKET_CONTROL_REMEDY`.
   "cmux-socket-control": {
@@ -144,8 +173,21 @@ export const SETUP_SERVICE_INFO: Record<
     label: "cmux socket control",
     started: "cmux socket control is set to allowAll. cmux applies it without a restart.",
     refused: "The cmux configuration could not be written.",
+    retry: "Fix the file named above as described, then press Re-check.",
   },
 };
+
+/**
+ * Something a service start found missing that a different, named repair supplies.
+ *
+ * `mission-integrations`: Codex MCP trust edits the `[mcp_servers.mission-control]` table,
+ * so it cannot run until the desktop app's integration install has registered that server.
+ * A refusal carrying this tells the panel to offer that install instead of prose that sends
+ * the operator to a terminal for something no terminal command in front of them would fix.
+ */
+export const SETUP_SERVICE_PREREQUISITES = ["mission-integrations"] as const;
+
+export type SetupServicePrerequisite = (typeof SETUP_SERVICE_PREREQUISITES)[number];
 
 /**
  * How the panel helps with one unsatisfied row.
@@ -156,9 +198,17 @@ export const SETUP_SERVICE_INFO: Record<
  * how it runs. That is what keeps this union safe to widen: the wire contract grows a case,
  * not an execution surface.
  */
+/**
+ * What a `command` remedy does once it runs, which decides how the panel and the terminal
+ * describe it. Not a grammar switch the browser controls: the daemon checks an `install`
+ * against its package-manager grammar and a `sign-in` against its closed list of exact
+ * sign-in commands, and refuses anything that is neither.
+ */
+export type SetupCommandPurpose = "install" | "sign-in";
+
 export type SetupRemedy =
   | { kind: "link"; url: string; label: string }
-  | { kind: "command"; argv: readonly string[]; note: string }
+  | { kind: "command"; purpose: SetupCommandPurpose; argv: readonly string[]; note: string }
   // A package the operator installs themselves, with a guide. Linux has no one package
   // manager this build could name, so it offers the package and runs nothing (D12).
   | { kind: "instruction"; package: string; url: string; label: string }
@@ -270,6 +320,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Without it, Claude sessions and Claude-backed background jobs cannot launch.",
     remedies: everywhere({
       kind: "command",
+      purpose: "install",
       argv: ["npm", "install", "-g", "@anthropic-ai/claude-code"],
       note: "Install the official Claude Code npm package without sudo. This installer requires external Node and npm; native CLI installations keep their own prerequisites.",
     }),
@@ -294,6 +345,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Without it, Pi sessions cannot launch or resume, and Pi's Agent SDK runtime stays unavailable.",
     remedies: everywhere({
       kind: "command",
+      purpose: "install",
       argv: ["npm", "install", "-g", "@earendil-works/pi-coding-agent"],
       note: "Install the Pi coding agent package globally. This installer requires external Node and npm supported by Pi.",
     }),
@@ -307,6 +359,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     remedies: {
       darwin: {
         kind: "command",
+        purpose: "install",
         argv: ["brew", "install", "tmux"],
         note: "Install tmux with Homebrew.",
       },
@@ -339,6 +392,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     remedies: {
       darwin: {
         kind: "command",
+        purpose: "install",
         argv: ["brew", "install", "--cask", "wezterm"],
         note: "Install WezTerm with Homebrew.",
       },
@@ -359,6 +413,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     remedies: {
       darwin: {
         kind: "command",
+        purpose: "install",
         argv: ["brew", "install", "--cask", "ghostty"],
         note: "Install Ghostty with Homebrew.",
       },
@@ -379,6 +434,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     remedies: {
       darwin: {
         kind: "command",
+        purpose: "install",
         argv: ["brew", "install", "gh"],
         note: "Install the GitHub CLI with Homebrew.",
       },
@@ -443,6 +499,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     remedies: {
       darwin: {
         kind: "command",
+        purpose: "install",
         argv: ["brew", "install", "--cask", "iterm2"],
         note: "Install iTerm2 with Homebrew.",
       },
@@ -472,6 +529,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     remedies: {
       darwin: {
         kind: "command",
+        purpose: "install",
         argv: ["brew", "install", "node"],
         note: "Install or update Node.js and npm with Homebrew, then press Re-check.",
       },
@@ -497,6 +555,72 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       label: "Open lsof project page",
     }),
     platforms: ["linux"],
+  },
+  "coderabbit-cli": {
+    id: "coderabbit-cli", label: "CodeRabbit CLI", family: "extensions", requirement: "optional",
+    enables: "Local committed workflow reviews require CLI >=0.9.1 and stored authentication in the daemon effective HOME. Only root YAML boolean true enables review. Run coderabbit auth login there, then Re-check. No review or sign-in starts during detection.",
+    remedies: everywhere({ kind: "link", url: "https://docs.coderabbit.ai/cli", label: "Install and authenticate CodeRabbit" }),
+  },
+  "claude-mcp-trust": {
+    id: "claude-mcp-trust",
+    label: "Claude Code Mission Control MCP trust",
+    family: "extensions",
+    requirement: "recommended",
+    enables: "Allows Mission Control MCP tools by default, including in auto mode. Existing explicit restrictions still apply.",
+    remedies: everywhere({
+      kind: "service",
+      service: "claude-mcp-trust",
+      label: "Trust Mission Control in Claude Code",
+      note: "Add mcp__mission-control__* to permissions.allow in ~/.claude/settings.json, preserving other settings and a recovery copy. Restart Claude Code sessions to apply. Register the MCP server first with Install Claude integrations in the desktop app.",
+    }),
+  },
+  "codex-mcp-trust": {
+    id: "codex-mcp-trust",
+    label: "Codex Mission Control MCP trust",
+    family: "extensions",
+    requirement: "recommended",
+    enables: "Allows Mission Control MCP tools by default, including in auto mode. Existing explicit restrictions still apply.",
+    remedies: everywhere({
+      kind: "service",
+      service: "codex-mcp-trust",
+      label: "Trust Mission Control in Codex",
+      note: "Set mcp_servers.mission-control.default_tools_approval_mode to approve in ~/.codex/config.toml, preserving other settings and a recovery copy. Restart Codex sessions to apply. Needs the MCP server registered in Codex; this offers Install Claude integrations when it is not.",
+    }),
+  },
+  "acli-cli": {
+    id: "acli-cli",
+    label: "Atlassian CLI",
+    family: "jira",
+    requirement: "optional",
+    enables: "Without it, Jira task sources set to read through the Atlassian CLI (acli) cannot sweep, check, or write back.",
+    remedies: {
+      darwin: {
+        kind: "command",
+        purpose: "install",
+        // The tap-qualified name taps atlassian/homebrew-acli and installs from it in one step.
+        argv: ["brew", "install", "atlassian/acli/acli"],
+        note: "Install the Atlassian CLI from Atlassian's Homebrew tap, then press Re-check.",
+      },
+      linux: {
+        kind: "instruction",
+        package: "acli",
+        url: "https://developer.atlassian.com/cloud/acli/guides/install-linux/",
+        label: "Open Atlassian CLI installation guide",
+      },
+    },
+  },
+  "acli-auth": {
+    id: "acli-auth",
+    label: "Atlassian CLI sign-in",
+    family: "jira",
+    requirement: "optional",
+    enables: "acli reads Jira only while it is signed in, and only for the site it is signed in to. A source on another site is refused until acli switches to it.",
+    remedies: everywhere({
+      kind: "command",
+      purpose: "sign-in",
+      argv: ["acli", "jira", "auth", "login", "--web"],
+      note: "Sign acli in to Jira through your browser. Choose the site your Jira sources use, then press Re-check.",
+    }),
   },
 };
 
@@ -655,6 +779,7 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     // contract change for one row; naming both here costs a sentence.
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["npm", "run", "install-hooks"],
       note: "Re-point the hooks at a checkout that exists, from a durable clone rather than a pooled worktree. If you installed from the desktop app and have no checkout, press Install Claude integrations in Settings → Setup → Integrations instead.",
     },

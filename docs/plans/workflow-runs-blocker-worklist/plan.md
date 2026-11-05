@@ -36,7 +36,7 @@ Volume is the symptom. The causes are structural:
 ## Approved design
 
 The human reviewed six mockups in
-[`docs/reports/workflow-runs-triage-mockups/report.html`](https://github.com/teamupstart/mission-control/blob/baf85ef86ca1a9c43775f5e582cd81491bb04994/docs/reports/workflow-runs-triage-mockups/report.html)
+`docs/reports/workflow-runs-triage-mockups/report.html` (removed from the repository in #1213)
 and selected **Mockup B, the Blocker Worklist**. That selection is a requirement of this
 plan, not an open question.
 

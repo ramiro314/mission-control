@@ -1,3 +1,5 @@
+import { runCodeRabbit, type probeCodeRabbit } from "./coderabbit.ts";
+import { WORKFLOW_COMMAND_INTERPRETERS, type CodeRabbitComparison, type CodeRabbitConfigSnapshot, type CodeRabbitReviewSummary } from "@shared/workflow.ts";
 import { resolveRepoPath } from "../repos.ts";
 import {
   WORKFLOW_EXECUTION_LIMITS,
@@ -6,6 +8,7 @@ import {
   affectedTestsTargets,
   checkBlockedReason,
   checkCommandSubpath,
+  effectiveWorkflowCommandTimeoutMs,
   formatCheckCommand,
   resolveWorkflowCommand,
   type WorkflowAffectedTestsReport,
@@ -13,6 +16,7 @@ import {
   type WorkflowCheckSlot,
   type WorkflowCommandResolution,
   type WorkflowCommandView,
+  type WorkflowCommandArtifactDescriptor,
   type WorkflowPolicy,
 } from "@shared/workflow.ts";
 
@@ -47,6 +51,8 @@ import {
 export interface CheckRunReservation {
   granted: boolean;
   spent: number;
+  /** Return a granted claim when the executor proves it could not start the Command. */
+  release?: () => void;
 }
 
 /**
@@ -60,14 +66,26 @@ export interface CheckRunReservation {
 export interface CheckInfrastructureFailure {
   kind: "infrastructure";
   reason: string;
+  artifacts?: WorkflowCommandArtifactDescriptor[];
+}
+
+export interface CheckActionRequiredFailure {
+  kind: "action_required";
+  reason: string;
+  setup?: boolean;
+  review?: CodeRabbitReviewSummary;
+  artifacts?: WorkflowCommandArtifactDescriptor[];
 }
 
 export type CheckResult =
   | { kind: "outcome"; outcome: WorkflowCheckOutcome }
-  | CheckInfrastructureFailure;
+  | CheckInfrastructureFailure
+  | CheckActionRequiredFailure;
 
 /** What the execution runtime is asked to do, once the ladder has decided it should run. */
 export interface CheckExecutionRequest {
+  /** The owning workflow engine is draining for shutdown. */
+  signal?: AbortSignal;
   slot: WorkflowCheckSlot;
   /** argv, never a shell string. Nothing downstream has a shell. */
   command: string[];
@@ -101,6 +119,10 @@ export interface CheckExecutionRequest {
    * absent for origin's default. Read by the slot that selects by what changed, `affected-tests`.
    */
   baseBranch?: string | null;
+  /** Frozen from the catalog before the attempt starts. */
+  timeoutMs?: number;
+  coderabbit?: CodeRabbitComparison;
+  env?: NodeJS.ProcessEnv;
 }
 
 export type CheckExecutionResult =
@@ -112,6 +134,8 @@ export type CheckExecutionResult =
     truncatedBytes: number;
     /** How long the command waited for the machine's check test lease, when it waited. */
     waitedMs?: number;
+    artifacts?: WorkflowCommandArtifactDescriptor[];
+    review?: CodeRabbitReviewSummary;
   }
   /**
    * An executor that interprets its command's results itself - the `affected-tests` slot,
@@ -127,6 +151,7 @@ export type CheckExecutionResult =
     truncatedBytes: number;
     affected?: WorkflowAffectedTestsReport;
     waitedMs?: number;
+    artifacts?: WorkflowCommandArtifactDescriptor[];
   }
   /** The configured executable is not there. A settings problem, not a defect. */
   | { kind: "unavailable"; note: string }
@@ -137,7 +162,14 @@ export type CheckExecutionResult =
    * dependency claim that failed for a reason the change does not own is retried as the same
    * execution, and must not have spent one.
    */
-  | { kind: "infrastructure"; reason: string; ranNothing?: boolean };
+  | {
+    kind: "infrastructure";
+    reason: string;
+    ranNothing?: boolean;
+    started?: boolean;
+    artifacts?: WorkflowCommandArtifactDescriptor[];
+    review?: CodeRabbitReviewSummary;
+  };
 
 export type CheckExecutor = (request: CheckExecutionRequest) => Promise<CheckExecutionResult>;
 
@@ -154,6 +186,7 @@ export type CheckoutSubpathResolver = (
 ) => Promise<string | null>;
 
 export interface CheckRunDeps {
+  codeRabbitProbe?: typeof probeCodeRabbit;
   /** Defaults to asking git. Null is a legitimate answer and declines nested matching. */
   checkoutSubpath?: CheckoutSubpathResolver;
   /**
@@ -276,6 +309,8 @@ function outcome(
       exitCode: null,
       output: "",
       truncatedBytes: 0,
+      artifacts: [],
+      timeoutMs: null,
       note,
       ...over,
     },
@@ -349,9 +384,9 @@ function runCount(runs: number): string {
  * `cwd` and `repoRoot` are both taken because a binding records both and they answer
  * different halves of the same question - see `resolveWorkflowCommand`.
  */
-export async function runCheck(
-  input: {
+export interface RunCheckInput {
     slot: WorkflowCheckSlot;
+    coderabbit?: { yaml?: CodeRabbitConfigSnapshot; dirty: boolean; retryAt?: number; comparison: () => Promise<CodeRabbitComparison> };
     /**
      * This slot's entry in the Global Command catalog, or null when the caller has none.
      *
@@ -392,10 +427,14 @@ export async function runCheck(
     headSha: string | null;
     /** The task's base branch for this repository, or null - see `CheckExecutionRequest`. */
     baseBranch?: string | null;
-  },
+}
+
+export async function runCheck(
+  input: RunCheckInput,
   deps: CheckRunDeps = {},
 ): Promise<CheckResult> {
   const { slot, policy } = input;
+  if (WORKFLOW_COMMAND_INTERPRETERS[slot] === "coderabbit") return runCodeRabbit(input, deps);
 
   // Unconfigured is asked FIRST, before consent. A repository nobody wrote a command for is
   // not a repository the operator failed to authorize, and telling them to switch checks on
@@ -432,22 +471,32 @@ export async function runCheck(
   const command = resolved.command;
 
   const blocked = checkBlockedReason(policy, input.cwd, input.repoRoot);
-  if (blocked) return outcome(slot, "unavailable", blocked, { command });
+  if (blocked) {
+    return input.command?.onUnavailable === "block"
+      ? { kind: "action_required", reason: blocked }
+      : outcome(slot, "unavailable", blocked, { command });
+  }
 
   // A configured command with no repository to run it in cannot be located, and guessing one
   // is how a gate ends up testing somebody else's checkout.
   if (!input.repoRoot) {
-    return outcome(
+    const reason =
+      "This session reported no repository, so there was nowhere to run the command.";
+    return input.command?.onUnavailable === "block"
+      ? { kind: "action_required", reason }
+      : outcome(
       slot,
       "unavailable",
-      "This session reported no repository, so there was nowhere to run the command.",
+      reason,
       { command },
     );
   }
 
   const execute = deps.execute ?? null;
   if (!execute) {
-    return outcome(slot, "unavailable", CHECK_RUNTIME_UNAVAILABLE_NOTE, { command });
+    return input.command?.onUnavailable === "block"
+      ? { kind: "action_required", reason: CHECK_RUNTIME_UNAVAILABLE_NOTE }
+      : outcome(slot, "unavailable", CHECK_RUNTIME_UNAVAILABLE_NOTE, { command });
   }
 
   // THE LAST RUNG BEFORE THE SPAWN, and that position is the invariant rather than a
@@ -472,12 +521,17 @@ export async function runCheck(
       WORKFLOW_LIMITS.commandMaxRunsMin,
       input.command?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
     );
+    const reason =
+      `The ${slot} Command already ran ${runCount(reservation.spent)} in this workflow run, `
+      + `which is the most its ${allowed === 1 ? "limit of one run" : `limit of ${allowed} runs`} `
+      + "allows.";
+    if (input.command?.onBudgetExhausted === "block") {
+      return { kind: "action_required", reason: `${reason} Raise the run allowance, then retry.` };
+    }
     return outcome(
       slot,
       "budget_spent",
-      `The ${slot} Command already ran ${runCount(reservation.spent)} in this workflow run, `
-      + `which is the most its ${allowed === 1 ? "limit of one run" : `limit of ${allowed} runs`} `
-      + "allows, so this gate was skipped rather than running it again. CI still runs it "
+      `${reason} This gate was skipped rather than running it again. CI still runs it `
       + "against the merge commit.",
       { command },
     );
@@ -492,15 +546,19 @@ export async function runCheck(
     // global default, which names no repository, runs at the checkout root.
     workingSubpath: resolved.workingSubpath,
     headSha: input.headSha,
+    timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command!),
     baseBranch: input.baseBranch ?? null,
     ...(affectedTargets ? { affectedTargets } : {}),
   });
   if (result.kind === "infrastructure") {
     if (result.ranNothing && reservation?.granted) input.releaseRun?.();
-    return { kind: "infrastructure", reason: result.reason };
+    return { kind: "infrastructure", reason: result.reason, artifacts: result.artifacts };
   }
   if (result.kind === "unavailable") {
-    return outcome(slot, "unavailable", result.note, { command });
+    reservation?.release?.();
+    return input.command?.onUnavailable === "block"
+      ? { kind: "action_required", reason: result.note }
+      : outcome(slot, "unavailable", result.note, { command });
   }
 
   if (result.kind === "decided") {
@@ -516,6 +574,8 @@ export async function runCheck(
       exitCode: result.exitCode,
       output: bounded.text,
       truncatedBytes: result.truncatedBytes + bounded.droppedBytes,
+      artifacts: result.artifacts ?? [],
+      timeoutMs: result.exitCode === null ? null : effectiveWorkflowCommandTimeoutMs(input.command!),
       ...(result.affected ? { affected: result.affected } : {}),
     });
   }
@@ -532,12 +592,16 @@ export async function runCheck(
         exitCode: 0,
         output: bounded.text,
         truncatedBytes,
+        artifacts: result.artifacts ?? [],
+        timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command!),
       })
     : outcome(slot, "failed", checkOutcomeNote(command, ` exited ${result.exitCode}.${waited}`), {
         command,
         exitCode: result.exitCode,
         output: bounded.text,
         truncatedBytes,
+        artifacts: result.artifacts ?? [],
+        timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command!),
       });
 }
 

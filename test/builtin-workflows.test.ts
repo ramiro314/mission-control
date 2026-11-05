@@ -245,7 +245,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 22),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 23),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -286,7 +286,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and Inspector completion", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review (High Rigor)");
-  assert.equal(builtin.versions.length, 22);
+  assert.equal(builtin.versions.length, 23);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -412,7 +412,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 22, "one workflow, twenty-two versions");
+  assert.equal(builtin.versions.length, 23, "one workflow, twenty-three versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -709,7 +709,7 @@ test("version 9 judges code quality before the verified PR action and completes 
 
 test("appending version 9 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 22);
+  assert.equal(builtin.versions.length, 23);
   for (const [index, version] of builtin.versions.slice(0, 8).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"),
@@ -882,7 +882,7 @@ test("version 11 reviews design alongside risk and quality in stage 3", () => {
 
 test("appending version 11 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 22);
+  assert.equal(builtin.versions.length, 23);
   for (const [index, version] of builtin.versions.slice(0, 10).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-design"),
@@ -1315,7 +1315,7 @@ for (const [slug, versionNumber, lintId, historicalDigest] of [
     const builtin = BUILTIN_WORKFLOWS.find((entry) => entry.definition.id === builtinWorkflowId(slug))!;
     const version = builtin.versions[versionNumber - 1]!;
     assert.equal(version.version, versionNumber);
-    assert.deepEqual(builtin.definition.draft, asDraft(version.graph));
+    if (slug !== "no-mistakes-review") assert.deepEqual(builtin.definition.draft, asDraft(version.graph));
     const pipeline = projectStages(asDraft(version.graph))!;
     assert.ok(pipeline.sessionId);
     const gate = evaluation(pipeline.stages[0]);
@@ -1465,7 +1465,10 @@ test("No-Mistakes Review (Affected tests) is No-Mistakes Review with affected te
   ]);
 
   const flagship = noMistakesReview();
-  const flagshipShape = shapeOf(flagship.definition.draft);
+  // Upstream's CodeRabbit stage (No-Mistakes Review version 22) has not been carried into this
+  // variant, whose versions are frozen; compare against the flagship without it.
+  const flagshipShape = shapeOf(flagship.definition.draft)
+    .filter((stage) => !(stage.length === 1 && stage[0] === "check:coderabbit"));
   const expected = [
     ...flagshipShape.map((stage) => stage.map((member) => member === "check:test" ? "check:affected-tests" : member)),
     ["wait_for_ci"],
@@ -1553,8 +1556,9 @@ for (const [slug, previousCount, historicalDigest] of [
 ] as const) {
   test(`documentation guidelines append a version without rewriting ${slug} bindings`, () => {
     const builtin = BUILTIN_WORKFLOWS.find((item) => item.definition.id === builtinWorkflowId(slug))!;
-    // Fork: the issue closing line version follows this one.
-    const followers = 1;
+    // Upstream's CodeRabbit version follows this one on No-Mistakes Review, and the fork's issue
+    // closing line version follows every upstream one.
+    const followers = (slug === "no-mistakes-review" ? 1 : 0) + 1;
     assert.equal(builtin.versions.length, previousCount + 1 + followers);
     assert.equal(createHash("sha256").update(JSON.stringify(builtin.versions.slice(0, previousCount)))
       .digest("hex"), historicalDigest, "a previously published snapshot changed");

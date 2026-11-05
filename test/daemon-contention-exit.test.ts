@@ -31,6 +31,10 @@ async function loadSupervisor(root: string) {
         export const utilityProcess = { fork() {
           const child = new EventEmitter();
           child.kill = () => true;
+          // stop() asks for an orderly drain and waits for the exit (upstream #1335).
+          child.postMessage = (message) => {
+            if (message?.type === "mission:shutdown") queueMicrotask(() => child.emit("exit", 0));
+          };
           children.push(child);
           return child;
         } };` }));

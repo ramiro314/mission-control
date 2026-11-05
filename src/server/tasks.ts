@@ -62,24 +62,28 @@ import {
   stampShapeTicketsAwaitingReview,
 } from "./shape-tickets.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
-import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage, canRename } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency } from "@shared/task-dependency.ts";
 import {
+  taskHasRepository,
   dispatchHasNoProvisionedResources,
   isLocalPlanningTask,
   isPlanningTaskKind,
-  TASK_KIND_BACKLOG_REFUSAL,
+  RESIDENT_TASK_REFUSAL,
   providerOwnsTaskCompletion,
   taskKindAllowsBacklog,
+  taskKindBacklogRefusal,
+  taskKindCreator,
   taskRequeueRefusal,
 } from "@shared/task.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import type { WritebackEnqueuer } from "./task-sources/writeback.ts";
 import {
   Dispatcher,
+  type DispatcherDeps as TaskDispatcherDeps,
   deriveTitle,
   reclaimedFrom,
   WorktreeTeardownError,
@@ -163,6 +167,8 @@ import {
 import { withTaskKindContract } from "./task-contract.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
+import { newLaunchFailure, type TaskLaunchFailure } from "@shared/launch-failure.ts";
+import { residentRunForTask } from "./residents/store.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
 import { cancelPipelineCommission } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
@@ -367,10 +373,19 @@ export type InternalCreateOptions =
   | {
       id: string;
       schedule: TaskScheduleProvenance;
+      resident?: undefined;
     }
   | {
       id: string;
       schedule?: undefined;
+      resident?: undefined;
+    }
+  | {
+      /** The task id the resident run reserved before this task existed. */
+      id: string;
+      schedule?: undefined;
+      /** The run that owns this task. Identity only; the run row stays the source of truth. */
+      resident: { runId: string; workspaceDir?: string | null };
     };
 
 /** A preallocated id already belongs to a DIFFERENT task. Corruption, never idempotency. */
@@ -430,6 +445,13 @@ export class TaskEffortUnsupportedError extends Error {}
  */
 export const MANUAL_DISPATCH_TASK_CREATE = Symbol("manual-dispatch-task-create");
 
+/**
+ * Capability held only by `ResidentManager.launch`. A resident task is created with the id its
+ * run reserved, and only after that reservation exists, so no other creator - the Dispatch
+ * route included - can file one.
+ */
+export const RESIDENT_LAUNCH_TASK_CREATE = Symbol("resident-launch-task-create");
+
 export class TaskStatusConflictError extends Error {}
 
 export const INTERRUPTED_BEFORE_PROVISION_ERROR =
@@ -437,6 +459,9 @@ export const INTERRUPTED_BEFORE_PROVISION_ERROR =
 
 export const INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR =
   "Chat dispatch was interrupted before a worktree or agent was created. Launch a new chat from Dispatch.";
+
+export const INTERRUPTED_RESIDENT_BEFORE_PROVISION_ERROR =
+  "Resident launch was interrupted before a worktree or agent was created. Launch the resident again from its profile.";
 
 /**
  * One authorized automatic cleanup, as the retention service presents it.
@@ -628,6 +653,7 @@ function settledTreesReclaimOnSessionLeaving(task: Task): boolean {
 
 /** Every repository whose cleanup one task can reach, in the queue's canonical key space. */
 function taskCleanupRepoKeys(task: Task): string[] {
+  if (!taskHasRepository(task)) return [];
   return [...new Set(
     [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalWorktreePath),
   )];
@@ -1088,6 +1114,9 @@ export class TaskManager {
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
   ) => boolean = () => false;
+  /** The resident launch composer, installed by the daemon once `ResidentManager` exists. */
+  private residentLaunch?: NonNullable<TaskDispatcherDeps["residentLaunch"]>;
+  private residentMcp?: NonNullable<TaskDispatcherDeps["residentMcp"]>;
   /**
    * Where a completion is announced to the task-source write-back ledger, when the daemon
    * installed one. Absent in every focused test, which is exactly the shipped default
@@ -1132,6 +1161,16 @@ export class TaskManager {
       // The launch no longer waits for a model to name it, so the name can arrive on either
       // side of the session. This is the "session arrived" half; see `settleTitleName`.
       onSessionBound: (taskId) => void this.settleTitleName(taskId),
+      // Late-bound: the composer's owner is built after this manager, because it creates its
+      // tasks through `create`. A resident dispatched with no composer installed is refused.
+      residentLaunch: (task, repository, runtime) => {
+        if (!this.residentLaunch) {
+          throw new Error("this daemon has no resident launch composer, so it cannot launch a resident");
+        }
+        return this.residentLaunch(task, repository, runtime);
+      },
+      residentMcp: (task) => this.residentMcp?.(task) ?? null,
+      residentProfileId: (task) => residentRunForTask(task.id)?.run.profileId ?? null,
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -1620,6 +1659,21 @@ export class TaskManager {
       });
     }
     return observation;
+  }
+
+  /** A launch-failure record for a dispatch this manager settles outside the dispatcher. */
+  private launchFailureFor(t: Task, sessionKept = false): TaskLaunchFailure {
+    const resident = TASK_KIND_BEHAVIOR[t.kind].launch === "resident";
+    return newLaunchFailure(t, Date.now(), resident ? residentRunForTask(t.id)?.run.profileId ?? null : null, sessionKept);
+  }
+
+  /** Install the resident launch composer after `ResidentManager` exists. */
+  registerResidentLaunch(
+    compose: NonNullable<TaskDispatcherDeps["residentLaunch"]>,
+    mcp?: NonNullable<TaskDispatcherDeps["residentMcp"]>,
+  ): void {
+    this.residentLaunch = compose;
+    this.residentMcp = mcp;
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
@@ -2239,12 +2293,19 @@ export class TaskManager {
   private mergeQuorumFor(t: Task): QuorumVerdict {
     const primary = primaryRepoPrForTask(t.id);
     const task = { ...t, extraRepos: taskReposFor(t.id) };
+    const changes = [taskWorkEpisodeForTask(t.id), ...historicalTaskWorkEpisodeBindingsForTask(t.id)]
+      .flatMap(binding => binding?.repoChanges ?? []);
     return taskMergeQuorum(task, (ref) => {
       const entry = ref.role === "primary" ? null : task.extraRepos[ref.position - 1];
       return {
         prUrl: entry ? entry.prUrl : primary.prUrl,
         mergedAt: entry ? entry.mergedAt : primary.mergedAt,
         headSha: this.registry.worktreeHead(ref.worktreePath),
+        retainedChange: ref.worktreePath === null
+          ? changes.some(v => v.repoRoot === ref.repoRoot && v.verdict === "changed") ? "changed"
+            : changes.some(v => v.repoRoot === ref.repoRoot && v.verdict === "unknown") ? "unknown"
+              : changes.some(v => v.repoRoot === ref.repoRoot) ? "unchanged" : "unknown"
+          : undefined,
       };
     });
   }
@@ -2337,8 +2398,8 @@ export class TaskManager {
    * edge: terminal rows are eventually pruned, so a completion recorded only in this task's
    * row stops being readable and every dependent silently re-blocks.
    *
-   * Idempotent, and it must stay that way - it runs from four signals. A `done` task is
-   * never revisited, and a merge already recorded costs one indexed read per task.
+   * Done sources with unresolved dependents are revisited for edge repair only. Their
+   * outcome, completion time, writeback and cleanup obligations are never replayed.
    */
   reconcileMergedTasks(): void {
     // Completing re-enters here: `complete` upserts, which resyncs the bound session, which
@@ -2348,6 +2409,10 @@ export class TaskManager {
     if (this.reconcilingMergedTasks) return;
     this.reconcilingMergedTasks = true;
     try {
+      for (const source of this.registry.completedDependencySources()) {
+        const outcome = this.mergeOutcomeFor(source);
+        if (outcome) this.satisfyDeclaredEdgesTo(source.id, Date.now(), outcome.url, true);
+      }
       for (const { id } of this.registry.listTasks()) {
         // Re-read rather than trusting the snapshot: a completion mid-loop can settle
         // another row through that same re-entrancy, and can evict a terminal one entirely.
@@ -2656,6 +2721,8 @@ export class TaskManager {
     this.registry.upsertTask({
       ...t,
       status: "failed",
+      // The provider run this dispatch exists to create never appeared: it did not start.
+      launchFailure: this.launchFailureFor(t),
       error: `the managed Agent SDK host ended before Conductor created pipeline run${expected}`,
       sessionId: null,
       updatedAt: Date.now(),
@@ -2870,7 +2937,8 @@ export class TaskManager {
           };
         }
       } else {
-        const target = this.registry.getTask(input.taskId);
+        const target = this.registry.getTask(input.taskId) ??
+          (existing.has(`task:${input.taskId}`) ? getDurableTask(input.taskId) : undefined);
         if (!target) {
           const kept = existing.get(`task:${input.taskId}`);
           if (!kept) throw new TaskDependencyError("dependency task is no longer available");
@@ -2880,6 +2948,16 @@ export class TaskManager {
           const previousEdge = existing.get(`task:${target.id}`);
           const binding = this.registry.workEpisodeForTask(target.id);
           const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
+          const merged = target.status === "done" ? this.mergeOutcomeFor(target) : null;
+          const mergeCandidate: TaskDependency = previousEdge ?? {
+            type: "task", taskId: target.id, title: target.title,
+            sessionId: binding?.sessionId ?? null, episodeId: binding?.episodeId ?? null,
+            agentSessionId: binding?.agentSessionId ?? null, branch: binding?.branch ?? null,
+            prUrl: null, selectedAt, satisfiedAt: null,
+          };
+          const mergedUrl = merged && (previousEdge || binding)
+            ? this.mergeUrlForDependency(mergeCandidate, merged.url)
+            : null;
           if (!previousEdge) {
             const refusal = newTaskEdgeRefusal(target, activeSession);
             if (refusal) throw new TaskDependencyError(refusal);
@@ -2892,12 +2970,14 @@ export class TaskManager {
             episodeId: previousEdge?.episodeId ?? binding?.episodeId ?? null,
             agentSessionId: previousEdge?.agentSessionId ?? binding?.agentSessionId ?? null,
             branch: previousEdge?.branch ?? binding?.branch ?? null,
-            prUrl: previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
+            prUrl: previousEdge?.satisfiedAt != null
+              ? previousEdge.prUrl
+              : mergedUrl ?? previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
             selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
             satisfiedAt:
-              observedPr && activeSession?.prState === "merged"
+              previousEdge?.satisfiedAt ?? (mergedUrl || (target.status !== "done" && observedPr && activeSession?.prState === "merged")
                 ? Date.now()
-                : existing.get(`task:${target.id}`)?.satisfiedAt ?? null,
+                : null),
           };
         }
       }
@@ -3075,15 +3155,29 @@ export class TaskManager {
     manualDispatch?: symbol,
     creationPolicy?: TaskCreationPolicy,
   ): Task {
-    if (!taskKindAllowsBacklog(input.kind) && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
-      throw new TaskKindBacklogError(TASK_KIND_BACKLOG_REFUSAL);
+    const creator = taskKindCreator(input.kind);
+    const refusal = taskKindBacklogRefusal(input.kind);
+    if (creator === "resident-launch") {
+      // Only the resident launch, and only with the id its run reserved: a resident task with
+      // no run row behind it would be work no lifecycle owns.
+      if (manualDispatch !== RESIDENT_LAUNCH_TASK_CREATE || !internal?.resident) {
+        throw new TaskKindBacklogError(refusal);
+      }
+      if (internal.resident.workspaceDir &&
+          (input.repoRoot !== internal.resident.workspaceDir || input.extraRepoRoots?.length)) {
+        throw new TaskKindBacklogError("a resident workspace cannot attach repositories");
+      }
+    } else if (internal?.resident) {
+      throw new TaskKindBacklogError(`a ${input.kind} task cannot be reserved by a resident run`);
+    } else if (creator === "dispatch" && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
+      throw new TaskKindBacklogError(refusal);
     }
     if (
       !taskKindAllowsBacklog(input.kind) &&
-      (input.backlog || internal !== undefined || input.source !== undefined ||
-        (input.dependencies?.length ?? 0) > 0)
+      (input.backlog || (internal !== undefined && !internal.resident) ||
+        input.source !== undefined || (input.dependencies?.length ?? 0) > 0)
     ) {
-      throw new TaskKindBacklogError(TASK_KIND_BACKLOG_REFUSAL);
+      throw new TaskKindBacklogError(refusal);
     }
     const now = Date.now();
     const explicitTitle = input.title?.trim();
@@ -3116,6 +3210,28 @@ export class TaskManager {
       // different Task, so fail closed rather than adopt and rewrite a stranger's work.
       const existing = getDurableTask(id);
       if (existing) {
+        if (internal.resident) {
+          // The resident producer's identity check: the reserved id must still hold a resident
+          // task carrying exactly the launch the run recorded. Anything else is somebody
+          // else's task under a colliding id, and is refused rather than adopted.
+          if (
+            existing.kind !== "resident" ||
+            existing.repoRoot !== input.repoRoot ||
+            (existing.workspaceKind ?? null) !== (internal.resident.workspaceDir ? "resident-workspace" : null) ||
+            existing.intent !== input.intent ||
+            existing.title !== explicitTitle ||
+            existing.agent !== agent ||
+            existing.model !== (input.model ?? null) ||
+            existing.effort !== (input.effort ?? null) ||
+            existing.advisorModel !== null ||
+            existing.workflowId !== null
+          ) {
+            throw new TaskIdCollisionError(
+              `task ${id} already exists and is not resident run ${internal.resident.runId}'s task`,
+            );
+          }
+          return existing;
+        }
         if (internal.schedule) {
           const p = internal.schedule;
           if (
@@ -3137,6 +3253,7 @@ export class TaskManager {
             existing.agent !== agent ||
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
+            existing.advisorModel !== null ||
             existing.workflowId !== workflowId ||
             existing.scheduleId !== null
           ) {
@@ -3149,7 +3266,11 @@ export class TaskManager {
       // each call site: first persist a named ordinary backlog Task. The scheduler stops
       // there; the ensemble engine separately dispatches through TaskManager only after the
       // complete wave exists. A blank title would also put model titling on a recovery path.
-      if (!input.backlog) throw new Error(`internally created task ${id} must be backlog`);
+      // A resident is the one durable producer that launches at once: its run row, written
+      // first, is what recovery reads, so there is no backlog stop to recover from.
+      if (!input.backlog && !internal.resident) {
+        throw new Error(`internally created task ${id} must be backlog`);
+      }
       if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }
     const { planPolicy, workflowId } = creationPolicy ?? this.prepareCreationPolicy(input);
@@ -3204,6 +3325,9 @@ export class TaskManager {
       // `resolveDispatchEffort`).
       model: input.model ?? null,
       effort: input.effort ?? null,
+      // A task no longer pins an advisor: Settings -> Harnesses chooses it per launch model.
+      // The column stays for tasks filed before that move, whose pin still applies.
+      advisorModel: null,
       // The binding is intentionally deferred: a fresh task has no session or durable
       // conversation key yet. WorkflowManager watches the task/session join and pins the
       // selected workflow's current immutable version there.
@@ -3215,6 +3339,7 @@ export class TaskManager {
       pipelineRun: null,
       repoRoot: input.repoRoot,
       baseBranch: input.baseBranch ?? null,
+      workspaceKind: internal?.resident?.workspaceDir ? "resident-workspace" : null,
       worktreePath: null,
       branch: null,
       provider: null,
@@ -3573,6 +3698,11 @@ export class TaskManager {
           : { ok: false, error: recovered.error, task: recovered.task };
       }
     }
+    // A resident launches only through its profile: retrying the task would start a second
+    // session under a run that already settled.
+    if (taskKindCreator(t.kind) === "resident-launch") {
+      return { ok: false, error: RESIDENT_TASK_REFUSAL, task: t };
+    }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
       const refusal = this.backlogDispatchRefusal(t, options);
       if (refusal) return { ok: false, error: refusal, task: t };
@@ -3606,7 +3736,7 @@ export class TaskManager {
    * without converting anything.
    */
   backlogDispatchRefusal(t: Task, options: Pick<DispatchOptions, "overrideDisabled"> = {}): string | null {
-    if (!taskKindAllowsBacklog(t.kind)) return TASK_KIND_BACKLOG_REFUSAL;
+    if (!taskKindAllowsBacklog(t.kind)) return taskKindBacklogRefusal(t.kind);
     // Asked before dependencies, like the allowlist is in `decideBacklogTick`: it is
     // the coarser fact and the one the operator can act on immediately.
     if (refusedAsDisabled(t, options.overrideDisabled)) return DISABLED_REFUSAL;
@@ -4091,7 +4221,7 @@ export class TaskManager {
       return { ok: false, error: `task is ${t.status}, not in the backlog` };
     }
     if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind)) {
-      return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL };
+      return { ok: false, error: taskKindBacklogRefusal(patch.kind ?? t.kind) };
     }
     const intent = patch.intent?.trim() ?? t.intent;
     const title = patch.title?.trim();
@@ -4101,6 +4231,15 @@ export class TaskManager {
     const effort = patch.effort === undefined ? (agentChanged ? null : t.effort) : patch.effort;
     if (effort !== null && !supportsEffort(agent, effort)) {
       return { ok: false, error: `reasoning effort ${effort} is not supported by ${agent}` };
+    }
+    // A pin from before the advisor moved to Settings -> Harnesses can only be cleared here,
+    // never set (the patch schema accepts only null). Reset with the model and effort on an
+    // agent change: a pin chosen for Claude means nothing to a harness with no advisor.
+    const advisorModel = patch.advisorModel === undefined
+      ? (agentChanged ? null : t.advisorModel)
+      : patch.advisorModel;
+    if (advisorModel !== null && !supportsAdvisor(agent, advisorModel)) {
+      return { ok: false, error: `an advisor override (${advisorModel}) is not supported by ${agent}` };
     }
     // The repo set is replaced wholesale when named, and left alone otherwise. Safe to
     // rebuild the entries from roots because the status guard above has already refused
@@ -4224,6 +4363,7 @@ export class TaskManager {
       // the caller clearing it, which is a value the row can hold and cannot use `??`.
       model,
       effort,
+      advisorModel,
       // Like model and effort, this is provisioning intent: it can change while shelved
       // and is frozen once the session that will carry the binding has launched.
       workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,
@@ -4589,7 +4729,7 @@ export class TaskManager {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
     }
     if (!taskKindAllowsBacklog(t.kind)) {
-      return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL, scope: "task" };
+      return { ok: false, error: taskKindBacklogRefusal(t.kind), scope: "task" };
     }
     // Provider-owned tasks need the provider's own terminal launch. Handing one to an
     // existing harness session would bypass that launch and type an engine idea into an
@@ -5171,7 +5311,7 @@ export class TaskManager {
   /** Stop only an agent this task launched, leaving assigned operator sessions alone. */
   private async quiesceLaunchedAgentBeforeCapture(t: Task): Promise<void> {
     const session = t.sessionId ? this.registry.getSession(t.sessionId) : undefined;
-    if ((taskHasWorktrees(t) || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
+    if ((!taskHasRepository(t) || taskHasWorktrees(t) || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
       if (!this.supervisor) throw new Error("this build has no session supervisor");
       if (this.supervisor.handleFor(session.id)) await this.supervisor.stop(session.id);
     }
@@ -5695,7 +5835,8 @@ export class TaskManager {
     } catch (err) {
       console.error("[writeback] enqueue on completion failed:", id, err);
     }
-    if (input.satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
+    const merged = this.mergeOutcomeFor(updated);
+    if (input.satisfyDependents || merged) this.satisfyDeclaredEdgesTo(id, now, merged?.url, !input.satisfyDependents);
     if (updated.kind === "shape") this.settleShapeTicketsOnCompletion(t);
     if (taskHasWorktrees(updated) && !closeSessionId && this.completedInitialSessionSweep) {
       this.enqueueFinishedWorktreeReturn(updated, "complete");
@@ -5811,7 +5952,36 @@ export class TaskManager {
    * by construction operator-started work with no task to complete - nothing this call
    * could be about.
    */
-  private satisfyDeclaredEdgesTo(taskId: string, at: number): void {
+  private mergeUrlForDependency(dependency: TaskDependency, fallback: string): string | null {
+    if (dependency.type !== "task" || dependency.episodeId === null) return fallback;
+    const bindings = [taskWorkEpisodeForTask(dependency.taskId), ...historicalTaskWorkEpisodeBindingsForTask(dependency.taskId)];
+    const bound = bindings.find((binding) => binding?.episodeId === dependency.episodeId &&
+      binding.sessionId === dependency.sessionId);
+    // A retained, unmerged episode cannot borrow another episode's delivery. Legacy or
+    // stale provenance without a surviving binding still uses the task's durable outcome.
+    if (!bound) return fallback;
+    const source = this.registry.getTask(dependency.taskId) ?? getDurableTask(dependency.taskId);
+    if (source && source.extraRepos.length > 0) {
+      const secondary = workEpisodeRepoPrsForTask(dependency.taskId).filter(row =>
+        row.episodeId === bound.episodeId && row.sessionId === bound.sessionId);
+      const quorum = taskMergeQuorum(source, ref => {
+        const row = secondary.find(row => row.repoRoot === ref.repoRoot);
+        return {
+          prUrl: ref.role === "primary" ? bound.prUrl : row?.prUrl ?? null,
+          mergedAt: ref.role === "primary" ? bound.mergedAt : row?.mergedAt ?? null,
+          retainedChange: bound.repoChanges?.find(v => v.repoRoot === ref.repoRoot)?.verdict ?? "unknown",
+        };
+      });
+      if (!quorum.satisfied) return null;
+    }
+    if (bound.mergedAt !== null && bound.prUrl) return bound.prUrl;
+    // The primary can be unchanged. Once the task quorum passes, a merged secondary
+    // belonging to this same episode is delivery evidence for its dependent as well.
+    return workEpisodeRepoPrsForTask(dependency.taskId).find((row) =>
+      row.episodeId === bound.episodeId && row.sessionId === bound.sessionId && row.mergedAt !== null)?.prUrl ?? null;
+  }
+
+  private satisfyDeclaredEdgesTo(taskId: string, at: number, prUrl?: string, verifyEpisode = false): void {
     for (const task of this.registry.listTasks()) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
@@ -5822,8 +5992,10 @@ export class TaskManager {
         ) {
           return dependency;
         }
+        const verifiedUrl = verifyEpisode && prUrl ? this.mergeUrlForDependency(dependency, prUrl) : prUrl;
+        if (verifiedUrl === null) return dependency;
         changed = true;
-        return { ...dependency, satisfiedAt: at };
+        return { ...dependency, satisfiedAt: at, prUrl: verifiedUrl ?? dependency.prUrl };
       });
       if (changed) {
         this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, at) });
@@ -6029,7 +6201,7 @@ export class TaskManager {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
     if (!taskKindAllowsBacklog(t.kind)) {
-      return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL };
+      return { ok: false, error: taskKindBacklogRefusal(t.kind) };
     }
     if (t.status !== "cancelled" && t.status !== "failed") {
       return {
@@ -6121,6 +6293,8 @@ export class TaskManager {
       outcome: null,
       outcomeUrl: null,
       error: null,
+      // Re-filed on purpose: a launch failure it carried was answered by this.
+      launchFailure: null,
       dispatchedAt: null,
       completedAt: null,
       updatedAt: Date.now(),
@@ -6783,7 +6957,10 @@ export class TaskManager {
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
     if (transferForTask(t.id)) return;
-    if (dispatchHasNoProvisionedResources(t)) {
+    // A repo-less resident can have a durable SDK row before dispatch binds its task,
+    // with no worktree milestone. The row is stronger evidence than empty resource fields.
+    const embedded = this.supervisor?.taskLiveness(t.id) ?? null;
+    if (dispatchHasNoProvisionedResources(t) && embedded !== true) {
       const current = this.registry.getTask(t.id);
       if (!current || !dispatchHasNoProvisionedResources(current)) return;
       this.registry.upsertTask({
@@ -6791,7 +6968,12 @@ export class TaskManager {
         status: taskKindAllowsBacklog(current.kind) ? "backlog" : "failed",
         error: taskKindAllowsBacklog(current.kind)
           ? INTERRUPTED_BEFORE_PROVISION_ERROR
-          : INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR,
+          : taskKindCreator(current.kind) === "resident-launch"
+            ? INTERRUPTED_RESIDENT_BEFORE_PROVISION_ERROR
+            : INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR,
+        // A dispatch the restart interrupted before anything was provisioned never started:
+        // drawn where its placeholder was, or on its Backlog card when it went back there.
+        launchFailure: this.launchFailureFor(current),
         dispatchedAt: null,
         updatedAt: Date.now(),
       });
@@ -6808,7 +6990,6 @@ export class TaskManager {
     // supervisor answers from the row: a row that says it was alive is a session this
     // daemon is about to pick back up, and reading the empty handle map would reclaim its
     // worktree out from under it.
-    const embedded = this.supervisor?.taskLiveness(t.id) ?? null;
     if (providerOwnsTaskCompletion(t.kind) && t.homeName === null && t.pipelineRun !== null) {
       const session = this.supervisor?.liveSessionForTask(t.id) ?? null;
       if (embedded === true && session) {
@@ -6871,6 +7052,9 @@ export class TaskManager {
         this.registry.upsertTask({
           ...t,
           status: "failed",
+          // Its home survived the restart (or its session is being resumed): kept, like the
+          // dispatcher's own kept branch, so it is opened or cancelled rather than retried.
+          launchFailure: this.launchFailureFor(t, true),
           error:
             embedded === true
               ? "dispatch interrupted by a restart - its session is being resumed; Cancel it if you don't want it"
@@ -7051,6 +7235,9 @@ export class TaskManager {
         : t.status === "dispatching"
           ? "dispatch interrupted by a restart - re-dispatch"
           : "the agent's session did not survive a restart";
+    // A dispatch the restart interrupted never reached its session: a launch failure, drawn
+    // where its placeholder was. A session that ran and died with the daemon is not one.
+    const interrupted = t.status === "dispatching" ? { launchFailure: this.launchFailureFor(t) } : {};
 
     if (taskHasWorktrees(t)) {
       // The agent died WITH the daemon, and this used to be where its checkout was removed on
@@ -7077,6 +7264,7 @@ export class TaskManager {
       const now = Date.now();
       const settled: Task = {
         ...t,
+        ...interrupted,
         status: settledStatus,
         error: settledError,
         // The one resource fact restart is entitled to clear, and only because the existing
@@ -7107,6 +7295,7 @@ export class TaskManager {
     if (!archived.ok) {
       this.registry.upsertTask({
         ...t,
+        ...interrupted,
         status: settledStatus,
         error: t.status === "done" || t.status === "cancelled" ? t.error : archived.error ?? null,
         sessionId: null,
@@ -7125,6 +7314,7 @@ export class TaskManager {
         // Whatever came back is released even though the teardown failed overall; the rest
         // keeps its record so it stays reclaimable. See `releasedTaskResources`.
         ...releasedTaskResources(t, reclaimedFrom(error)),
+        ...interrupted,
         status: settledStatus,
         error:
           t.status === "done" || t.status === "cancelled"
@@ -7137,6 +7327,7 @@ export class TaskManager {
     }
     this.registry.upsertTask({
       ...t,
+      ...interrupted,
       status: settledStatus,
       error: settledError,
       ...releasedTaskResources(t, null),

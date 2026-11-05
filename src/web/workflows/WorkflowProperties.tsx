@@ -12,6 +12,7 @@ import type {
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_CHECK_SLOTS,
+  CODERABBIT_COMMAND_STATUS_NOTE,
   WORKFLOW_LIMITS,
   personaChoiceLabel,
   personaChoicesForDisplay,
@@ -528,8 +529,9 @@ export function WorkflowProperties({
                     Library › Commands
                   </a>
                 </Tooltip>{" "}
-                configures for that slot here. An unconfigured or unauthorized Command, or one
-                this build cannot run, passes with a note saying which.
+                configures for that slot here. {selectedNode.slot === "coderabbit"
+                  ? CODERABBIT_COMMAND_STATUS_NOTE
+                  : "An unconfigured or unauthorized Command, or one this build cannot run, passes with a note saying which."}
               </p>
             </>
           )}

@@ -145,6 +145,9 @@ test("the stored choice launches a no-commit setup that proposes a Command docum
     expectedRevision: 1,
     defaultCommand: null,
     maxRuns: 1,
+    timeoutMs: null,
+    onUnavailable: "skip",
+    onBudgetExhausted: "skip",
     overrides: [
       { repoRoot: `${repo}/apps/web`, command: ["yarn", "vitest", "--outputFile={junit}", "{files}"] },
       { repoRoot: repo, command: ["npm", "test", "--", "--junit={junit}", "{files}"] },
@@ -262,11 +265,15 @@ async function setCommand(f: ReturnType<typeof fixture>, body: unknown, token = 
 test("the tool sets only the session repository's affected-tests override, keeping every other entry", async () => {
   const f = fixture();
   const repo = gitRepo("mcp");
-  // Another repository's override, a default, and another slot, all of which must survive.
+  // Another repository's override, a default, a timeout and failure policies, and another slot,
+  // all of which must survive.
   const seeded = f.commands.replace("affected-tests", {
     expectedRevision: 1,
     defaultCommand: ["run-default", "{files}", "{junit}"],
     maxRuns: 2,
+    timeoutMs: 120_000,
+    onUnavailable: "block",
+    onBudgetExhausted: "block",
     overrides: [{ repoRoot: "/elsewhere", command: ["other", "{files}", "--junit={junit}"] }],
   });
   assert.ok(seeded.ok);
@@ -282,6 +289,9 @@ test("the tool sets only the session repository's affected-tests override, keepi
   const view = f.commands.get("affected-tests")!;
   assert.deepEqual(view.defaultCommand, ["run-default", "{files}", "{junit}"]);
   assert.equal(view.maxRuns, 2);
+  assert.equal(view.timeoutMs, 120_000);
+  assert.equal(view.onUnavailable, "block");
+  assert.equal(view.onBudgetExhausted, "block");
   assert.deepEqual(view.overrides, [
     { repoRoot: "/elsewhere", command: ["other", "{files}", "--junit={junit}"] },
     { repoRoot: repo, command: TEMPLATE },

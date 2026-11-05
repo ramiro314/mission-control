@@ -124,7 +124,7 @@ export function createPosixProcessInspector(runner: CommandRunner = defaultComma
       const timeoutMs = PS_TIMEOUT_MS * (options?.timeoutScale ?? 1);
       const [a, b] = await Promise.all([
         runner.run("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="], { timeoutMs }),
-        runner.run("ps", ["-Ao", "pid=,command="], { timeoutMs }),
+        runner.run("ps", ["-ww", "-A", "-o", "pid=,command="], { timeoutMs }),
       ]);
 
       const commands = new Map<number, string>();

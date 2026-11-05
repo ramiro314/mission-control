@@ -1,3 +1,4 @@
+import { gitInfo } from "../util/git.ts";
 import type { UpdateWorkflowCommand } from "@shared/protocol.ts";
 import type { WorkflowCheckSlot, WorkflowCommandOverride, WorkflowCommandView } from "@shared/workflow.ts";
 import type { Registry } from "../registry.ts";
@@ -68,6 +69,9 @@ export class WorkflowCommandManager {
     input: UpdateWorkflowCommand,
     now = Date.now(),
   ): WorkflowCommandMutation {
+    if (slot === "coderabbit" && input.overrides.some((rule) => gitInfo(rule.repoRoot).root !== rule.repoRoot)) {
+      return { ok: false, reason: "invalid_recipe", current: this.get(slot) };
+    }
     return this.publish(this.store.replaceWorkflowCommandCas(
       slot,
       input.expectedRevision,
@@ -75,6 +79,9 @@ export class WorkflowCommandManager {
         defaultCommand: input.defaultCommand,
         overrides: input.overrides,
         maxRuns: input.maxRuns,
+        timeoutMs: input.timeoutMs,
+        onUnavailable: input.onUnavailable,
+        onBudgetExhausted: input.onBudgetExhausted,
       },
       now,
     ));
@@ -115,10 +122,10 @@ export class WorkflowCommandManager {
    * connection, in ONE transaction: the Command document's apply.
    *
    * Each slot is written through its own compare-and-swap under the revision the caller computed
-   * the list from, and keeps its default and run budget exactly as stored - a document describes
-   * rows, never a slot's machine-wide settings. Any refusal, from a slot or from `alongside`
-   * throwing `WorkflowCommandsTogetherConflict`, rolls back everything, so a document lands
-   * whole or not at all. Events go out after the commit, one per slot that moved, as `replace`
+   * the list from, and keeps its default, run budget, timeout and failure policies exactly as
+   * stored - a document describes rows, never a slot's machine-wide settings. Any refusal, from
+   * a slot or from `alongside` throwing `WorkflowCommandsTogetherConflict`, rolls back
+   * everything, so a document lands whole or not at all. Events go out after the commit, one per slot that moved, as `replace`
    * does.
    */
   replaceOverridesTogether(
@@ -136,7 +143,14 @@ export class WorkflowCommandManager {
           const result = this.store.replaceWorkflowCommandCas(
             write.slot,
             write.expectedRevision,
-            { defaultCommand: current.defaultCommand, overrides: write.overrides, maxRuns: current.maxRuns },
+            {
+              defaultCommand: current.defaultCommand,
+              overrides: write.overrides,
+              maxRuns: current.maxRuns,
+              timeoutMs: current.timeoutMs,
+              onUnavailable: current.onUnavailable,
+              onBudgetExhausted: current.onBudgetExhausted,
+            },
             now,
           );
           if (!result.ok) throw new WorkflowCommandsTogetherConflict(`the ${write.slot} Command`);

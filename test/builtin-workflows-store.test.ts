@@ -525,13 +525,16 @@ test("a binding the pre-sync fork pinned to No-Mistakes Review v21 resolves to u
   // stores only its id - so nothing stored can disagree with the catalog. A binding pinned to
   // v21 resolves to upstream's v21: the documentation guidance graph with the Pull Request
   // action text as it was before the closing line. The pull-request skill the action invokes
-  // is read live and still carries the closing-line rule. New bindings take v22.
+  // is read live and still carries the closing-line rule. The 2026-11-05 sync did the same
+  // again: upstream's CodeRabbit stage took v22 and the closing line moved to v23, which new
+  // bindings take.
   const { createHash } = await import("node:crypto");
   const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
   const BEFORE_CLOSING_LINE = "031b3fef42055cd8bba573a547cd9b27b9615b7bbe15c78240720496d51dbb4c";
   const WITH_CLOSING_LINE = "38a31167eead7cd3ffaf0b501ee95113c10adff06f3dc86db1e08426799621fb";
   const v21 = builtinWorkflowVersionId("no-mistakes-review", 21);
   const v22 = builtinWorkflowVersionId("no-mistakes-review", 22);
+  const v23 = builtinWorkflowVersionId("no-mistakes-review", 23);
 
   // As the pre-sync build left it: a binding and a run naming v21, and no version row.
   const beforeSync = new WorkflowStore(db);
@@ -571,10 +574,13 @@ test("a binding the pre-sync fork pinned to No-Mistakes Review v21 resolves to u
   assert.ok(steward && steward.kind === "persona");
   assert.equal(steward.persona.guidanceMarkdown, current.guidanceMarkdown, "v21 is upstream's documentation guidance version");
 
-  const latest = afterSync.getWorkflowVersionById(v22);
-  assert.ok(latest, "the closing line version exists as v22");
+  const coderabbit = afterSync.getWorkflowVersionById(v22);
+  assert.ok(coderabbit, "upstream's CodeRabbit version exists as v22");
+  assert.deepEqual(prompts(coderabbit).map(sha256), [BEFORE_CLOSING_LINE], "v22 is upstream's, before the closing line");
+  const latest = afterSync.getWorkflowVersionById(v23);
+  assert.ok(latest, "the closing line version exists as v23");
   assert.deepEqual(prompts(latest).map(sha256), [WITH_CLOSING_LINE]);
-  assert.equal(afterSync.getWorkflow(builtinWorkflowId("no-mistakes-review"))?.currentVersionId, v22, "new bindings take v22");
+  assert.equal(afterSync.getWorkflow(builtinWorkflowId("no-mistakes-review"))?.currentVersionId, v23, "new bindings take v23");
 
   assert.equal(afterSync.getBinding("b-v21")?.workflowVersionId, v21);
   assert.equal(afterSync.runSummary("r-v21")?.workflowVersion, 21);

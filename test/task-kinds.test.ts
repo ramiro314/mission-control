@@ -30,7 +30,10 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_TASK_KIND, TASK_KINDS, type TaskKind } from "../src/shared/types.ts";
 import {
   BACKLOG_TASK_KINDS,
+  DISPATCH_TASK_KINDS,
+  RESIDENT_TASK_REFUSAL,
   SCHEDULE_TASK_KINDS,
+  TASK_KIND_BACKLOG_REFUSAL,
   TASK_KIND_BEHAVIOR,
   TASK_KIND_INFO,
   allowsBacklogAutopilot,
@@ -40,6 +43,10 @@ import {
   taskDefaultWorkflowId,
   taskKindAllowsBacklog,
   taskKindAllowsSchedule,
+  taskKindBacklogRefusal,
+  taskKindCreator,
+  taskKindForcedRuntime,
+  taskKindLaunchesHarness,
 } from "../src/shared/task.ts";
 import { PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 
@@ -99,7 +106,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 test("the kinds preserve the append-only order and derive the type from it", () => {
-  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document", "shape"]);
+  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document", "resident", "shape"]);
   // Order is a contract, not an accident of how they were typed: it is the order the
   // dispatch form lists the options in, and the order the guided pass offers them.
   assert.equal(TASK_KINDS[0], "ship", "ship leads - it is the default and the common case");
@@ -111,7 +118,7 @@ test("the kinds preserve the append-only order and derive the type from it", () 
   // `(typeof TASK_KINDS)[number]`, so a value the tuple does not hold is not assignable
   // and this file would not compile - which is the assertion.
   const every: readonly TaskKind[] = TASK_KINDS;
-  assert.equal(every.length, 8);
+  assert.equal(every.length, 9);
 });
 
 test("every kind says how it is offered", () => {
@@ -154,13 +161,14 @@ test("the diffless kinds are the ones whose blurb promises no after-work", () =>
   assert.equal(hasReviewableDiff("scout"), false);
   assert.equal(hasReviewableDiff("pipeline"), false);
   assert.equal(hasReviewableDiff("chat"), false);
+  assert.equal(hasReviewableDiff("resident"), false);
 });
 
-test("only chat is excluded from backlog-producing surfaces", () => {
+test("only chat and resident are excluded from backlog-producing surfaces", () => {
   assert.deepEqual([...BACKLOG_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix", "document", "shape"]);
   assert.deepEqual(
     Object.fromEntries(TASK_KINDS.map((kind) => [kind, taskKindAllowsBacklog(kind)])),
-    { ship: true, scout: true, plan: true, pipeline: true, chat: false, bugfix: true, document: true, shape: true },
+    { ship: true, scout: true, plan: true, pipeline: true, chat: false, bugfix: true, document: true, resident: false, shape: true },
   );
 });
 
@@ -170,6 +178,21 @@ test("recurring missions offer every backlog kind except shape", () => {
   assert.deepEqual([...SCHEDULE_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix", "document"]);
   assert.equal(taskKindAllowsSchedule("shape"), false);
   assert.equal(taskKindAllowsSchedule("chat"), false);
+  assert.equal(taskKindAllowsSchedule("resident"), false);
+});
+
+test("resident is launched only from a profile: Dispatch does not offer it and it forces the SDK", () => {
+  assert.deepEqual([...DISPATCH_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document", "shape"]);
+  assert.equal(taskKindCreator("resident"), "resident-launch");
+  assert.equal(taskKindCreator("chat"), "dispatch");
+  assert.equal(taskKindCreator("ship"), "any");
+  assert.equal(taskKindForcedRuntime("resident"), "sdk");
+  assert.equal(taskKindForcedRuntime("chat"), null);
+  assert.equal(taskKindLaunchesHarness("resident"), false, "the profile, not a per-kind default, owns its launch");
+  assert.equal(allowsBacklogAutopilot("resident"), false);
+  assert.equal(taskDefaultWorkflowId("resident", {}), null);
+  assert.equal(taskKindBacklogRefusal("resident"), RESIDENT_TASK_REFUSAL);
+  assert.equal(taskKindBacklogRefusal("chat"), TASK_KIND_BACKLOG_REFUSAL);
 });
 
 test("shape is planning work that Foreman never starts on its own", () => {
@@ -179,6 +202,7 @@ test("shape is planning work that Foreman never starts on its own", () => {
   assert.equal(allowsBacklogAutopilot("shape"), false, "the interview needs a human to answer it");
   assert.equal(hasReviewableDiff("shape"), true);
   assert.equal(taskDefaultWorkflowId("shape", {}), PLAN_VALIDATION_WORKFLOW_ID);
+  assert.equal(taskKindCreator("shape"), "any");
 });
 
 test("every kind has its own colour, so no two marks can be mistaken for each other", () => {

@@ -33,7 +33,9 @@ import { checkoutGitHubRepository } from "./github/repository.ts";
 /** Branches that never carry a PR, so we never spend a `gh` call on them. */
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
 
-type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId" | "episodeId">;
+type PrCandidate = Omit<PrMatch, "branch" | "agentSessionId" | "episodeId">;
+type PrLookup = "error" | null | PrCandidate | PrCandidate[];
+type EpisodeSearch = { from: number; until: number | null; headSha: string | null };
 /**
  * What the by-URL poller learned about one pull request. `closed` is a pull request closed
  * without merging, which a task bound to it is told about (`Registry.reconcilePrClosures`).
@@ -102,7 +104,7 @@ async function forEachConcurrent<T>(
  * (`owner/name`). `--repo` is never left out: `gh`'s own choice outside a terminal is a remote
  * named `upstream` - on a fork, the parent, which an org enforcing SAML SSO refuses.
  */
-export function prListArgs(branch: string, repo: string): string[] {
+export function prListArgs(branch: string, repo: string, search?: string): string[] {
   return [
     "pr",
     "list",
@@ -112,10 +114,12 @@ export function prListArgs(branch: string, repo: string): string[] {
     branch,
     "--state",
     "all",
+    ...(search === undefined ? [] : ["--search", search]),
     "--json",
     "url,number,state,statusCheckRollup,createdAt,mergedAt,headRefOid,mergeable,baseRefName",
     "--limit",
-    "20",
+    // An episode search filters at GitHub, so it can afford a wider page than a branch read.
+    search === undefined ? "20" : "100",
   ];
 }
 
@@ -126,8 +130,36 @@ export function prListArgs(branch: string, repo: string): string[] {
  * no matching PR, or `"error"` when `gh` is missing/unauthenticated/timed out, or the checkout
  * names no GitHub repository - which the reconciler treats as "unknown, leave the existing
  * chip alone" rather than a reason to clear.
+ *
+ * With `episode`, every pull request on `branch` inside that work episode's window instead.
  */
-export async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
+export async function queryPr(cwd: string, branch: string, episode?: EpisodeSearch): Promise<PrLookup> {
+  if (episode) {
+    const repo = await checkoutGitHubRepository(cwd);
+    if (!repo.ok) return "error";
+    // Filter at GitHub before its result limit: a hundred newer uses of a branch must not
+    // hide the PR in this episode's window. SHA search also finds late-opened PRs.
+    const iso = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+    const from = iso(Math.floor(episode.from / 1000) * 1000);
+    const searches: string[] = [];
+    if (episode.until !== null) searches.push(`created:${from}..${iso(Math.ceil(episode.until / 1000) * 1000)}`);
+    if (episode.headSha) searches.push(`${episode.headSha} created:>=${from}`);
+    const candidates: PrCandidate[] = [];
+    for (const search of searches) {
+      const result = await run(ghBin(), prListArgs(branch, repo.repo, search), { cwd, timeoutMs: 8000 });
+      if (result.code !== 0) return "error";
+      try {
+        const rows: unknown = JSON.parse(result.stdout || "[]");
+        if (!Array.isArray(rows)) return "error";
+        for (const row of rows) {
+          const candidate = parsePrCandidate(row, null);
+          if (candidate && !candidates.some(pr => pr.url === candidate.url)) candidates.push(candidate);
+        }
+      } catch { return "error"; }
+    }
+    // Prefer landed evidence when more than one PR belongs to an episode.
+    return candidates.sort((a, b) => Number(b.state === "merged") - Number(a.state === "merged"));
+  }
   const [res, head] = await Promise.all([
     checkoutGitHubRepository(cwd).then((repo) =>
       repo.ok ? run(ghBin(), prListArgs(branch, repo.repo), { cwd, timeoutMs: 8000 }) : null,
@@ -145,37 +177,29 @@ export async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
     const match = open ?? arr.find((p) => prStateOf(p) === "merged")
       ?? arr.find((p) => prStateOf(p) === "closed");
     if (!match) return null;
-    const { url, number, createdAt, mergedAt, headRefOid, mergeable, baseRefName } = match as {
-      url?: unknown;
-      number?: unknown;
-      createdAt?: unknown;
-      mergedAt?: unknown;
-      headRefOid?: unknown;
-      mergeable?: unknown;
-      baseRefName?: unknown;
-    };
-    const state = prStateOf(match);
-    const createdAtMs = typeof createdAt === "string" ? Date.parse(createdAt) : Number.NaN;
-    const mergedAtMs = typeof mergedAt === "string" ? Date.parse(mergedAt) : Number.NaN;
-    if (typeof url !== "string" || !Number.isFinite(createdAtMs) || typeof headRefOid !== "string") {
-      return "error";
-    }
-    if (state === "merged" && !Number.isFinite(mergedAtMs)) return "error";
-    return {
-      url,
-      number: typeof number === "number" ? number : null,
-      state: state as PrState,
-      checks: checksOf(match),
-      createdAt: createdAtMs,
-      mergedAt: state === "merged" ? mergedAtMs : null,
-      headSha: headRefOid,
-      worktreeHeadSha,
-      mergeable: prMergeableFromGitHub(mergeable),
-      baseRef: typeof baseRefName === "string" ? baseRefName : null,
-    };
+    return parsePrCandidate(match, worktreeHeadSha) ?? "error";
   } catch {
     return "error";
   }
+}
+
+function parsePrCandidate(value: unknown, worktreeHeadSha: string | null): PrCandidate | null {
+  if (!value || typeof value !== "object") return null;
+  const { url, number, createdAt, mergedAt, headRefOid, mergeable, baseRefName } = value as Record<string, unknown>;
+  const state = prStateOf(value);
+  const createdAtMs = typeof createdAt === "string" ? Date.parse(createdAt) : Number.NaN;
+  const mergedAtMs = typeof mergedAt === "string" ? Date.parse(mergedAt) : Number.NaN;
+  if (!state || typeof url !== "string" || !Number.isFinite(createdAtMs) || typeof headRefOid !== "string" ||
+    (state === "merged" && !Number.isFinite(mergedAtMs))) return null;
+  return { url, number: typeof number === "number" ? number : null, state, checks: checksOf(value),
+    createdAt: createdAtMs, mergedAt: state === "merged" ? mergedAtMs : null,
+    headSha: headRefOid, worktreeHeadSha, mergeable: prMergeableFromGitHub(mergeable),
+    baseRef: typeof baseRefName === "string" ? baseRefName : null };
+}
+
+function preferredPr(result: PrLookup): Exclude<PrLookup, PrCandidate[]> {
+  if (!Array.isArray(result)) return result;
+  return result.find(pr => pr.state === "open") ?? result.find(pr => pr.state === "merged") ?? result[0] ?? null;
 }
 
 /**
@@ -187,8 +211,8 @@ export async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
  * looked", which the registry represents by having no entry at all and which HOLDS
  * completion.
  */
-async function queryHead(dir: string): Promise<string | null> {
-  const r = await run("git", ["-C", dir, "rev-parse", "HEAD"], { timeoutMs: 8000 });
+async function queryHead(dir: string, branch?: string): Promise<string | null> {
+  const r = await run("git", ["-C", dir, "rev-parse", "--verify", branch ? `refs/heads/${branch}` : "HEAD"], { timeoutMs: 8000 });
   const sha = r.stdout.trim();
   return r.code === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
 }
@@ -275,27 +299,31 @@ function checksOf(p: unknown): PrChecks | null {
  */
 export async function pollAndReconcilePrs(
   registry: Registry,
-  lookup: (cwd: string, branch: string) => Promise<PrLookup> = queryPr,
+  lookup: (cwd: string, branch: string, episode?: EpisodeSearch) => Promise<PrLookup> = queryPr,
   lookupUrl: (url: string) => Promise<PrStateLookup> = queryPrUrl,
   urlState = new PrUrlPollState(),
   now = Date.now(),
-  lookupHead: (dir: string) => Promise<string | null> = queryHead,
+  lookupHead: (dir: string, branch?: string) => Promise<string | null> = queryHead,
   /** Seam for the telemetry harvest, so a focused test can drive it without a real store. */
   telemetryTargets: (() => string[]) | null = null,
   /** The conflict episodes, or null where a caller does not track them. */
   conflicts: PrConflictTracker | null = null,
 ): Promise<void> {
   const targets = registry.prPollTargets();
+  const workHeadTargets = registry.dependencyWorkHeadTargets();
   // The SECONDARY repositories of every live multi-repo task, each with its own worktree and
   // branch. Same cost rule as the primary list - one `gh` call per distinct cwd - and empty
   // whenever no multi-repo task is running, which is the ordinary case.
   const repoTargets = registry.extraRepoPrPollTargets();
+  const completedTargets = registry.completedDependencyBranchTargets()
+    .filter((target) => target.binding.branch && !DEFAULT_BRANCHES.has(target.binding.branch));
   // Every multi-repo worktree the completion quorum still needs a head for. Read here rather
   // than at reconcile time because the reconciler is synchronous and runs on every session
   // event: a `git` call there would be a subprocess on the hot path. This tick is the one
   // place that already spends subprocesses, and it runs immediately before the reconciler it
   // feeds, so the observation is as fresh as the merge that triggers the question.
   const headTargets = registry.worktreeHeadTargets();
+  const repoEvidenceTargets = registry.repoChangeEvidenceTargets();
   // Both harvests, deduplicated: a task waiting on its own merge is very often also the
   // task something else declared a dependency on, and asking twice would spend two `gh`
   // calls and two backoffs on one pull request.
@@ -334,8 +362,10 @@ export async function pollAndReconcilePrs(
   if (
     queryable.length === 0 &&
     repoQueryable.length === 0 &&
+    completedTargets.length === 0 &&
     linkedUrls.length === 0 &&
-    headTargets.length === 0
+    headTargets.length === 0 &&
+    workHeadTargets.length === 0
   ) {
     registry.reconcilePrs(found, skip); // clears any lingering link, spawns nothing
     conflicts?.reconcile(new Map(), now);
@@ -354,6 +384,10 @@ export async function pollAndReconcilePrs(
     ...[...byCwd].map(async ([cwd, branch]) => {
       results.set(cwd, await lookup(cwd, branch));
     }),
+    forEachConcurrent(workHeadTargets, PR_URL_CONCURRENCY, async (target) => {
+      const sha = await lookupHead(target.cwd, target.binding.branch!);
+      registry.recordDependencyWorkHead(target, sha);
+    }),
     forEachConcurrent(headTargets, PR_URL_CONCURRENCY, async (dir) => {
       heads.set(dir, await lookupHead(dir));
     }),
@@ -361,10 +395,10 @@ export async function pollAndReconcilePrs(
   // Before the reconcilers below, which is the ordering the quorum depends on: both of them
   // can complete a task, and a task completed against last tick's heads is a task completed
   // against a repository whose work may since have moved off its baseline.
-  if (headTargets.length > 0) registry.recordWorktreeHeads(heads);
+  if (headTargets.length > 0) registry.recordWorktreeHeads(heads, repoEvidenceTargets);
 
   for (const t of queryable) {
-    const r = results.get(t.cwd);
+    const r = preferredPr(results.get(t.cwd) ?? null);
     if (r === "error") skip.add(t.id);
     else if (r) {
       found.set(t.id, {
@@ -377,7 +411,7 @@ export async function pollAndReconcilePrs(
     // r === null (no matching PR) -> omitted from both -> reconcile clears the chip
   }
   for (const t of repoQueryable) {
-    const r = results.get(t.cwd);
+    const r = preferredPr(results.get(t.cwd) ?? null);
     if (r === "error") repoSkip.add(t.key);
     else if (r) {
       repoFound.set(t.key, {
@@ -453,7 +487,31 @@ export async function pollAndReconcilePrs(
   registry.reconcilePrMerges(operationalMerges, mergedBases);
   // Closures carry no completion authority, but they do move task state (a pending shape
   // choice lapses), so they take the same operational filter as merges.
-  registry.reconcilePrClosures(new Set([...closedUrls].filter((url) => operationalUrls.has(url))));
+  const operationalClosures = new Set([...closedUrls].filter((url) => operationalUrls.has(url)));
+  registry.reconcilePrClosures(operationalClosures);
+  registry.reconcileClosedDependencyPrs(operationalClosures);
+  // Filter candidates by each retained ownership window before GitHub applies its limit.
+  // Share identical searches and bound concurrency just as for the durable by-URL harvest.
+  const completedByBranch = new Map<string, typeof completedTargets>();
+  for (const target of registry.completedDependencyBranchTargets().filter(target => target.binding.branch && !DEFAULT_BRANCHES.has(target.binding.branch))) {
+    const key = `${target.cwd}\0${target.binding.branch}\0${target.startedAt}\0${target.endedAt}\0${target.binding.workHeadSha}`;
+    const group = completedByBranch.get(key) ?? [];
+    group.push(target);
+    completedByBranch.set(key, group);
+  }
+  await forEachConcurrent([...completedByBranch.values()], PR_URL_CONCURRENCY, async (group) => {
+    const first = group[0]!;
+    const result = await lookup(first.cwd, first.binding.branch!, {
+      from: first.startedAt, until: first.endedAt, headSha: first.binding.workHeadSha ?? null,
+    });
+    if (!result || result === "error") return;
+    for (const match of Array.isArray(result) ? result : [result]) {
+      for (const target of group) registry.reconcileCompletedDependencyPr(target, {
+        ...match, branch: target.binding.branch!, episodeId: target.binding.episodeId,
+        agentSessionId: target.binding.agentSessionId,
+      });
+    }
+  });
   // And the observation-only half, which has authority over nothing. It emits the verified
   // late-delivery fact and stamps the retained row, carrying the attribution frozen when the
   // pull request was first associated rather than whatever the task is bound to today.

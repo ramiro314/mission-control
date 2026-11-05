@@ -384,7 +384,7 @@ test("queryPr prefers an open PR, then a merged one, and falls back to a closed 
   const pick = async (rows: object[]) => {
     writeFileSync(listOut, JSON.stringify(rows));
     const r = await queryPr(repo, "feat/x");
-    assert.ok(r && r !== "error", `expected a match, got ${String(r)}`);
+    assert.ok(r && r !== "error" && !Array.isArray(r), `expected one match, got ${String(r)}`);
     return { number: r.number, state: r.state };
   };
   process.env.HARNESS_GH_BIN = join(bin, "gh");
