@@ -185,14 +185,75 @@ test("backlog tasks and tasks without a base are not candidates, and each base i
   assert.equal(registry.getTask("shelved")?.baseBranch, "feat/a", "the backlog keeps its edit path");
 });
 
-test("a move is refused for a backlog task and for a base that changed since it was read", async () => {
+test("a move is refused for a backlog task, a base that changed since it was read, and a task being assigned", async () => {
   const registry = new Registry();
   const tasks = taskManager(registry);
   registry.upsertTask(mkTask({ id: "shelved", status: "backlog", baseBranch: "feat/a" }));
   registry.upsertTask(mkTask({ id: "running", status: "running", baseBranch: "feat/c" }));
-  assert.equal(tasks.moveBaseBranch("shelved", "feat/a", null).ok, false);
-  assert.equal(tasks.moveBaseBranch("running", "feat/a", null).ok, false);
-  assert.equal(registry.getTask("running")?.baseBranch, "feat/c");
+  registry.upsertTask(mkTask({ id: "assigning", status: "running", baseBranch: "feat/a" }));
+  (tasks as unknown as { assigningTasks: Set<string> }).assigningTasks.add("assigning");
+
+  assert.deepEqual(tasks.moveBaseBranch("shelved", "feat/a", null), {
+    ok: false, error: "a backlog task's base branch is changed by editing it",
+  });
+  assert.deepEqual(tasks.moveBaseBranch("running", "feat/a", null), {
+    ok: false, error: "task's base branch is no longer feat/a",
+  });
+  assert.deepEqual(tasks.moveBaseBranch("assigning", "feat/a", null), { ok: false, error: "task is being assigned" });
+  for (const [id, base] of [["shelved", "feat/a"], ["running", "feat/c"], ["assigning", "feat/a"]] as const) {
+    assert.equal(registry.getTask(id)?.baseBranch, base, `${id} keeps its base`);
+    assert.equal(registry.getTask(id)?.baseBranchMovedFrom ?? null, null, `${id} records no move`);
+  }
+});
+
+test("an unreachable origin, a refused new base, or a base merged into itself leaves the task alone", async () => {
+  const cases: Array<[string, Partial<import("../src/server/base-branch-move.ts").BaseBranchMoveDeps>]> = [
+    ["unreachable origin", { remoteBranch: async () => ({ ok: false, reason: "timed out", outcomeUnknown: true }) }],
+    ["refused new base", { resolve: async () => ({ ok: false, error: "base branch main does not exist" }) }],
+    ["merged into itself", { mergedInto: async (_root, branch) => branch }],
+  ];
+  for (const [name, override] of cases) {
+    const registry = new Registry();
+    const tasks = taskManager(registry);
+    const id = `alone-${name.replaceAll(" ", "-")}`;
+    registry.upsertTask(mkTask({ id, status: "running", repoRoot: "/repo-alone", baseBranch: "feat/a" }));
+    const moves = await moveMergedBaseBranches(
+      {
+        candidates: () => registry.baseBranchMoveCandidates().filter((t) => t.id === id),
+        move: (taskId, from, to) => tasks.moveBaseBranch(taskId, from, to),
+      },
+      {
+        remoteBranch: async () => ({ ok: true, value: null }),
+        mergedInto: async () => "main",
+        resolve: async () => ({ ok: true, baseBranch: null }),
+        fetch: async () => {},
+        ...override,
+      },
+    );
+    assert.deepEqual(moves, [], name);
+    assert.equal(registry.getTask(id)?.baseBranch, "feat/a", name);
+    assert.equal(registry.getTask(id)?.baseBranchMovedFrom ?? null, null, name);
+  }
+});
+
+test("a failed fetch of the new base still moves the task", async () => {
+  const registry = new Registry();
+  const tasks = taskManager(registry);
+  registry.upsertTask(mkTask({ id: "fetch-fails", status: "running", repoRoot: "/repo-fetch", baseBranch: "feat/a" }));
+  const moves = await moveMergedBaseBranches(
+    {
+      candidates: () => registry.baseBranchMoveCandidates().filter((t) => t.id === "fetch-fails"),
+      move: (taskId, from, to) => tasks.moveBaseBranch(taskId, from, to),
+    },
+    {
+      remoteBranch: async () => ({ ok: true, value: null }),
+      mergedInto: async () => "main",
+      resolve: async () => ({ ok: true, baseBranch: null }),
+      fetch: async () => { throw new Error("fetch failed"); },
+    },
+  );
+  assert.deepEqual(moves, [{ taskId: "fetch-fails", from: "feat/a", to: null }]);
+  assert.equal(registry.getTask("fetch-fails")?.baseBranchMovedFrom, "feat/a");
 });
 
 test("editing a backlog task's base drops the record of an earlier move", async () => {
