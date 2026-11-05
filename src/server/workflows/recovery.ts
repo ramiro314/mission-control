@@ -80,6 +80,10 @@ export const WORKFLOW_PHASE_RECOVERY = {
   ci_missing: "retry",
   ci_timeout: "retry",
   ci_pull_request_unknown: "resume",
+  // An expected check the operator makes appear, or names correctly in a new version.
+  ci_expected_missing: "retry",
+  // The operator checks the rest on GitHub, then disables the node for the run to pass it.
+  ci_checks_truncated: "retry",
 } satisfies Record<WorkflowRunPhase, PhaseRecovery>;
 
 export interface WorkflowRecoveryContext {

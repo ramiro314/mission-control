@@ -1,4 +1,5 @@
 import { withExecutionOverride, withRecheckAfterRepair } from "./workflow.ts";
+import { storedWaitForCiSettings, type WaitForCiStoredSettings } from "./wait-for-ci.ts";
 import type {
   Persona,
   PersonaId,
@@ -72,7 +73,7 @@ export type StageMember =
    * is only valid alone, in the stage right after a Pull Request action - graph validation
    * says so, and the editor offers it only there.
    */
-  | { nodeId: string | null; kind: "wait_for_ci"; timeoutMinutes: number };
+  | ({ nodeId: string | null; kind: "wait_for_ci"; timeoutMinutes: number } & WaitForCiStoredSettings);
 
 /**
  * The one thing a SessionAction stage runs.
@@ -100,7 +101,7 @@ const isMemberKind = (kind: StageNode["kind"]): kind is "persona" | "check" | "w
 /** The member a node IS, which is the projection's half of the round trip. */
 function memberOf(node: StageMemberNode): StageMember {
   if (node.kind === "wait_for_ci") {
-    return { nodeId: node.id, kind: "wait_for_ci", timeoutMinutes: node.timeoutMinutes };
+    return { nodeId: node.id, kind: "wait_for_ci", timeoutMinutes: node.timeoutMinutes, ...storedWaitForCiSettings(node) };
   }
   return node.kind === "check"
     ? { nodeId: node.id, kind: "check", slot: node.slot }
@@ -731,7 +732,7 @@ export function compileStages(
       nodes.push(member.kind === "check"
         ? { id, kind: "check", slot: member.slot, position }
         : member.kind === "wait_for_ci"
-        ? { id, kind: "wait_for_ci", timeoutMinutes: member.timeoutMinutes, position }
+        ? { id, kind: "wait_for_ci", timeoutMinutes: member.timeoutMinutes, position, ...storedWaitForCiSettings(member) }
         : {
             id,
             kind: "persona",

@@ -635,3 +635,54 @@ test("a published Persona node projects its override the same way a draft node d
     [routed("intent", "intent", OVERRIDE)],
   );
 });
+
+// ---- Wait for CI settings (D6) ---------------------------------------------------------------
+
+test("a legacy Wait for CI node round-trips byte-identical, and the first edit writes all three settings", async () => {
+  const { insertStage, setWaitForCiMember } = await import("../src/web/workflows/PipelineEditor.tsx");
+  const { WAIT_FOR_CI_NEW_NODE_SETTINGS, waitForCiSettings } = await import("../src/shared/wait-for-ci.ts");
+  const legacy: StagePipeline = {
+    sessionId: "session",
+    endId: "end",
+    endOutcome: "Approved",
+    stages: [
+      { kind: "session_action", member: { nodeId: "pr", kind: "session_action", sessionActionId: "action-pr" } },
+      { kind: "evaluation", joinId: null, members: [{ nodeId: "ci", kind: "wait_for_ci", timeoutMinutes: 45 }] },
+    ],
+  };
+  const graph = compileStages(legacy, empty);
+  const ciNode = () => graph.nodes.find((node) => node.id === "ci")!;
+  assert.deepEqual(Object.keys(ciNode()), ["id", "kind", "timeoutMinutes", "position"]);
+  // Projected and compiled again, untouched: the same bytes, with nothing planted.
+  const projected = projectStages(graph)!;
+  assert.deepEqual(evaluation(projected.stages[1]!).members, [{ nodeId: "ci", kind: "wait_for_ci", timeoutMinutes: 45 }]);
+  assert.equal(JSON.stringify(compileStages(projected, graph)), JSON.stringify(graph));
+
+  // The editor hands back every field on any edit, so one change writes all three.
+  const ref = { stage: 1, member: 0 };
+  const member = evaluation(projected.stages[1]!).members[0]!;
+  const edited = setWaitForCiMember(projected, ref, {
+    timeoutMinutes: 45,
+    ...waitForCiSettings(member.kind === "wait_for_ci" ? member : {}),
+    expectedChecks: [],
+    quietMinutes: 5,
+  });
+  const written = compileStages(edited, graph).nodes.find((node) => node.id === "ci")!;
+  assert.deepEqual(written, {
+    id: "ci", kind: "wait_for_ci", timeoutMinutes: 45, position: ciNode().position,
+    strictness: "all", quietMinutes: 5, expectedChecks: [],
+  });
+  // And a configured node round-trips with its fields.
+  const again = compileStages(projectStages(compileStages(edited, graph))!, graph);
+  assert.deepEqual(again.nodes.find((node) => node.id === "ci"), written);
+  // An edit that changes nothing changes nothing.
+  assert.equal(setWaitForCiMember(projected, ref, { timeoutMinutes: 45 }), projected);
+
+  // A node added through the stage inserter writes the new-node settings.
+  const inserted = insertStage({ ...legacy, stages: [legacy.stages[0]!] }, 1, { kind: "wait_for_ci" });
+  const fresh = compileStages(inserted, empty).nodes.find((node) => node.kind === "wait_for_ci")!;
+  assert.deepEqual(
+    { strictness: fresh.strictness, quietMinutes: fresh.quietMinutes, expectedChecks: fresh.expectedChecks },
+    WAIT_FOR_CI_NEW_NODE_SETTINGS,
+  );
+});

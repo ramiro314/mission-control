@@ -1011,13 +1011,30 @@ A SessionAction is a durable side effect, not an evaluator:
   (`WAIT_FOR_CI_BLOCK_CODES`, append-only, each with a sentence in `run-model.ts` and a
   recovery policy); the submission fails with it so the infrastructure retry can revive it and
   wait again. A block never becomes a repair packet or spends a round.
-- No check name is exempt or required. Every node judges under `WAIT_FOR_CI_LEGACY_SETTINGS`
-  (all checks, a 3-minute quiet period, no expected checks): literals, so a node or attempt
-  that names no setting means exactly that for ever, and never follows a later default.
+- No check name is exempt. A node's `strictness`, `quietMinutes` and `expectedChecks` are
+  optional with no `.default()` on both node arms and the stage member, and `waitForCiSettings`
+  is the one resolver: an absent field means `WAIT_FOR_CI_LEGACY_SETTINGS` (all checks, a
+  3-minute quiet period, no expected checks), literals, so a node or attempt that names no
+  setting means exactly that for ever and never follows a later default. A legacy node
+  round-trips through the stage model byte-identical; the editor writes all three on the first
+  edit, and a new node writes `WAIT_FOR_CI_NEW_NODE_SETTINGS`. The attempt copies them at
+  activation. Publish refuses a quiet period at or above the timeout and a repeated or
+  twenty-first expected check, through `waitForCiQuietFits` and `waitForCiExpectedChecksValid`,
+  which the editor reads too.
+- `CI_STRICTNESS` (`src/shared/ci-checks.ts`) is append-only: it is persisted in workflow graphs
+  and in Foreman config. `countedChecks` decides what a node counts, and its Required-mode
+  fallback reads `requiredChecksRollup`, the same classification Foreman uses.
 - The quiet period is observed, never assumed. `quietSince` is the `observedAt` of the
-  observation that first saw the settled set, and only a later observation of the same set
-  passes the node; the sweep re-deciding one observation cannot. Past the timeout a running
-  quiet period may finish but never restart, bounded by `WAIT_FOR_CI_QUIET_GRACE_MS`.
+  observation that first saw the settled counted set, and only a later observation of the same
+  set (name, state, conclusion, required mark) passes the node; the sweep re-deciding one
+  observation cannot. Past the timeout a running quiet period may finish but never restart,
+  bounded by `WAIT_FOR_CI_QUIET_GRACE_MS`.
+- The node never passes on a partial list: when the observation's `totalCount` exceeds the 100
+  checks read, a pass becomes `ci_checks_truncated`. On such a head `countedChecks` never takes
+  the Required fallback and `missingExpectedChecks` reports nothing, because the unread checks
+  may be the required or expected ones; pass the total to both. `ci_expected_missing` and
+  `ci_checks_truncated` were appended to the block codes and the run phases with recovery
+  `retry`; append new codes after them.
 - `greenWithoutReportSince` is retired but stays in `WaitForCiStateSchema`, always written as
   null, so a downgraded daemon still reads new attempt rows. `ci_flake_report_missing` stays in
   the block codes for runs an earlier build blocked; nothing produces it.

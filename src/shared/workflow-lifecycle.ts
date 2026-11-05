@@ -197,6 +197,8 @@ export const WORKFLOW_RUN_PHASES = [
   "ci_missing",
   "ci_timeout",
   "ci_pull_request_unknown",
+  "ci_expected_missing",
+  "ci_checks_truncated",
 ] as const;
 
 /**
@@ -315,6 +317,8 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   ci_missing: ["blocked"],
   ci_timeout: ["blocked"],
   ci_pull_request_unknown: ["blocked"],
+  ci_expected_missing: ["blocked"],
+  ci_checks_truncated: ["blocked"],
 };
 
 /**
@@ -437,6 +441,8 @@ const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
   ci_missing: "no CI on the PR",
   ci_timeout: "CI timed out",
   ci_pull_request_unknown: "no PR to watch",
+  ci_expected_missing: "expected check missing",
+  ci_checks_truncated: "over 100 checks",
 };
 
 /** The short cause for `phase`, or the phase code made readable when it is unmapped. */
@@ -614,6 +620,8 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   ci_missing: ["nodeId", "attemptId", "code", "detail"],
   ci_timeout: ["nodeId", "attemptId", "code", "detail"],
   ci_pull_request_unknown: ["nodeId", "attemptId", "code", "detail"],
+  ci_expected_missing: ["nodeId", "attemptId", "code", "detail"],
+  ci_checks_truncated: ["nodeId", "attemptId", "code", "detail"],
 };
 
 /** The reserved key a phase detail carries the sticky gate under. See `withInspectorGate`. */
