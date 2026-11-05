@@ -449,6 +449,9 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- The origin branch the primary repo starts from and opens its PR against.
       -- NULL means origin's default branch, which is every task filed before this column.
       base_branch   TEXT,
+      -- The base branch this task had before it was moved to where that branch merged, or
+      -- NULL for a task whose base never moved.
+      base_branch_moved_from TEXT,
       workspace_kind TEXT,
       -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
       -- coordinate, so only provider and slug need their own nullable columns.
@@ -4305,6 +4308,9 @@ function migrate(d: DatabaseSync): void {
   // backfill: every existing row was dispatched from, and shipped to, origin's default
   // branch, and NULL is exactly what that means to every reader.
   addColumn(d, "tasks", "base_branch", "TEXT");
+  // Where an in-flight task's base branch was moved from once that branch merged. NULL with no
+  // backfill: no task moved before this column existed.
+  addColumn(d, "tasks", "base_branch_moved_from", "TEXT");
   addColumn(d, "tasks", "worktree_lease_id", "TEXT");
   // A dispatch that failed before its session started. NULL on an upgraded row is the honest
   // reading: nothing recorded whether its failure, if any, was a launch failure, and drawing
@@ -5920,6 +5926,7 @@ interface TaskRow {
   source_parent: string | null;
   repo_root: string;
   base_branch: string | null;
+  base_branch_moved_from: string | null;
   pipeline_provider: string | null;
   pipeline_slug: string | null;
   pipeline_commission_id: string | null;
@@ -6386,6 +6393,7 @@ function rowToTask(
     sourceParent: parseSourceParent(r.source_parent),
     repoRoot: r.repo_root,
     baseBranch: r.base_branch ?? null,
+    baseBranchMovedFrom: r.base_branch_moved_from ?? null,
     workspaceKind: r.workspace_kind === "resident-workspace" ? r.workspace_kind : null,
     pipelineRun:
       r.pipeline_provider && isPipelineProviderId(r.pipeline_provider) && r.pipeline_slug
@@ -6470,7 +6478,7 @@ export function upsertTask(t: Task): string[] {
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
          model, effort, advisor_model,
          workflow_id, source_id, external_id, source_url, source_parent, repo_root, base_branch,
-         workspace_kind,
+         base_branch_moved_from, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha,
@@ -6478,7 +6486,7 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, claim_warnings, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -6489,6 +6497,7 @@ export function upsertTask(t: Task): string[] {
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url, source_parent=excluded.source_parent,
          repo_root=excluded.repo_root, base_branch=excluded.base_branch,
+         base_branch_moved_from=excluded.base_branch_moved_from,
          workspace_kind=excluded.workspace_kind,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
          pipeline_commission_id=CASE
@@ -6528,7 +6537,7 @@ export function upsertTask(t: Task): string[] {
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.sourceParent ? JSON.stringify(t.sourceParent) : null,
-      t.repoRoot, t.baseBranch ?? null, t.workspaceKind ?? null,
+      t.repoRoot, t.baseBranch ?? null, t.baseBranchMovedFrom ?? null, t.workspaceKind ?? null,
       t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,

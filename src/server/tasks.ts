@@ -4190,6 +4190,29 @@ export class TaskManager {
   }
 
   /**
+   * Move an in-flight task's base branch from `from` to `to` (null: origin's default), and
+   * record `from` on the task. `moveMergedBaseBranches` is the caller, once `from` has merged.
+   *
+   * The one write of a provisioning field `update` refuses outside the backlog, and allowed
+   * here because nothing re-provisions from it: every reader of a dispatched task's base - the
+   * merge watcher, the Diff view, evidence and affected-tests measurement, resets, the Pull
+   * Request action and a contract composed on a later assign - asks the row when it runs, so
+   * each follows the move from then on. A backlog task keeps the edit path. Refused when the
+   * task's base is no longer `from`, because the caller decided on a row read before its
+   * network calls.
+   */
+  moveBaseBranch(id: string, from: string, to: string | null): Ok & { task?: Task } {
+    const t = this.registry.getTask(id);
+    if (!t) return { ok: false, error: "no such task" };
+    if (t.status === "backlog") return { ok: false, error: "a backlog task's base branch is changed by editing it" };
+    if (this.assigningTasks.has(id)) return { ok: false, error: "task is being assigned" };
+    if ((t.baseBranch ?? null) !== from) return { ok: false, error: `task's base branch is no longer ${from}` };
+    const task: Task = { ...t, baseBranch: to, baseBranchMovedFrom: from, updatedAt: Date.now() };
+    this.registry.upsertTask(task);
+    return { ok: true, task };
+  }
+
+  /**
    * Everything `update` decides, without the write: the row this patch would produce, or
    * the refusal. Split out so a bulk edit can check every task before it writes any of them.
    *
@@ -4336,8 +4359,9 @@ export class TaskManager {
       repoRoot: patch.repoRoot ?? t.repoRoot,
       // Checked against origin by the route before it reaches here, like `repoRoot` above.
       // Written only when the patch names it, so an edit that does not touch the base leaves
-      // the task exactly as it was rather than adding a key it did not carry.
-      ...(patch.baseBranch !== undefined ? { baseBranch: patch.baseBranch } : {}),
+      // the task exactly as it was rather than adding a key it did not carry. A base the
+      // operator names supersedes any earlier move, so the record of that move goes with it.
+      ...(patch.baseBranch !== undefined ? { baseBranch: patch.baseBranch, baseBranchMovedFrom: null } : {}),
       extraRepos,
       intent,
       // Emptying the title asks for one to be derived again - and from the intent as it

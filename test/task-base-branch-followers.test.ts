@@ -571,3 +571,31 @@ test("a task with no base branch completes on a merge into any branch, exactly a
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
   assert.deepEqual(f.tasks.dependencyBlockers(f.dependent()), []);
 });
+
+test("after its base branch merged and moved, a merge into the new base completes the task and releases its dependent", async () => {
+  const url = "https://github.com/example/repo/pull/906";
+  const f = withDependent("moved-base");
+  f.branchPoll(url, "open", "release/2.0");
+  f.depart();
+
+  // GitHub retargeted the PR to main when release/2.0 merged there; the move has not happened.
+  await f.urlPoll(url, "main");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "failed", "a merge outside the base still counts for nothing");
+
+  assert.equal(f.tasks.moveBaseBranch(f.taskId, "release/2.0", null).ok, true);
+  await f.urlPoll(url, "main");
+
+  const done = f.registry.getTask(f.taskId)!;
+  assert.equal(done.status, "done");
+  assert.equal(done.baseBranchMovedFrom, "release/2.0");
+  assert.notEqual(f.dependent().dependencies[0]?.satisfiedAt, null, "stamped on the edge");
+  assert.deepEqual(f.tasks.dependencyBlockers(f.dependent()), []);
+});
+
+test("the branch poller counts a merge into the base a task was moved to", () => {
+  const f = withDependent("moved-branch");
+  assert.equal(f.tasks.moveBaseBranch(f.taskId, "release/2.0", "release/3.0").ok, true);
+  f.branchPoll("https://github.com/example/repo/pull/907", "merged", "release/3.0");
+  assert.equal(taskWorkEpisodeForTask(f.taskId)?.mergedAt, NOW);
+  assert.deepEqual(f.tasks.dependencyBlockers(f.dependent()), []);
+});

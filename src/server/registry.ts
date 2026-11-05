@@ -5810,6 +5810,15 @@ export class Registry extends EventEmitter {
       .concat(this.completedDependencySources());
   }
 
+  /**
+   * The tasks whose base branch a merge of that branch can move (`moveMergedBaseBranches`):
+   * the ones a merge of their own pull request is still judged for against that base. Only
+   * rows the registry holds, since the move is written through it.
+   */
+  baseBranchMoveCandidates(): Task[] {
+    return this.mergeObservationTasks().filter((task) => task.baseBranch && this.tasks.has(task.id));
+  }
+
   private unresolvedDependencyReferences(binding: TaskWorkEpisodeBinding): boolean {
     return this.listTasks().some((task) => task.dependencies.some((edge) =>
       edge.type === "task" && edge.taskId === binding.taskId && edge.satisfiedAt === null &&

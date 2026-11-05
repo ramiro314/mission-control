@@ -72,10 +72,12 @@ test("a database from before base branches opens, gains the column, and reads it
     openDb().prepare(`PRAGMA table_info(tasks)`).all() as unknown as Array<{ name: string }>
   ).map((c) => c.name);
   assert.ok(columns.includes("base_branch"));
+  assert.ok(columns.includes("base_branch_moved_from"));
 
   const existing = getTask("before-base-branch");
   assert.ok(existing, "the pre-feature row is still readable");
   assert.equal(existing.baseBranch, null);
+  assert.equal(existing.baseBranchMovedFrom, null, "no task moved before the column existed");
 });
 
 test("a base branch written to an upgraded database reads back, and clears back to null", () => {
@@ -84,4 +86,6 @@ test("a base branch written to an upgraded database reads back, and clears back 
   assert.equal(getTask("before-base-branch")?.baseBranch, "release/2.0");
   upsertTask({ ...existing, baseBranch: null });
   assert.equal(getTask("before-base-branch")?.baseBranch, null);
+  upsertTask({ ...existing, baseBranch: null, baseBranchMovedFrom: "feat/a" });
+  assert.equal(getTask("before-base-branch")?.baseBranchMovedFrom, "feat/a");
 });
