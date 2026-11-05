@@ -51,7 +51,9 @@ import { mkSession } from "../../test/helpers/session-fixture.ts";
  * the registration it is missing. The preview names Git's fix, Execute runs it for real and then
  * recovers the slot, and a slot that holds work comes out repaired and still quarantined, for
  * Recover. The broken registrations are real files in the repository's Git directory; the one
- * seeded fact is the quarantine reason, which needs a pass this fixture has switched off.
+ * seeded fact is the quarantine reason, which needs a pass this fixture has switched off. A slot
+ * whose registration is gone altogether is registered again by the same Repair: its preview names
+ * the commit, and Execute keeps the warm install's inodes.
  *
  * Orphan processes: a process still inside a tree whose owner has finished is listed in Storage,
  * its link lands on the slot card, and Kill there goes through its confirmation to the guarded
@@ -488,6 +490,105 @@ test("Repair runs Git's own fix from the slot card through its preview, and a sl
   expect(existsSync(locked(holdingWork.path))).toBe(false);
   expect(readFileSync(notes, "utf8")).toBe("not committed anywhere\n");
   await shoot(dashboard, "13-repaired-holds-work");
+});
+
+test("Repair registers again a slot whose Git registration is gone, keeping its warm install, and one holding work stays quarantined", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const repo = (...args: string[]) => execFileSync("git", ["-C", daemon.repo, ...args], { stdio: "pipe" }).toString().trim();
+  repo("config", "user.name", "Spec");
+  repo("config", "user.email", "spec@example.com");
+  writeFileSync(join(daemon.repo, ".gitignore"), ".yarn/install-state.gz\nnode_modules/\n");
+  repo("add", ".gitignore");
+  repo("commit", "-qm", "ignore the install");
+  repo("push", "-q", "origin", "main");
+  const head = repo("rev-parse", "HEAD");
+
+  const lease = async (label: string) => {
+    const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(acquired.status()).toBe(201);
+    return await acquired.json() as { path: string; leaseId: string };
+  };
+  const leases = [await lease("registration gone"), await lease("registration gone, holds work")];
+  for (const { leaseId } of leases) {
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId } });
+    expect(returned.ok()).toBe(true);
+  }
+  const [clean, holdingWork] = leases.map((held) => held.path) as [string, string];
+
+  // A warm install in each, then what an operator's stray `git worktree prune` leaves: the folder,
+  // its old .git file, and no administrative directory for it.
+  const install = [".yarn/install-state.gz", "node_modules/pkg/index.js"];
+  const inodes = (path: string) => install.map((file) => statSync(join(path, file)).ino);
+  for (const path of [clean, holdingWork]) {
+    for (const file of install) {
+      mkdirSync(join(path, file, ".."), { recursive: true });
+      writeFileSync(join(path, file), "installed\n");
+    }
+    rmSync(dirname(indexLockOf(path)), { recursive: true });
+  }
+  const notes = join(holdingWork, "notes.md");
+  writeFileSync(notes, "not committed anywhere\n");
+  const before = { clean: inodes(clean), holdingWork: inodes(holdingWork) };
+  expect(repo("worktree", "list", "--porcelain")).not.toContain(`worktree ${clean}\n`);
+  withDaemonDb(daemon, (db) => {
+    for (const path of [clean, holdingWork]) {
+      const changed = db.prepare(
+        `UPDATE worktree_slots
+            SET state = 'quarantined', version = version + 1, quarantined_at = ?,
+                quarantine_reason = 'slot path or Git registration is missing', last_error = NULL
+          WHERE path = ? AND state = 'available'`,
+      ).run(Date.now(), path);
+      expect(Number(changed.changes)).toBe(1);
+    }
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const slot = dashboard.locator(".wt-slot", { hasText: clean });
+  await expect(slot).toContainText("slot path or Git registration is missing");
+  await expect(slot.getByRole("button", { name: "Forget", exact: true })).toHaveCount(0);
+  await dashboard.setViewportSize({ width: 1280, height: 1100 });
+  await slot.scrollIntoViewIfNeeded();
+  await slot.getByRole("button", { name: "Repair", exact: true }).click();
+
+  const preview = dashboard.getByRole("dialog", { name: "repair worktree preview" });
+  await expect(preview.getByText(
+    `No Git registration names ${clean}, so Repair registers the folder again at ${head}, the HEAD the slot last recorded.`,
+  )).toBeVisible();
+  await expect(preview.getByText("Tracked and untracked files are checked once the slot is registered again. Ignored files stay.")).toBeVisible();
+  await expect(preview.getByLabel(/I understand/)).toHaveCount(0);
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "18-reregister-preview");
+
+  // Cancel changes nothing: the folder stays unregistered.
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(preview).toHaveCount(0);
+  expect(repo("worktree", "list", "--porcelain")).not.toContain(`worktree ${clean}\n`);
+
+  await slot.getByRole("button", { name: "Repair", exact: true }).click();
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(slot.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  expect(repo("worktree", "list", "--porcelain")).toContain(`worktree ${clean}\n`);
+  expect(inodes(clean), "the install kept every inode").toEqual(before.clean);
+  await shoot(dashboard, "19-reregistered-available");
+
+  const kept = dashboard.locator(".wt-slot", { hasText: holdingWork });
+  await kept.getByRole("button", { name: "Repair", exact: true }).click();
+  await expect(preview.getByText(/^No Git registration names .*, so Repair registers the folder again at /)).toBeVisible();
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(kept).toContainText("registration repaired; holds work", { timeout: EXECUTES_MS });
+  await expect(kept).toContainText("notes.md");
+  await expect(kept.getByRole("button", { name: "Repair", exact: true })).toHaveCount(0);
+  await expect(kept.getByRole("button", { name: "Recover", exact: true })).toBeVisible();
+  expect(readFileSync(notes, "utf8")).toBe("not committed anywhere\n");
+  expect(inodes(holdingWork)).toEqual(before.holdingWork);
+  await shoot(dashboard, "20-reregistered-holds-work");
 });
 
 test("Forget runs from the slot card through its preview when Repair has no answer, and requires the discard acknowledgement", async ({

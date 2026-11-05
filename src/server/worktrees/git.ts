@@ -70,7 +70,12 @@ export type BranchCheckoutMode = "attach" | "track" | "detach";
 export interface WorktreeGit {
   list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>>;
   inspect(path: string): Promise<GitResult<WorktreeInspection>>;
-  add(identity: WorktreeRepositoryIdentity, path: string, commit: string): Promise<GitResult<void>>;
+  /** `checkout: false` registers the folder at `commit` and writes neither its files nor its index. */
+  add(identity: WorktreeRepositoryIdentity, path: string, commit: string, options?: { checkout?: boolean }): Promise<GitResult<void>>;
+  /** Fills a worktree's index from its `HEAD`, leaving its files as they are. */
+  readIndex(path: string): Promise<GitResult<void>>;
+  /** Whether the repository holds `sha` as a commit. Reads objects only; never fetches. */
+  hasCommit(identity: WorktreeRepositoryIdentity, sha: string): Promise<GitResult<boolean>>;
   reset(path: string, commit: string): Promise<GitResult<void>>;
   observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
@@ -307,6 +312,7 @@ export class NativeWorktreeGit implements WorktreeGit {
     identity: WorktreeRepositoryIdentity,
     path: string,
     commit: string,
+    options: { checkout?: boolean } = {},
   ): Promise<GitResult<void>> {
     const parent = dirname(path);
     await mkdir(parent, { recursive: true });
@@ -322,11 +328,33 @@ export class NativeWorktreeGit implements WorktreeGit {
     // interrupted add by that word. `LANGUAGE` reaches only messages, so hooks keep their locale.
     const result = await this.execute(
       "git",
-      ["-C", identity.mainCheckoutRoot, "worktree", "add", "--detach", path, commit],
+      ["-C", identity.mainCheckoutRoot, "worktree", "add", "--detach", ...(options.checkout === false ? ["--no-checkout"] : []), path, commit],
       { timeoutMs: 60_000, env: { ...process.env, LANGUAGE: "C" } },
     );
     if (commandFailed(result)) return failure("git worktree add", result);
     return { ok: true, value: undefined };
+  }
+
+  async readIndex(path: string): Promise<GitResult<void>> {
+    const result = await this.execute("git", ["-C", path, "read-tree", "HEAD"], { timeoutMs: 60_000 });
+    if (commandFailed(result)) return failure("git read-tree HEAD", result);
+    return { ok: true, value: undefined };
+  }
+
+  async hasCommit(identity: WorktreeRepositoryIdentity, sha: string): Promise<GitResult<boolean>> {
+    // Only an object name reaches Git, never an option or a revision expression.
+    if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) return { ok: true, value: false };
+    return this.observe(
+      ["-C", identity.mainCheckoutRoot, ...OBSERVATION_GIT_OPTIONS, "rev-parse", "--verify", "--quiet", `${sha}^{commit}`],
+      15_000,
+      (result): GitResult<boolean> => {
+        if (result.outcomeUnknown || result.overflowed) return failure(`git rev-parse ${sha}`, result);
+        if (result.code === 0) return { ok: true, value: true };
+        // `--verify --quiet` answers an object that is not here with exit 1 and nothing printed.
+        if (result.code === 1 && result.stdout.trim() === "") return { ok: true, value: false };
+        return failure(`git rev-parse ${sha}`, result);
+      },
+    );
   }
 
   async reset(path: string, commit: string): Promise<GitResult<void>> {
