@@ -283,7 +283,9 @@ test("the dock opens from its chord and from the palette, lists profiles, and a 
   // Escape hands focus back to the button the dock hangs off, not to the page body.
   await expect(dashboard.getByRole("button", { name: /^Residents - \d+ live$/ })).toBeFocused();
 
-  await dashboard.keyboard.press("Meta+K");
+  // ControlOrMeta, not Meta: off macOS the fork's primary modifier is Ctrl and Super+K is
+  // deliberately ignored (see `chordFromEvent`).
+  await dashboard.keyboard.press("ControlOrMeta+k");
   const palette = dashboard.getByRole("dialog").filter({ has: dashboard.getByRole("combobox") }).first();
   await dashboard.keyboard.type("Residents dock");
   // The command row, not the shortcut row of the same name, which opens its binding instead.

@@ -28,6 +28,9 @@ interface CommandView {
   slot: string;
   defaultCommand: string[] | null;
   maxRuns: number;
+  timeoutMs: number | null;
+  onUnavailable: "skip" | "block";
+  onBudgetExhausted: "skip" | "block";
   overrides: Array<{ repoRoot: string; command: string[] }>;
   revision: number;
 }
@@ -55,6 +58,9 @@ async function saveSlot(daemon: DaemonHandle, slot: string, overrides: CommandVi
     expectedRevision: view.revision,
     defaultCommand: view.defaultCommand,
     maxRuns: view.maxRuns,
+    timeoutMs: view.timeoutMs,
+    onUnavailable: view.onUnavailable,
+    onBudgetExhausted: view.onBudgetExhausted,
     overrides,
   }, "PUT");
 }
@@ -91,6 +97,9 @@ test("a Command document is previewed, refused as stale after another window sav
     expectedRevision: lint.revision,
     defaultCommand: ["npm", "run", "lint"],
     maxRuns: 3,
+    timeoutMs: lint.timeoutMs,
+    onUnavailable: lint.onUnavailable,
+    onBudgetExhausted: lint.onBudgetExhausted,
     overrides: [],
   }, "PUT");
   await api(daemon, "/api/testing-settings", {

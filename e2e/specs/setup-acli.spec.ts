@@ -130,13 +130,25 @@ test.describe("with acli not installed", () => {
     await expectRowStatus(page, "dependency-acli-cli", "Missing");
     await expect(cli).toContainText("Atlassian CLI");
     await expect(cli).toContainText("cannot sweep, check, or write back");
-    await expect(cli.locator(".setup-command code")).toHaveText("brew install atlassian/acli/acli");
-    await expect(cli.getByRole("button", { name: "Copy" })).toBeVisible();
-    await expect(cli.getByRole("button", { name: "Run in a terminal" })).toBeEnabled();
 
     const auth = setupRow(page, "dependency-acli-auth");
     await expectRowStatus(page, "dependency-acli-auth", "Needs setup");
     await expect(auth).toContainText("Install the Atlassian CLI first, press Re-check, then sign in.");
+
+    // Homebrew is macOS-only, so Linux offers the install guide and runs nothing.
+    if (process.platform !== "darwin") {
+      await expect(cli).toContainText("Install acli with your distribution's package manager.");
+      await expect(cli.getByRole("link", { name: "Open Atlassian CLI installation guide" }))
+        .toHaveAttribute("href", "https://developer.atlassian.com/cloud/acli/guides/install-linux/");
+      await expect(cli.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
+      await expect(cli).not.toContainText("brew");
+      await shoot(page, "setup-acli-missing");
+      expect(terminalRecords(daemon.recordDir)).toEqual([]);
+      return;
+    }
+    await expect(cli.locator(".setup-command code")).toHaveText("brew install atlassian/acli/acli");
+    await expect(cli.getByRole("button", { name: "Copy" })).toBeVisible();
+    await expect(cli.getByRole("button", { name: "Run in a terminal" })).toBeEnabled();
     await shoot(page, "setup-acli-missing");
 
     // The install runs exactly the catalog's command, in the terminal the operator picks.

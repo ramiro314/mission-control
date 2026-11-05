@@ -141,10 +141,15 @@ const LONG_PROFILES = [PROFILES[0]!, PROFILES[1]!, profile("p3", LONG_NAME, "amb
  * holds one row down to about 1040px with the dock's button (about 980px before it: one more
  * control's glyph and count). Below that the bar may stack, and the claim left to make there
  * is the one this file owns - the panel still opens inside the window.
+ *
+ * The fork's History page segment (fork:session-history) adds its glyph to the bar at these
+ * rungs, about 35px in the DejaVu faces CI's Linux runners draw with: the default-rung bar
+ * then needs about 1420px and the fully shed one about 1100px. `wide` and `narrow` are 40px
+ * wider than upstream's 1400 and 1100 so each keeps the margin it had there.
  */
 const VIEWPORTS = {
-  wide: { width: 1400, height: 900, rung: "1 2 3 4", oneRow: true },
-  narrow: { width: 1100, height: 560, rung: "1 2 3 4 5", oneRow: true },
+  wide: { width: 1440, height: 900, rung: "1 2 3 4", oneRow: true },
+  narrow: { width: 1140, height: 560, rung: "1 2 3 4 5", oneRow: true },
   tight: { width: 900, height: 520, rung: "1 2 3 4 5", oneRow: false },
   // The narrowest window Settings > Worktrees is checked at. The dock's button made the
   // action cluster wider than this bar, and the page scrolled sideways until the cluster

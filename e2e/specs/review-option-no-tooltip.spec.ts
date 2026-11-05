@@ -12,6 +12,10 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * alike (both draw `DecisionForm`). Absences are read once after the click is confirmed, since
  * a retrying assertion would pass over a bubble that appeared and went away, and each test
  * first shows that "Chat about it", which keeps its tooltip, can still raise one.
+ *
+ * fork:decision-forms opens a form on its recommended options, and `check()` on an input that
+ * is already checked does nothing, so it would neither pick nor focus. A recommended radio is
+ * picked with a click instead, and a recommended checkbox is cleared before it is ticked.
  */
 
 const EVIDENCE = artifactsDir("review-option-no-tooltip");
@@ -128,7 +132,8 @@ test("choosing an option leaves no tooltip over the question", async ({ dashboar
   await rebase.hover();
   expect(await bubble.count(), "hovering an option row paints no bubble").toBe(0);
 
-  await rebase.check();
+  await expect(rebase, "the form opens on the recommendation").toBeChecked();
+  await rebase.click();
   await expect(rebase).toBeChecked();
   await expect(rebase).toBeFocused();
   expect(await bubble.count(), "picking an option leaves no bubble behind").toBe(0);
@@ -201,7 +206,8 @@ test("a request_input question's options leave no tooltip over the question eith
   await biome.hover();
   expect(await bubble.count(), "hovering an option row paints no bubble").toBe(0);
 
-  await biome.check();
+  await expect(biome, "the form opens on the recommendation").toBeChecked();
+  await biome.click();
   await expect(biome).toBeChecked();
   await expect(biome).toBeFocused();
   expect(await bubble.count(), "picking an option leaves no bubble behind").toBe(0);
@@ -237,6 +243,8 @@ test("a multi-select request_input question's checkboxes leave no tooltip either
   await dashboard.mouse.move(0, 0);
   await expect(bubble).toHaveCount(0);
 
+  await expect(biome, "the form opens on the recommendation").toBeChecked();
+  await biome.uncheck();
   await biome.check();
   await expect(biome).toBeChecked();
   await expect(biome).toBeFocused();

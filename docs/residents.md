@@ -510,8 +510,9 @@ Open **Residents > Skill sources** to browse Mission Control's `skills/`, `~/.cl
 `~/.agents/skills`, and `$CODEX_HOME/skills` (or `~/.codex/skills` when unset). Claude entries
 that resolve to a skill already indexed by Mission Control are omitted; independent
 `mission-*` folders and links remain indexed.
-The pre-installed html-plans, html-report, phased-plan, pull-request and retro skills appear
-under **Mission Control**, read directly from the current app bundle. Stale global links to an
+The pre-installed html-plans, html-report, phased-plan, pull-request and retro skills, and in
+this fork deflake, docs-only-ci, grill, testing-setup and tickets, appear under **Mission
+Control**, read directly from the current app bundle. Stale global links to an
 older app location do not remove those entries; choose **Mission Control** in the Source filter
 to see them.
 Register up to 16 additional absolute or home-relative folders. Removing a source only removes
