@@ -358,7 +358,7 @@ test("the CodeRabbit message carries open Inspector findings and an unescalated 
   const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
   assert.equal(candidate.error, undefined);
   const payload = candidate.payload!;
-  assert.match(payload, /CodeRabbit has 1 unresolved review threads/);
+  assert.match(payload, /CodeRabbit has 1 unresolved findings \(review threads or pre-merge checks\)/);
   assert.match(payload, /GitHub Inspector has 1 unresolved finding on it/);
   assert.match(payload, /Null deref in the parser/);
   assert.doesNotMatch(payload, /Already fixed finding/);
@@ -381,7 +381,7 @@ test("the CodeRabbit message leaves out findings and a conflict when there are n
     const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
     assert.equal(candidate.error, undefined, variant);
     const payload = candidate.payload!;
-    assert.match(payload, /CodeRabbit has 1 unresolved review threads/, variant);
+    assert.match(payload, /CodeRabbit has 1 unresolved findings \(review threads or pre-merge checks\)/, variant);
     assert.doesNotMatch(payload, /merge conflicts/, variant);
     if (variant === "escalated") assert.match(payload, /Null deref in the parser/, variant);
     else assert.doesNotMatch(payload, /GitHub Inspector has|Null deref in the parser/, variant);
@@ -402,7 +402,7 @@ test("the CodeRabbit message's CI lines follow which failures count", (t) => {
   };
 
   const quiet = payloadFor("required", "passing").payload;
-  assert.match(quiet, /CodeRabbit has 1 unresolved review threads/);
+  assert.match(quiet, /CodeRabbit has 1 unresolved findings \(review threads or pre-merge checks\)/);
   assert.doesNotMatch(quiet, /CI checks are failing|gh pr checks/, "a non-required failure is not relayed");
 
   const red = payloadFor("required", "failing");
