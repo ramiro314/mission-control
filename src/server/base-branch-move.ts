@@ -46,24 +46,17 @@ export interface BaseBranchMoveDeps {
 }
 
 /**
- * The base `branch` merged into, as `pr list --head <branch> --state merged` reports it. `gh`
- * lists newest first, so a branch name reused for a later pull request answers with that one.
+ * The `gh pr list` arguments for the newest merged pull request headed by `branch` on `repo`
+ * (`owner/name`). `--repo` is never left out, for the reason `prListArgs` gives.
  */
-export async function mergedPullRequestBase(
-  repoRoot: string,
-  branch: string,
-  execute: typeof run = run,
-): Promise<string | null | "error"> {
-  const repo = await checkoutGitHubRepository(repoRoot);
-  if (!repo.ok) return "error";
-  const listed = await execute(
-    ghBin(),
-    ["pr", "list", "--repo", repo.repo, "--head", branch, "--state", "merged", "--json", "baseRefName", "--limit", "1"],
-    { cwd: repoRoot, timeoutMs: 8000 },
-  );
-  if (listed.code !== 0) return "error";
+export function mergedPrListArgs(branch: string, repo: string): string[] {
+  return ["pr", "list", "--repo", repo, "--head", branch, "--state", "merged", "--json", "baseRefName", "--limit", "1"];
+}
+
+/** The base a `mergedPrListArgs` listing names: null for no merged pull request. */
+export function parseMergedPullRequestBase(stdout: string): string | null | "error" {
   try {
-    const rows: unknown = JSON.parse(listed.stdout || "[]");
+    const rows: unknown = JSON.parse(stdout || "[]");
     if (!Array.isArray(rows)) return "error";
     if (rows.length === 0) return null;
     const base = (rows[0] as { baseRefName?: unknown } | null)?.baseRefName;
@@ -71,6 +64,17 @@ export async function mergedPullRequestBase(
   } catch {
     return "error";
   }
+}
+
+/**
+ * The base `branch` merged into, as `pr list --head <branch> --state merged` reports it. `gh`
+ * lists newest first, so a branch name reused for a later pull request answers with that one.
+ */
+export async function mergedPullRequestBase(repoRoot: string, branch: string): Promise<string | null | "error"> {
+  const repo = await checkoutGitHubRepository(repoRoot);
+  if (!repo.ok) return "error";
+  const listed = await run(ghBin(), mergedPrListArgs(branch, repo.repo), { cwd: repoRoot, timeoutMs: 8000 });
+  return listed.code === 0 ? parseMergedPullRequestBase(listed.stdout) : "error";
 }
 
 const defaultDeps: BaseBranchMoveDeps = {

@@ -19,7 +19,8 @@ process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const taskManager = trackedTaskManagers(TaskManager);
-const { moveMergedBaseBranches, mergedPullRequestBase } = await import("../src/server/base-branch-move.ts");
+const { moveMergedBaseBranches, mergedPrListArgs, parseMergedPullRequestBase } =
+  await import("../src/server/base-branch-move.ts");
 const { changedPathsSince, computeSessionDiff } = await import("../src/server/diff.ts");
 const { resetPreview } = await import("../src/server/actions.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
@@ -318,20 +319,14 @@ test("editing a backlog task's base drops the record of an earlier move", async 
   assert.equal(registry.getTask("requeued")?.baseBranchMovedFrom, null);
 });
 
-test("the merged pull request's base is read from gh for the checkout's GitHub repository", async () => {
-  const repo = join(repos, "gh-lookup");
-  execFileSync("git", ["init", "-q", repo]);
-  git(repo, "remote", "add", "origin", "https://github.com/example/repo.git");
-  const calls: string[][] = [];
-  const answer = (stdout: string, code = 0) => async (_bin: string, args: string[]) => {
-    calls.push(args);
-    return { code, stdout, stderr: "" } as Awaited<ReturnType<typeof import("../src/server/util/exec.ts").run>>;
-  };
-  assert.equal(await mergedPullRequestBase(repo, "feat/a", answer(`[{"baseRefName":"main"}]`)), "main");
-  assert.deepEqual(calls[0], [
+test("the merged pull request's base is read from gh for the named repository", () => {
+  assert.deepEqual(mergedPrListArgs("feat/a", "example/repo"), [
     "pr", "list", "--repo", "example/repo", "--head", "feat/a", "--state", "merged", "--json", "baseRefName", "--limit", "1",
   ]);
-  assert.equal(await mergedPullRequestBase(repo, "feat/a", answer("[]")), null);
-  assert.equal(await mergedPullRequestBase(repo, "feat/a", answer("not json")), "error");
-  assert.equal(await mergedPullRequestBase(repo, "feat/a", answer("", 1)), "error");
+  assert.equal(parseMergedPullRequestBase(`[{"baseRefName":"main"}]`), "main");
+  assert.equal(parseMergedPullRequestBase("[]"), null);
+  assert.equal(parseMergedPullRequestBase(""), null);
+  assert.equal(parseMergedPullRequestBase(`[{"baseRefName":""}]`), "error");
+  assert.equal(parseMergedPullRequestBase("{}"), "error");
+  assert.equal(parseMergedPullRequestBase("not json"), "error");
 });
