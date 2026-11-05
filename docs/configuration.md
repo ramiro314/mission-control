@@ -10,6 +10,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
 | `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, and disposable Git worktrees) |
+| `MISSION_DAEMON_LOG_CAPTURED` | unset | `1` tells the daemon its launcher already keeps its stdout and stderr, so it writes no [daemon log](#the-daemon-log) of its own. The desktop app's launcher and `npm run install-service` set it; leave it unset for `make start`, `make up` and `make server` |
 | `MISSION_AGENT_RUNTIME_DIR` | Linux: `$XDG_RUNTIME_DIR/mission-control`, else the temp dir | where the private agent runtime roots live: `mission-control-agent-state` (each launch's disposable state home and terminal launch wrapper) and `mission-control-agent-capabilities` (scout credentials an MCP child reads). The daemon resolves it once and sets it in every launch env and every MCP config env it hands an agent, so children never derive a different root. Each root must be a real directory owned by your uid with no group or other mode bits; otherwise the launch or credential provisioning that needed it fails with "Mission Control refused `<path>`" and never falls back to another directory. See [Troubleshooting](troubleshooting.md#a-launch-fails-with-mission-control-refused-a-path). On Linux, logind removes `$XDG_RUNTIME_DIR` when your last login session ends unless lingering is enabled, which also removes every running agent's launch wrapper and state home; a daemon that outlives your login, for example one started in tmux over SSH, needs `loginctl enable-linger` or this variable set to a private directory |
 | `MISSION_EXECUTABLE_PATHS` | unset | colon-separated absolute directories searched before version-manager locations and inherited PATH. Use this escape hatch for a private tool directory that is not exported by the login shell. `FLEET_EXECUTABLE_PATHS` and `HARNESS_EXECUTABLE_PATHS` remain compatible fallbacks. Relative entries are ignored, and Mission Control never scans below a listed directory |
 | `MISSION_WORKSPACE_DIRS` | unset | colon-separated launch-time override for **Settings → Repositories**. While set, it is the effective repository-index list and the saved list stays read-only. Without it, the removable saved defaults are `~/workspace`, `~/code`, `~/dev`, and `~/upstart` |
@@ -211,6 +212,36 @@ for the operator to fix.
 > repo: `npm run install-service` (the launchd label becomes `com.mission-control.daemon`;
 > the installer unloads the old one for you) and, if you use the review channel,
 > re-adding the MCP server under its new name (`claude mcp add -s user mission-control …`).
+
+## The daemon log
+
+Every daemon leaves its output in `$MISSION_HOME/daemon.log`, which is
+`~/.mission-control/daemon.log` by default. Who writes the file depends on who started the
+daemon:
+
+- **The desktop app** appends the daemon's stdout and stderr to it, and the shell's own
+  main-process lines go to the same file.
+- **The installed service** (`npm run install-service`) sends the output to `daemon.log` on
+  macOS, and to the journal on Linux (`journalctl --user -u mission-control`).
+- **A dev launch** (`make start`, `make server`, `make up`) has the daemon append its own output
+  to `daemon.log`, as well as printing it to the terminal. Under `make up` the output still also
+  goes to `.harness.log` in the checkout, and `make logs` still tails that file.
+
+The first two set `MISSION_DAEMON_LOG_CAPTURED=1`, so the daemon writes nothing itself and no
+line appears twice. The service sets it in its entry script as well as in the unit, so a service
+installed before this variable existed needs no reinstall: the daemon code that writes the log
+only runs after a restart, and that restart goes through the entry script. The daemon removes
+the variable from its own environment once read, so a dev daemon started from a terminal or
+agent session it launched still keeps its log.
+
+In a dev launch the daemon appends to `daemon.log` from its first line, but only rotates it once
+it owns the state home. A dev launch refused because another daemon, such as the installed
+service, already owns the home adds its refusal line and never renames the file that daemon's
+launcher holds open. The owning dev daemon checks the file's size before each batch of writes
+and, once it passes 10 MB, renames it to `daemon.log.1`, shifting older files up to
+`daemon.log.3` and deleting the oldest. A new log file is mode `0600`. The desktop shell's
+logger opens the file by path for every line, so it keeps writing to the new `daemon.log` after
+a rotation.
 
 ## Desktop update channel
 

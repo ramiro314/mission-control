@@ -56,6 +56,10 @@ if (buildResult.signal || buildResult.code !== 0) {
   );
 }
 
+// launchd and systemd keep this process's output, so the daemon must not write its own log.
+// The units set this too, but one installed before the daemon kept a log does not, and it
+// still enters here, so setting it in the entry fixes that unit on its next restart.
+process.env.MISSION_DAEMON_LOG_CAPTURED = "1";
 register();
 process.argv[1] = server;
 await import(pathToFileURL(server).href);

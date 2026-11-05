@@ -177,7 +177,7 @@ async function daemonFixture(t: test.TestContext) {
   t.after(() => { Date.now = realNow; Reflect.deleteProperty(globalThis, "__missionFakeSleep"); });
   const loaded = require(outfile) as {
     startDaemon: typeof startDaemon;
-    calls: { afterExit?: (code: number) => Promise<string | null> }[];
+    calls: { afterExit?: (code: number) => Promise<string | null>; env?: NodeJS.ProcessEnv }[];
   };
   let unresponsive = 0;
   return {
@@ -211,6 +211,12 @@ test("startDaemon hands its supervisor the contention re-probe only on Linux, an
   f.state.health = "incompatible";
   assert.equal(await afterExit(75), "another daemon from an older build owns this state; not restarting");
   assert.equal(f.unresponsive(), 0);
+});
+
+test("startDaemon tells the daemon its output is captured, so it writes no daemon.log of its own", async (t) => {
+  const f = await daemonFixture(t);
+  await f.start();
+  assert.equal(f.calls[0]?.env?.MISSION_DAEMON_LOG_CAPTURED, "1");
 });
 
 test("a running unit that never answers is adopted after 30 s and reported to the startup page", async (t) => {

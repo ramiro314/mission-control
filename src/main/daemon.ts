@@ -86,7 +86,7 @@ const INCOMPATIBLE_DAEMON =
  * Adopt a running daemon, or spawn + supervise our own. The spawned daemon is
  * restarted with capped backoff if it exits unexpectedly, and torn down on
  * `stop()`. Its env carries the resolved login-shell PATH (so it can find
- * tmux/wezterm/git) and MISSION_WEB_DIR.
+ * tmux/wezterm/git), MISSION_WEB_DIR and MISSION_DAEMON_LOG_CAPTURED.
  */
 export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonController> {
   const compatibility = await daemonCompatibility();
@@ -107,7 +107,8 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
     entry: opts.serverEntry,
     serviceName: "mission-control-daemon",
     logPath: opts.logPath,
-    env: executableChildEnv({ ...process.env, MISSION_WEB_DIR: opts.webDir }),
+    // This launcher appends the daemon's output to `logPath` itself, so the daemon must not.
+    env: executableChildEnv({ ...process.env, MISSION_WEB_DIR: opts.webDir, MISSION_DAEMON_LOG_CAPTURED: "1" }),
     // A Report click is armed in the shell over IPC and consumed here over the private
     // utility-process port. A loopback caller has access to neither side of that handoff.
     onSpawn: (child) => {
