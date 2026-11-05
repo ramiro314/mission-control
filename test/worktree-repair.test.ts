@@ -1219,6 +1219,31 @@ test("Forget clears a slot whose folder is gone: the row and registration go, an
   assert.equal(manager.store.slot((next as { lease: NativeWorktreeLease }).lease.slotId)?.ordinal, ordinal + 1);
 });
 
+test("a Forget preview waits for whatever holds the slot, and a claim is named once, as a claim", async () => {
+  const { clone, sha } = repository("mission-forget-busy-");
+  const slot = await quarantinedSlot(manager, clone, sha, "task-forget-busy", REGISTRATION_OR_IDENTITY.missingRegistration);
+  rmSync(slot.path, { recursive: true });
+  const preview = () => operations.preview({ action: "forget", slotId: slot.slotId });
+  assert.equal((await preview()).allowed, true, (await preview()).blockers.join("; "));
+
+  const held = manager as unknown as { acquireSlotLock(slotId: string, holder: string): Promise<() => void> };
+  const release = await held.acquireSlotLock(slot.slotId, "reconciliation");
+  const blocked = await preview();
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.blockers.join("; "), /is busy with reconciliation; preview again once it finishes/);
+  release();
+
+  const claim = manager.claims.register(slot.slotId, { kind: "task", key: "claiming" }, Date.now())!;
+  const claimed = (await preview()).blockers;
+  assert.ok(claimed.some((line) => /A dependency claim is running/.test(line)), claimed.join("; "));
+  assert.equal(claimed.some((line) => /is busy with/.test(line)), false, claimed.join("; "));
+  manager.claims.unregister(slot.slotId, claim);
+
+  const free = await preview();
+  assert.equal(free.allowed, true, free.blockers.join("; "));
+  assert.equal(free.blockers.some((line) => /is busy/.test(line)), false);
+});
+
 test("Forget deletes a folder whose common directory differs, and leaves that other repository alone", async () => {
   const { clone, sha } = repository("mission-forget-common-");
   const other = repository("mission-forget-common-other-");
