@@ -6,6 +6,7 @@ import {
   WAIT_FOR_CI_QUIET_MINUTES,
   WAIT_FOR_CI_QUIET_PERIOD_MESSAGE,
   WAIT_FOR_CI_TIMEOUT_MINUTES,
+  ciStrictnessLabel,
   waitForCiExpectedChecksValid,
   waitForCiQuietFits,
   waitForCiSettings,
@@ -235,7 +236,7 @@ export function waitForCiSummary(node: WaitForCiNodeFields): string {
   const settings = waitForCiSettings(node);
   const expected = settings.expectedChecks.length;
   return [
-    settings.strictness === "required" ? "Required checks" : "All checks",
+    ciStrictnessLabel(settings.strictness),
     `quiet ${settings.quietMinutes} min`,
     `blocks after ${node.timeoutMinutes} min`,
     expected > 0 ? `expects ${expected} check${expected === 1 ? "" : "s"}` : null,

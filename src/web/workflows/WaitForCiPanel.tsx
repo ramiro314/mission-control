@@ -1,20 +1,16 @@
 import type { WorkflowNodeAttempt } from "@shared/workflow.ts";
 import {
   countedChecks,
-  quotedNames,
+  notReportedWhenFailed,
   waitForCiSettings,
   waitForCiTruncated,
+  waitForCiTruncationText,
   type CiCheckRun,
   type WaitForCiSettings,
 } from "@shared/wait-for-ci.ts";
 import { ClockText } from "../components/ClockText.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
-import {
-  waitForCiHeadline,
-  waitForCiSettingsLine,
-  waitForCiStateOf,
-  waitForCiTruncationNote,
-} from "./run-model.ts";
+import { waitForCiHeadline, waitForCiSettingsLine, waitForCiStateOf } from "./run-model.ts";
 
 const CHECK_STATE_WORDS: Record<CiCheckRun["state"], string> = {
   pending: "Running",
@@ -23,14 +19,15 @@ const CHECK_STATE_WORDS: Record<CiCheckRun["state"], string> = {
 };
 
 /**
- * Why a check does or does not count, in Required mode only. "Not required" is said only once
- * GitHub has marked some check required: with none marked, every check counts.
+ * Why a check does or does not count, in Required mode only, read off `countedChecks` so the
+ * panel cannot disagree with the decision. "Not required" is said only for a check the node did
+ * not count: in the fallback, with none marked, every check counts.
  */
-function checkTag(run: CiCheckRun, settings: WaitForCiSettings, anyMarked: boolean): string | null {
+function checkTag(run: CiCheckRun, settings: WaitForCiSettings, counted: ReadonlySet<CiCheckRun>): string | null {
   if (settings.strictness !== "required") return null;
   if (run.required === true) return "Required";
   if (settings.expectedChecks.includes(run.name)) return "Expected";
-  return anyMarked ? "Not required" : null;
+  return counted.has(run) ? null : "Not required";
 }
 
 /**
@@ -53,8 +50,9 @@ export function WaitForCiPanel({
   const settings = waitForCiSettings(state);
   // The panel lists only what the node counted, so a failure that is not required never reads
   // as the reason it failed.
-  const failing = countedChecks(state.checkRuns, settings).counted.filter((run) => run.state === "failing");
-  const anyMarked = state.checkRuns.some((run) => run.required === true);
+  const counted = countedChecks(state.checkRuns, settings).counted;
+  const countedSet = new Set(counted);
+  const failing = counted.filter((run) => run.state === "failing");
   const unreported = state.observedAt === null ? [] : (state.missingExpected ?? []);
   const flakes = state.flakeReport?.flakes ?? [];
   const issues = new Map((state.flakeReport?.issues ?? []).map((issue) => [issue.key, issue]));
@@ -79,7 +77,7 @@ export function WaitForCiPanel({
       {state.requiredFallback && (
         <p className="wf-run-meta">No check on this head is marked required, so every check was judged.</p>
       )}
-      {waitForCiTruncated(state) && <p className="wf-run-meta">{waitForCiTruncationNote(state)}</p>}
+      {waitForCiTruncated(state) && <p className="wf-run-meta">{`${waitForCiTruncationText(state.checksTotal)}.`}</p>}
       {state.outcome === "fail" && failing.length > 0 && (
         <>
           <h5>Failing checks</h5>
@@ -101,7 +99,7 @@ export function WaitForCiPanel({
             ))}
           </ul>
           {unreported.length > 0 && (
-            <p className="wf-run-meta">{`Not reported when CI failed: ${quotedNames(unreported)}.`}</p>
+            <p className="wf-run-meta">{notReportedWhenFailed(unreported)}</p>
           )}
         </>
       )}
@@ -139,7 +137,7 @@ export function WaitForCiPanel({
           </Tooltip>
           <ul className="wf-run-ci-checks" aria-label="CI checks">
             {state.checkRuns.map((run, index) => {
-              const tag = checkTag(run, settings, anyMarked);
+              const tag = checkTag(run, settings, countedSet);
               return (
                 <li key={`${index}:${run.name}`} className={`is-${run.state}`}>
                   <span>{run.name}</span>

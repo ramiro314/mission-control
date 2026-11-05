@@ -629,6 +629,27 @@ test("Required mode with nothing marked waits out the quiet period, then judges 
   );
   assert.equal(skipped!.kind, "pass");
   assert.equal(skipped!.state.requiredFallback, true);
+  // The skip is for a pass only: a fallback failure with every expected check reported still
+  // waits out the quiet period, so a required check that reports last can still take over.
+  const [held, marked, judged] = observe(
+    configured({ strictness: "required", expectedChecks: ["deploy"] }),
+    at([run("deploy", "passing"), run("lint", "failing")], T0 + 10),
+    at([run("deploy", "passing"), run("lint", "failing")], T0 + 10 + 60_000),
+    at([run("deploy", "passing"), run("lint", "failing")], T0 + 10 + QUIET_MS),
+  );
+  assert.equal(held!.kind, "wait", "a failure that may not be required spent a repair round at once");
+  assert.equal(held!.state.quietSince, T0 + 10);
+  assert.equal(marked!.kind, "wait");
+  assert.equal(judged!.kind, "fail");
+  assert.equal(judged!.state.requiredFallback, true);
+  // ...and when the required check does report, the failure that is not required never decides.
+  const [, reported] = observe(
+    configured({ strictness: "required", expectedChecks: ["deploy"] }),
+    at([run("deploy", "passing"), run("lint", "failing")], T0 + 10),
+    at([run("deploy", "passing"), run("lint", "failing"), req("CI result", "passing")], T0 + 10 + 60_000),
+  );
+  assert.equal(reported!.kind, "pass");
+  assert.equal(reported!.state.requiredFallback, undefined);
 });
 
 test("expected checks must appear and pass in both modes, and all of them settled skips the quiet period", () => {

@@ -78,6 +78,7 @@ import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
 import {
   decideWaitForCi,
   initialWaitForCiState,
+  notReportedWhenFailed,
   quotedNames,
   readWaitForCiState,
   waitForCiSettings,
@@ -552,7 +553,7 @@ export function waitForCiVerdict(
   // the run panel, never sent for repair.
   const names = quotedNames(decision.failing.map((check) => check.name));
   const missing = decision.state.missingExpected ?? [];
-  const unreported = missing.length > 0 ? ` Not reported when CI failed: ${quotedNames(missing)}.` : "";
+  const unreported = missing.length > 0 ? ` ${notReportedWhenFailed(missing)}` : "";
   return normalizePersonaVerdict({
     verdict: "fail",
     summary: `CI failed on ${head}: ${names}.${unreported}${fallback}`,

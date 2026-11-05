@@ -51,10 +51,11 @@ import {
 import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
 import { blockedPhaseClause, workflowCaptureFailure, workflowPreparationRecovery } from "@shared/workflow-lifecycle.ts";
 import {
-  CI_CHECK_RUNS_MAX,
+  ciStrictnessLabel,
   quotedNames,
   readWaitForCiState,
   waitForCiSettings,
+  waitForCiTruncationText,
   type WaitForCiBlockCode,
   type WaitForCiState,
 } from "@shared/wait-for-ci.ts";
@@ -4059,20 +4060,9 @@ export const WAIT_FOR_CI_BLOCK_SENTENCES: Record<WaitForCiBlockCode, (state: Wai
       + "new version, then wait for CI again.";
   },
   ci_checks_truncated: (state) =>
-    `${truncationNote(state)} so this node cannot confirm CI passed. Check the rest on GitHub; `
-    + "if they pass, an operator can disable this node for the run.",
+    `${waitForCiTruncationText(state.checksTotal)}, so this node cannot confirm CI passed. Check the `
+    + "rest on GitHub; if they pass, an operator can disable this node for the run.",
 };
-
-/** How many checks GitHub reported against how many were read, ending in a comma or period. */
-function truncationNote(state: WaitForCiState, end = ","): string {
-  const total = state.checksTotal != null ? String(state.checksTotal) : `more than ${CI_CHECK_RUNS_MAX}`;
-  return `GitHub reported ${total} checks; only the first ${CI_CHECK_RUNS_MAX} were read${end}`;
-}
-
-/** The note under a Wait for CI card when GitHub reported more checks than were read. */
-export function waitForCiTruncationNote(state: WaitForCiState): string {
-  return truncationNote(state, ".");
-}
 
 /**
  * What a Wait for CI attempt judged under, in one line:
@@ -4081,7 +4071,7 @@ export function waitForCiTruncationNote(state: WaitForCiState): string {
 export function waitForCiSettingsLine(state: WaitForCiState): string {
   const settings = waitForCiSettings(state);
   return [
-    settings.strictness === "required" ? "Required checks" : "All checks",
+    ciStrictnessLabel(settings.strictness),
     settings.expectedChecks.length > 0 ? `expects ${quotedNames(settings.expectedChecks)}` : null,
     `quiet ${settings.quietMinutes} min`,
     `limit ${state.timeoutMinutes} min`,

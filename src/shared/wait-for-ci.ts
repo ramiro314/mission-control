@@ -51,11 +51,21 @@ export const WAIT_FOR_CI_LEGACY_SETTINGS = {
 } as const satisfies WaitForCiSettings;
 
 /** What a node added in the editor writes, built from the defaults. */
-export const WAIT_FOR_CI_NEW_NODE_SETTINGS: WaitForCiSettings = {
+export const WAIT_FOR_CI_NEW_NODE_SETTINGS: Readonly<WaitForCiSettings> = {
   strictness: CI_STRICTNESS[0],
   quietMinutes: WAIT_FOR_CI_QUIET_MINUTES.default,
   expectedChecks: [],
 };
+
+/** `WAIT_FOR_CI_NEW_NODE_SETTINGS` as fields a new node owns, its list a fresh array. */
+export function newWaitForCiNodeSettings(): Required<WaitForCiStoredSettings> {
+  return { ...WAIT_FOR_CI_NEW_NODE_SETTINGS, expectedChecks: [...WAIT_FOR_CI_NEW_NODE_SETTINGS.expectedChecks] };
+}
+
+/** The strictness as every surface names it: "All checks" or "Required checks". */
+export function ciStrictnessLabel(strictness: CiStrictness): string {
+  return strictness === "required" ? "Required checks" : "All checks";
+}
 
 /**
  * The one resolver for a node's or an attempt's settings: a stored field wins, and an absent
@@ -415,6 +425,20 @@ export function missingExpectedChecks(runs: readonly CiCheckRun[], settings: Wai
   return [...new Set(settings.expectedChecks)].filter((name) => !present.has(name));
 }
 
+/**
+ * How many checks GitHub reported against how many were read, as the block detail and the run
+ * panel say it: `GitHub reported 140 checks; only the first 100 were read`, with no end mark.
+ */
+export function waitForCiTruncationText(checksTotal: number | null | undefined): string {
+  const total = checksTotal != null ? String(checksTotal) : `more than ${CI_CHECK_RUNS_MAX}`;
+  return `GitHub reported ${total} checks; only the first ${CI_CHECK_RUNS_MAX} were read`;
+}
+
+/** The line a fail carries for expected checks CI never reported, or "" when there are none. */
+export function notReportedWhenFailed(missing: readonly string[]): string {
+  return missing.length > 0 ? `Not reported when CI failed: ${quotedNames(missing)}.` : "";
+}
+
 /** Whether GitHub reported more checks on the head than the node read. */
 export function waitForCiTruncated(state: Pick<WaitForCiState, "checksTotal">): boolean {
   return state.checksTotal != null && state.checksTotal > CI_CHECK_RUNS_MAX;
@@ -512,7 +536,7 @@ export function decideWaitForCi(
         if (waitForCiTruncated(decided)) {
           const blocked = {
             code: "ci_checks_truncated" as const,
-            detail: `GitHub reported ${decided.checksTotal} checks; only the first ${CI_CHECK_RUNS_MAX} were read.`,
+            detail: `${waitForCiTruncationText(decided.checksTotal)}.`,
           };
           return { kind: "block", ...blocked, state: { ...decided, outcome: "blocked", blocked } };
         }
@@ -521,8 +545,9 @@ export function decideWaitForCi(
       // A counted failure is decided at once, unless nothing is marked required: then the
       // quiet period runs first, in case GitHub marks the required checks late.
       if (failing.length > 0 && !fallback) return verdict();
-      // Every expected check reported and settled: nothing more to wait for.
-      if (settings.expectedChecks.length > 0 && missing.length === 0) return verdict();
+      // Every expected check reported and settled: nothing more to wait for. A pass only: a
+      // fallback failure still waits out the quiet period above, whatever was expected.
+      if (failing.length === 0 && settings.expectedChecks.length > 0 && missing.length === 0) return verdict();
       if (quietMs === 0) return verdict();
       const since = next.quietSince ?? null;
       if (since !== null && sameChecks(previous, counted)) {

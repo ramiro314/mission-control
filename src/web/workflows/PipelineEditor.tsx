@@ -36,7 +36,7 @@ import {
   type StageMember,
   type StagePipeline,
 } from "@shared/workflow-stages.ts";
-import { WAIT_FOR_CI_NEW_NODE_SETTINGS, WAIT_FOR_CI_TIMEOUT_MINUTES } from "@shared/wait-for-ci.ts";
+import { WAIT_FOR_CI_TIMEOUT_MINUTES, newWaitForCiNodeSettings } from "@shared/wait-for-ci.ts";
 import { WaitForCiNodeFieldset, waitForCiSummary, type WaitForCiNodeFields } from "./WaitForCiFields.tsx";
 import { waitForCiMayFollow } from "@shared/workflow-graph.ts";
 import {
@@ -120,8 +120,7 @@ const seededStage = (seed: StageSeed): Stage => seed.kind === "session_action"
           nodeId: null,
           kind: "wait_for_ci",
           timeoutMinutes: WAIT_FOR_CI_TIMEOUT_MINUTES.default,
-          ...WAIT_FOR_CI_NEW_NODE_SETTINGS,
-          expectedChecks: [...WAIT_FOR_CI_NEW_NODE_SETTINGS.expectedChecks],
+          ...newWaitForCiNodeSettings(),
         }],
       }
     : { kind: "evaluation", joinId: null, members: [seeded(seed)] };
