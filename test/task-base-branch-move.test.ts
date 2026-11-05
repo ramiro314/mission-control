@@ -10,7 +10,8 @@ import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { Task } from "../src/shared/types.ts";
 // Pure and browser-safe, so a static import cannot open the DB ahead of the home below.
-import { movableBaseBranch } from "../src/shared/task.ts";
+import { baseBranchMoveRefusal, movableBaseBranch } from "../src/shared/task.ts";
+import { TASK_STATUSES } from "../src/shared/types.ts";
 
 // Moving an in-flight task's base branch to where its base branch merged (#771). Every fixture
 // is a stack: `feat/base` cut from `main`, and the task's worktree `feat/stacked` cut from
@@ -405,6 +406,23 @@ test("a squash-merged stack of three is walked down one merge at a time", async 
 });
 
 // --- the footer's offer ---
+
+test("the footer offers the move exactly when the daemon's shared refusal allows it, and the route refuses with its words", async () => {
+  const f = runningStack("one-rule");
+  baseMerged("main", f.mergedHead);
+  for (const status of TASK_STATUSES) {
+    for (const baseBranch of ["feat/base", null]) {
+      const refusal = baseBranchMoveRefusal({ status, baseBranch });
+      assert.equal(movableBaseBranch({ status, baseBranch }), refusal === null ? baseBranch : null, `${status} ${baseBranch}`);
+      if (refusal === null) continue;
+      const id = `one-rule-${status}-${baseBranch ?? "none"}`;
+      f.registry.upsertTask(mkTask({ id, status, repoRoot: f.repo, baseBranch, baseSha: f.mergedHead }));
+      const res = await f.move(id);
+      assert.equal(res.status, 409, `${status} ${baseBranch}`);
+      assert.equal(((await res.json()) as { error: string }).error, refusal);
+    }
+  }
+});
 
 test("the footer offers a move for the base the task has now, not for a stale move record", () => {
   const ontoMain = { from: "feat/base", to: "main", toDefault: true, toSha: "c".repeat(40), prUrl: BASE_PR, movedAt: 1 };

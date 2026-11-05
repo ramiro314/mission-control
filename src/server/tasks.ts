@@ -70,6 +70,7 @@ import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency } from "@shared/task-dependency.ts";
 import {
+  baseBranchMoveRefusal,
   taskHasRepository,
   dispatchHasNoProvisionedResources,
   isLocalPlanningTask,
@@ -4218,7 +4219,7 @@ export class TaskManager {
   ): Promise<{ ok: true; task: Task } | { ok: false; error: string; status: 404 | 409 | 502 }> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task", status: 404 };
-    const refused = this.baseBranchMoveRefusal(t);
+    const refused = this.moveRefusal(t);
     if (refused) return { ok: false, error: refused, status: 409 };
     const from = t.baseBranch!;
     const merged = await (deps.mergedPullRequest ?? mergedPullRequestForBranch)(t.repoRoot, from);
@@ -4264,7 +4265,7 @@ export class TaskManager {
     if (!toSha.ok) return { ok: false, error: `could not read origin/${to}: ${toSha.reason}`, status: 502 };
     // The awaits above leave the row free to change. Write only over the row this was asked of.
     const live = this.registry.getTask(id);
-    if (!live || live.baseBranch !== from || this.baseBranchMoveRefusal(live)) {
+    if (!live || live.baseBranch !== from || this.moveRefusal(live)) {
       return { ok: false, error: "task changed while its base branch was moving; retry", status: 409 };
     }
     const now = Date.now();
@@ -4280,14 +4281,9 @@ export class TaskManager {
     return { ok: true, task: next };
   }
 
-  /** Why `moveBaseBranch` may not move this task's base, or null when it may. */
-  private baseBranchMoveRefusal(t: Task): string | null {
-    if (t.status === "backlog") return "task is in the backlog; edit its base branch instead";
-    if (t.status === "dispatching") return "task is still dispatching";
-    if (t.status === "done") return "task is done";
-    if (this.assigningTasks.has(t.id)) return "task is being assigned";
-    if (!t.baseBranch) return "task has no base branch to move";
-    return null;
+  /** The shared `baseBranchMoveRefusal`, plus the one thing only the daemon knows: assignment. */
+  private moveRefusal(t: Task): string | null {
+    return baseBranchMoveRefusal(t) ?? (this.assigningTasks.has(t.id) ? "task is being assigned" : null);
   }
 
   /**

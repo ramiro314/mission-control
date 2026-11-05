@@ -33,7 +33,9 @@ refused. Automatic moving can be added later on the same server path if stacks b
 
 `POST /api/tasks/:id/base-branch/move`, no body, through `TaskManager.moveBaseBranch`.
 
-1. **Who may move.** A task in `running`, `cancelled` or `failed` with a base branch (a
+1. **Who may move.** One shared predicate, `baseBranchMoveRefusal` in `src/shared/task.ts`,
+   answers this for both the daemon and the footer (the daemon adds only its own "being
+   assigned" state). A task in `running`, `cancelled` or `failed` with a base branch (a
    cancelled or failed task can still be completed by a merge). Refused with 409: a backlog
    task (edit its base branch instead, as today), a `dispatching` or assigning task, a `done`
    task, and a task with no base branch. 404 for an unknown task.
