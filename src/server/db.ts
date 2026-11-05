@@ -6445,8 +6445,8 @@ function parseBaseBranchMove(raw: string | null): TaskBaseBranchMove | null {
   try {
     const v = JSON.parse(raw) as Partial<TaskBaseBranchMove> | null;
     return v && typeof v.from === "string" && typeof v.to === "string" && typeof v.toDefault === "boolean" &&
-      typeof v.prUrl === "string" && typeof v.movedAt === "number"
-      ? { from: v.from, to: v.to, toDefault: v.toDefault, prUrl: v.prUrl, movedAt: v.movedAt }
+      typeof v.toSha === "string" && typeof v.prUrl === "string" && typeof v.movedAt === "number"
+      ? { from: v.from, to: v.to, toDefault: v.toDefault, toSha: v.toSha, prUrl: v.prUrl, movedAt: v.movedAt }
       : null;
   } catch {
     return null;

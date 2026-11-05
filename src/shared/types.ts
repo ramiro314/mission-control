@@ -2809,12 +2809,16 @@ export interface TaskSummary {
  * One move of an in-flight task's base branch, recorded on the task.
  *
  * `from` was the base; its pull request `prUrl` merged into `to`, which became the base.
- * `toDefault` says whether `to` was origin's default branch when the move was made.
+ * `toDefault` says whether `to` was origin's default branch when the move was made. `toSha` is
+ * the fetched tip of `to` at the move, which already carries that merge: the next move down a
+ * stack checks `to`'s own pull request against it, since a squash leaves the task's original
+ * start commit out of `to`'s history.
  */
 export interface TaskBaseBranchMove {
   from: string;
   to: string;
   toDefault: boolean;
+  toSha: string;
   prUrl: string;
   movedAt: number;
 }

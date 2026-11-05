@@ -199,13 +199,16 @@ one starts from origin's default branch and targets it, exactly as before.
   control (`POST /api/tasks/:id/base-branch/move`, no body) moves a running, cancelled or
   failed task's base to that branch. The daemon reads the target from `gh` (the newest merged
   pull request whose head is the base branch), checks it exists on origin, and fetches origin.
-  It then requires that pull request's head commit to carry the commit the task was dispatched
-  from, so an older pull request on a reused branch name never counts, and checks that the
+  It then requires that pull request's head commit to carry the commit the task's base was
+  taken at (the commit it was dispatched from, or, after an earlier move, the new base's tip at
+  that move, so a squash-merged stack can be walked down), so an older pull request on a reused
+  branch name never counts, and checks that the
   base branch as origin has it now has landed there: deleted, still at that
   pull request's head commit, or already contained in the target. A long-lived branch such as
   `develop`, whose old release pull request merged into `main` but which has moved on since,
   is refused rather than moved. It then stores the target by name, origin's default included, and records the move on the task
-  (`baseBranchMove`: from, to, whether `to` was the default, the pull request, when). From
+  (`baseBranchMove`: from, to, whether `to` was the default, `to`'s tip, the pull request,
+  when). From
   then on the merge watcher counts a merge into the new base, the Diff view, captured evidence
   and affected-tests selection measure from it even if the old branch was deleted, resets land
   on it, and the task contract and Pull Request action name it. A base whose pull request has

@@ -18,7 +18,7 @@ import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import { mergedPullRequestForBranch } from "./pr.ts";
-import { branchLandedIn, commitCarries, fetchOrigin, resolveBaseBranch } from "./git/remote-default.ts";
+import { branchLandedIn, commitCarries, fetchOrigin, resolveBaseBranch, trackingBranchSha } from "./git/remote-default.ts";
 import type {
   AgentType,
   AssignRefusalScope,
@@ -4232,16 +4232,19 @@ export class TaskManager {
     const fetched = await (deps.fetch ?? fetchOrigin)(t.repoRoot);
     if (!fetched.ok) return { ok: false, error: `could not fetch origin: ${fetched.reason}`, status: 502 };
     // A pull request listed by the base's NAME may be an older use of a reused name. Only one
-    // whose head carries the commit this task started from merged the base it was stacked on.
-    const carried = t.baseSha && merged.pr.headSha
-      ? await commitCarries(t.repoRoot, t.baseSha, merged.pr.headSha)
+    // whose head carries the commit this task's base was taken at merged the base it was stacked
+    // on: the dispatch start commit, or - for a base an earlier move put here - that base's tip
+    // at the move, because a squash leaves the start commit out of the next branch's history.
+    const anchor = t.baseBranchMove?.to === from ? t.baseBranchMove.toSha : t.baseSha;
+    const carried = anchor && merged.pr.headSha
+      ? await commitCarries(t.repoRoot, anchor, merged.pr.headSha)
       : ({ ok: true, value: false } as const);
     if (!carried.ok) return { ok: false, error: `could not check ${merged.pr.url}'s head: ${carried.reason}`, status: 502 };
     if (!carried.value) {
       return {
         ok: false,
-        error: t.baseSha
-          ? `${merged.pr.url} does not carry the ${from} this task started from, so it is not this base branch's merge`
+        error: anchor
+          ? `${merged.pr.url} does not carry the ${from} this task was stacked on, so it is not this base branch's merge`
           : `this task recorded no start commit, so ${merged.pr.url} cannot be confirmed as its base branch's merge`,
         status: 409,
       };
@@ -4257,6 +4260,8 @@ export class TaskManager {
         status: 409,
       };
     }
+    const toSha = await trackingBranchSha(t.repoRoot, to);
+    if (!toSha.ok) return { ok: false, error: `could not read origin/${to}: ${toSha.reason}`, status: 502 };
     // The awaits above leave the row free to change. Write only over the row this was asked of.
     const live = this.registry.getTask(id);
     if (!live || live.baseBranch !== from || this.baseBranchMoveRefusal(live)) {
@@ -4266,7 +4271,9 @@ export class TaskManager {
     const next: Task = {
       ...live,
       baseBranch: to,
-      baseBranchMove: { from, to, toDefault: target.baseBranch === null, prUrl: merged.pr.url, movedAt: now },
+      baseBranchMove: {
+        from, to, toDefault: target.baseBranch === null, toSha: toSha.value, prUrl: merged.pr.url, movedAt: now,
+      },
       updatedAt: now,
     };
     this.registry.upsertTask(next);

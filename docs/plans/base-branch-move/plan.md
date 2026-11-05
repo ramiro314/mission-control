@@ -49,10 +49,13 @@ refused. Automatic moving can be added later on the same server path if stacks b
    a long-lived `develop` that once merged into `main`, or a reused feature branch name, carries
    old merged pull requests while it still has work of its own. Two checks follow the fetch.
    First, the pull request must be the merge of the branch this task was stacked on: its head
-   commit (`headRefOid`) has to carry `Task.baseSha`, the commit dispatch started the task from
-   (`commitCarries`; a head missing locally is fetched by id once). An older pull request on a
-   reused name predates that commit, and a task that recorded no start commit cannot be
-   confirmed, so both are refused. Second, `branchLandedIn` asks origin for the base's tip
+   commit (`headRefOid`) has to carry the commit the task's base was taken at (`commitCarries`;
+   a head missing locally is fetched by id once). For the base dispatch started from, that is
+   `Task.baseSha`. For a base an earlier move put there, it is that move's `toSha`, the fetched
+   tip of the new base, which already holds the previous merge: a squash leaves `baseSha` out
+   of the next branch's history, so anchoring every hop on it would strand a squash-merged
+   stack at its second move. An older pull request on a reused name predates its anchor, and
+   a task that recorded no start commit cannot be confirmed, so both are refused. Second, `branchLandedIn` asks origin for the base's tip
    again. A deleted branch, a tip equal to the merged pull request's head commit (which is
    what vouches for a squash merge), or a tip already in `origin/<target>` has landed; anything
    else is refused ("has moved on since ... merged it"). Every refusal writes nothing.
@@ -66,8 +69,9 @@ refused. Automatic moving can be added later on the same server path if stacks b
    only backlog tasks, so it leaves a moved in-flight task alone; a moved task that returns to
    the backlog is normalized like any other.
 6. **The record.** `Task.baseBranchMove` (`tasks.base_branch_move`, JSON, added in
-   `migrate()`): `{ from, to, toDefault, prUrl, movedAt }` for the latest move, `toDefault`
-   saying whether the target was origin's default when it moved. NULL on every task that was
+   `migrate()`): `{ from, to, toDefault, toSha, prUrl, movedAt }` for the latest move,
+   `toDefault` saying whether the target was origin's default when it moved and `toSha` the
+   fetched tip of the target then, the anchor for the next move. NULL on every task that was
    never moved.
 7. **The live session is not messaged.** Its pull request, if already open against the old
    branch, is retargeted by GitHub when the old branch is deleted; otherwise the next Pull
@@ -93,7 +97,8 @@ naming the new base, so a stack of three can be walked down one merge at a time.
 - `test/task-base-branch-move.test.ts`: the route's refusals (backlog, dispatching, done, no
   base, unknown, no merged pull request, `gh` failure, a merge `gh` names no base for, missing
   target, a failed origin fetch, a base still on origin with work newer than its merged pull
-  request, a base deleted unmerged beside an older same-named merged pull request, a head that
+  request, a base deleted unmerged beside an older same-named merged pull request, an older
+  pull request on a base a move put there, a head that
   cannot be found, a task with no recorded start commit); a base still on origin moving when its tip is in the target or is a squash-merged
   pull request's head; the footer's offer for the current base, not a stale record; a successful move storing the target by name and the record,
   onto origin's default and onto another branch (`toDefault` false), from a running, cancelled
@@ -101,7 +106,8 @@ naming the new base, so a stack of three can be walked down one merge at a time.
   into the target completing the task and satisfying its dependent; the Diff view and changed
   paths measuring from the target after the old branch is deleted on origin; reset preview,
   the contract and the Pull Request action naming the target; a backlog task's edit still
-  storing origin's default as null.
+  storing origin's default as null; and a squash-merged stack of three walked down in two
+  moves.
 - `e2e/specs/task-base-branch-move.spec.ts`: dispatch a task on a base branch, press **move
   base** and read the refusal, then script the fake `gh` to report the base branch's pull
   request merged into `main`, delete the branch on origin, press again, and read the flash, the

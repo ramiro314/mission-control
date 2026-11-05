@@ -196,7 +196,7 @@ test("a stacked task's base moves to where its base branch merged, and is record
   assert.equal(moved.baseBranch, "main", "the target is stored by name, origin's default included");
   assert.deepEqual(
     { ...moved.baseBranchMove, movedAt: 0 },
-    { from: "feat/base", to: "main", toDefault: true, prUrl: BASE_PR, movedAt: 0 },
+    { from: "feat/base", to: "main", toDefault: true, toSha: git(f.repo, "rev-parse", "origin/main"), prUrl: BASE_PR, movedAt: 0 },
   );
   const stored = getTask(f.taskId)!;
   assert.equal(stored.baseBranch, "main");
@@ -318,20 +318,96 @@ test("a base deleted unmerged is not moved by an older merged pull request on th
     assert.equal(getTask(f.taskId)?.baseBranchMove, null);
   };
   baseMerged("feat/mid", earlierHead);
-  await refused(/^https:\/\/github\.com\/mc-test\/stack\/pull\/7 does not carry the feat\/base this task started from/);
+  await refused(/^https:\/\/github\.com\/mc-test\/stack\/pull\/7 does not carry the feat\/base this task was stacked on/);
   // A head nobody can produce, even fetched by id, is not evidence either.
   baseMerged("feat/mid", "e".repeat(40));
-  await refused(/does not carry the feat\/base this task started from/);
+  await refused(/does not carry the feat\/base this task was stacked on/);
   // Nor is any pull request, for a task that recorded no start commit to compare.
   f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, baseSha: null });
   baseMerged("feat/mid", f.mergedHead);
   await refused(/this task recorded no start commit, so .* cannot be confirmed as its base branch's merge/);
 });
 
+test("a squash-merged stack of three is walked down one merge at a time", async () => {
+  // main <- feat/mid <- feat/base <- the task, each hop landing by squash and its branch deleted.
+  const name = "walk-down";
+  const repo = join(repos, name);
+  mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  writeFileSync(join(repo, "file.txt"), "main\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "main");
+  const origin = join(repos, `${name}.git`);
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  git(repo, "config", `url.${origin}.insteadOf`, `https://github.com/mc-test/${name}.git`);
+  git(repo, "remote", "add", "origin", `https://github.com/mc-test/${name}.git`);
+  git(repo, "push", "-qu", "origin", "main");
+  git(origin, "symbolic-ref", "HEAD", "refs/heads/main");
+  const commitOn = (branch: string, from: string, file: string) => {
+    git(repo, "checkout", "-qb", branch, from);
+    writeFileSync(join(repo, file), `${branch}\n`);
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", branch);
+    git(repo, "push", "-q", "origin", branch);
+    return git(repo, "rev-parse", "HEAD");
+  };
+  const midTip = commitOn("feat/mid", "main", "mid.txt");
+  const baseTip = commitOn("feat/base", "feat/mid", "base.txt");
+  git(repo, "checkout", "-q", "main");
+  git(repo, "fetch", "-q", "origin");
+  git(repo, "remote", "set-head", "origin", "main");
+  const other = join(repos, `${name}-other`);
+  execFileSync("git", ["clone", "-q", origin, other]);
+  /** Squash `head` into `into` on origin and delete `head`, returning the head that merged. */
+  const squash = (head: string, into: string): string => {
+    git(other, "fetch", "-q", "origin");
+    git(other, "checkout", "-qB", into, `origin/${into}`);
+    const merged = git(other, "rev-parse", `origin/${head}`);
+    git(other, "merge", "-q", "--squash", `origin/${head}`);
+    git(other, "commit", "-qm", `Squashed ${head}`);
+    git(other, "push", "-q", "origin", into, `:${head}`);
+    return merged;
+  };
+
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "walker", status: "running", repoRoot: realpathSync(repo), baseBranch: "feat/base", baseSha: baseTip }));
+  const { move } = appFor(registry);
+  const hop = async (head: string, into: string, url: string) => {
+    ghReports([{ url, state: "MERGED", mergedAt: "2026-11-01T10:00:00Z", baseRefName: into, headRefOid: squash(head, into) }]);
+    const res = await move("walker");
+    assert.equal(res.status, 200, await res.clone().text());
+    return getTask("walker")!;
+  };
+
+  const first = await hop("feat/base", "feat/mid", "https://github.com/mc-test/walk-down/pull/7");
+  assert.equal(first.baseBranch, "feat/mid");
+  assert.equal(first.baseBranchMove?.toSha, git(repo, "rev-parse", "origin/feat/mid"), "the squash commit anchors the next move");
+  assert.equal(first.baseSha, baseTip, "the dispatch start commit is left as it was");
+  // An older feat/mid pull request, from before feat/base landed in it, predates the anchor.
+  ghReports([{
+    url: "https://github.com/mc-test/walk-down/pull/2", state: "MERGED", mergedAt: "2026-10-01T10:00:00Z",
+    baseRefName: "main", headRefOid: midTip,
+  }]);
+  const stale = await move("walker");
+  assert.equal(stale.status, 409, await stale.clone().text());
+  assert.match(((await stale.json()) as { error: string }).error, /pull\/2 does not carry the feat\/mid this task was stacked on/);
+  assert.equal(getTask("walker")?.baseBranch, "feat/mid");
+  // feat/mid's own pull request carries the squash of feat/base, never `baseTip` itself.
+  const second = await hop("feat/mid", "main", "https://github.com/mc-test/walk-down/pull/8");
+  assert.equal(second.baseBranch, "main");
+  assert.deepEqual(
+    { ...second.baseBranchMove, movedAt: 0 },
+    {
+      from: "feat/mid", to: "main", toDefault: true, toSha: git(repo, "rev-parse", "origin/main"),
+      prUrl: "https://github.com/mc-test/walk-down/pull/8", movedAt: 0,
+    },
+  );
+});
+
 // --- the footer's offer ---
 
 test("the footer offers a move for the base the task has now, not for a stale move record", () => {
-  const ontoMain = { from: "feat/base", to: "main", toDefault: true, prUrl: BASE_PR, movedAt: 1 };
+  const ontoMain = { from: "feat/base", to: "main", toDefault: true, toSha: "c".repeat(40), prUrl: BASE_PR, movedAt: 1 };
   assert.equal(movableBaseBranch({ status: "running", baseBranch: "feat/base", baseBranchMove: null }), "feat/base");
   assert.equal(movableBaseBranch({ status: "failed", baseBranch: "feat/base" }), "feat/base");
   assert.equal(movableBaseBranch({ status: "running", baseBranch: "main", baseBranchMove: ontoMain }), null, "already on the default");

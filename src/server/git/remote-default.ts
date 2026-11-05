@@ -389,6 +389,26 @@ export async function branchLandedIn(
 }
 
 /**
+ * The commit the fetched `origin/<branch>` names, or why there is none. Read after a fetch.
+ */
+export async function trackingBranchSha(
+  root: string,
+  branch: string,
+  execute: Run = run,
+): Promise<RemoteProbe<string>> {
+  const ref = `refs/remotes/origin/${branch}`;
+  const resolved = await execute("git", ["-C", root, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+    timeoutMs: LOCAL_TIMEOUT_MS,
+  });
+  // A killed child prints what a genuine miss prints, so the uncertainty flags come first.
+  if (resolved.outcomeUnknown || resolved.overflowed) return failure(`git rev-parse ${ref}`, resolved, LOCAL_TIMEOUT_MS);
+  const sha = resolved.stdout.trim();
+  return resolved.code === 0 && FULL_SHA.test(sha)
+    ? { ok: true, value: sha }
+    : { ok: false, reason: `${branch} is not in this repository's remote-tracking refs`, outcomeUnknown: false };
+}
+
+/**
  * Whether commit `descendant` carries `ancestor` (is it, or descends from it).
  *
  * Asked of a merged pull request's head and the commit an in-flight task started from, before
