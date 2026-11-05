@@ -317,20 +317,6 @@ export function ActionBar({
   }
 
   /**
-   * Hand the session its own retrospective.
-   *
-   * A single click with no confirm, and that is the right weight for it: the daemon types an
-   * instruction, and the instruction's own first rule is that nothing gets written without
-   * the human approving it. The consequential step is the approval, which happens later and
-   * item by item - putting a confirm in front of the request would be guarding the harmless
-   * half of the ceremony.
-   *
-   * The success flash is not decoration either. The route has two success arms that mean
-   * different things - typed into this session, or filed as a backlog task because it could
-   * not be - and a live session is not a promise of delivery, so the outcome is REPORTED
-   * rather than assumed from a 200.
-   */
-  /**
    * Move this task's base branch to where its base branch's pull request merged.
    *
    * One click, no confirm: the daemon picks the target from GitHub, and refuses unless the base
@@ -345,6 +331,20 @@ export function ActionBar({
     if (move) showFlash({ text: `base moved from ${move.from} to ${move.to}`, ok: true }, 6000);
   }
 
+  /**
+   * Hand the session its own retrospective.
+   *
+   * A single click with no confirm, and that is the right weight for it: the daemon types an
+   * instruction, and the instruction's own first rule is that nothing gets written without
+   * the human approving it. The consequential step is the approval, which happens later and
+   * item by item - putting a confirm in front of the request would be guarding the harmless
+   * half of the ceremony.
+   *
+   * The success flash is not decoration either. The route has two success arms that mean
+   * different things - typed into this session, or filed as a backlog task because it could
+   * not be - and a live session is not a promise of delivery, so the outcome is REPORTED
+   * rather than assumed from a 200.
+   */
   async function runRetro(): Promise<void> {
     const result = await run("retro", () => api.runRetro(session.id));
     if (result.ok) showFlash({ text: retroOutcome(result), ok: true }, 6000);
