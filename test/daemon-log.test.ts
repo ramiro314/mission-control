@@ -100,6 +100,50 @@ test("AC32: the log rotates once it passes 10 MB, keeping 3 old files", (t) => {
   assert.deepEqual(stdout.seen, ["first line after rotation\n"]);
 });
 
+test("a log one byte under the limit is appended to, not rotated", (t) => {
+  const path = join(scratch(t), "daemon.log");
+  writeFileSync(path, "x".repeat(99));
+  const out = fakeStream();
+  const capture = teeToDaemonLog({ path, streams: [out], maxBytes: 100 });
+  t.after(() => capture.stop());
+
+  out.write("kept\n");
+  capture.flush();
+  assert.equal(existsSync(`${path}.1`), false, "an existing log under the limit is never rotated");
+  assert.equal(readFileSync(path, "utf8"), `${"x".repeat(99)}kept\n`);
+});
+
+test("a log that cannot be written warns once on the real stderr and never throws", (t) => {
+  const root = scratch(t);
+  const parent = join(root, "parent");
+  // A regular file where the log's directory should be, so mkdir and append both fail.
+  const breakParent = () => { rmSync(parent, { recursive: true, force: true }); writeFileSync(parent, ""); };
+  const path = join(parent, "daemon.log");
+  breakParent();
+  const out = fakeStream();
+  const err = fakeStream();
+  const capture = teeToDaemonLog({ path, streams: [out, err] });
+  t.after(() => capture.stop());
+  const warnings = () => err.seen.filter((line) => line.startsWith("[daemon-log] could not append to "));
+
+  out.write("lost\n");
+  assert.doesNotThrow(() => capture.flush());
+  assert.equal(warnings().length, 1);
+
+  // Once the directory can be made, the next batch holds only what came after the failure:
+  // a warning written through the wrapped stream would have been queued for this file.
+  rmSync(parent);
+  out.write("kept\n");
+  capture.flush();
+  assert.equal(readFileSync(path, "utf8"), "kept\n");
+
+  breakParent();
+  out.write("lost again\n");
+  assert.doesNotThrow(() => capture.flush());
+  assert.equal(warnings().length, 1, "reported once, not on every failing batch");
+  assert.deepEqual(out.seen, ["lost\n", "kept\n", "lost again\n"], "the terminal still gets every line");
+});
+
 test("the size is checked before each write batch, not each write", async (t) => {
   const path = join(scratch(t), "daemon.log");
   const out = fakeStream();
