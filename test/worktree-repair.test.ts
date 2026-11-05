@@ -22,6 +22,7 @@ import {
 import { describeTreeDiscard } from "../src/server/worktrees/orphan-sweep.ts";
 import { diagnoseRegistration, forgetCause } from "../src/server/worktrees/registration-repair.ts";
 import { NO_SEED } from "../src/server/worktrees/seed.ts";
+import { repairStagingRoot, stageSlotEntries } from "../src/server/worktrees/repair-staging.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { run } from "../src/server/util/exec.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -2321,4 +2322,258 @@ test("History keeps a Forget that finished as finished when something after it f
   const [row] = operationRows(m, slot.slotId);
   assert.deepEqual([row?.operation, row?.outcome], ["forget", "partial"]);
   assert.match(row?.reason ?? "", /^This slot finished, and the operation stopped at a later step/);
+});
+
+/** A slot whose registration is gone while its folder, its old `.git` and its warm install remain. */
+async function unregisteredSlot(m: WorktreeManager, prefix: string) {
+  const { clone, sha } = repository(prefix, "node_modules/\n.yarn/install-state.gz\n");
+  const slot = await quarantinedSlot(m, clone, sha, `task-${prefix}`, REGISTRATION_OR_IDENTITY.missingRegistration);
+  const yarnState = join(slot.path, ".yarn", "install-state.gz");
+  mkdirSync(dirname(yarnState), { recursive: true });
+  writeFileSync(yarnState, "state\n");
+  rmSync(slot.administrative, { recursive: true });
+  assert.equal(registered(clone, slot.path), false);
+  return {
+    ...slot,
+    clone,
+    sha,
+    yarnState,
+    inodes: () => [statSync(slot.install).ino, statSync(join(slot.path, "node_modules")).ino, statSync(yarnState).ino],
+  };
+}
+
+function repairStaging(m: WorktreeManager, slotId: string): string[] {
+  const root = join(dirname(dirname(m.store.slot(slotId)!.path)), ".repair-staging");
+  return existsSync(root) ? readdirSync(root) : [];
+}
+
+test("AC24: card Repair re-registers a slot whose registration is gone, keeps its install's inodes, and the slot ends available", async () => {
+  const slot = await unregisteredSlot(manager, "mission-reregister-card-");
+  const inodes = slot.inodes();
+  assert.equal((await slotActions(slot.slotId))?.includes("repair"), true);
+  assert.equal((await slotActions(slot.slotId))?.includes("forget"), false, "registering again keeps the install");
+
+  const preview = await operations.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  assert.deepEqual(preview.requiredAcknowledgements, []);
+  assert.ok(preview.consequences.includes(
+    `No Git registration names ${slot.path}, so Repair registers the folder again at ${slot.sha}, the HEAD the slot last recorded.`,
+  ), preview.consequences.join("\n"));
+  assert.ok(preview.consequences.includes("Tracked and untracked files are checked once the slot is registered again. Ignored files stay."));
+  assert.ok(preview.consequences.some((line) => line.includes("registration repaired; holds work")));
+
+  assert.equal((await operations.execute(preview.token, [])).ok, true);
+  assert.equal(registered(slot.clone, slot.path), true);
+  assert.deepEqual(slot.inodes(), inodes, "node_modules and .yarn/install-state.gz kept their inodes");
+  assertRecovered(manager, slot);
+  assert.equal(readFileSync(slot.yarnState, "utf8"), "state\n");
+  assert.deepEqual(repairStaging(manager, slot.slotId), []);
+});
+
+test("AC24: a re-registered slot that holds work stays quarantined as repaired, with its work intact", async () => {
+  const slot = await unregisteredSlot(manager, "mission-reregister-work-");
+  writeFileSync(join(slot.path, "notes.txt"), "keep me\n");
+  writeFileSync(join(slot.path, ".gitignore"), "node_modules/\n.yarn/install-state.gz\n*.log\n");
+  const inodes = slot.inodes();
+
+  const preview = await operations.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal((await operations.execute(preview.token, [])).ok, true);
+
+  const row = manager.store.slot(slot.slotId)!;
+  assert.equal(row.state, "quarantined");
+  assert.equal(row.quarantineReason, REGISTRATION_OR_IDENTITY.repairedHoldsWork);
+  assert.match(row.lastError ?? "", /notes\.txt|\.gitignore/);
+  assert.equal(registered(slot.clone, slot.path), true);
+  assert.equal(readFileSync(join(slot.path, "notes.txt"), "utf8"), "keep me\n");
+  assert.equal(readFileSync(join(slot.path, ".gitignore"), "utf8"), "node_modules/\n.yarn/install-state.gz\n*.log\n");
+  assert.deepEqual(slot.inodes(), inodes);
+  // The index came from HEAD: nothing is staged, the tracked edit is a worktree change, and no
+  // tracked file reads as deleted.
+  assert.equal(gitIn(slot.path, "diff", "--cached", "--name-only"), "");
+  assert.equal(gitIn(slot.path, "diff", "--name-only"), ".gitignore");
+  assert.equal(gitIn(slot.path, "ls-files", "--others", "--exclude-standard"), "notes.txt");
+});
+
+test("a pass and a direct Repair never re-register: the slot and its files stay as they were", async () => {
+  const m = managerWith();
+  const slot = await unregisteredSlot(m, "mission-reregister-pass-");
+  const row = m.store.slot(slot.slotId)!;
+  const listing = readdirSync(slot.path).sort();
+
+  await m.recoverQuarantines();
+  assert.equal(m.recoveryRefusal(row)?.reason, "no Git registration names this path, so it has to be registered again");
+  assert.deepEqual(await m.repairSlot({ slotId: slot.slotId }), {
+    outcome: "refused", reason: "no Git registration names this path, so it has to be registered again",
+  });
+  assert.deepEqual(m.store.slot(slot.slotId), row);
+  assert.deepEqual(readdirSync(slot.path).sort(), listing);
+  assert.equal(registered(slot.clone, slot.path), false);
+});
+
+test("re-registration refuses an occupant, a live or unknown owner and a running claim, and moves nothing", async () => {
+  const m = managerWith();
+  const slot = await unregisteredSlot(m, "mission-reregister-refuse-");
+  const row = m.store.slot(slot.slotId)!;
+  const inodes = slot.inodes();
+  const refused = async (reason: RegExp) => {
+    const result = await m.repairSlot({ slotId: slot.slotId, reregister: true });
+    assert.equal(result.outcome, "refused");
+    assert.match((result as { reason: string }).reason, reason);
+    assert.deepEqual(m.store.slot(slot.slotId), row);
+    assert.deepEqual(slot.inodes(), inodes);
+    assert.equal(registered(slot.clone, slot.path), false);
+    assert.deepEqual(repairStaging(m, slot.slotId), []);
+  };
+
+  occupants = [occupant(slot.path, "node dev-server.js")];
+  await refused(/processes still occupy the worktree/);
+  occupants = [];
+  ownerReferenced = async () => true;
+  await refused(/a live task owner references this slot/);
+  ownerReferenced = async () => { throw new Error("tasks table is unreadable"); };
+  await refused(/domain ownership is unknown/);
+  ownerReferenced = async () => false;
+  const claim = m.claims.register(slot.slotId, { kind: "task", key: "claiming" }, Date.now())!;
+  await refused(/a dependency claim is running/);
+  m.claims.unregister(slot.slotId, claim);
+});
+
+test("a slot whose recorded HEAD the repository no longer holds is registered again at origin's default", async () => {
+  const slot = await unregisteredSlot(manager, "mission-reregister-default-");
+  db.prepare("UPDATE worktree_slots SET current_head_sha = ? WHERE id = ?").run("f".repeat(40), slot.slotId);
+
+  const preview = await operations.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  assert.ok(preview.consequences.includes(
+    `No Git registration names ${slot.path}, so Repair registers the folder again at ${slot.sha}, origin's default, because the repository no longer holds a HEAD the slot recorded.`,
+  ), preview.consequences.join("\n"));
+  assert.equal((await operations.execute(preview.token, [])).ok, true);
+  assertRecovered(manager, slot);
+});
+
+test("a git worktree add Git refuses puts every file back, the old .git included, and leaves no staging", async () => {
+  class RefusingAdd extends NativeWorktreeGit {
+    override async add(...args: Parameters<NativeWorktreeGit["add"]>) {
+      if (args[3]?.checkout !== false) return super.add(...args);
+      return { ok: false as const, reason: "git worktree add failed: fatal: refused for this test", outcomeUnknown: false };
+    }
+  }
+  const m = managerWith(new RefusingAdd());
+  const slot = await unregisteredSlot(m, "mission-reregister-refused-add-");
+  const inodes = slot.inodes();
+  const dotGit = readFileSync(join(slot.path, ".git"), "utf8");
+
+  assert.deepEqual(await m.repairSlot({ slotId: slot.slotId, reregister: true }), {
+    outcome: "refused", reason: "git worktree add failed: fatal: refused for this test",
+  });
+  assert.deepEqual(slot.inodes(), inodes);
+  assert.equal(readFileSync(join(slot.path, ".git"), "utf8"), dotGit);
+  assert.deepEqual(repairStaging(m, slot.slotId), []);
+  assert.equal(m.store.slot(slot.slotId)?.quarantineReason, REGISTRATION_OR_IDENTITY.missingRegistration);
+});
+
+test("execute refuses a commit to register at that moved after the preview, and moves nothing", async () => {
+  let moved = false;
+  class MovingDefault extends NativeWorktreeGit {
+    override async hasCommit(identity: Parameters<NativeWorktreeGit["hasCommit"]>[0], sha: string) {
+      return moved ? { ok: true as const, value: false } : super.hasCommit(identity, sha);
+    }
+  }
+  const m = managerWith(new MovingDefault());
+  const service = operationsFor(m);
+  const slot = await unregisteredSlot(m, "mission-reregister-moved-");
+  const preview = await service.preview({ action: "repair", slotId: slot.slotId });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+
+  moved = true;
+  await assert.rejects(service.execute(preview.token, []), /changed after preview/);
+  assert.equal(registered(slot.clone, slot.path), false);
+  // The manager holds the commit too, for the moment between the rebuild and the lock.
+  db.prepare("UPDATE worktree_slots SET current_head_sha = NULL WHERE id = ?").run(slot.slotId);
+  assert.deepEqual(await m.repairSlot({ slotId: slot.slotId, reregister: true, expectedCommit: slot.sha.replace(/^./, "0") }), {
+    outcome: "refused", reason: "the commit to register at changed since the preview; preview Repair again",
+  });
+  assert.equal(registered(slot.clone, slot.path), false);
+});
+
+test("AC25: a re-registration cut off after Git registered the folder is finished by the next reconcile before anything reads the slot", async () => {
+  const first = managerWith();
+  const slot = await unregisteredSlot(first, "mission-reregister-cutoff-");
+  const inodes = slot.inodes();
+  const row = first.store.slot(slot.slotId)!;
+  const pool = first.store.poolForSlot(slot.slotId)!;
+  // What the daemon had done when it stopped: the intent, the move aside, and Git's add.
+  await stageSlotEntries(join(repairStagingRoot(pool.poolPath), "cut-off"), {
+    slotId: slot.slotId, path: slot.path, commit: slot.sha, startedAt: Date.now(),
+  });
+  assert.deepEqual(readdirSync(slot.path), []);
+  gitIn(slot.clone, "worktree", "add", "--detach", "--no-checkout", slot.path, slot.sha);
+
+  const reads: boolean[] = [];
+  class Watching extends NativeWorktreeGit {
+    override async list(identity: Parameters<NativeWorktreeGit["list"]>[0]) {
+      reads.push(existsSync(slot.install));
+      return super.list(identity);
+    }
+    override async inspect(path: string) {
+      reads.push(existsSync(slot.install));
+      return super.inspect(path);
+    }
+  }
+  const restarted = managerWith(new Watching());
+  await restarted.reconcile();
+
+  assert.ok(reads.length > 0);
+  assert.ok(reads.every(Boolean), "every read of the pool came after the files were back");
+  assert.deepEqual(slot.inodes(), inodes);
+  assert.deepEqual(repairStaging(restarted, slot.slotId), []);
+  assert.equal(gitIn(slot.path, "status", "--porcelain"), "", "the index was read from HEAD");
+  assert.equal(restarted.store.slot(slot.slotId)?.version, row.version);
+
+  await restarted.recoverQuarantines();
+  assertRecovered(restarted, slot);
+  assert.deepEqual(slot.inodes(), inodes);
+});
+
+test("AC25: a re-registration cut off before Git ran puts the folder back as it was, for the card's Repair", async () => {
+  const first = managerWith();
+  const slot = await unregisteredSlot(first, "mission-reregister-cutoff-early-");
+  const inodes = slot.inodes();
+  const dotGit = readFileSync(join(slot.path, ".git"), "utf8");
+  const pool = first.store.poolForSlot(slot.slotId)!;
+  await stageSlotEntries(join(repairStagingRoot(pool.poolPath), "cut-off"), {
+    slotId: slot.slotId, path: slot.path, commit: slot.sha, startedAt: Date.now(),
+  });
+
+  const restarted = managerWith();
+  await restarted.reconcile();
+
+  assert.deepEqual(slot.inodes(), inodes);
+  assert.equal(readFileSync(join(slot.path, ".git"), "utf8"), dotGit);
+  assert.deepEqual(repairStaging(restarted, slot.slotId), []);
+  assert.equal(restarted.store.slot(slot.slotId)?.quarantineReason, REGISTRATION_OR_IDENTITY.missingRegistration);
+  assert.equal(
+    (await restarted.repairSlot({ slotId: slot.slotId, reregister: true })).outcome,
+    "recovered",
+  );
+  assert.deepEqual(slot.inodes(), inodes);
+});
+
+test("leftover repair staging with no intent is removed, and staging whose intent names no slot is kept", async () => {
+  const m = managerWith();
+  const slot = await unregisteredSlot(m, "mission-reregister-leftover-");
+  const root = repairStagingRoot(m.store.poolForSlot(slot.slotId)!.poolPath);
+  mkdirSync(join(root, "no-intent", "entries"), { recursive: true });
+  const stranger = join(root, "stranger");
+  mkdirSync(join(stranger, "entries"), { recursive: true });
+  writeFileSync(join(stranger, "repair.json"), JSON.stringify({ slotId: "gone", path: "/nowhere", commit: slot.sha, startedAt: 0 }));
+  writeFileSync(join(stranger, "entries", "kept.txt"), "someone's\n");
+  const broken = join(root, "broken");
+  mkdirSync(broken);
+  writeFileSync(join(broken, "repair.json"), "{");
+
+  await m.reconcile();
+
+  assert.deepEqual(readdirSync(root).sort(), ["broken", "stranger"]);
+  assert.equal(readFileSync(join(stranger, "entries", "kept.txt"), "utf8"), "someone's\n");
 });
