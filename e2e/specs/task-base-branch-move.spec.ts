@@ -41,6 +41,15 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
   return JSON.parse(text) as T;
 }
 
+/**
+ * The commit `feat/base` was pushed at, which is `main`'s tip. The daemon only moves a base for
+ * a merged pull request whose head carries the commit the task started from, so the fake `gh`
+ * reports this real head rather than a placeholder.
+ */
+function baseTip(daemon: DaemonHandle): string {
+  return execFileSync("git", ["-C", daemon.repo, "rev-parse", "main"], { stdio: "pipe" }).toString().trim();
+}
+
 type TaskReply = { id: string; status: string; baseBranch: string | null; baseBranchMove: unknown };
 
 async function taskById(daemon: DaemonHandle, id: string): Promise<TaskReply | undefined> {
@@ -75,7 +84,7 @@ test("a running task's base moves to where its base branch merged, from the sess
   writeGhPullRequests(daemon.home, [{
     cwd: daemon.repo, url: BASE_PR, number: 41, state: "MERGED",
     createdAt: "2026-11-01T09:00:00Z", mergedAt: "2026-11-01T10:00:00Z",
-    headRefOid: "a".repeat(40), baseRefName: "main",
+    headRefOid: baseTip(daemon), baseRefName: "main",
   }]);
   execFileSync("git", ["-C", daemon.repo, "push", "-q", "origin", ":refs/heads/feat/base"], { stdio: "pipe" });
 
@@ -109,7 +118,7 @@ test("a base moved onto a non-default branch keeps the control, naming the new b
   writeGhPullRequests(daemon.home, [{
     cwd: daemon.repo, url: BASE_PR, number: 41, state: "MERGED",
     createdAt: "2026-11-01T09:00:00Z", mergedAt: "2026-11-01T10:00:00Z",
-    headRefOid: "a".repeat(40), baseRefName: "feat/mid",
+    headRefOid: baseTip(daemon), baseRefName: "feat/mid",
   }]);
 
   const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: TITLE });
@@ -142,7 +151,7 @@ test("a task sent back and stacked again is offered the move, despite its earlie
   writeGhPullRequests(daemon.home, [{
     cwd: daemon.repo, url: BASE_PR, number: 41, state: "MERGED",
     createdAt: "2026-11-01T09:00:00Z", mergedAt: "2026-11-01T10:00:00Z",
-    headRefOid: "a".repeat(40), baseRefName: "main",
+    headRefOid: baseTip(daemon), baseRefName: "main",
   }]);
   execFileSync("git", ["-C", daemon.repo, "push", "-q", "origin", ":refs/heads/feat/base"], { stdio: "pipe" });
   await api(daemon, `/api/tasks/${filed.id}/base-branch/move`, {});

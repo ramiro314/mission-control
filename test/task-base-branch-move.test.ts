@@ -85,8 +85,11 @@ const BASE_PR = "https://github.com/mc-test/stack/pull/7";
  * left behind the merge, so measuring from it proves the move fetched.
  */
 interface StackShape {
-  /** How `feat/base` landed in `main`: a merge commit, or a squash that leaves its tip outside. */
-  landing?: "merge" | "squash";
+  /**
+   * How `feat/base` landed in `main`: a merge commit, a squash that leaves its tip outside, or
+   * not at all (abandoned, its pull request closed unmerged).
+   */
+  landing?: "merge" | "squash" | "none";
   /** Leave `feat/base` on origin after it landed, as a long-lived branch would be. */
   keepBase?: boolean;
   /** Then push one more commit to the kept `feat/base`: work `main` does not have. */
@@ -133,7 +136,7 @@ function strandedStack(
   const mergedHead = git(other, "rev-parse", "FETCH_HEAD");
   if (landing === "merge") {
     git(other, "merge", "-q", "--no-ff", "-m", "Merge feat/base", "FETCH_HEAD");
-  } else {
+  } else if (landing === "squash") {
     git(other, "merge", "-q", "--squash", "FETCH_HEAD");
     git(other, "commit", "-qm", "Squashed feat/base");
   }
@@ -179,14 +182,14 @@ function runningStack(name: string, shape: StackShape = {}) {
   const session = registry.snapshot().sessions.find((s) => s.name === name)!;
   registry.upsertTask(mkTask({
     id: `task-${name}`, kind: "ship", status: "running", repoRoot: repo, baseBranch: "feat/base",
-    sessionId: session.id, worktreePath: wt, branch: "feat/stacked",
+    sessionId: session.id, worktreePath: wt, branch: "feat/stacked", baseSha: mergedHead,
   }));
   return { repo, wt, mergedHead, session, taskId: `task-${name}`, ...appFor(registry) };
 }
 
 test("a stacked task's base moves to where its base branch merged, and is recorded on the task", async () => {
   const f = runningStack("moves");
-  baseMerged();
+  baseMerged("main", f.mergedHead);
   const res = await f.move(f.taskId);
   assert.equal(res.status, 200, await res.clone().text());
   const moved = (await res.json()) as Task;
@@ -209,7 +212,7 @@ test("a stacked task's base moves to where its base branch merged, and is record
 
 test("a move onto a non-default branch stores it as not the default, so the base can move again", async () => {
   const f = runningStack("onto-mid");
-  baseMerged("feat/mid");
+  baseMerged("feat/mid", f.mergedHead);
   const res = await f.move(f.taskId);
   assert.equal(res.status, 200, await res.clone().text());
   const moved = getTask(f.taskId)!;
@@ -223,10 +226,10 @@ test("a move onto a non-default branch stores it as not the default, so the base
 
 test("a cancelled or failed task, which a merge can still complete, may move its base", async () => {
   const f = runningStack("stopped");
-  baseMerged();
+  baseMerged("main", f.mergedHead);
   for (const status of ["cancelled", "failed"] as const) {
     const id = `stopped-${status}`;
-    f.registry.upsertTask(mkTask({ id, status, repoRoot: f.repo, baseBranch: "feat/base" }));
+    f.registry.upsertTask(mkTask({ id, status, repoRoot: f.repo, baseBranch: "feat/base", baseSha: f.mergedHead }));
     const res = await f.move(id);
     assert.equal(res.status, 200, await res.clone().text());
     assert.equal(getTask(id)?.baseBranch, "main");
@@ -240,7 +243,7 @@ test("of several merged pull requests on the base branch, the newest decides the
   // Listed oldest first, so taking the first or last row as given would pick the wrong one.
   ghReports([
     { url: older, state: "MERGED", mergedAt: "2026-10-01T10:00:00Z", baseRefName: "main" },
-    { url: BASE_PR, state: "MERGED", mergedAt: "2026-11-01T10:00:00Z", baseRefName: "feat/mid" },
+    { url: BASE_PR, state: "MERGED", mergedAt: "2026-11-01T10:00:00Z", baseRefName: "feat/mid", headRefOid: f.mergedHead },
   ]);
   const res = await f.move(f.taskId);
   assert.equal(res.status, 200, await res.clone().text());
@@ -250,7 +253,7 @@ test("of several merged pull requests on the base branch, the newest decides the
 
 test("a move whose origin fetch fails is refused with nothing written", async () => {
   const f = runningStack("unfetched");
-  baseMerged();
+  baseMerged("main", f.mergedHead);
   const fetched: string[] = [];
   const res = await f.tasks.moveBaseBranch(f.taskId, {
     fetch: async (root) => {
@@ -270,7 +273,7 @@ test("a move whose origin fetch fails is refused with nothing written", async ()
 
 test("a base still on origin moves once its tip is in the target", async () => {
   const f = runningStack("kept-merged", { keepBase: true });
-  baseMerged();
+  baseMerged("main", f.mergedHead);
   const res = await f.move(f.taskId);
   assert.equal(res.status, 200, await res.clone().text());
   assert.equal(getTask(f.taskId)?.baseBranch, "main");
@@ -302,6 +305,29 @@ test("a base with work newer than its merged pull request is refused, as a long-
   assert.equal(getTask(f.taskId)?.baseBranchMove, null);
 });
 
+test("a base deleted unmerged is not moved by an older merged pull request on the same branch name", async () => {
+  const f = runningStack("reused-name", { landing: "none" });
+  // Months ago an earlier `feat/base` merged into `feat/mid`. Its head predates this task's
+  // `feat/base`, which was abandoned and deleted without merging.
+  const earlierHead = git(f.repo, "rev-parse", "main");
+  const refused = async (pattern: RegExp) => {
+    const res = await f.move(f.taskId);
+    assert.equal(res.status, 409, await res.clone().text());
+    assert.match(((await res.json()) as { error: string }).error, pattern);
+    assert.equal(getTask(f.taskId)?.baseBranch, "feat/base");
+    assert.equal(getTask(f.taskId)?.baseBranchMove, null);
+  };
+  baseMerged("feat/mid", earlierHead);
+  await refused(/^https:\/\/github\.com\/mc-test\/stack\/pull\/7 does not carry the feat\/base this task started from/);
+  // A head nobody can produce, even fetched by id, is not evidence either.
+  baseMerged("feat/mid", "e".repeat(40));
+  await refused(/does not carry the feat\/base this task started from/);
+  // Nor is any pull request, for a task that recorded no start commit to compare.
+  f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, baseSha: null });
+  baseMerged("feat/mid", f.mergedHead);
+  await refused(/this task recorded no start commit, so .* cannot be confirmed as its base branch's merge/);
+});
+
 // --- the footer's offer ---
 
 test("the footer offers a move for the base the task has now, not for a stale move record", () => {
@@ -331,7 +357,7 @@ test("after the move the Diff view, evidence diff and affected-tests base measur
   assert.equal(before.ok, false, "the deleted base fails rather than falling back");
   assert.match(before.error ?? "", /feat\/base is not in this repository's remote-tracking refs/);
 
-  baseMerged();
+  baseMerged("main", f.mergedHead);
   assert.equal((await f.move(f.taskId)).status, 200);
 
   const after = await diffOf();
@@ -351,7 +377,7 @@ test("after the move the Diff view, evidence diff and affected-tests base measur
 
 test("after the move resets, the task contract and the Pull Request action name the new base", async () => {
   const f = runningStack("names");
-  baseMerged();
+  baseMerged("main", f.mergedHead);
   assert.equal((await f.move(f.taskId)).status, 200);
   const moved = getTask(f.taskId)!;
 
@@ -394,7 +420,7 @@ test("a move is refused, with nothing written, unless the task is in flight on a
   assert.equal(getTask(f.taskId)?.baseBranch, "feat/base");
   assert.equal(getTask(f.taskId)?.baseBranchMove, null);
 
-  baseMerged();
+  baseMerged("main", f.mergedHead);
   for (const [id, status, baseBranch, pattern] of [
     ["shelved", "backlog", "feat/base", /in the backlog; edit its base branch instead/],
     ["finished", "done", "feat/base", /task is done/],
@@ -424,7 +450,7 @@ test("a backlog task still changes its base through the edit, which stores origi
 
 test("after the move a merge into the new base completes the task and satisfies its dependent", async () => {
   setShippingConfig({ closeSessionAfterMerge: false });
-  const { repo } = strandedStack("lands");
+  const { repo, mergedHead } = strandedStack("lands");
   const registry = new Registry();
   const tasks = taskManager(registry);
   const id = "lands";
@@ -437,7 +463,7 @@ test("after the move a merge into the new base completes the task and satisfies 
   registry.applyHook({ agent: "claude", event: "Stop", sessionId: `${id}-episode`, cwd, transcriptPath: null, env: {} });
   registry.upsertTask(mkTask({
     id: taskId, title: "Stacked", status: "running", sessionId: id, worktreePath: cwd, homeName: "Stacked",
-    repoRoot: repo, baseBranch: "feat/base",
+    repoRoot: repo, baseBranch: "feat/base", baseSha: mergedHead,
   }));
   registry.bindTaskToWorkEpisode(taskId, id);
   registry.upsertTask(mkTask({
@@ -468,7 +494,7 @@ test("after the move a merge into the new base completes the task and satisfies 
   assert.equal(taskWorkEpisodeForTask(taskId)?.mergedAt, null);
   assert.equal(dependent().dependencies[0]?.satisfiedAt, null);
 
-  baseMerged();
+  baseMerged("main", mergedHead);
   const moved = await tasks.moveBaseBranch(taskId);
   assert.ok(moved.ok, moved.ok ? "" : moved.error);
 

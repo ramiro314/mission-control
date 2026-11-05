@@ -389,6 +389,39 @@ export async function branchLandedIn(
 }
 
 /**
+ * Whether commit `descendant` carries `ancestor` (is it, or descends from it).
+ *
+ * Asked of a merged pull request's head and the commit an in-flight task started from, before
+ * the task's base moves to where that pull request merged: a pull request listed by head NAME
+ * may be an older use of a reused branch name, and only one that carries the task's own start
+ * commit is the merge of the base the task was stacked on. A head missing locally - a
+ * squash-merged branch deleted before this checkout fetched its last commit - is fetched by id
+ * once (GitHub keeps every pull request's head); one that still cannot be found does not count.
+ */
+export async function commitCarries(
+  root: string,
+  ancestor: string,
+  descendant: string,
+  execute: Run = run,
+): Promise<RemoteProbe<boolean>> {
+  const present = async () =>
+    (await execute("git", ["-C", root, "cat-file", "-e", `${descendant}^{commit}`], { timeoutMs: LOCAL_TIMEOUT_MS }))
+      .code === 0;
+  if (!(await present())) {
+    await execute("git", ["-C", root, "fetch", "-q", "origin", descendant], { timeoutMs: NETWORK_TIMEOUT_MS });
+    if (!(await present())) return { ok: true, value: false };
+  }
+  const carried = await execute("git", ["-C", root, "merge-base", "--is-ancestor", ancestor, descendant], {
+    timeoutMs: LOCAL_TIMEOUT_MS,
+  });
+  if (!carried.outcomeUnknown && !carried.overflowed && carried.code === 0) return { ok: true, value: true };
+  if (!carried.outcomeUnknown && !carried.overflowed && carried.code === 1 && !carried.stderr.trim()) {
+    return { ok: true, value: false };
+  }
+  return failure(`git merge-base --is-ancestor ${ancestor} ${descendant}`, carried, LOCAL_TIMEOUT_MS);
+}
+
+/**
  * The base branch a task should store for `branch` in `root`, or why it may not take it.
  *
  * Asked when a task is created or edited with a base branch: the branch has to exist on

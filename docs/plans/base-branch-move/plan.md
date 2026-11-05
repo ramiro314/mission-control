@@ -47,11 +47,15 @@ refused. Automatic moving can be added later on the same server path if stacks b
    measures from it. Either failing refuses the move with nothing written.
 4. **The base must have landed.** A merged pull request with the base's name is not enough:
    a long-lived `develop` that once merged into `main`, or a reused feature branch name, carries
-   old merged pull requests while it still has work of its own. After the fetch,
-   `branchLandedIn` asks origin for the base's tip again. A deleted branch, a tip equal to the
-   merged pull request's head commit (`headRefOid`, which is what vouches for a squash merge),
-   or a tip already in `origin/<target>` has landed; anything else is refused ("has moved on
-   since ... merged it"), with nothing written.
+   old merged pull requests while it still has work of its own. Two checks follow the fetch.
+   First, the pull request must be the merge of the branch this task was stacked on: its head
+   commit (`headRefOid`) has to carry `Task.baseSha`, the commit dispatch started the task from
+   (`commitCarries`; a head missing locally is fetched by id once). An older pull request on a
+   reused name predates that commit, and a task that recorded no start commit cannot be
+   confirmed, so both are refused. Second, `branchLandedIn` asks origin for the base's tip
+   again. A deleted branch, a tip equal to the merged pull request's head commit (which is
+   what vouches for a squash merge), or a tip already in `origin/<target>` has landed; anything
+   else is refused ("has moved on since ... merged it"). Every refusal writes nothing.
 5. **The write.** `baseBranch` becomes the target **by name, even when it is origin's
    default.** That is the one exception to "origin's default is stored as NULL", and it is
    what makes every reader follow without a change of its own: the merge watcher counts only
@@ -89,7 +93,8 @@ naming the new base, so a stack of three can be walked down one merge at a time.
 - `test/task-base-branch-move.test.ts`: the route's refusals (backlog, dispatching, done, no
   base, unknown, no merged pull request, `gh` failure, a merge `gh` names no base for, missing
   target, a failed origin fetch, a base still on origin with work newer than its merged pull
-  request); a base still on origin moving when its tip is in the target or is a squash-merged
+  request, a base deleted unmerged beside an older same-named merged pull request, a head that
+  cannot be found, a task with no recorded start commit); a base still on origin moving when its tip is in the target or is a squash-merged
   pull request's head; the footer's offer for the current base, not a stale record; a successful move storing the target by name and the record,
   onto origin's default and onto another branch (`toDefault` false), from a running, cancelled
   or failed task, and to the newest of several merged pull requests; after the move, a merge

@@ -18,7 +18,7 @@ import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import { mergedPullRequestForBranch } from "./pr.ts";
-import { branchLandedIn, fetchOrigin, resolveBaseBranch } from "./git/remote-default.ts";
+import { branchLandedIn, commitCarries, fetchOrigin, resolveBaseBranch } from "./git/remote-default.ts";
 import type {
   AgentType,
   AssignRefusalScope,
@@ -4200,8 +4200,10 @@ export class TaskManager {
    * pull request merges, and from then on only a merge into the branch it merged into can land
    * the task. This is the one in-flight base change, and the daemon picks the target from
    * `gh`, so the operator who asks for it cannot point a running task at an arbitrary branch.
-   * It also requires the base as origin has it NOW to have landed there (`branchLandedIn`), so
-   * an old merged pull request on a long-lived or reused branch name moves nothing.
+   * It also requires that pull request to carry the commit the task started from
+   * (`commitCarries`, so an older pull request on a reused branch name moves nothing), and the
+   * base as origin has it NOW to have landed there (`branchLandedIn`, so a long-lived branch
+   * that has moved on since its last merge moves nothing).
    *
    * The target is stored BY NAME, origin's default included - the one exception to "the
    * default is stored as NULL". Every reader then follows it without a change of its own: the
@@ -4229,8 +4231,23 @@ export class TaskManager {
     if (!target.ok) return { ok: false, error: target.error, status: 409 };
     const fetched = await (deps.fetch ?? fetchOrigin)(t.repoRoot);
     if (!fetched.ok) return { ok: false, error: `could not fetch origin: ${fetched.reason}`, status: 502 };
-    // A merged pull request with the base's NAME is not the base landing: a long-lived branch
-    // or a reused name carries older merged pull requests while it still has work of its own.
+    // A pull request listed by the base's NAME may be an older use of a reused name. Only one
+    // whose head carries the commit this task started from merged the base it was stacked on.
+    const carried = t.baseSha && merged.pr.headSha
+      ? await commitCarries(t.repoRoot, t.baseSha, merged.pr.headSha)
+      : ({ ok: true, value: false } as const);
+    if (!carried.ok) return { ok: false, error: `could not check ${merged.pr.url}'s head: ${carried.reason}`, status: 502 };
+    if (!carried.value) {
+      return {
+        ok: false,
+        error: t.baseSha
+          ? `${merged.pr.url} does not carry the ${from} this task started from, so it is not this base branch's merge`
+          : `this task recorded no start commit, so ${merged.pr.url} cannot be confirmed as its base branch's merge`,
+        status: 409,
+      };
+    }
+    // Nor is the right pull request the base landing when the branch has moved on since: a
+    // long-lived branch keeps work of its own after each merge.
     const landed = await branchLandedIn(t.repoRoot, from, to, merged.pr.headSha);
     if (!landed.ok) return { ok: false, error: `could not check whether ${from} landed: ${landed.reason}`, status: 502 };
     if (!landed.value) {
