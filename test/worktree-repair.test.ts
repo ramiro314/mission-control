@@ -2755,3 +2755,54 @@ test("a Repair preview whose commit to register at cannot be read is blocked, an
   await assert.rejects(service.execute(preview.token, []), /The commit to register the slot at could not be read/);
   assert.equal(registered(slot.clone, slot.path), false);
 });
+
+test("a slot whose files are still staged is never recovered or seeded from, though its registration reads healthy", async () => {
+  // Ignored content written into the folder during Git's add takes a staged entry's name.
+  class WritesAnInstall extends NativeWorktreeGit {
+    override async add(...args: Parameters<NativeWorktreeGit["add"]>) {
+      const added = await super.add(...args);
+      if (args[3]?.checkout === false) {
+        mkdirSync(join(args[1], "node_modules", "other"), { recursive: true });
+        writeFileSync(join(args[1], "node_modules", "other", "index.js"), "not the slot's\n");
+      }
+      return added;
+    }
+  }
+  const m = managerWith(new WritesAnInstall());
+  const slot = await unregisteredSlot(m, "mission-reregister-staged-");
+  const installInode = slot.inode;
+
+  assert.equal((await m.repairSlot({ slotId: slot.slotId, reregister: true })).outcome, "outcomeUnknown");
+  assert.equal(registered(slot.clone, slot.path), true, "Git's registration stands, and reads healthy");
+  assert.equal(existsSync(slot.install), false, "the slot's own install is still staged");
+  const row = m.store.slot(slot.slotId)!;
+
+  // A pass, an operator's Recover and a seed each refuse, by the staging, not by work.
+  await m.reconcile();
+  await m.recoverQuarantines();
+  const after = m.store.slot(slot.slotId)!;
+  assert.deepEqual([after.state, after.version, after.quarantineReason], ["quarantined", row.version, row.quarantineReason]);
+  assert.match(m.recoveryRefusal(row)?.reason ?? "", /some of the slot's files are still in .*\.repair-staging/);
+  const recovered = await m.recoverSlot({ slotId: slot.slotId, allowDirty: true, automatic: false });
+  assert.equal(recovered.outcome, "refused");
+  assert.match((recovered as { reason: string }).reason, /still in .*\.repair-staging/);
+  db.prepare("UPDATE worktree_slots SET deps_state = 'current' WHERE id = ?").run(slot.slotId);
+  const pool = m.store.poolForSlot(slot.slotId)!;
+  const internals = m as unknown as {
+    identity(root: string): unknown;
+    quarantinedSourceProof(input: object, slotId: string): Promise<WorktreeSlotRow | string>;
+  };
+  const proof = await internals.quarantinedSourceProof({
+    pool, identity: internals.identity(pool.mainCheckoutRoot), targetSlotId: null, fingerprint: null, exactOnly: false,
+  }, slot.slotId);
+  assert.match(String(proof), /still in .*\.repair-staging/);
+  assert.equal(existsSync(slot.install), false);
+
+  // Once nothing in the slot holds that name, reconcile moves the install back and a pass recovers it.
+  rmSync(join(slot.path, "node_modules"), { recursive: true });
+  await m.reconcile();
+  assert.equal(statSync(slot.install).ino, installInode);
+  assert.deepEqual(repairStaging(m, slot.slotId), []);
+  await m.recoverQuarantines();
+  assertRecovered(m, slot);
+});

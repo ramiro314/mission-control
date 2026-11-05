@@ -2507,6 +2507,8 @@ export class WorktreeManager {
     if (this.claims.has(slot.id)) return "a dependency claim is running in it";
     if (untrustedTreeQuarantine(slot.quarantineReason)) return `its tree cannot be trusted as an install: ${slot.quarantineReason}`;
     if (!exactSlotPath(input.pool, input.identity, slot)) return REGISTRATION_OR_IDENTITY.inexactPath;
+    const staged = await this.stagedRepairBlocker(input.pool, slot);
+    if (staged) return staged;
     // A quarantine can mean the folder is not what the row says, and nothing here reads Git.
     const physical = await physicalDirectoryProblem(slot.path);
     if (physical) return physical;
@@ -3480,6 +3482,8 @@ export class WorktreeManager {
       return { outcome: "refused", reason: "slot changed after it was observed" };
     }
     if (slot.quarantineReason === INTERRUPTED_FORGET) return { outcome: "refused", reason: RECOVER_REFUSES_INTERRUPTED_FORGET };
+    const staged = await this.stagedRepairBlocker(pool, slot);
+    if (staged) return { outcome: "refused", reason: staged };
     if (input.automatic && !input.repaired && !automaticRecoveryCandidate(slot)) {
       return { outcome: "refused", reason: "automatic recovery does not clear this quarantine" };
     }
@@ -3833,6 +3837,25 @@ export class WorktreeManager {
       console.warn(oneLine(`[worktrees] staged files could not all be moved back to ${slotPath}: ${bounded(String(error))}`));
       return false;
     }
+  }
+
+  /**
+   * Why this slot's install is incomplete because some of its files are still in repair staging,
+   * or null when no `repair.json` names it. A registration Git finished reads healthy even while
+   * files are staged, so this, not the registration, is what keeps a reset, and a seed copying
+   * from the slot, away from it until reconcile can move them back.
+   */
+  private async stagedRepairBlocker(pool: WorktreePoolRow, slot: WorktreeSlotRow): Promise<string | null> {
+    let staged: Awaited<ReturnType<typeof stagedRepairs>>;
+    try {
+      staged = await stagedRepairs(pool.poolPath);
+    } catch (error) {
+      return `repair staging could not be read, so the slot's files may not all be in place: ${bounded(String(error))}`;
+    }
+    const naming = staged.find((repair) => repair.status === "intent" && repair.intent.slotId === slot.id);
+    return naming
+      ? `some of the slot's files are still in ${naming.directory}, which reconcile moves back only once nothing in the slot has the same name`
+      : null;
   }
 
   /**

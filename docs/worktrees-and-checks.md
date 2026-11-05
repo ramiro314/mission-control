@@ -511,6 +511,9 @@ whatever an older configuration's seed left behind.
   before anything reads a slot. Each staged entry goes back into the slot its `repair.json`
   names, under that slot's lock. A `.git` the folder already has came from Git's add, so the
   staged one is dropped; any other name already present is never overwritten and stays staged.
+  While any `repair.json` names a slot, Recover, Repair's recovery, a maintenance pass and a
+  seed all refuse it, because a registration Git finished reads healthy with part of the install
+  still staged. Once nothing in the slot holds the staged name, the next reconcile moves it back.
   When Git's add had finished but the index was never read, it is read from `HEAD`, so the next
   pass can recover the slot. A re-registration cut off before Git ran leaves the folder as it was,
   for the card's Repair. Staging with no `repair.json` holds nothing of a slot's, because the
