@@ -199,7 +199,9 @@ one starts from origin's default branch and targets it, exactly as before.
   the daemon checks each base branch of a dispatched task that has not landed yet (and of a
   finished task that dependents still wait on). When origin no longer has that branch and `gh`
   reports a merged pull request from it, the daemon moves the task's base to the branch that
-  pull request merged into. This is the state GitHub's delete-on-merge leaves behind, and
+  pull request merged into. When that branch is gone and merged too, the daemon follows the
+  chain, up to five branches, to the first one origin still has. This is the state GitHub's
+  delete-on-merge leaves behind, and
   GitHub retargets the stacked pull request the same way. The new base is stored as any base
   is, so origin's default stores as no base branch. The old branch is kept on the task as
   `baseBranchMovedFrom`. From then on, the merge watcher counts a merge into the new base. The

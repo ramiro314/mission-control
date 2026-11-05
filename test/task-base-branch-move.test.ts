@@ -209,7 +209,10 @@ test("a move is refused for a backlog task, a base that changed since it was rea
 test("an unreachable origin, a refused new base, or a base merged into itself leaves the task alone", async () => {
   const cases: Array<[string, Partial<import("../src/server/base-branch-move.ts").BaseBranchMoveDeps>]> = [
     ["unreachable origin", { remoteBranch: async () => ({ ok: false, reason: "timed out", outcomeUnknown: true }) }],
-    ["refused new base", { resolve: async () => ({ ok: false, error: "base branch main does not exist" }) }],
+    ["refused new base origin still has", {
+      remoteBranch: async (_root, branch) => ({ ok: true, value: branch === "feat/a" ? null : "f".repeat(40) }),
+      resolve: async () => ({ ok: false, error: "could not check base branch main on origin: timed out" }),
+    }],
     ["merged into itself", { mergedInto: async (_root, branch) => branch }],
   ];
   for (const [name, override] of cases) {
@@ -233,6 +236,56 @@ test("an unreachable origin, a refused new base, or a base merged into itself le
     assert.deepEqual(moves, [], name);
     assert.equal(registry.getTask(id)?.baseBranch, "feat/a", name);
     assert.equal(registry.getTask(id)?.baseBranchMovedFrom ?? null, null, name);
+  }
+});
+
+/** A sweep over one running task on `feat/a`, against an origin described by `merges`. */
+async function sweepChain(
+  id: string,
+  merges: Record<string, string>,
+  { unreachable = new Set<string>(), present = new Set<string>(["main"]) } = {},
+) {
+  const registry = new Registry();
+  const tasks = taskManager(registry);
+  registry.upsertTask(mkTask({ id, status: "running", repoRoot: "/repo-chain", baseBranch: "feat/a" }));
+  const moves = await moveMergedBaseBranches(
+    {
+      candidates: () => registry.baseBranchMoveCandidates().filter((t) => t.id === id),
+      move: (taskId, from, to) => tasks.moveBaseBranch(taskId, from, to),
+    },
+    {
+      remoteBranch: async (_root, branch) => unreachable.has(branch)
+        ? { ok: false, reason: "timed out", outcomeUnknown: true }
+        : { ok: true, value: present.has(branch) ? "f".repeat(40) : null },
+      mergedInto: async (_root, branch) => merges[branch] ?? null,
+      resolve: async (_root, branch) => present.has(branch)
+        ? { ok: true, baseBranch: branch === "main" ? null : branch }
+        : { ok: false, error: `base branch ${branch} does not exist on /repo-chain's origin` },
+      fetch: async () => {},
+    },
+  );
+  return { moves, task: registry.getTask(id)! };
+}
+
+test("a base whose merged-into branch also merged and was deleted moves to where that chain ends", async () => {
+  const { moves, task } = await sweepChain("two-hops", { "feat/a": "feat/x", "feat/x": "main" });
+  assert.deepEqual(moves, [{ taskId: "two-hops", from: "feat/a", to: null }]);
+  assert.equal(task.baseBranch, null);
+  assert.equal(task.baseBranchMovedFrom, "feat/a", "the record names the task's own old base");
+});
+
+test("a chain that cannot be followed to a branch origin has leaves the task alone", async () => {
+  const cases = {
+    "unreachable at the second hop": sweepChain("chain-unreachable", { "feat/a": "feat/x", "feat/x": "main" }, { unreachable: new Set(["feat/x"]) }),
+    "deleted without merging at the second hop": sweepChain("chain-unmerged", { "feat/a": "feat/x" }),
+    "a cycle": sweepChain("chain-cycle", { "feat/a": "feat/x", "feat/x": "feat/a" }),
+    "longer than the hop limit": sweepChain("chain-long", { "feat/a": "b1", b1: "b2", b2: "b3", b3: "b4", b4: "b5", b5: "main" }),
+  };
+  for (const [name, swept] of Object.entries(cases)) {
+    const { moves, task } = await swept;
+    assert.deepEqual(moves, [], name);
+    assert.equal(task.baseBranch, "feat/a", name);
+    assert.equal(task.baseBranchMovedFrom ?? null, null, name);
   }
 });
 

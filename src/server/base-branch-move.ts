@@ -12,7 +12,9 @@
 // null). A base branch that still exists is never moved, even with a merged pull request
 // behind it: a long-lived branch such as `release/2.0` is merged into the default regularly
 // and stays the base of the work cut from it. Anything uncertain - an unreachable origin, a
-// `gh` failure, a branch deleted without merging - leaves the task exactly as it is.
+// `gh` failure, a branch deleted without merging - leaves the task exactly as it is. When the
+// branch it merged into is gone and merged too, the move follows that chain to the first
+// branch origin still has.
 
 import type { Task } from "@shared/types.ts";
 import { ghBin } from "./config.ts";
@@ -23,6 +25,9 @@ import { unref } from "./util/timers.ts";
 
 /** How often the daemon looks for a moved base. One `ls-remote` per distinct base each time. */
 export const BASE_BRANCH_MOVE_POLL_MS = 60_000;
+
+/** How many merged-and-deleted branches a move follows before it gives up on a chain. */
+const MAX_BASE_BRANCH_MOVE_HOPS = 5;
 
 export interface BaseBranchMoveTasks {
   /** The tasks whose base a merge can move: `Registry.baseBranchMoveCandidates`. */
@@ -98,14 +103,26 @@ export async function moveMergedBaseBranches(
     let target = targets.get(key);
     if (!target) {
       target = (async () => {
-        const remote = await deps.remoteBranch(repoRoot, branch);
-        if (!remote.ok || remote.value !== null) return null;
-        const mergedInto = await deps.mergedInto(repoRoot, branch);
-        if (typeof mergedInto !== "string" || mergedInto === branch) return null;
-        const resolved = await deps.resolve(repoRoot, mergedInto);
-        if (!resolved.ok) return null;
-        await deps.fetch(repoRoot, mergedInto).catch(() => undefined);
-        return { to: resolved.baseBranch };
+        // Follow the chain while each branch is gone and merged: the branch the base merged
+        // into may itself have merged and been deleted before a sweep saw the first merge,
+        // and a merged pull request keeps the base it merged into, which then never resolves.
+        const visited = new Set([branch]);
+        let current = branch;
+        for (let hop = 0; hop < MAX_BASE_BRANCH_MOVE_HOPS; hop++) {
+          const remote = await deps.remoteBranch(repoRoot, current);
+          if (!remote.ok || remote.value !== null) return null;
+          const mergedInto = await deps.mergedInto(repoRoot, current);
+          if (typeof mergedInto !== "string" || visited.has(mergedInto)) return null;
+          visited.add(mergedInto);
+          const resolved = await deps.resolve(repoRoot, mergedInto);
+          if (resolved.ok) {
+            await deps.fetch(repoRoot, mergedInto).catch(() => undefined);
+            return { to: resolved.baseBranch };
+          }
+          // Refused: the next hop moves on only if origin confirms this branch is gone too.
+          current = mergedInto;
+        }
+        return null;
       })().catch(() => null);
       targets.set(key, target);
     }
