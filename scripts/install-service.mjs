@@ -17,6 +17,7 @@ const uninstall = process.argv.includes("--uninstall");
 
 // Both service managers keep the daemon's output (launchd in daemon.log, systemd in the
 // journal), so each unit sets MISSION_DAEMON_LOG_CAPTURED=1 and the daemon writes no log of its own.
+// start-service.mjs sets it as well, for units installed before the variable existed.
 // The service manager starts with a minimal PATH; include node's dir + common tool dirs so
 // the daemon can shell out to ps / tmux / git / wezterm.
 const pathDirs = (extra) => [dirname(node), ...extra, "/usr/local/bin", "/usr/bin", "/bin"].join(":");

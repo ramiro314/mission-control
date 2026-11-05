@@ -123,6 +123,10 @@ export function daemonLogCaptured(): boolean {
 
 /** Start the daemon's own log unless its launcher captures the output. */
 export function startDaemonLog(): DaemonLogCapture | null {
-  if (daemonLogCaptured()) return null;
+  const captured = daemonLogCaptured();
+  // The variable describes this process's launcher only. A dev daemon started from a shell this
+  // daemon launched (a terminal session, an agent) has no such launcher and must keep its log.
+  for (const prefix of ["MISSION", "FLEET", "HARNESS"]) delete process.env[`${prefix}_DAEMON_LOG_CAPTURED`];
+  if (captured) return null;
   return teeToDaemonLog({ path: join(stateDir(), "daemon.log") });
 }

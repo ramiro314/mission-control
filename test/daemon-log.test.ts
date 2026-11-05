@@ -48,6 +48,7 @@ function runDaemonLike(home: string, captured: boolean) {
   if (captured) env.MISSION_DAEMON_LOG_CAPTURED = "1";
   const script = [
     `await import(${JSON.stringify(startModule)});`,
+    'console.log("inherited=" + (process.env.MISSION_DAEMON_LOG_CAPTURED ?? "none"));',
     `console.log("[worktrees] quarantined uwf slot 3: occupancy-unknown (timeout)");`,
     `console.error("[worktrees] recovered uwf slot 3");`,
     `setImmediate(() => { throw new Error("daemon crashed"); });`,
@@ -76,6 +77,7 @@ test("AC32: with MISSION_DAEMON_LOG_CAPTURED=1 the daemon writes nothing to daem
   const run = runDaemonLike(home, true);
   assert.match(run.stdout, /quarantined uwf slot 3/, "the launcher still receives the output");
   assert.equal(existsSync(join(home, "daemon.log")), false);
+  assert.match(run.stdout, /inherited=none/, "children the daemon starts do not inherit the variable");
 });
 
 test("AC32: the log rotates once it passes 10 MB, keeping 3 old files", (t) => {

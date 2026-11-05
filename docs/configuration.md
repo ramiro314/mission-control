@@ -228,7 +228,11 @@ daemon:
   goes to `.harness.log` in the checkout, and `make logs` still tails that file.
 
 The first two set `MISSION_DAEMON_LOG_CAPTURED=1`, so the daemon writes nothing itself and no
-line appears twice. In a dev launch the daemon checks the file's size before each batch of
+line appears twice. The service sets it in its entry script as well as in the unit, so a service
+installed before this variable existed picks it up the next time it restarts; until then a macOS
+service writes each line to `daemon.log` twice. Restart it, or re-run `npm run install-service`.
+The daemon removes the variable from its own environment once read, so a dev daemon started
+from a terminal or agent session it launched still keeps its log. In a dev launch the daemon checks the file's size before each batch of
 writes and, once it passes 10 MB, renames it to `daemon.log.1`, shifting older files up to
 `daemon.log.3` and deleting the oldest. A new log file is mode `0600`. The desktop shell's
 logger opens the file by path for every line, so it keeps writing to the new `daemon.log` after
