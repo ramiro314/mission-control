@@ -3,6 +3,8 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+// Second: the dev daemon's own log, opened in the migrated state dir. See daemon-log-start.ts.
+import "./daemon-log-start.ts";
 import { clearStoredDefaultBaseBranches } from "./base-branch-backfill.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";

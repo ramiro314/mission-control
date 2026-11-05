@@ -80,6 +80,11 @@ test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
       "launchd must enter through the checked-in native-build service entry",
     );
     assert.ok(existsSync(serviceEntry), "the LaunchAgent service entry must be checked in");
+    assert.match(
+      plist,
+      /<key>MISSION_DAEMON_LOG_CAPTURED<\/key>\s*<string>1<\/string>/,
+      "launchd already appends the daemon's output to daemon.log, so the daemon must not",
+    );
 
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -153,6 +158,8 @@ test("on Linux a systemd user unit runs the native-build daemon entry and stops 
         `ExecStart=${quote(process.execPath)} ${quote(serviceEntry)}`,
         `WorkingDirectory=${repo.replaceAll("%", "%%")}`,
         `Environment="PATH=${pathEnv.replaceAll("%", "%%")}"`,
+        // systemd keeps the output in the journal, so the daemon writes no daemon.log of its own.
+        'Environment="MISSION_DAEMON_LOG_CAPTURED=1"',
         "Restart=always",
         "RestartSec=2",
         "RestartPreventExitStatus=75",
