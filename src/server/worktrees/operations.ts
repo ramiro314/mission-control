@@ -552,6 +552,8 @@ export class WorktreeOperationsService {
   private readonly tokens = new Map<string, HeldPreview>();
   /** Each built Recover preview's work set (`worktreeResetWorkKey`), for execute to hold the reset to. */
   private readonly recoverWork = new WeakMap<object, string>();
+  /** Each built re-registering Repair preview's commit, for execute to register at. */
+  private readonly reregisterCommit = new WeakMap<object, string>();
   private legacyVisibleRevision: string | null = null;
   private observing: Promise<Observation> | null = null;
   private nextObservation: Promise<Observation> | null = null;
@@ -1548,7 +1550,8 @@ export class WorktreeOperationsService {
    * Repair one slot quarantined for its registration. The preview names each of Git's fixes, and
    * what it read is bound into the token, so a registration or an occupant that changes after
    * it makes Execute refuse as stale. Nothing here needs an acknowledgement: the recovery that
-   * follows never discards work, and a slot holding any stays quarantined for Recover.
+   * follows never discards work, and a slot holding any stays quarantined for Recover. A slot no
+   * registration names at all is registered again, at the commit the preview names.
    */
   private async buildRepairPreview(
     request: Extract<WorktreeActionRequest, { action: "repair" }>,
@@ -1563,6 +1566,9 @@ export class WorktreeOperationsService {
     const { pool, slot } = target;
     const ordinal = slot.slot.ordinal;
     const diagnosis = await this.manager.slotRegistrationDiagnosis(slot.slot);
+    const reregistration = diagnosis?.ok && diagnosis.value.status === "unregistered"
+      ? await this.manager.slotReregistrationTarget(slot.slot)
+      : null;
     affected.push({
       provider: "mission",
       id: slot.slot.id,
@@ -1575,6 +1581,7 @@ export class WorktreeOperationsService {
         occupancy: slot.occupancy,
         ownerReferenced: slot.ownerReferenced,
         diagnosis,
+        reregistration,
       }),
       diskBytes: null,
     });
@@ -1611,12 +1618,23 @@ export class WorktreeOperationsService {
       if (diagnosis.value.fixes.some((fix) => fix !== "unlock")) {
         consequences.push("git worktree repair covers the whole repository, so it also rewrites any other worktree's broken .git file.");
       }
+    } else if (diagnosis.value.status === "unregistered") {
+      if (!reregistration?.ok) {
+        blockers.push(`The commit to register the slot at could not be read; try again: ${reregistration?.reason ?? "the pool's repository identity cannot be proven"}.`);
+      } else {
+        const { commit, source } = reregistration.value;
+        consequences.push(`No Git registration names ${slot.slot.path}, so Repair registers the folder again at ${commit}, ${source === "recorded" ? "the HEAD the slot last recorded" : "origin's default, because the repository no longer holds a HEAD the slot recorded"}.`);
+        consequences.push("Moves the folder's files aside on the same volume while Git registers it with no checkout, then moves every one back, so the warm install keeps its files and inodes.");
+        consequences.push("Tracked and untracked files are checked once the slot is registered again. Ignored files stay.");
+      }
     } else {
       consequences.push("Git's registration of this slot already reads healthy, so no Git fix runs.");
     }
     consequences.push("Then runs automatic recovery's checks and resets the slot to the fetched remote default, keeping its warm install.");
     consequences.push("A slot that holds work is not reset: it stays quarantined as \"registration repaired; holds work\", for Recover.");
-    return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+    const built = this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+    if (reregistration?.ok) this.reregisterCommit.set(built, reregistration.value.commit);
+    return built;
   }
 
   /**
@@ -2268,11 +2286,12 @@ export class WorktreeOperationsService {
       }
       // The rebuild matched the preview, so its work set is the preview's.
       const expectedWork = this.recoverWork.get(rebuilt);
+      const expectedCommit = this.reregisterCommit.get(rebuilt);
       // publishOnSuccess covers legacy-only actions where no native manager method calls
       // publish(). Supplying the service publisher also coalesces native mutations through the
       // same content-free invalidation path instead of emitting once from each dependency.
       await runAsWorktreeActor("operator", () => this.manager.runChangeBatch(
-        () => this.dispatch(held, acknowledgementSet, removed, progress, expectedWork),
+        () => this.dispatch(held, acknowledgementSet, removed, progress, expectedWork, expectedCommit),
         true,
         this.deps.notifyChanged,
       ));
@@ -2362,6 +2381,7 @@ export class WorktreeOperationsService {
     removed: (target: WorktreeActionAffected) => void,
     progress: OperationProgress,
     expectedWork?: string,
+    expectedCommit?: string,
   ): Promise<void> {
     const { preview } = held;
     const request = preview.request;
@@ -2394,7 +2414,13 @@ export class WorktreeOperationsService {
     }
     if (request.action === "repair") {
       const target = preview.affected[0]!;
-      const result = await this.manager.repairSlot({ slotId: target.id, expectedVersion: target.version ?? undefined });
+      // The operator's Repair is the only one that registers a folder again (S17).
+      const result = await this.manager.repairSlot({
+        slotId: target.id,
+        expectedVersion: target.version ?? undefined,
+        reregister: true,
+        expectedCommit,
+      });
       progress.settled = this.manager.recoverySettled(target.id, target.version, result);
       if (result.outcome === "recovered" || result.outcome === "heldWork") return;
       throw new WorktreeOperationError(

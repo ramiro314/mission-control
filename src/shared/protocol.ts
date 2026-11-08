@@ -5,7 +5,11 @@ import { z } from "zod";
 import { ModelIdSchema } from "./model-id.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
-import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "./wait-for-ci.ts";
+import {
+  WAIT_FOR_CI_EXPECTED_CHECKS,
+  WAIT_FOR_CI_QUIET_MINUTES,
+  WAIT_FOR_CI_TIMEOUT_MINUTES,
+} from "./wait-for-ci.ts";
 import { CI_STRICTNESS } from "./ci-checks.ts";
 import { WORKTREE_HISTORY_LIMITS, WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
@@ -5990,6 +5994,23 @@ export const SessionActionCapabilitiesSchema = z.object({
 });
 export type SessionActionCapabilities = z.infer<typeof SessionActionCapabilitiesSchema>;
 
+/**
+ * A Wait for CI node's settings, identical on both arms. Optional with no `.default()`, like
+ * `executionOverride`: a graph written before they existed is never rewritten when it is read,
+ * and absence means `WAIT_FOR_CI_LEGACY_SETTINGS`. Publish, not the schema, limits the list to
+ * `WAIT_FOR_CI_EXPECTED_CHECKS.max` unique names, so the editor can say so on the node.
+ */
+const WaitForCiNodeSettingsShape = {
+  strictness: z.enum(CI_STRICTNESS).optional(),
+  quietMinutes: z.number().int()
+    .min(WAIT_FOR_CI_QUIET_MINUTES.min)
+    .max(WAIT_FOR_CI_QUIET_MINUTES.max)
+    .optional(),
+  expectedChecks: z.array(z.string().trim().min(1).max(WAIT_FOR_CI_EXPECTED_CHECKS.nameMax))
+    .max(WAIT_FOR_CI_EXPECTED_CHECKS.schemaMax)
+    .optional(),
+};
+
 export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("session"), position: WorkflowPointSchema }),
   z.object({
@@ -6028,6 +6049,7 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
       .min(WAIT_FOR_CI_TIMEOUT_MINUTES.min)
       .max(WAIT_FOR_CI_TIMEOUT_MINUTES.max),
     position: WorkflowPointSchema,
+    ...WaitForCiNodeSettingsShape,
   }),
 ]);
 
@@ -6072,6 +6094,7 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
       .min(WAIT_FOR_CI_TIMEOUT_MINUTES.min)
       .max(WAIT_FOR_CI_TIMEOUT_MINUTES.max),
     position: WorkflowPointSchema,
+    ...WaitForCiNodeSettingsShape,
   }),
 ]);
 

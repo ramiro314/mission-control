@@ -75,6 +75,9 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
   "src/main/updater.ts": [
     { fn: "latestMainCommit", argv: "UPDATE_GH_ARGS.mainCommit()", how: "explicit", why: "`repos/${CANONICAL_REPO}/commits/main`, through `runGh`" },
   ],
+  "src/server/base-branch-move.ts": [
+    { fn: "newestMergedPullRequest", argv: "mergedPrListArgs(branch, repo.repo)", how: "resolver", why: "`--repo` from `checkoutGitHubRepository`; no gh call when it fails" },
+  ],
   "src/server/inspector/github.ts": [
     { fn: "authenticatedLogin", argv: '["api", "user", "--jq", ".login"]', how: "none", why: "the token's own login" },
     { fn: "fetchPr", argv: '["api", "graphql", "-f", `query=${PR_QUERY(includeCodeRabbitComments)}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
@@ -93,7 +96,6 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
     { fn: "queryPr", argv: "prListArgs(branch, repo.repo, search)", how: "resolver", why: "the episode search; `--repo` from `checkoutGitHubRepository`, no gh call when it fails" },
     { fn: "queryPr", argv: "prListArgs(branch, repo.repo)", how: "resolver", why: "`--repo` from `checkoutGitHubRepository`; no gh call when it fails" },
     { fn: "queryPrUrl", argv: '["pr", "view", url, "--json", "state,mergedAt,mergeable,baseRefName,headRefOid"]', how: "url", why: "the adopted PR's URL" },
-    { fn: "mergedPullRequestForBranch", argv: '["pr", "list", "--repo", repo.repo, "--head", branch, "--state", "merged", "--json", "url,state,mergedAt,baseRefName,headRefOid", "--limit", "20"]', how: "resolver", why: "a task's base branch's merged PRs; `--repo` from `checkoutGitHubRepository`, no gh call when it fails" },
   ],
   "src/server/product-issues.ts": [
     { fn: "ProductIssueService.preflight", argv: '["--version"]', how: "none", why: "version probe" },

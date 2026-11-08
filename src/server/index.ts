@@ -3,7 +3,10 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+// Second: the dev daemon's own log, opened in the migrated state dir. See daemon-log-start.ts.
+import { daemonLog } from "./daemon-log-start.ts";
 import { clearStoredDefaultBaseBranches } from "./base-branch-backfill.ts";
+import { startMergedBaseBranchMover } from "./base-branch-move.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
@@ -170,6 +173,8 @@ try {
   console.error(`[mission-control] ${error.message}`);
   process.exit(STATE_CONTENTION_EXIT_STATUS);
 }
+// Only the owner may rotate daemon.log: before this, another launcher may hold it open.
+daemonLog?.allowRotation();
 const database = openDb();
 // The desktop window's launch colour follows the stored skin, whoever stored it.
 syncWindowBackground();
@@ -714,6 +719,12 @@ const prConflicts = new PrConflictTracker(registry, getForemanConfig, (runId) =>
   workflows.waitForCiReachable(runId),
 );
 const stopPrPoller = startPrPoller(registry, prConflicts);
+// A task stacked on another branch follows that branch to wherever it merged, once origin has
+// deleted it, so the merge watcher above counts the task's own merge there.
+const stopBaseBranchMover = startMergedBaseBranchMover({
+  candidates: () => registry.baseBranchMoveCandidates(),
+  move: (id, from, to, movedSha) => tasks.moveBaseBranch(id, from, to, movedSha),
+});
 const stopInspector = startInspector(registry, {
   workflowGate: (prKey) => workflows.mergeGate(prKey),
 });
@@ -1137,6 +1148,7 @@ async function shutdown(): Promise<void> {
   stopPoller();
   stopAgentsShadow();
   stopPrPoller();
+  stopBaseBranchMover();
   stopInspector();
   stopRuntimeMeta();
   stopRetroWorthiness();

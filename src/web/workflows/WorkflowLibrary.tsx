@@ -18,7 +18,7 @@ import {
   type WorkflowTargetPort,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
-import { WAIT_FOR_CI_TIMEOUT_MINUTES } from "@shared/wait-for-ci.ts";
+import { WAIT_FOR_CI_TIMEOUT_MINUTES, newWaitForCiNodeSettings } from "@shared/wait-for-ci.ts";
 import type { LlmProviderView } from "@shared/types.ts";
 import {
   WORKFLOW_NODE_SOURCE_PORTS,
@@ -654,7 +654,13 @@ export function WorkflowLibrary({
           : spec.kind === "session_action"
             ? { id, kind: "session_action", sessionActionId: spec.sessionActionId, position }
             : spec.kind === "wait_for_ci"
-              ? { id, kind: "wait_for_ci", timeoutMinutes: WAIT_FOR_CI_TIMEOUT_MINUTES.default, position }
+              ? {
+                  id,
+                  kind: "wait_for_ci",
+                  timeoutMinutes: WAIT_FOR_CI_TIMEOUT_MINUTES.default,
+                  position,
+                  ...newWaitForCiNodeSettings(),
+                }
               : { id, kind: "end", outcome: "Complete", position };
     draft.update({ draft: { ...workflow.draft, nodes: [...workflow.draft.nodes, node] } });
     setSelection({ kind: "node", id });

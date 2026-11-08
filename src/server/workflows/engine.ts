@@ -32,7 +32,7 @@ import type {
   WorkflowCommandView,
   WorkflowPolicy,
 } from "@shared/workflow.ts";
-import type { WorkflowVerdictNode } from "@shared/workflow.ts";
+import type { WorkflowVerdictNode, WorkflowWaitForCiNode } from "@shared/workflow.ts";
 import {
   WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE,
   workflowCheckCleanupBlock,
@@ -78,7 +78,10 @@ import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
 import {
   decideWaitForCi,
   initialWaitForCiState,
+  notReportedWhenFailed,
+  quotedNames,
   readWaitForCiState,
+  waitForCiSettings,
   type CiObservation,
   type WaitForCiDecision,
   type WaitForCiMergeability,
@@ -530,11 +533,15 @@ export function waitForCiVerdict(
       confidence: 1,
     }, new Set(), new Set(), new Set([attemptId]));
   }
+  const fallback = decision.state.requiredFallback
+    ? " No check was marked required, so every check was judged."
+    : "";
   if (decision.kind === "pass") {
     const flakes = decision.state.flakeReport?.flakes.length ?? 0;
-    const summary = flakes === 0
+    const summary = (flakes === 0
       ? `CI passed on ${head}.`
-      : `CI passed on ${head}, with ${flakes} flaky test${flakes === 1 ? "" : "s"} that passed on rerun.`;
+      : `CI passed on ${head}, with ${flakes} flaky test${flakes === 1 ? "" : "s"} that passed on rerun.`)
+      + fallback;
     return normalizePersonaVerdict({
       verdict: "pass",
       summary,
@@ -542,10 +549,14 @@ export function waitForCiVerdict(
       confidence: 1,
     });
   }
-  const names = decision.failing.map((check) => `"${check.name}"`).join(", ");
+  // Only counted failures: in Required mode a failing check that is not required is shown in
+  // the run panel, never sent for repair.
+  const names = quotedNames(decision.failing.map((check) => check.name));
+  const missing = decision.state.missingExpected ?? [];
+  const unreported = missing.length > 0 ? ` ${notReportedWhenFailed(missing)}` : "";
   return normalizePersonaVerdict({
     verdict: "fail",
-    summary: `CI failed on ${head}: ${names}.`,
+    summary: `CI failed on ${head}: ${names}.${unreported}${fallback}`,
     requestedChanges: decision.failing.map((check) => {
       const said = [check.title, check.summary].filter((part): part is string => Boolean(part));
       const quote = said[0] ?? `The check concluded ${check.conclusion ?? "with a failure"}.`;
@@ -808,7 +819,7 @@ export class WorkflowEngine {
             attempt: (latest?.attempt ?? 0) + 1,
             state: "waiting",
             persona: null,
-            waitForCiState: this.initialCiWait(latestSubmission, target.timeoutMinutes),
+            waitForCiState: this.initialCiWait(latestSubmission, target),
             inputFingerprint: `${submission.evidenceFingerprint}:${target.id}`,
             now: this.now(),
           });
@@ -2168,7 +2179,7 @@ export class WorkflowEngine {
    * manager (`resolveWaitForCiHead`). A submission with no such source records nulls, and the
    * first observation blocks it plainly.
    */
-  private initialCiWait(submission: WorkflowSubmission, timeoutMinutes: number): WaitForCiState {
+  private initialCiWait(submission: WorkflowSubmission, node: WorkflowWaitForCiNode): WaitForCiState {
     const source = submission.continuationNodeAttemptId
       ? this.store.getAttempt(submission.continuationNodeAttemptId)
       : null;
@@ -2186,7 +2197,10 @@ export class WorkflowEngine {
       // push this action made. It is kept only as the fallback when the capture cannot resolve.
       expectedHeadOid: null,
       reportedHeadOid: pr?.expectedHeadOid ?? null,
-      timeoutMinutes,
+      timeoutMinutes: node.timeoutMinutes,
+      // Resolved once, here, like the timeout: the attempt judges under what the version said
+      // when it activated, and a node without the fields under the legacy settings.
+      ...waitForCiSettings(node),
       now: this.now(),
     });
   }
@@ -2264,6 +2278,9 @@ export class WorkflowEngine {
       ...(decision.kind === "fail" ? { failing: decision.failing.map((check) => check.name) } : {}),
       ...(decision.kind === "fail" && decision.conflict ? { conflict: true } : {}),
       flakes: decision.state.flakeReport?.flakes.length ?? 0,
+      strictness: waitForCiSettings(decision.state).strictness,
+      requiredFallback: decision.state.requiredFallback === true,
+      missingExpected: decision.state.missingExpected?.length ?? 0,
     }, now);
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);

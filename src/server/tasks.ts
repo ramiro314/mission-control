@@ -17,8 +17,6 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
-import { mergedPullRequestForBranch } from "./pr.ts";
-import { branchLandedIn, commitCarries, fetchOrigin, resolveBaseBranch, trackingBranchSha } from "./git/remote-default.ts";
 import type {
   AgentType,
   AssignRefusalScope,
@@ -4193,96 +4191,35 @@ export class TaskManager {
   }
 
   /**
-   * Move an in-flight task's base branch to the branch its base branch's pull request merged
-   * into, and record the move on the task.
+   * Move an in-flight task's base branch from `from` to `to` (null: origin's default), and
+   * record `from` on the task. `moveMergedBaseBranches` is the caller, once `from` has merged.
    *
-   * The edit path above refuses any base change once a task leaves the backlog, because the
-   * base is what dispatch provisioned from. A stacked task outlives that: its base branch's
-   * pull request merges, and from then on only a merge into the branch it merged into can land
-   * the task. This is the one in-flight base change, and the daemon picks the target from
-   * `gh`, so the operator who asks for it cannot point a running task at an arbitrary branch.
-   * It also requires that pull request to carry the commit the task started from
-   * (`commitCarries`, so an older pull request on a reused branch name moves nothing), and the
-   * base as origin has it NOW to have landed there (`branchLandedIn`, so a long-lived branch
-   * that has moved on since its last merge moves nothing).
-   *
-   * The target is stored BY NAME, origin's default included - the one exception to "the
-   * default is stored as NULL". Every reader then follows it without a change of its own: the
-   * merge watcher counts only a merge into it, diffs and checks measure from
-   * `origin/<target>`, resets land there, and every instruction names it. A NULL would instead
-   * let a merge into any branch complete the task. `origin` is fetched first so
-   * `origin/<target>` already carries the base branch's merge when anything measures from it.
+   * The one write of a provisioning field `update` refuses outside the backlog, and allowed
+   * here because nothing re-provisions from it: every reader of a dispatched task's base - the
+   * merge watcher, the Diff view, evidence and affected-tests measurement, resets, the Pull
+   * Request action and a contract composed on a later assign - asks the row when it runs, so
+   * each follows the move from then on. A backlog task keeps the edit path. Refused when the
+   * task's base is no longer `from`, because the caller decided on a row read before its
+   * network calls. A finished dependency source the registry no longer holds is read back from
+   * the database, as the merge watcher reads it, so its dependents are not stranded.
    */
-  async moveBaseBranch(
-    id: string,
-    deps: { mergedPullRequest?: typeof mergedPullRequestForBranch; fetch?: typeof fetchOrigin } = {},
-  ): Promise<{ ok: true; task: Task } | { ok: false; error: string; status: 404 | 409 | 502 }> {
-    const t = this.registry.getTask(id);
-    if (!t) return { ok: false, error: "no such task", status: 404 };
-    const refused = this.moveRefusal(t);
-    if (refused) return { ok: false, error: refused, status: 409 };
-    const from = t.baseBranch!;
-    const merged = await (deps.mergedPullRequest ?? mergedPullRequestForBranch)(t.repoRoot, from);
-    if (!merged.ok) return { ok: false, error: merged.error, status: 502 };
-    if (!merged.pr) {
-      return { ok: false, error: `base branch ${from} has no merged pull request, so it has nowhere to move yet`, status: 409 };
-    }
-    const to = merged.pr.baseRef;
-    const target = await resolveBaseBranch(t.repoRoot, to);
-    if (!target.ok) return { ok: false, error: target.error, status: 409 };
-    const fetched = await (deps.fetch ?? fetchOrigin)(t.repoRoot);
-    if (!fetched.ok) return { ok: false, error: `could not fetch origin: ${fetched.reason}`, status: 502 };
-    // A pull request listed by the base's NAME may be an older use of a reused name. Only one
-    // whose head carries the commit this task's base was taken at merged the base it was stacked
-    // on: the dispatch start commit, or - for a base an earlier move put here - that base's tip
-    // at the move, because a squash leaves the start commit out of the next branch's history.
-    const anchor = t.baseBranchMove?.to === from ? t.baseBranchMove.toSha : t.baseSha;
-    const carried = anchor && merged.pr.headSha
-      ? await commitCarries(t.repoRoot, anchor, merged.pr.headSha)
-      : ({ ok: true, value: false } as const);
-    if (!carried.ok) return { ok: false, error: `could not check ${merged.pr.url}'s head: ${carried.reason}`, status: 502 };
-    if (!carried.value) {
-      return {
-        ok: false,
-        error: anchor
-          ? `${merged.pr.url} does not carry the ${from} this task was stacked on, so it is not this base branch's merge`
-          : `this task recorded no start commit, so ${merged.pr.url} cannot be confirmed as its base branch's merge`,
-        status: 409,
-      };
-    }
-    // Nor is the right pull request the base landing when the branch has moved on since: a
-    // long-lived branch keeps work of its own after each merge.
-    const landed = await branchLandedIn(t.repoRoot, from, to, merged.pr.headSha);
-    if (!landed.ok) return { ok: false, error: `could not check whether ${from} landed: ${landed.reason}`, status: 502 };
-    if (!landed.value) {
-      return {
-        ok: false,
-        error: `base branch ${from} has moved on since ${merged.pr.url} merged it into ${to}, so it has not landed there`,
-        status: 409,
-      };
-    }
-    const toSha = await trackingBranchSha(t.repoRoot, to);
-    if (!toSha.ok) return { ok: false, error: `could not read origin/${to}: ${toSha.reason}`, status: 502 };
-    // The awaits above leave the row free to change. Write only over the row this was asked of.
-    const live = this.registry.getTask(id);
-    if (!live || live.baseBranch !== from || this.moveRefusal(live)) {
-      return { ok: false, error: "task changed while its base branch was moving; retry", status: 409 };
-    }
-    const now = Date.now();
-    const next: Task = {
-      ...live,
-      baseBranch: to,
-      baseBranchMove: {
-        from, to, toDefault: target.baseBranch === null, toSha: toSha.value, prUrl: merged.pr.url, movedAt: now,
-      },
-      updatedAt: now,
-    };
-    this.registry.upsertTask(next);
-    return { ok: true, task: next };
+  moveBaseBranch(id: string, from: string, to: string | null, movedSha: string | null = null): Ok & { task?: Task } {
+    const t = this.registry.getTask(id) ?? getDurableTask(id);
+    if (!t) return { ok: false, error: "no such task" };
+    if (t.status === "backlog") return { ok: false, error: "a backlog task's base branch is changed by editing it" };
+    if (this.assigningTasks.has(id)) return { ok: false, error: "task is being assigned" };
+    if ((t.baseBranch ?? null) !== from) return { ok: false, error: `task's base branch is no longer ${from}` };
+    const task: Task = { ...t, baseBranch: to, baseBranchMovedFrom: from, baseBranchMovedSha: movedSha, updatedAt: Date.now() };
+    this.registry.upsertTask(task);
+    return { ok: true, task };
   }
 
-  /** The shared `baseBranchMoveRefusal`, plus the one thing only the daemon knows: assignment. */
-  private moveRefusal(t: Task): string | null {
+  /**
+   * Why the operator may not move this task's base now, or null: the shared
+   * `baseBranchMoveRefusal` the session footer reads, plus the assignment only the daemon sees.
+   * The automatic sweep is not held to it: it also moves a finished dependency source.
+   */
+  operatorMoveRefusal(t: Task): string | null {
     return baseBranchMoveRefusal(t) ?? (this.assigningTasks.has(t.id) ? "task is being assigned" : null);
   }
 
@@ -4433,8 +4370,11 @@ export class TaskManager {
       repoRoot: patch.repoRoot ?? t.repoRoot,
       // Checked against origin by the route before it reaches here, like `repoRoot` above.
       // Written only when the patch names it, so an edit that does not touch the base leaves
-      // the task exactly as it was rather than adding a key it did not carry.
-      ...(patch.baseBranch !== undefined ? { baseBranch: patch.baseBranch } : {}),
+      // the task exactly as it was rather than adding a key it did not carry. A base the
+      // operator names supersedes any earlier move, so the record of that move goes with it.
+      ...(patch.baseBranch !== undefined
+        ? { baseBranch: patch.baseBranch, baseBranchMovedFrom: null, baseBranchMovedSha: null }
+        : {}),
       extraRepos,
       intent,
       // Emptying the title asks for one to be derived again - and from the intent as it

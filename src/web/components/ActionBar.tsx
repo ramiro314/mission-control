@@ -327,8 +327,7 @@ export function ActionBar({
   async function moveBase(): Promise<void> {
     if (!session.task) return;
     const result = await run("base", () => api.moveTaskBaseBranch(session.task!.id));
-    const move = result.ok ? result.baseBranchMove : null;
-    if (move) showFlash({ text: `base moved from ${move.from} to ${move.to}`, ok: true }, 6000);
+    if (result.ok) showFlash({ text: `base moved from ${result.baseBranchMovedFrom} to ${result.movedTo}`, ok: true }, 6000);
   }
 
   /**

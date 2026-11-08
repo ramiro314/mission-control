@@ -80,6 +80,11 @@ test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
       "launchd must enter through the checked-in native-build service entry",
     );
     assert.ok(existsSync(serviceEntry), "the LaunchAgent service entry must be checked in");
+    assert.match(
+      plist,
+      /<key>MISSION_DAEMON_LOG_CAPTURED<\/key>\s*<string>1<\/string>/,
+      "launchd already appends the daemon's output to daemon.log, so the daemon must not",
+    );
 
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -153,6 +158,8 @@ test("on Linux a systemd user unit runs the native-build daemon entry and stops 
         `ExecStart=${quote(process.execPath)} ${quote(serviceEntry)}`,
         `WorkingDirectory=${repo.replaceAll("%", "%%")}`,
         `Environment="PATH=${pathEnv.replaceAll("%", "%%")}"`,
+        // systemd keeps the output in the journal, so the daemon writes no daemon.log of its own.
+        'Environment="MISSION_DAEMON_LOG_CAPTURED=1"',
         "Restart=always",
         "RestartSec=2",
         "RestartPreventExitStatus=75",
@@ -285,14 +292,17 @@ test("the LaunchAgent entry builds first and runs the daemon at its exact PID", 
     `import { appendFileSync } from "node:fs";\n` +
       `const record = (event) => appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify(event) + "\\n");\n` +
       `process.on("SIGTERM", () => { record({ stage: "signal", pid: process.pid, signal: "SIGTERM" }); process.exit(0); });\n` +
-      `record({ stage: "daemon", pid: process.pid, args: process.argv.slice(1) });\n` +
+      `record({ stage: "daemon", pid: process.pid, args: process.argv.slice(1), captured: process.env.MISSION_DAEMON_LOG_CAPTURED });\n` +
       `setInterval(() => {}, 1_000);\n`,
   );
 
   try {
+    // As under a unit installed before the variable existed: the entry must set it itself.
+    const env: NodeJS.ProcessEnv = { ...process.env, SERVICE_EVENT_LOG: eventsPath };
+    delete env.MISSION_DAEMON_LOG_CAPTURED;
     const child = spawn(process.execPath, [copiedEntry], {
       cwd: root,
-      env: { ...process.env, SERVICE_EVENT_LOG: eventsPath },
+      env,
       stdio: "pipe",
     });
     const servicePid = child.pid;
@@ -316,11 +326,12 @@ test("the LaunchAgent entry builds first and runs the daemon at its exact PID", 
       .trim()
       .split("\n")
       .map((line) =>
-        JSON.parse(line) as { stage: string; pid: number; args?: string[]; signal?: string },
+        JSON.parse(line) as { stage: string; pid: number; args?: string[]; signal?: string; captured?: string },
       );
     assert.deepEqual(events.map((event) => event.stage), ["build", "daemon", "signal"]);
     assert.notEqual(events[0]!.pid, servicePid, "the bounded build runs as a child");
     assert.equal(events[1]!.pid, servicePid, "the daemon keeps launchd's exact service PID");
+    assert.equal(events[1]!.captured, "1", "the service manager keeps the output, so the daemon writes no log");
     assert.notEqual(events[1]!.pid, events[0]!.pid, "the build exits before the daemon starts");
     assert.deepEqual(events[1]!.args, [realpathSync(server)]);
     assert.deepEqual(events[2], {

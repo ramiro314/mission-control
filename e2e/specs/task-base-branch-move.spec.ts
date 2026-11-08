@@ -50,7 +50,7 @@ function baseTip(daemon: DaemonHandle): string {
   return execFileSync("git", ["-C", daemon.repo, "rev-parse", "main"], { stdio: "pipe" }).toString().trim();
 }
 
-type TaskReply = { id: string; status: string; baseBranch: string | null; baseBranchMove: unknown };
+type TaskReply = { id: string; status: string; baseBranch: string | null; baseBranchMovedFrom?: string | null };
 
 async function taskById(daemon: DaemonHandle, id: string): Promise<TaskReply | undefined> {
   return (await api<TaskReply[]>(daemon, "/api/tasks")).find((task) => task.id === id);
@@ -99,8 +99,9 @@ test("a running task's base moves to where its base branch merged, from the sess
 
   const task = (await taskById(daemon, filed.id))!;
   expect(task.status).toBe("running");
-  expect(task.baseBranch).toBe("main");
-  expect(task.baseBranchMove).toMatchObject({ from: "feat/base", to: "main", toDefault: true, prUrl: BASE_PR });
+  // Origin's default is stored as null, as every base write stores it; the move is recorded.
+  expect(task.baseBranch).toBeNull();
+  expect(task.baseBranchMovedFrom).toBe("feat/base");
 });
 
 test("a base moved onto a non-default branch keeps the control, naming the new base", async ({ dashboard, daemon }) => {
@@ -135,10 +136,10 @@ test("a base moved onto a non-default branch keeps the control, naming the new b
 
   const task = (await taskById(daemon, filed.id))!;
   expect(task.baseBranch).toBe("feat/mid");
-  expect(task.baseBranchMove).toMatchObject({ from: "feat/base", to: "feat/mid", toDefault: false });
+  expect(task.baseBranchMovedFrom).toBe("feat/base");
 });
 
-test("a task sent back and stacked again is offered the move, despite its earlier move onto main", async ({ dashboard, daemon }) => {
+test("a task moved onto main, sent back and stacked again is offered the move again", async ({ dashboard, daemon }) => {
   for (const branch of ["feat/base", "feat/other"]) {
     execFileSync("git", ["-C", daemon.repo, "push", "-q", "origin", `main:refs/heads/${branch}`], { stdio: "pipe" });
   }
@@ -155,10 +156,10 @@ test("a task sent back and stacked again is offered the move, despite its earlie
   }]);
   execFileSync("git", ["-C", daemon.repo, "push", "-q", "origin", ":refs/heads/feat/base"], { stdio: "pipe" });
   await api(daemon, `/api/tasks/${filed.id}/base-branch/move`, {});
-  expect((await taskById(daemon, filed.id))?.baseBranchMove).toMatchObject({ to: "main", toDefault: true });
+  expect(await taskById(daemon, filed.id)).toMatchObject({ baseBranch: null, baseBranchMovedFrom: "feat/base" });
 
-  // Back to the backlog, onto a new stacked base, and out again. The move record onto `main`
-  // stays on the task, and must not hide the control for a base it does not describe.
+  // Back to the backlog, onto a new stacked base, and out again. The move onto `main` hid the
+  // control by clearing the base; a base named again must bring it back.
   await api(daemon, `/api/tasks/${filed.id}/requeue`, {});
   await expect.poll(async () => (await taskById(daemon, filed.id))?.status, { timeout: 60_000 }).toBe("backlog");
   await api(daemon, `/api/tasks/${filed.id}/update`, { baseBranch: "feat/other" });
@@ -166,7 +167,7 @@ test("a task sent back and stacked again is offered the move, despite its earlie
   await expect.poll(async () => (await taskById(daemon, filed.id))?.status, { timeout: 60_000 }).toBe("running");
   const again = (await taskById(daemon, filed.id))!;
   expect(again.baseBranch).toBe("feat/other");
-  expect(again.baseBranchMove).toMatchObject({ to: "main", toDefault: true });
+  expect(again.baseBranchMovedFrom ?? null, "naming a base supersedes the earlier move").toBeNull();
 
   const card = dashboard.locator(".console-detail");
   const move = card.getByRole("button", { name: "move base" });

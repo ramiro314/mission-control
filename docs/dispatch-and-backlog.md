@@ -153,7 +153,9 @@ one starts from origin's default branch and targets it, exactly as before.
   `POST /api/tasks/:id/update` take `baseBranch`; `null` on an edit returns the task to the
   default branch. The MCP
   [`create_task` and `push_task`](sessions.md#review-channel-mcp) tools take it too. Like the
-  other provisioning fields, it can change only while the task is in the backlog. A
+  other provisioning fields, it can be edited only while the task is in the backlog; after
+  dispatch it moves only to where the base branch merged, by the daemon or the operator
+  (below). A
   [recurring mission](recurring-missions.md)'s template can name one too, and every task the
   mission files carries it.
 - **It must exist on origin.** Creating or editing a task with a base branch asks
@@ -193,31 +195,38 @@ one starts from origin's default branch and targets it, exactly as before.
 - **The merge watcher counts only a merge into the base.** The task completes, and its declared
   dependents unblock, when its pull request merges into its base branch. The same pull request
   merged into any other branch is not recorded as the task's merge.
-- **Moving the base after it merges.** A task stacked on another feature's branch is stranded
-  once that branch's pull request merges: its own pull request can then only merge into the
-  branch the base merged into, which does not count. The session footer's **move base**
-  control (`POST /api/tasks/:id/base-branch/move`, no body) moves a running, cancelled or
-  failed task's base to that branch. The daemon reads the target from `gh` (the newest merged
-  pull request whose head is the base branch), checks it exists on origin, and fetches origin.
-  It then requires that pull request's head commit to carry the commit the task's base was
-  taken at (the commit it was dispatched from, or, after an earlier move, the new base's tip at
-  that move, so a squash-merged stack can be walked down), so an older pull request on a reused
-  branch name never counts, and checks that the
-  base branch as origin has it now has landed there: deleted, still at that
-  pull request's head commit, or already contained in the target. A long-lived branch such as
-  `develop`, whose old release pull request merged into `main` but which has moved on since,
-  is refused rather than moved. It then stores the target by name, origin's default included, and records the move on the task
-  (`baseBranchMove`: from, to, whether `to` was the default, `to`'s tip, the pull request,
-  when). From
-  then on the merge watcher counts a merge into the new base, the Diff view, captured evidence
-  and affected-tests selection measure from it even if the old branch was deleted, resets land
-  on it, and the task contract and Pull Request action name it. A base whose pull request has
-  not merged, and a backlog, dispatching or done task, are refused with the reason; a backlog
-  task's base is still changed by editing it. The control is shown only while a move is
-  possible, so it disappears once the base has moved onto origin's default, and comes back if
-  the task is later sent back and stacked on another branch. The move is
-  always the operator's: Mission Control does not move a base on its own when it sees the
-  merge ([plan](plans/base-branch-move/plan.md)).
+- **A stacked task follows its base when that branch merges.** A task based on another
+  feature's branch keeps that base after dispatch until the branch merges. About once a minute
+  the daemon checks each base branch of a dispatched task that has not landed yet (and of a
+  finished task that dependents still wait on). When origin no longer has that branch and `gh`
+  reports a merged pull request from it, the daemon moves the task's base to the branch that
+  pull request merged into. When that branch is gone and merged too, the daemon follows the
+  chain, up to five branches, to the first one origin still has. This is the state GitHub's
+  delete-on-merge leaves behind, and
+  GitHub retargets the stacked pull request the same way. The new base is stored as any base
+  is, so origin's default stores as no base branch. The old branch is kept on the task as
+  `baseBranchMovedFrom`. From then on, the merge watcher counts a merge into the new base. The
+  Diff view, evidence capture and affected-tests selection measure from it. Resets, the Pull
+  Request action and a contract composed on a later assign name it. A base branch that still
+  exists is never moved, even if a pull request from it merged, because a long-lived branch
+  such as `release/2.0` is merged onward regularly and stays the base. A base deleted without a
+  merged pull request, or a `gh` failure, leaves the task as it is. Only the merge of the
+  branch the task was stacked on counts: `gh` lists pull requests by branch name, so the merged
+  pull request's head commit has to contain the commit the base was taken at (the one the task
+  was dispatched from, or, after an earlier move, the new base's tip at that move, which is
+  kept as `baseBranchMovedSha` so a squash-merged stack can still be followed). An older pull
+  request on a reused branch name, or a task that recorded no start commit, moves nothing. The
+  agent's first prompt is not resent, so a running agent still has the old base in that prompt.
+- **The operator can move it too, from the session footer.** **move base** appears on a
+  running, cancelled or failed task's session while the task has a base branch
+  (`POST /api/tasks/:id/base-branch/move`, no body). It makes the same move through the same
+  record, and it is the only way to move a base that still exists on origin, such as a stacked
+  pull request retargeted by hand: the daemon then also checks that the base as origin has it
+  now has landed in its target (it is still at the merged head, or inside the target), so a
+  live long-lived branch is refused rather than moved. It follows one merge, not a chain. Each
+  refusal says why and changes nothing; a backlog task's base is still changed by editing it.
+  The footer flashes "base moved from X to Y", and once the base reaches origin's default the
+  task has no base branch left and the control disappears.
 - **Primary repository only.** On a multi-repo task the attached repositories start from, and
   open their pull requests against, their own default branch.
 

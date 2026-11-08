@@ -458,20 +458,12 @@ export function baseBranchMoveRefusal(task: Pick<Task, "status" | "baseBranch">)
 }
 
 /**
- * The base branch the session footer offers to move, or null when it offers none.
- *
- * Offered whenever `baseBranchMoveRefusal` allows a move, unless the base is ALREADY the target
- * of a move onto origin's default: there is nowhere further to go. The move record is the latest
- * move and outlives a return to the backlog, so it hides the control only while it describes
- * the base the task has now. The daemon checks the merge itself.
+ * The base branch the session footer offers to move, or null when it offers none: exactly the
+ * tasks `baseBranchMoveRefusal` allows. A move onto origin's default stores no base, so the
+ * offer ends there by itself. The daemon checks the merge.
  */
-export function movableBaseBranch(
-  task: Pick<Task, "status" | "baseBranch" | "baseBranchMove">,
-): string | null {
-  if (baseBranchMoveRefusal(task) !== null) return null;
-  const base = task.baseBranch!;
-  const move = task.baseBranchMove;
-  return move?.toDefault && move.to === base ? null : base;
+export function movableBaseBranch(task: Pick<Task, "status" | "baseBranch">): string | null {
+  return baseBranchMoveRefusal(task) === null ? task.baseBranch! : null;
 }
 
 /** The fields `taskRequeueRefusal` reads, so a `TaskSummary` answers as well as a `Task`. */

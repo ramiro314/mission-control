@@ -165,6 +165,8 @@ interface HarnessOptions {
   requireSkill?: (session: Session, id: string) => { ok: true; command: string } | { ok: false; message: string };
   /** Put a Wait for CI node, with this timeout, between the last action and End. */
   waitForCiMinutes?: number;
+  /** The Wait for CI node's own settings, spread onto it as a version stores them. */
+  waitForCiSettings?: Record<string, unknown>;
   trackMergeConflicts?: () => boolean;
   ciStrictness?: () => CiStrictness;
 }
@@ -360,7 +362,13 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       ? [{ id: "downstream", kind: "persona", personaId: downstreamId, position: { x: 700, y: 0 } }]
       : []),
     ...(options.waitForCiMinutes
-      ? [{ id: "ci", kind: "wait_for_ci", timeoutMinutes: options.waitForCiMinutes, position: { x: 800, y: 0 } }]
+      ? [{
+          id: "ci",
+          kind: "wait_for_ci",
+          timeoutMinutes: options.waitForCiMinutes,
+          position: { x: 800, y: 0 },
+          ...options.waitForCiSettings,
+        }]
       : []),
     { id: "end", kind: "end", outcome: "Approved", position: { x: 900, y: 0 } },
   ];
@@ -2170,6 +2178,88 @@ test("a failing CI check sends a repair packet naming it, and Flaky tests counts
     assert.match(repair.payload, /CI check "Flaky tests"/);
   } finally {
     await h.stop();
+  }
+});
+
+test("a Wait for CI outcome records the node's strictness, the fallback and the missing expected checks", async () => {
+  /** The `wait_for_ci_outcome` event the run recorded, which the run views and telemetry read. */
+  const outcome = (h: Harness, runId: string) =>
+    h.store.listEvents(runId).find((event) => event.kind === "wait_for_ci_outcome")?.payload as Record<string, unknown>;
+
+  // Required, with marks: only the marked failure fails it, and the expected check not yet
+  // reported is counted in the event and named in the verdict.
+  const required = await harness("ci-outcome-required", {
+    pullRequest: true,
+    waitForCiMinutes: 45,
+    waitForCiSettings: { strictness: "required", quietMinutes: 0, expectedChecks: ["deploy", "e2e"] },
+  });
+  try {
+    const runId = await runToCiWait(required);
+    // The attempt copied the node's settings when it started waiting.
+    const waiting = ciAttempts(required, runId)[0]!.output as Record<string, unknown>;
+    assert.deepEqual(
+      [waiting.strictness, waiting.quietMinutes, waiting.expectedChecks],
+      ["required", 0, ["deploy", "e2e"]],
+    );
+    observeCi(required, required.full("head-2"), [
+      ciRun("build", "failing", { required: true }),
+      ciRun("lint", "failing"),
+      ciRun("e2e", "passing"),
+    ]);
+    await required.manager.sweepWaitForCi();
+    await waitFor(() => outcome(required, runId) !== undefined, "Wait for CI recorded no outcome");
+    assert.deepEqual(outcome(required, runId), {
+      nodeId: "ci",
+      attemptId: ciAttempts(required, runId)[0]!.id,
+      submissionId: ciAttempts(required, runId)[0]!.submissionId,
+      outcome: "fail",
+      failing: ["build"],
+      flakes: 0,
+      strictness: "required",
+      requiredFallback: false,
+      missingExpected: 1,
+    });
+    const verdict = ciAttempts(required, runId)[0]!.verdict as { summary: string; requestedChanges: { title: string }[] };
+    assert.deepEqual(verdict.requestedChanges.map((change) => change.title), ['Fix the failing CI check "build"']);
+    assert.match(verdict.summary, /Not reported when CI failed: "deploy"\.$/);
+  } finally {
+    await required.stop();
+  }
+
+  // Required, with nothing marked: the fallback judged every check, and the event says so.
+  const fallback = await harness("ci-outcome-fallback", {
+    pullRequest: true,
+    waitForCiMinutes: 45,
+    waitForCiSettings: { strictness: "required", quietMinutes: 0, expectedChecks: [] },
+  });
+  try {
+    const runId = await runToCiWait(fallback);
+    observeCi(fallback, fallback.full("head-2"), [ciRun("unit", "passing"), ciRun("lint", "passing")]);
+    await fallback.manager.sweepWaitForCi();
+    await waitFor(() => fallback.store.getRun(runId)?.status === "completed", "the fallback did not pass green CI");
+    assert.deepEqual(
+      [outcome(fallback, runId).outcome, outcome(fallback, runId).strictness, outcome(fallback, runId).requiredFallback, outcome(fallback, runId).missingExpected],
+      ["pass", "required", true, 0],
+    );
+  } finally {
+    await fallback.stop();
+  }
+
+  // A node published before the settings existed activates under the legacy settings, written
+  // out on the attempt, and records the legacy strictness.
+  const legacy = await harness("ci-outcome-legacy", { pullRequest: true, waitForCiMinutes: 45 });
+  try {
+    const runId = await runToCiWait(legacy);
+    const activated = ciAttempts(legacy, runId)[0]!.output as Record<string, unknown>;
+    assert.deepEqual([activated.strictness, activated.quietMinutes, activated.expectedChecks], ["all", 3, []]);
+    await observeGreenCi(legacy, legacy.full("head-2"), [ciRun("unit", "passing")]);
+    await waitFor(() => legacy.store.getRun(runId)?.status === "completed", "legacy green CI did not pass");
+    assert.deepEqual(
+      [outcome(legacy, runId).strictness, outcome(legacy, runId).requiredFallback, outcome(legacy, runId).missingExpected],
+      ["all", false, 0],
+    );
+  } finally {
+    await legacy.stop();
   }
 });
 

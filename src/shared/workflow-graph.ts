@@ -19,6 +19,13 @@ import {
   WORKFLOW_MISSING_PR_ACTIONS,
   personaEffortLevels,
 } from "./workflow.ts";
+import {
+  WAIT_FOR_CI_EXPECTED_CHECKS_MESSAGE,
+  WAIT_FOR_CI_QUIET_PERIOD_MESSAGE,
+  waitForCiExpectedChecksValid,
+  waitForCiQuietFits,
+  waitForCiSettings,
+} from "./wait-for-ci.ts";
 
 export interface WorkflowGraphValidationInput {
   graph: WorkflowDraftGraph;
@@ -441,6 +448,23 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
       diagnostics.push(diagnostic(
         "wait_for_ci_placement",
         "Wait for CI must follow a Pull Request session action's complete route, and nothing else.",
+        { nodeId: node.id },
+      ));
+    }
+    // Absent settings validate as the legacy ones, whose 3-minute quiet period is below the
+    // 5-minute minimum timeout, so no version published before the settings existed fails here.
+    const settings = waitForCiSettings(node);
+    if (!waitForCiQuietFits(settings, node.timeoutMinutes)) {
+      diagnostics.push(diagnostic(
+        "wait_for_ci_quiet_period",
+        WAIT_FOR_CI_QUIET_PERIOD_MESSAGE,
+        { nodeId: node.id },
+      ));
+    }
+    if (!waitForCiExpectedChecksValid(settings.expectedChecks)) {
+      diagnostics.push(diagnostic(
+        "wait_for_ci_expected_checks",
+        WAIT_FOR_CI_EXPECTED_CHECKS_MESSAGE,
         { nodeId: node.id },
       ));
     }

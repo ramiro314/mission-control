@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { lstat, realpath, rm, unlink } from "node:fs/promises";
+import { lstat, mkdir, realpath, rm, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { HistoryResumeCheckout, HistoryResumeKeptReason } from "@shared/history.ts";
@@ -88,9 +88,11 @@ import {
   describeRegistrationFix,
   diagnoseRegistration,
   forgetCause,
+  UNREGISTERED_SLOT,
   type RegistrationDiagnosis,
   type RegistrationFix,
 } from "./registration-repair.ts";
+import { repairStagingRoot, restoreStagedEntries, stagedRepairs, stageSlotEntries } from "./repair-staging.ts";
 import { taskOwner } from "./owners.ts";
 import { trackedRun } from "./own-processes.ts";
 import {
@@ -98,6 +100,7 @@ import {
   indexLockBlocker,
   inspectSlotIndexLock,
   lockCausedQuarantine,
+  slotGitDirectory,
   type FileHolders,
   type SlotIndexLock,
 } from "./index-lock.ts";
@@ -254,6 +257,15 @@ export type WorktreeRepairResult =
   | (Extract<WorktreeRecoverResult, { outcome: "refused" | "outcomeUnknown" }> & { repair?: "attempted" | "proven" })
   /** The registration is repaired, and the slot stays quarantined for the work it holds. */
   | { outcome: "heldWork"; reason: string };
+
+export interface RepairInput {
+  slotId: string;
+  expectedVersion?: number;
+  /** Register an unregistered folder again. Only an operator's Repair passes it (S17). */
+  reregister?: boolean;
+  /** The commit a re-registration's preview named; a different one now is refused. */
+  expectedCommit?: string;
+}
 
 export type WorktreeForgetResult =
   | { outcome: "forgotten" }
@@ -950,6 +962,8 @@ export class WorktreeManager {
   private readonly liveWarmOwners = new Set<string>();
   /** Staging directories a seed in flight owns. Reconciliation removes every other one. */
   private readonly liveSeedStaging = new Set<string>();
+  /** Repair staging a re-registration in flight owns. Reconciliation finishes every other one. */
+  private readonly liveRepairStaging = new Set<string>();
   /**
    * The quarantined slots a seed is copying from right now, each with its slot lock held. A
    * clone can run for minutes, so maintenance skips these and the operator's actions are refused
@@ -2493,6 +2507,8 @@ export class WorktreeManager {
     if (this.claims.has(slot.id)) return "a dependency claim is running in it";
     if (untrustedTreeQuarantine(slot.quarantineReason)) return `its tree cannot be trusted as an install: ${slot.quarantineReason}`;
     if (!exactSlotPath(input.pool, input.identity, slot)) return REGISTRATION_OR_IDENTITY.inexactPath;
+    const staged = await this.stagedRepairBlocker(input.pool, slot);
+    if (staged) return staged;
     // A quarantine can mean the folder is not what the row says, and nothing here reads Git.
     const physical = await physicalDirectoryProblem(slot.path);
     if (physical) return physical;
@@ -3466,6 +3482,8 @@ export class WorktreeManager {
       return { outcome: "refused", reason: "slot changed after it was observed" };
     }
     if (slot.quarantineReason === INTERRUPTED_FORGET) return { outcome: "refused", reason: RECOVER_REFUSES_INTERRUPTED_FORGET };
+    const staged = await this.stagedRepairBlocker(pool, slot);
+    if (staged) return { outcome: "refused", reason: staged };
     if (input.automatic && !input.repaired && !automaticRecoveryCandidate(slot)) {
       return { outcome: "refused", reason: "automatic recovery does not clear this quarantine" };
     }
@@ -3575,16 +3593,17 @@ export class WorktreeManager {
    * A slot that holds work stays quarantined as `repairedHoldsWork`, for a manual Recover.
    *
    * A claim holds the slot lock for hours, so it is refused here rather than waited on.
-   * Re-registration is not here: it moves files, so it never runs without an operator.
+   * Re-registration moves files, so it runs only with `reregister`, which only an operator's
+   * Repair passes; `expectedCommit` is the commit its preview named.
    */
-  async repairSlot(input: { slotId: string; expectedVersion?: number }): Promise<WorktreeRepairResult> {
+  async repairSlot(input: RepairInput): Promise<WorktreeRepairResult> {
     if (!this.store.poolForSlot(input.slotId)) return { outcome: "refused", reason: "native slot no longer exists" };
     if (this.claims.has(input.slotId)) return { outcome: "refused", reason: "a dependency claim is running in this slot" };
     if (this.heldSeedSources.has(input.slotId)) return { outcome: "refused", reason: SEED_SOURCE_HELD };
     return this.withSlot(input.slotId, "Repair", () => this.repairLocked(input));
   }
 
-  private async repairLocked(input: { slotId: string; expectedVersion?: number }): Promise<WorktreeRepairResult> {
+  private async repairLocked(input: RepairInput): Promise<WorktreeRepairResult> {
     const pool = this.store.poolForSlot(input.slotId);
     const slot = this.store.slot(input.slotId);
     if (!pool || !slot) return { outcome: "refused", reason: "native slot no longer exists" };
@@ -3608,21 +3627,30 @@ export class WorktreeManager {
     const diagnosis = await this.readRegistration(pool, identity, slot);
     if (!diagnosis.ok) return { outcome: "outcomeUnknown", reason: diagnosis.reason };
     if (diagnosis.value.status === "refused") return { outcome: "refused", reason: diagnosis.value.reason };
-    if (diagnosis.value.status === "fixable") {
-      const { fixes } = diagnosis.value;
-      for (const [index, fix] of fixes.entries()) {
-        const fixed = await this.applyRegistrationFix(identity, slot.path, fix);
-        // Git's own refusal of the first fix is the one failure that changed nothing.
-        if (fixed) return fixed.outcome === "refused" && index === 0 ? fixed : { ...fixed, repair: "attempted" };
+    if (diagnosis.value.status === "unregistered" && !input.reregister) return { outcome: "refused", reason: UNREGISTERED_SLOT };
+    if (diagnosis.value.status !== "healthy") {
+      let done: string;
+      if (diagnosis.value.status === "fixable") {
+        const { fixes } = diagnosis.value;
+        for (const [index, fix] of fixes.entries()) {
+          const fixed = await this.applyRegistrationFix(identity, slot.path, fix);
+          // Git's own refusal of the first fix is the one failure that changed nothing.
+          if (fixed) return fixed.outcome === "refused" && index === 0 ? fixed : { ...fixed, repair: "attempted" };
+        }
+        done = fixes.map(describeRegistrationFix).join("; ");
+      } else {
+        const registered = await this.reregisterLocked(pool, identity, slot, input.expectedCommit);
+        if (typeof registered !== "string") return registered;
+        done = `registered its folder again at ${registered.slice(0, 12)}, keeping every file`;
       }
       const repaired = await this.readRegistration(pool, identity, slot);
       if (!repaired.ok) return { outcome: "outcomeUnknown", reason: repaired.reason, repair: "attempted" };
       if (repaired.value.status !== "healthy") {
         return { outcome: "refused", reason: "Git's repair did not leave the registration healthy", repair: "attempted" };
       }
-      console.log(oneLine(`[worktrees] repaired ${this.slotLabel(slot)}: ${fixes.map(describeRegistrationFix).join("; ")}`));
+      console.log(oneLine(`[worktrees] repaired ${this.slotLabel(slot)}: ${done}`));
     }
-    const fixedRegistration = diagnosis.value.status === "fixable";
+    const fixedRegistration = diagnosis.value.status !== "healthy";
     const recovered = await this.recoverLocked({
       slotId: slot.id,
       expectedVersion: slot.version,
@@ -3715,6 +3743,149 @@ export class WorktreeManager {
     console.log(oneLine(`[worktrees] forgot ${this.slotLabel(slot)}: ${cause}`));
     this.publish();
     return { outcome: "forgotten" };
+  }
+
+  /**
+   * Register an unregistered slot's folder again, keeping every file in it: move its entries to
+   * repair staging on the same volume, `repair.json` first; add the registration with no
+   * checkout; move every entry but the old `.git` back; then read the index from `HEAD`. Returns
+   * the commit it registered at, or why it stopped. A failure before Git ran puts everything
+   * back. One after it leaves whatever could not move back staged, and the next reconcile
+   * finishes it from `repair.json`, as it does for a restart.
+   */
+  private async reregisterLocked(
+    pool: WorktreePoolRow,
+    identity: WorktreeRepositoryIdentity,
+    slot: WorktreeSlotRow,
+    expectedCommit: string | undefined,
+  ): Promise<string | Extract<WorktreeRepairResult, { outcome: "refused" | "outcomeUnknown" }>> {
+    const target = await this.readReregistrationTarget(identity, slot);
+    if (!target.ok) return { outcome: target.outcomeUnknown ? "outcomeUnknown" : "refused", reason: target.reason };
+    const { commit } = target.value;
+    if (expectedCommit !== undefined && commit !== expectedCommit) {
+      return { outcome: "refused", reason: "the commit to register at changed since the preview; preview Repair again" };
+    }
+    const root = repairStagingRoot(pool.poolPath);
+    try {
+      // The path is proven against the pool as spelled, so a symlinked parent is what is left.
+      if ((await realpath(dirname(slot.path))) !== dirname(slot.path)) {
+        return { outcome: "refused", reason: `${dirname(slot.path)} resolves outside its pool` };
+      }
+      await mkdir(root, { recursive: true });
+      if ((await realpath(root)) !== resolve(root)) return { outcome: "refused", reason: `${root} resolves outside its pool` };
+      // A rename is what keeps the install's inodes, and it only stays one on the same volume.
+      if ((await stat(root)).dev !== (await stat(slot.path)).dev) {
+        return { outcome: "refused", reason: `${root} is not on the slot's volume, so its files cannot be moved aside in place` };
+      }
+    } catch (error) {
+      return { outcome: "refused", reason: `repair staging could not be prepared: ${bounded(String(error))}` };
+    }
+    const id = this.deps.randomId();
+    const staging = join(root, id);
+    this.liveRepairStaging.add(id);
+    try {
+      try {
+        await stageSlotEntries(staging, { slotId: slot.id, path: slot.path, commit, startedAt: this.deps.now() });
+      } catch (error) {
+        const reason = `the slot's files could not be moved aside: ${bounded(String(error))}`;
+        return (await this.unstage(staging, slot.path)) ? { outcome: "refused", reason } : { outcome: "outcomeUnknown", reason };
+      }
+      let added: GitResult<void>;
+      try {
+        added = await this.deps.git.add(identity, slot.path, commit, { checkout: false });
+      } catch (error) {
+        added = { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
+      }
+      // Whatever Git did, the files go back: the old `.git` only when Git wrote no new one.
+      if (!(await this.unstage(staging, slot.path))) {
+        return {
+          outcome: "outcomeUnknown",
+          reason: `some of the slot's files are still in ${staging}; the next reconcile moves them back`,
+          repair: "attempted",
+        };
+      }
+      if (!added.ok) {
+        // Git's own refusal wrote nothing, so the folder is exactly as it was.
+        return added.outcomeUnknown
+          ? { outcome: "outcomeUnknown", reason: added.reason, repair: "attempted" }
+          : { outcome: "refused", reason: added.reason };
+      }
+      let indexed: GitResult<void>;
+      try {
+        indexed = await this.deps.git.readIndex(slot.path);
+      } catch (error) {
+        indexed = { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
+      }
+      if (!indexed.ok) return { outcome: "outcomeUnknown", reason: indexed.reason, repair: "attempted" };
+      return commit;
+    } finally {
+      this.liveRepairStaging.delete(id);
+    }
+  }
+
+  /** Move a re-registration's staged entries back and drop its staging. False when any is left. */
+  private async unstage(staging: string, slotPath: string): Promise<boolean> {
+    try {
+      const left = await restoreStagedEntries(staging, slotPath);
+      if (left.length > 0) {
+        console.warn(oneLine(`[worktrees] ${slotPath} already holds ${left.join(", ")}, so the staged copies stay in ${staging}`));
+        return false;
+      }
+      await rm(staging, { recursive: true, force: true });
+      return true;
+    } catch (error) {
+      console.warn(oneLine(`[worktrees] staged files could not all be moved back to ${slotPath}: ${bounded(String(error))}`));
+      return false;
+    }
+  }
+
+  /**
+   * Why this slot's install is incomplete because some of its files are still in repair staging,
+   * or null when no `repair.json` names it. A registration Git finished reads healthy even while
+   * files are staged, so this, not the registration, is what keeps a reset, and a seed copying
+   * from the slot, away from it until reconcile can move them back.
+   */
+  private async stagedRepairBlocker(pool: WorktreePoolRow, slot: WorktreeSlotRow): Promise<string | null> {
+    let staged: Awaited<ReturnType<typeof stagedRepairs>>;
+    try {
+      staged = await stagedRepairs(pool.poolPath);
+    } catch (error) {
+      return `repair staging could not be read, so the slot's files may not all be in place: ${bounded(String(error))}`;
+    }
+    const naming = staged.find((repair) => repair.status === "intent" && repair.intent.slotId === slot.id);
+    return naming
+      ? `some of the slot's files are still in ${naming.directory}, which reconcile moves back only once nothing in the slot has the same name`
+      : null;
+  }
+
+  /**
+   * The commit an unregistered slot is registered again at: the HEAD it last recorded, while the
+   * repository still holds it, or else the pool's default as last fetched.
+   */
+  private async readReregistrationTarget(
+    identity: WorktreeRepositoryIdentity,
+    slot: WorktreeSlotRow,
+  ): Promise<GitResult<{ commit: string; source: "recorded" | "default" }>> {
+    try {
+      if (slot.currentHeadSha) {
+        const held = await this.deps.git.hasCommit(identity, slot.currentHeadSha);
+        if (!held.ok) return held;
+        if (held.value) return { ok: true, value: { commit: slot.currentHeadSha, source: "recorded" } };
+      }
+      const fallback = await this.deps.git.observedDefaultSha(identity);
+      if (!fallback.ok) return { ...fallback, reason: `origin's default could not be read: ${fallback.reason}` };
+      return { ok: true, value: { commit: fallback.value, source: "default" } };
+    } catch (error) {
+      return { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
+    }
+  }
+
+  /** What re-registering this slot would register it at, for Repair's preview. Null when the pool cannot be proven. */
+  async slotReregistrationTarget(slot: WorktreeSlotRow): Promise<GitResult<{ commit: string; source: "recorded" | "default" }> | null> {
+    const pool = this.store.poolForSlot(slot.id);
+    const identity = pool ? this.identity(pool.mainCheckoutRoot) : null;
+    if (!pool || !identity) return null;
+    return this.readReregistrationTarget(identity, slot);
   }
 
   /** The Git registrations that name this path, from a fresh listing. */
@@ -4075,17 +4246,84 @@ export class WorktreeManager {
    * directory there, never a symlink out of it.
    */
   private async removeLeftoverSeedStaging(pool: WorktreePoolRow): Promise<void> {
-    const root = seedStagingRoot(pool.poolPath);
     try {
-      // The pool's durable path is physical (its identity resolves the pools directory's parent),
-      // so it is compared with the pools directory spelled the same way.
-      const poolsDirectory = join(await realpath(dirname(this.deps.poolsDirectory)), basename(this.deps.poolsDirectory));
-      if (!pathContains(poolsDirectory, pool.poolPath) || resolve(pool.poolPath) === poolsDirectory) return;
-      const stat = await lstat(root).catch(() => null);
-      if (!stat?.isDirectory() || (await realpath(root)) !== resolve(root)) return;
+      if (!(await this.ownStagingRoot(pool, seedStagingRoot(pool.poolPath)))) return;
       await removeLeftoverStaging(pool.poolPath, this.liveSeedStaging);
     } catch (error) {
       console.warn(`[worktrees] leftover seed staging in ${pool.poolPath} could not be removed: ${bounded(String(error))}`);
+    }
+  }
+
+  /**
+   * Whether `root` is a staging root this daemon may touch: the pool's durable directory lies
+   * inside its pools directory, and `root` is a real directory there, never a symlink out of it.
+   */
+  private async ownStagingRoot(pool: WorktreePoolRow, root: string): Promise<boolean> {
+    // The pool's durable path is physical (its identity resolves the pools directory's parent),
+    // so it is compared with the pools directory spelled the same way.
+    const poolsDirectory = join(await realpath(dirname(this.deps.poolsDirectory)), basename(this.deps.poolsDirectory));
+    if (!pathContains(poolsDirectory, pool.poolPath) || resolve(pool.poolPath) === poolsDirectory) return false;
+    const entry = await lstat(root).catch(() => null);
+    return Boolean(entry?.isDirectory()) && (await realpath(root)) === resolve(root);
+  }
+
+  /**
+   * Finish every re-registration a restart or a failure cut off, before anything reads the pool's
+   * slots: move each staged entry back into the slot `repair.json` names, keeping the `.git` Git
+   * wrote if it got that far, and fill that registration's index if it never did. Staging with no
+   * intent holds nothing of a slot's, so it goes the way leftover seed staging does. An intent
+   * that names no slot of this pool, or cannot be read, is left where it is and logged: its
+   * files are a slot's, and nothing here may guess whose.
+   */
+  private async finishCutOffRepairs(pool: WorktreePoolRow): Promise<void> {
+    const root = repairStagingRoot(pool.poolPath);
+    let staged: Awaited<ReturnType<typeof stagedRepairs>>;
+    try {
+      if (!(await this.ownStagingRoot(pool, root))) return;
+      staged = await stagedRepairs(pool.poolPath);
+    } catch (error) {
+      console.warn(`[worktrees] repair staging in ${pool.poolPath} could not be read: ${bounded(String(error))}`);
+      return;
+    }
+    for (const repair of staged) {
+      if (this.liveRepairStaging.has(repair.id)) continue;
+      if (repair.status === "noIntent") {
+        await rm(repair.directory, { recursive: true, force: true }).catch((error) =>
+          console.warn(`[worktrees] leftover repair staging ${repair.directory} could not be removed: ${bounded(String(error))}`));
+        continue;
+      }
+      if (repair.status === "unreadable") {
+        console.warn(oneLine(`[worktrees] repair staging ${repair.directory} is left in place: ${repair.reason}`));
+        continue;
+      }
+      const { intent } = repair;
+      const slot = this.store.slot(intent.slotId);
+      if (slot?.poolId !== pool.id || slot.path !== intent.path || !pathContains(pool.poolPath, slot.path)) {
+        console.warn(oneLine(`[worktrees] repair staging ${repair.directory} names no slot at ${intent.path}, so it is left in place`));
+        continue;
+      }
+      // Skipped, never waited on, for the reason the per-slot pass skips them; the next pass retries.
+      if (this.claims.has(slot.id) || this.heldSeedSources.has(slot.id)) continue;
+      const releaseSlot = await this.acquireSlotLock(slot.id, "reconciliation");
+      try {
+        if ((await realpath(dirname(slot.path))) !== dirname(slot.path)) {
+          console.warn(oneLine(`[worktrees] repair staging ${repair.directory} is left in place: ${dirname(slot.path)} resolves outside its pool`));
+          continue;
+        }
+        if (!(await this.unstage(repair.directory, slot.path))) continue;
+        const administrative = await slotGitDirectory(slot.path, pool.gitCommonDirectory);
+        // Only a registration Git finished writing: an old `.git` names one that is gone.
+        if (administrative && existsSync(join(administrative, "HEAD")) && !existsSync(join(administrative, "index"))) {
+          const indexed = await this.deps.git.readIndex(slot.path).catch((error: unknown) =>
+            ({ ok: false as const, reason: bounded(String(error)) }));
+          if (!indexed.ok) console.warn(oneLine(`[worktrees] ${this.slotLabel(slot)}'s index could not be read from HEAD: ${indexed.reason}`));
+        }
+        console.log(oneLine(`[worktrees] finished a re-registration of ${this.slotLabel(slot)} that was cut off: its files are back in place`));
+      } catch (error) {
+        console.warn(oneLine(`[worktrees] a cut-off re-registration of ${this.slotLabel(slot)} could not be finished: ${bounded(String(error))}`));
+      } finally {
+        releaseSlot();
+      }
     }
   }
 
@@ -4098,7 +4336,9 @@ export class WorktreeManager {
 
   private async reconcilePool(pool: WorktreePoolRow): Promise<void> {
     // First, before any check that can fail the whole pool: staging is what a crash left, and a
-    // pool whose identity or marker cannot be proven is exactly the one nobody will clean up.
+    // pool whose identity or marker cannot be proven is exactly the one nobody will clean up. A
+    // cut-off re-registration goes before anything below reads a slot whose files it moved aside.
+    await this.finishCutOffRepairs(pool);
     await this.removeLeftoverSeedStaging(pool);
     const now = this.deps.now();
     const identity = this.identity(pool.mainCheckoutRoot);

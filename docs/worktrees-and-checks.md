@@ -506,6 +506,19 @@ whatever an older configuration's seed left behind.
   identity or marker cannot be proven still loses its leftover staging, because removing it
   touches no checkout. It is removed only when the pool's directory lies inside the daemon's
   pools directory and the staging root is a real directory there, never a symlink.
+- **Repair staging** under `<pool directory>/.repair-staging/` that no live re-registration owns
+  is finished by every reconciliation, under the same directory checks, before seed staging and
+  before anything reads a slot. Each staged entry goes back into the slot its `repair.json`
+  names, under that slot's lock. A `.git` the folder already has came from Git's add, so the
+  staged one is dropped; any other name already present is never overwritten and stays staged.
+  While any `repair.json` names a slot, Recover, Repair's recovery, a maintenance pass and a
+  seed all refuse it, because a registration Git finished reads healthy with part of the install
+  still staged. Once nothing in the slot holds the staged name, the next reconcile moves it back.
+  When Git's add had finished but the index was never read, it is read from `HEAD`, so the next
+  pass can recover the slot. A re-registration cut off before Git ran leaves the folder as it was,
+  for the card's Repair. Staging with no `repair.json` holds nothing of a slot's, because the
+  intent lands before the first move, so it is removed. One whose intent cannot be read, or names
+  no slot of the pool at that path, is left in place and logged.
 
 A claim step's process group that outlived the daemon still has its working directory inside
 the slot. The occupancy check therefore sees it, and the slot is never handed out while it runs.
@@ -985,10 +998,10 @@ The operations have deliberately narrow meanings:
   restart. A slot quarantined before that column existed is stamped once by the first start that
   finds it.
 - **Repair** is the way out for a slot quarantined because Git's registration of it is bare,
-  locked, prunable, or names another path. Each maintenance pass tries it with no operator, on
-  every such slot, and a quarantined slot's card offers it once the slot's owner is positively
-  gone. Recover needs a proven registration, so Repair is the one that can start from a broken
-  one.
+  locked, prunable, names another path, or is gone. Each maintenance pass tries Git's own fixes
+  with no operator, on every such slot, and a quarantined slot's card offers Repair once the
+  slot's owner is positively gone. Recover needs a proven registration, so Repair is the one that
+  can start from a broken one. Registering a folder again runs only from the card.
 
   It runs only when no owner is referenced, no process is in the slot (which covers a Git
   process with its working directory there), and no claim runs. An unknown owner or unknown
@@ -1011,15 +1024,38 @@ The operations have deliberately narrow meanings:
   Neither form of `git worktree repair` stops at one worktree: each also rewrites any other
   worktree's `.git` file in the repository that is already broken, and the preview says so.
 
-  A bare registration, a folder that is gone, a `.git` that is not a file, and a registration no
-  administrative directory can be traced to all refuse, and the card shows why, with **Forget**
-  as the fallback where it applies. A `git worktree
+  A bare registration, a folder that is gone, and a `.git` that is not a file all refuse, and the
+  card shows why, with **Forget** as the fallback where it applies. A `git worktree
   list` that fails says nothing about the slot, so its preview asks you to try again, and nothing
-  runs. Moving a folder aside to register it again never happens here. After a fix, Repair reads
-  the registration again instead of trusting Git's exit code, then takes automatic recovery's
-  checks and reset. The
+  runs. After a fix, Repair reads the registration again instead of trusting Git's exit code,
+  then takes automatic recovery's checks and reset. The
   preview names each fix, and Execute refuses a registration or an occupant that changed after
   it. Repair asks for no acknowledgement, because it never discards work.
+
+  A folder no administrative directory names, whose `.git` names none that exists (what a stray
+  `git worktree prune` leaves), is **registered again in place**, keeping its warm install. A pass
+  never does this, because it moves every file in the slot: it records "no Git registration names
+  this path, so it has to be registered again" and leaves the slot for the card. The preview names
+  the path and the commit it registers at: the slot's recorded `HEAD` while the repository still
+  holds it, otherwise origin's default as last fetched. It says that tracked and untracked files
+  are checked once the slot is registered again, and that ignored files stay. Execute refuses a
+  commit that changed since the preview. It then:
+
+  1. writes `repair.json`, naming the slot, its path and the commit, into
+     `<pool directory>/.repair-staging/<id>/`, and moves every entry of the folder into that
+     directory's `entries/`. The staging root must be on the slot's volume, so each move is a
+     rename and every file keeps its inode;
+  2. runs `git worktree add --detach --no-checkout <slot path> <commit>`, which writes a new `.git`
+     file and administrative directory and touches nothing else;
+  3. moves every entry back except the old `.git`, which named the registration that is gone;
+  4. reads the index from `HEAD` with `git read-tree HEAD`, so a tracked file reads as itself and
+     not as a deletion.
+
+  The slot then takes the same reset rule as every other Repair: with no work it takes the
+  ordinary reset and becomes available, and with work it stays quarantined as "registration
+  repaired; holds work", with that work intact. A `git worktree add` that Git refuses puts every
+  entry back, the old `.git` included, so the slot is exactly as it was. Re-registration refuses a
+  slot with an occupant, a live or unknown owner, or a running claim, before anything moves.
 
   A slot that holds work by the reset rule is not reset. It stays quarantined as "registration
   repaired; holds work", with that entry as its detail, and no pass touches it again until
@@ -1033,7 +1069,8 @@ The operations have deliberately narrow meanings:
   still exists, or a prune was interrupted with files still present (including one whose removal
   could not be verified). These are read from the slot as it stands, because a quarantine keeps its
   first reason whatever happens to the folder later. A registration that is gone while its folder
-  remains is not one of them. No maintenance pass runs Forget: it runs only from the card.
+  remains is not one of them, because Repair registers that folder again and keeps its install.
+  No maintenance pass runs Forget: it runs only from the card.
 
   The preview names the path and states that the folder and the slot's row are deleted. It lists
   the work it can see: the delete rule, with the pool's `seed.paths` counted as regenerable, when

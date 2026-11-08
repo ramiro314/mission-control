@@ -363,7 +363,8 @@ export async function remoteBranchSha(
  * Asked before an in-flight task's base moves to where its base merged. A branch name with an
  * old merged pull request - a long-lived `develop` that once merged into `main`, or a reused
  * feature branch name - is still live with work `target` does not have, and moving onto
- * `target` would strand the task there. Fetch first: the ancestry check reads local refs.
+ * `target` would strand the task there. Fetch `origin/<target>` first: the ancestry check reads
+ * local refs, and a tip missing from the local store is read as outside the target.
  */
 export async function branchLandedIn(
   root: string,
@@ -375,6 +376,11 @@ export async function branchLandedIn(
   const tip = await remoteBranchSha(root, branch, execute);
   if (!tip.ok) return tip;
   if (tip.value === null || tip.value === mergedHead) return { ok: true, value: true };
+  // With `origin/<target>` fetched, every commit it contains is local: a tip that is not is work
+  // the target does not have, so it has not landed - an answer, not a failed check.
+  const local = await execute("git", ["-C", root, "cat-file", "-e", `${tip.value}^{commit}`], { timeoutMs: LOCAL_TIMEOUT_MS });
+  if (local.outcomeUnknown || local.overflowed) return failure(`git cat-file ${tip.value}`, local, LOCAL_TIMEOUT_MS);
+  if (local.code !== 0) return { ok: true, value: false };
   const contained = await execute(
     "git",
     ["-C", root, "merge-base", "--is-ancestor", tip.value, `refs/remotes/origin/${target}`],

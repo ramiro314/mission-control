@@ -2089,9 +2089,10 @@ export const api = {
   // is still live. The session footer's Return to backlog; refused (409) on a done task.
   requeueTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/requeue`, {}),
   // Move an in-flight task's base branch to where its base branch's pull request merged. The
-  // daemon reads the target from GitHub; the reply is the Task, carrying `baseBranchMove`.
+  // daemon reads the target from GitHub; the reply is the Task, plus `movedTo`, the target's
+  // name even when it is origin's default and the task stores no base.
   moveTaskBaseBranch: (id: string) =>
-    post<ActionResult & Partial<Task>>(`/api/tasks/${encodeURIComponent(id)}/base-branch/move`),
+    post<ActionResult & Partial<Task> & { movedTo?: string }>(`/api/tasks/${encodeURIComponent(id)}/base-branch/move`),
   // A dispatch that never started (`@shared/launch-failure.ts`). Dismiss answers every attempt
   // a failed tile stands for; report starts the session that catalogs the failure and drafts
   // its public bug report, which still waits for the operator to submit it; retry dispatches a

@@ -2485,17 +2485,21 @@ export interface Task {
    *
    * Optional on the type only so the many hand-built Task fixtures need not name it; every
    * row the daemon reads carries it, and an absent value means null.
-   *
-   * Origin's default is stored as null when the base is WRITTEN by create or edit. A base
-   * moved by `POST /api/tasks/:id/base-branch/move` is the one exception: it names its target
-   * even when that is the default, so a merge into any other branch still does not count.
    */
   baseBranch?: string | null;
   /**
-   * The latest move of this in-flight task's base branch to where its old base merged, or
-   * null (or absent) when it was never moved. See `TaskBaseBranchMove`.
+   * The base branch this task started from, when the daemon later moved it to the branch that
+   * one merged into (`moveMergedBaseBranches`), or null for a task whose base never moved.
+   * `baseBranch` is then the new base. Optional on the type for the reason `baseBranch` is.
    */
-  baseBranchMove?: TaskBaseBranchMove | null;
+  baseBranchMovedFrom?: string | null;
+  /**
+   * The commit `origin/<baseBranch>` was at when a move put the base there, or null. It already
+   * holds the merge that caused the move, so the NEXT move down a stack checks the new base's
+   * merged pull request against it: a squash leaves `baseSha` out of that branch's history.
+   * Null for a task whose base never moved, and when the tip could not be read at the move.
+   */
+  baseBranchMovedSha?: string | null;
   /** Isolated Git worktree (realpath). Null before provisioning and for repo-less residents. */
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
@@ -2798,29 +2802,10 @@ export interface TaskSummary {
    */
   claimWarnings?: TaskClaimWarning[];
   /**
-   * `Task.baseBranch` and `Task.baseBranchMove`, carried to the session footer's move base
-   * control. Absent when the task has none, so every other card's payload is unchanged.
+   * `Task.baseBranch`, carried to the session footer's move base control. Absent when the task
+   * has none, so every other card's payload is unchanged.
    */
   baseBranch?: string;
-  baseBranchMove?: TaskBaseBranchMove;
-}
-
-/**
- * One move of an in-flight task's base branch, recorded on the task.
- *
- * `from` was the base; its pull request `prUrl` merged into `to`, which became the base.
- * `toDefault` says whether `to` was origin's default branch when the move was made. `toSha` is
- * the fetched tip of `to` at the move, which already carries that merge: the next move down a
- * stack checks `to`'s own pull request against it, since a squash leaves the task's original
- * start commit out of `to`'s history.
- */
-export interface TaskBaseBranchMove {
-  from: string;
-  to: string;
-  toDefault: boolean;
-  toSha: string;
-  prUrl: string;
-  movedAt: number;
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */

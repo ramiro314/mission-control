@@ -3,122 +3,84 @@
 Issue [#771](https://github.com/ramiro314/mission-control/issues/771), part of the per-task
 base branch feature ([#301](https://github.com/ramiro314/mission-control/issues/301)).
 
-A task stacked on another feature's branch keeps that branch as its base for its whole life.
-Once the branch's pull request merges, the task's own merge into the branch it merged into
-never counts, its dependents stay blocked, and its diffs, checks, resets and instructions keep
-measuring from and naming a branch that may already be gone.
+A task stacked on another feature's branch keeps that branch as its base. Once the branch's
+pull request merges, the task's own merge into the branch it merged into never counts, its
+dependents stay blocked, and its diffs, checks, resets and instructions keep measuring from and
+naming a branch that may already be gone.
 
-## Decision: an operator action, not an automatic move
+## Decision: both, through one move
 
-Mission Control moves the base only when the operator asks, from the session running the task.
-It does not move it on its own when it sees the base branch's pull request merge.
+PR #780 shipped the automatic half. This plan adds the operator half beside it, on the same
+lookup and the same write, and closes two gaps #780 recorded.
 
-- **A move changes what a reset discards.** After it, the session's reset lands on a different
-  branch. Every other change to where a task's checkout points is a person's click; this stays
-  one.
-- **Automatic detection is a new poller.** The merge watcher reads the pull requests of the
-  task's own branch. Watching every in-flight task's base branch for a merge is a second set
-  of `gh` calls per tick for an event that happens once per stack.
-- **The merge-counting rule is deliberate.** `mergeCounts` refuses a merge into any branch
-  other than the base so a task never completes on work that landed elsewhere. A watcher that
-  retargeted the base on its own would make that refusal quietly self-healing, and the rule
-  would stop meaning anything.
+- **Automatic** (`moveMergedBaseBranches`, about once a minute): the base is gone from origin
+  and `gh` reports a merged pull request from it. That is the state GitHub's delete-on-merge
+  leaves, so nobody has to act. A base that still exists is never moved automatically, because a
+  long-lived branch such as `release/2.0` merges onward regularly and stays the base.
+- **Operator** (`moveBaseBranchNow`, the session footer's **move base**): the same move on
+  request. It is the only way to move a base origin still has, for example a stacked pull
+  request retargeted by hand with its branch kept, which #780 listed as undetected. A move
+  changes where a reset lands, so moving a live branch stays a person's decision, and even then
+  only once that base has landed in its target.
 
-The daemon still decides *where* the base moves, so the operator cannot point a task at an
-arbitrary branch from an in-flight state: the target is the branch the base branch's own
-pull request merged into, as `gh` reports it. A base whose pull request has not merged is
-refused. Automatic moving can be added later on the same server path if stacks become common.
+Both store the new base as every base write does (origin's default as null) and record it with
+#780's `baseBranchMovedFrom`. No reader of `Task.baseBranch` changes.
 
 ## Behavior
 
-`POST /api/tasks/:id/base-branch/move`, no body, through `TaskManager.moveBaseBranch`.
-
-1. **Who may move.** One shared predicate, `baseBranchMoveRefusal` in `src/shared/task.ts`,
-   answers this for both the daemon and the footer (the daemon adds only its own "being
-   assigned" state). A task in `running`, `cancelled` or `failed` with a base branch (a
-   cancelled or failed task can still be completed by a merge). Refused with 409: a backlog
-   task (edit its base branch instead, as today), a `dispatching` or assigning task, a `done`
-   task, and a task with no base branch. 404 for an unknown task.
-2. **Where to.** `gh pr list --repo <repo> --head <base> --state merged`, run in the task's
-   primary repository (`mergedPullRequestForBranch` in `src/server/pr.ts`), newest merged pull
-   request first. No merged pull request, or one `gh` reports with no base, is refused. A
-   `gh` failure is refused with its reason.
-3. **The target must exist.** One `ls-remote` (`resolveBaseBranch`) confirms it and says
-   whether it is origin's default, and `fetchOrigin` then refreshes the repository's
-   remote-tracking refs so `origin/<target>` carries the base branch's merge before anything
-   measures from it. Either failing refuses the move with nothing written.
-4. **The base must have landed.** A merged pull request with the base's name is not enough:
-   a long-lived `develop` that once merged into `main`, or a reused feature branch name, carries
-   old merged pull requests while it still has work of its own. Two checks follow the fetch.
-   First, the pull request must be the merge of the branch this task was stacked on: its head
-   commit (`headRefOid`) has to carry the commit the task's base was taken at (`commitCarries`;
-   a head missing locally is fetched by id once, and a fetch that fails is a 502 with
-   git's reason, never a verdict on the pull request). For the base dispatch started from,
-   that is `Task.baseSha`. For a base an earlier move put there, it is that move's `toSha`, the fetched
-   tip of the new base, which already holds the previous merge: a squash leaves `baseSha` out
-   of the next branch's history, so anchoring every hop on it would strand a squash-merged
-   stack at its second move. An older pull request on a reused name predates its anchor, and
-   a task that recorded no start commit cannot be confirmed, so both are refused. Second, `branchLandedIn` asks origin for the base's tip
-   again. A deleted branch, a tip equal to the merged pull request's head commit (which is
-   what vouches for a squash merge), or a tip already in `origin/<target>` has landed; anything
-   else is refused ("has moved on since ... merged it"). Every refusal writes nothing.
-5. **The write.** `baseBranch` becomes the target **by name, even when it is origin's
-   default.** That is the one exception to "origin's default is stored as NULL", and it is
-   what makes every reader follow without a change of its own: the merge watcher counts only
-   a merge into the target, the Diff view, evidence diff and affected-tests selection measure
-   from `merge-base(HEAD, origin/<target>)`, resets land on `origin/<target>`, and the task
-   contract, the workflow's pull-request handoff and the Pull Request action name it. A NULL
-   would instead let a merge into any branch complete the task. The startup backfill touches
-   only backlog tasks, so it leaves a moved in-flight task alone; a moved task that returns to
-   the backlog is normalized like any other.
-6. **The record.** `Task.baseBranchMove` (`tasks.base_branch_move`, JSON, added in
-   `migrate()`): `{ from, to, toDefault, toSha, prUrl, movedAt }` for the latest move,
-   `toDefault` saying whether the target was origin's default when it moved and `toSha` the
-   fetched tip of the target then, the anchor for the next move. NULL on every task that was
-   never moved.
-7. **The live session is not messaged.** Its pull request, if already open against the old
-   branch, is retargeted by GitHub when the old branch is deleted; otherwise the next Pull
-   Request action names the new base.
-
-A task without a base branch, and a backlog task, take exactly the paths they take today.
+1. **Who may move.** The sweep moves any candidate `Registry.baseBranchMoveCandidates` lists,
+   including a finished dependency source. The operator path uses one shared predicate,
+   `baseBranchMoveRefusal` in `src/shared/task.ts`, for both the route and the footer: running,
+   cancelled or failed, with a base branch. The daemon adds only "being assigned"
+   (`TaskManager.operatorMoveRefusal`). 404 for an unknown task, 409 for a refusal.
+2. **Where to.** One lookup, `newestMergedPullRequest` (`gh pr list --head <base> --state
+   merged`), returns the newest merged pull request by `mergedAt`, with its base, head commit and
+   URL. No merged pull request is a refusal; a `gh` failure, or a newest merge naming no base,
+   is a 502.
+3. **The merge must be this base's.** `gh` lists by head name, so a reused branch name answers
+   with an older pull request. Its head commit must contain the commit the base was taken at
+   (`commitCarries`): `Task.baseSha` for the base dispatch started from, or `baseBranchMovedSha`
+   for a base an earlier move put there. That second anchor is the fetched tip of the new base
+   at the move, which already holds the merge; a squash leaves `baseSha` out of the next
+   branch's history, so anchoring every hop on it would strand a squash-merged stack at its
+   second move. A head missing locally is fetched by id once, and a failed fetch is a 502, never
+   a verdict. Both paths apply this check, which closes #780's reused-name gap.
+4. **The base must have landed** (operator only; the sweep's base is gone by definition).
+   `branchLandedIn` reads the base's tip from origin: deleted, equal to the merged head (which is
+   what vouches for a squash merge), or inside the fetched `origin/<target>` has landed. A tip
+   not in the local store after that fetch is outside the target. Anything else is refused ("has
+   moved on since ... merged it").
+5. **The write.** `TaskManager.moveBaseBranch(id, from, to, movedSha)`, #780's single write,
+   re-checks the row synchronously, stores `to` (null for the default), `baseBranchMovedFrom`,
+   and `baseBranchMovedSha` (new column `tasks.base_branch_moved_sha`, schema version 20). An
+   edit of a backlog task's base clears both records.
+6. **Chains.** The sweep follows a merged-and-deleted chain up to five branches. The operator
+   follows one merge; a target origin no longer has is refused with the reason.
+7. **The live session is not messaged.** The next Pull Request action names the new base.
 
 ## Dashboard
 
-The session footer (`ActionBar`) shows a **move base** control only when the session's task
-has a base branch, is past the backlog and not done, and that base is not itself the target
-of a move onto origin's default (`movableBaseBranch` in `src/shared/task.ts`, reading
-`TaskSummary.baseBranch` and `TaskSummary.baseBranchMove`). The record is the latest move and
-survives a return to the backlog, so it hides the control only while it describes the base the
-task has now: a task moved onto `main`, sent back and stacked on a new branch is offered the
-move again. Its tooltip names
-the current base. A click posts the move; the footer's flash prints "base moved from X to Y"
-or the daemon's refusal. After a move onto another non-default branch the control stays,
-naming the new base, so a stack of three can be walked down one merge at a time.
+The session footer (`ActionBar`) shows **move base** exactly when `movableBaseBranch` allows,
+which is `baseBranchMoveRefusal` plus the task's base from `TaskSummary.baseBranch`. A click
+posts the move; the flash prints "base moved from X to Y" from the reply's
+`baseBranchMovedFrom` and `movedTo` (the target's name, even when the task stores null), or the
+daemon's refusal. A move onto origin's default leaves no base, so the control disappears; a
+move onto another branch keeps it, so a stack is walked down one merge at a time.
 
 ## Tests
 
-- `test/task-base-branch-move.test.ts`: the route's refusals (backlog, dispatching, done, no
-  base, unknown, no merged pull request, `gh` failure, a merge `gh` names no base for, missing
-  target, a failed origin fetch, a base still on origin with work newer than its merged pull
-  request, a base deleted unmerged beside an older same-named merged pull request, an older
-  pull request on a base a move put there, a head that
-  cannot be found, a task with no recorded start commit); a base still on origin moving when its tip is in the target or is a squash-merged
-  pull request's head; the footer's offer for the current base, not a stale record; a successful move storing the target by name and the record,
-  onto origin's default and onto another branch (`toDefault` false), from a running, cancelled
-  or failed task, and to the newest of several merged pull requests; after the move, a merge
-  into the target completing the task and satisfying its dependent; the Diff view and changed
-  paths measuring from the target after the old branch is deleted on origin; reset preview,
-  the contract and the Pull Request action naming the target; a backlog task's edit still
-  storing origin's default as null; and a squash-merged stack of three walked down in two
-  moves.
-- `e2e/specs/task-base-branch-move.spec.ts`: dispatch a task on a base branch, press **move
-  base** and read the refusal, then script the fake `gh` to report the base branch's pull
-  request merged into `main`, delete the branch on origin, press again, and read the flash, the
-  control's disappearance and the stored move; and a move onto a non-default branch, after
-  which the control stays and names the new base; and a task moved onto `main`, sent back,
-  restacked and dispatched again, which is offered the move again.
+- `test/task-base-branch-move.test.ts` (#780's sweep, extended): newest-merge parsing; a reused
+  name, a task with no start commit and a failed check move nothing; a second hop is checked
+  against `baseBranchMovedSha` and records the new tip.
+- `test/task-base-branch-move-operator.test.ts`: the operator route and its refusals; a move
+  onto the default and onto another branch; cancelled and failed tasks; newest merge wins; a
+  failed fetch; a kept base that landed, squash-vouched or not, and one that moved on; a reused
+  name, an unfetchable head and a missing start commit; a squash-merged stack walked down in two
+  moves; `commitCarries` with a failing `git`; the footer offering exactly what the route allows.
+- `e2e/specs/task-base-branch-move.spec.ts`: refusal then a move onto `main` hiding the control,
+  a move onto `feat/mid` keeping it, and a restacked task offered the move again.
 
 ## Out of scope
 
-Moving attached repositories' bases (they keep their own default), moving the base of a
-backlog task through this route, and the automatic move.
+Moving attached repositories' bases (they keep their own default), and telling a running agent
+its base moved.

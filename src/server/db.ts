@@ -88,7 +88,6 @@ import type {
   PromptedRecoveryState,
   SessionQueue,
   Task,
-  TaskBaseBranchMove,
   TaskAutomaticCleanup,
   TaskPriority,
   TaskResidentRestart,
@@ -222,8 +221,8 @@ let db: DatabaseSync | undefined;
 //    `CREATE ... IF NOT EXISTS` or `addColumn` in `migrate()`, so a fork database stamped 14
 //    still gains upstream's 10 to 18. When the next upstream sync brings its own 19, renumber
 //    this entry above upstream's highest, as #618 and this sync did.
-// 20: fork - a task's base-branch move record (`tasks.base_branch_move`), NULL with no
-//     backfill: no task was ever moved before it existed.
+// 20: fork - a moved base branch's record (`tasks.base_branch_moved_from` and
+//     `tasks.base_branch_moved_sha`), NULL with no backfill: no task moved before they existed.
 export const CURRENT_DATABASE_SCHEMA_VERSION = 20;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
@@ -452,9 +451,11 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- The origin branch the primary repo starts from and opens its PR against.
       -- NULL means origin's default branch, which is every task filed before this column.
       base_branch   TEXT,
-      -- JSON TaskBaseBranchMove: the latest move of an in-flight task's base to where its
-      -- old base merged. NULL on every task never moved.
-      base_branch_move TEXT,
+      -- The base branch this task had before it was moved to where that branch merged, or
+      -- NULL for a task whose base never moved.
+      base_branch_moved_from TEXT,
+      -- The commit origin/<base_branch> was at when that move put the base there, or NULL.
+      base_branch_moved_sha TEXT,
       workspace_kind TEXT,
       -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
       -- coordinate, so only provider and slug need their own nullable columns.
@@ -4311,9 +4312,12 @@ function migrate(d: DatabaseSync): void {
   // backfill: every existing row was dispatched from, and shipped to, origin's default
   // branch, and NULL is exactly what that means to every reader.
   addColumn(d, "tasks", "base_branch", "TEXT");
-  // The latest move of an in-flight task's base branch, as JSON. NULL with no backfill: no task
-  // was moved before the column existed.
-  addColumn(d, "tasks", "base_branch_move", "TEXT");
+  // Where an in-flight task's base branch was moved from once that branch merged. NULL with no
+  // backfill: no task moved before this column existed.
+  addColumn(d, "tasks", "base_branch_moved_from", "TEXT");
+  // The tip the base was moved onto, which anchors the next move down a stack. NULL with no
+  // backfill, like the column above.
+  addColumn(d, "tasks", "base_branch_moved_sha", "TEXT");
   addColumn(d, "tasks", "worktree_lease_id", "TEXT");
   // A dispatch that failed before its session started. NULL on an upgraded row is the honest
   // reading: nothing recorded whether its failure, if any, was a launch failure, and drawing
@@ -5929,7 +5933,8 @@ interface TaskRow {
   source_parent: string | null;
   repo_root: string;
   base_branch: string | null;
-  base_branch_move: string | null;
+  base_branch_moved_from: string | null;
+  base_branch_moved_sha: string | null;
   pipeline_provider: string | null;
   pipeline_slug: string | null;
   pipeline_commission_id: string | null;
@@ -6396,7 +6401,8 @@ function rowToTask(
     sourceParent: parseSourceParent(r.source_parent),
     repoRoot: r.repo_root,
     baseBranch: r.base_branch ?? null,
-    baseBranchMove: parseBaseBranchMove(r.base_branch_move),
+    baseBranchMovedFrom: r.base_branch_moved_from ?? null,
+    baseBranchMovedSha: r.base_branch_moved_sha ?? null,
     workspaceKind: r.workspace_kind === "resident-workspace" ? r.workspace_kind : null,
     pipelineRun:
       r.pipeline_provider && isPipelineProviderId(r.pipeline_provider) && r.pipeline_slug
@@ -6433,20 +6439,6 @@ function rowToTask(
     dispatchedAt: r.dispatched_at,
     completedAt: r.completed_at,
   };
-}
-
-/** A stored base-branch move, or null for none or for a row no build of this shape wrote. */
-function parseBaseBranchMove(raw: string | null): TaskBaseBranchMove | null {
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw) as Partial<TaskBaseBranchMove> | null;
-    return v && typeof v.from === "string" && typeof v.to === "string" && typeof v.toDefault === "boolean" &&
-      typeof v.toSha === "string" && typeof v.prUrl === "string" && typeof v.movedAt === "number"
-      ? { from: v.from, to: v.to, toDefault: v.toDefault, toSha: v.toSha, prUrl: v.prUrl, movedAt: v.movedAt }
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -6494,8 +6486,8 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
          model, effort, advisor_model,
-         workflow_id, source_id, external_id, source_url, source_parent, repo_root, base_branch, base_branch_move,
-         workspace_kind,
+         workflow_id, source_id, external_id, source_url, source_parent, repo_root, base_branch,
+         base_branch_moved_from, base_branch_moved_sha, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha,
@@ -6503,7 +6495,7 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, claim_warnings, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -6514,7 +6506,8 @@ export function upsertTask(t: Task): string[] {
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url, source_parent=excluded.source_parent,
          repo_root=excluded.repo_root, base_branch=excluded.base_branch,
-         base_branch_move=excluded.base_branch_move,
+         base_branch_moved_from=excluded.base_branch_moved_from,
+         base_branch_moved_sha=excluded.base_branch_moved_sha,
          workspace_kind=excluded.workspace_kind,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
          pipeline_commission_id=CASE
@@ -6554,7 +6547,7 @@ export function upsertTask(t: Task): string[] {
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.sourceParent ? JSON.stringify(t.sourceParent) : null,
-      t.repoRoot, t.baseBranch ?? null, t.baseBranchMove ? JSON.stringify(t.baseBranchMove) : null,
+      t.repoRoot, t.baseBranch ?? null, t.baseBranchMovedFrom ?? null, t.baseBranchMovedSha ?? null,
       t.workspaceKind ?? null,
       t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
       t.pipelineCommissionId ?? null,

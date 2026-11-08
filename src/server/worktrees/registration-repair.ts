@@ -17,6 +17,11 @@ export type RegistrationFix = "repairGitFile" | "repairPath" | "unlock";
 export type RegistrationDiagnosis =
   | { status: "healthy" }
   | { status: "fixable"; fixes: RegistrationFix[] }
+  /**
+   * No registration names the folder and its `.git` names none that exists: Git has no fix, and
+   * only registering the folder again answers it. That moves files, so only an operator runs it.
+   */
+  | { status: "unregistered" }
   /** `elsewhere`: the slot's `.git` names a registration that belongs to another checkout. */
   | { status: "refused"; reason: string; elsewhere?: boolean };
 
@@ -26,6 +31,9 @@ export type RegistrationDiagnosis =
  * reason, so anything else is left alone.
  */
 const INTERRUPTED_ADD_LOCK = "initializing";
+
+/** Why a pass, which never re-registers, leaves an unregistered slot to the operator's Repair. */
+export const UNREGISTERED_SLOT = "no Git registration names this path, so it has to be registered again";
 
 /** The `.git` path an administrative directory's `gitdir` file names, or null when it names none. */
 async function recordedDotGit(administrative: string): Promise<string | null> {
@@ -59,8 +67,8 @@ async function lockReason(administrative: string): Promise<string | null> {
 /**
  * Which of Git's fixes this slot needs, read from the same files Git reads and changing nothing.
  * Everything else refuses: a bare or operator-locked registration, a folder that is gone, a
- * `.git` that is not a file, and a registration no administrative directory can be traced to,
- * which only re-registering the folder could answer.
+ * `.git` that is not a file. A folder no administrative directory can be traced to is
+ * `unregistered`, which only registering it again answers.
  */
 export async function diagnoseRegistration(input: {
   slotPath: string;
@@ -88,9 +96,7 @@ export async function diagnoseRegistration(input: {
     administrative = naming[0]!;
     if (pointed !== administrative) fixes.push("repairGitFile");
   } else {
-    if (!pointed || !directories.includes(pointed)) {
-      return refused("no Git registration names this path, so it has to be registered again");
-    }
+    if (!pointed || !directories.includes(pointed)) return { status: "unregistered" };
     // The folder, not its `.git`: a checkout that lost only that file is still the one registered.
     const elsewhere = recorded[directories.indexOf(pointed)];
     if (elsewhere && (await lstat(dirname(elsewhere)).catch(() => null))) {

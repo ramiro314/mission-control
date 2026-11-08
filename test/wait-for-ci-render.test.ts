@@ -9,10 +9,15 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WaitForCiPanel } from "../src/web/workflows/WaitForCiPanel.tsx";
-import { WAIT_FOR_CI_BLOCK_SENTENCES, waitForCiHeadline } from "../src/web/workflows/run-model.ts";
+import {
+  WAIT_FOR_CI_BLOCK_SENTENCES,
+  waitForCiHeadline,
+  waitForCiSettingsLine,
+} from "../src/web/workflows/run-model.ts";
 import {
   WAIT_FOR_CI_BLOCK_CODES,
   initialWaitForCiState,
+  type CiCheckRun,
   type WaitForCiBlockCode,
   type WaitForCiState,
 } from "../src/shared/wait-for-ci.ts";
@@ -34,8 +39,14 @@ function waiting(over: Partial<WaitForCiState> = {}): WaitForCiState {
   };
 }
 
-const blocked = (code: WaitForCiBlockCode): WaitForCiState =>
-  waiting({ outcome: "blocked", blocked: { code, detail: "machine detail" } });
+const blocked = (code: WaitForCiBlockCode, over: Partial<WaitForCiState> = {}): WaitForCiState =>
+  waiting({ outcome: "blocked", blocked: { code, detail: "machine detail" }, ...over });
+
+/** The attempt state each code's sentence reads its names or count from. */
+const BLOCK_STATE: Partial<Record<WaitForCiBlockCode, Partial<WaitForCiState>>> = {
+  ci_expected_missing: { missingExpected: ["deploy", "e2e"] },
+  ci_checks_truncated: { checksTotal: 140 },
+};
 
 const render = (state: WaitForCiState): string =>
   renderToStaticMarkup(createElement(WaitForCiPanel, { attempt: { output: state as never }, now: NOW + 12 * 60_000 }));
@@ -51,13 +62,22 @@ const SAYS: Record<WaitForCiBlockCode, RegExp[]> = {
   ci_missing: [/No CI check appeared/, /before the timeout/, /GitHub Inspector is on/],
   ci_timeout: [/still running, or had not stayed settled for the quiet period, when the timeout ran out/, /Wait for CI again/],
   ci_pull_request_unknown: [/could not tell which commit to watch/, /Start a new round/],
+  ci_expected_missing: [
+    /^These expected checks never appeared on the head commit before the timeout: "deploy", "e2e"\. /,
+    /Check that the workflows producing them run on pull requests, or correct the names in a new version, then wait for CI again\.$/,
+  ],
+  ci_checks_truncated: [
+    /^GitHub reported 140 checks; only the first 100 were read, so this node cannot confirm CI passed\. /,
+    /Check the rest on GitHub; if they pass, an operator can disable this node for the run\.$/,
+  ],
 };
 
 test("every block code renders its own plain reason as the card's headline", () => {
   const seen = new Set<string>();
   for (const code of WAIT_FOR_CI_BLOCK_CODES) {
-    const text = headline(render(blocked(code)));
-    assert.equal(text, WAIT_FOR_CI_BLOCK_SENTENCES[code], `${code} did not render its own sentence`);
+    const state = blocked(code, BLOCK_STATE[code]);
+    const text = headline(render(state));
+    assert.equal(text, WAIT_FOR_CI_BLOCK_SENTENCES[code](state), `${code} did not render its own sentence`);
     for (const pattern of SAYS[code]) assert.match(text, pattern, `${code}: ${text}`);
     assert.doesNotMatch(text, /Waiting for CI/, `${code} fell through to the waiting headline`);
     assert.doesNotMatch(text, /ci_|machine detail/, `${code} leaked its code or detail`);
@@ -142,4 +162,112 @@ test("one function picks each member kind's chip for every run view", async () =
     assert.match(source, /memberPipelineStatus\(/, view);
     assert.doesNotMatch(source, /waitForCiStatus\(|reviewerStatus\(/, `${view} re-derives a member chip`);
   }
+});
+
+// ---- node settings ---------------------------------------------------------------------------
+
+const ciRun = (
+  name: string,
+  state: CiCheckRun["state"],
+  required?: boolean,
+): CiCheckRun => ({
+  name,
+  state,
+  conclusion: state === "pending" ? null : state === "failing" ? "FAILURE" : "SUCCESS",
+  detailsUrl: null,
+  title: null,
+  summary: null,
+  ...(required === undefined ? {} : { required }),
+});
+
+/** The CI checks list as `name|tag|state` rows, tags blank where there is none. */
+const checkRows = (html: string): string[] => {
+  const list = /<ul class="wf-run-ci-checks"[^>]*>([\s\S]*?)<\/ul>/.exec(html)?.[1] ?? "";
+  return [...list.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/g)].map((match) => {
+    const cell = match[1]!;
+    const name = /<span>([^<]*)<\/span>/.exec(cell)?.[1] ?? "";
+    const tag = /<span class="wf-run-ci-tag">([^<]*)<\/span>/.exec(cell)?.[1] ?? "";
+    const word = /<span class="wf-run-meta">([^<]*)<\/span>/.exec(cell)?.[1] ?? "";
+    return `${name}|${tag}|${word}`;
+  });
+};
+
+test("the settings line says what the node judges under, legacy attempts as the legacy settings", () => {
+  assert.equal(waitForCiSettingsLine(waiting()), "All checks · quiet 3 min · limit 45 min");
+  assert.equal(
+    waitForCiSettingsLine(waiting({ strictness: "required", quietMinutes: 3, expectedChecks: ["deploy", "e2e"] })),
+    'Required checks · expects "deploy", "e2e" · quiet 3 min · limit 45 min',
+  );
+  assert.match(render(waiting()), /<p class="wf-run-meta">All checks · quiet 3 min · limit 45 min<\/p>/);
+  // The quiet headline reads the node's own quiet period.
+  const quiet = waiting({ quietMinutes: 10, checkRuns: [ciRun("unit", "passing")], quietSince: NOW, observedAt: NOW + 4 * 60_000 });
+  assert.match(waitForCiHeadline(quiet, NOW), /nothing changes for 10 min \(4 of 10 so far\)\.$/);
+});
+
+test("Required mode tags every check, and lists expected checks not reported yet as their own rows", () => {
+  const html = render(waiting({
+    strictness: "required",
+    quietMinutes: 3,
+    expectedChecks: ["deploy", "e2e"],
+    observedAt: NOW,
+    missingExpected: ["deploy"],
+    checkRuns: [ciRun("build", "passing", true), ciRun("e2e", "pending"), ciRun("lint", "failing")],
+  }));
+  assert.deepEqual(checkRows(html), [
+    "build|Required|Passed",
+    "e2e|Expected|Running",
+    "lint|Not required|Failed",
+    "deploy|Expected|Not reported yet",
+  ]);
+  // With nothing marked, every check counts, so none is called "Not required".
+  const unmarked = render(waiting({ strictness: "required", observedAt: NOW, checkRuns: [ciRun("lint", "passing")] }));
+  assert.deepEqual(checkRows(unmarked), ["lint||Passed"]);
+});
+
+test("All mode tags nothing, but still lists an expected check not reported yet", () => {
+  const html = render(waiting({
+    expectedChecks: ["deploy"],
+    observedAt: NOW,
+    missingExpected: ["deploy"],
+    checkRuns: [ciRun("build", "passing", true), ciRun("lint", "failing")],
+  }));
+  assert.deepEqual(checkRows(html), ["build||Passed", "lint||Failed", "deploy|Expected|Not reported yet"]);
+});
+
+test("a fail lists only counted failures, then the expected checks CI never reported", () => {
+  const html = render(waiting({
+    strictness: "required",
+    expectedChecks: ["deploy"],
+    outcome: "fail",
+    observedAt: NOW,
+    missingExpected: ["deploy"],
+    checkRuns: [ciRun("build", "failing", true), ciRun("lint", "failing")],
+  }));
+  const failing = /<ul class="wf-run-ci-failing">([\s\S]*?)<\/ul>/.exec(html)?.[1] ?? "";
+  assert.match(failing, /<strong>build<\/strong>/);
+  assert.doesNotMatch(failing, /lint/, "a failure that is not required read as the reason it failed");
+  assert.match(html, /Not reported when CI failed: &quot;deploy&quot;\./);
+});
+
+test("the fallback and truncation notes appear only when they apply", () => {
+  const plain = render(waiting({ outcome: "pass", checkRuns: [ciRun("unit", "passing")], observedAt: NOW }));
+  assert.doesNotMatch(plain, /marked required|only the first/);
+  const fallback = render(waiting({ strictness: "required", outcome: "pass", requiredFallback: true, checkRuns: [ciRun("unit", "passing")], observedAt: NOW }));
+  assert.match(fallback, /No check on this head is marked required, so every check was judged\./);
+  const truncated = render(waiting({ checksTotal: 140, checkRuns: [ciRun("unit", "passing")], observedAt: NOW }));
+  assert.match(truncated, /<p class="wf-run-meta">GitHub reported 140 checks; only the first 100 were read\.<\/p>/);
+  assert.doesNotMatch(render(waiting({ checksTotal: 100, checkRuns: [ciRun("unit", "passing")], observedAt: NOW })), /only the first/);
+  // A truncated Required head counts nothing it cannot see marked: an unmarked check read is not
+  // required, and the panel never claims the fallback for it.
+  const truncatedRequired = render(waiting({
+    strictness: "required",
+    outcome: "blocked",
+    blocked: { code: "ci_checks_truncated", detail: "x" },
+    checksTotal: 140,
+    observedAt: NOW,
+    missingExpected: [],
+    checkRuns: [ciRun("lint", "failing")],
+  }));
+  assert.deepEqual(checkRows(truncatedRequired), ["lint|Not required|Failed"]);
+  assert.doesNotMatch(truncatedRequired, /marked required, so every check/);
 });
