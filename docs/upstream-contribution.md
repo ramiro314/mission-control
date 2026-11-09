@@ -43,12 +43,19 @@ is any directory outside the checkout, such as the session's scratch directory:
 gh pr list --repo ramiro314/mission-control --label fork:<slug> --state merged --limit 100 \
   --json number,title,mergedAt --jq 'sort_by(.mergedAt)[] | "#\(.number) \(.title)"'
 gh pr list --repo ramiro314/mission-control --label fork:<slug> --state merged --limit 100 \
-  --json files --jq '.[].files[].path' | sort -u | while read -r p; do
+  --json mergeCommit --jq '.[].mergeCommit.oid' | while read -r m; do
+  git diff --name-only "$m^1" "$m"
+done | sort -u | while read -r p; do
   git cat-file -e "origin/main:$p" 2>/dev/null || continue
   git cat-file -e "upstream/main:$p" 2>/dev/null && echo "changed   $p" || echo "fork-only $p"
 done | tee "$SCRATCH/scope"
 grep '^fork-only' "$SCRATCH/scope" | cut -c11- > "$SCRATCH/fork-only-paths"
 ```
+
+The files come from each pull request's merge commit, diffed against its first parent, which
+is fork `main` just before the merge. `gh pr list --json files` is not used: it returns at most
+100 files per pull request and says nothing when it cuts the list (#770 changed 822 files and
+returned 100).
 
 Drop the paths that never go upstream, from the list and from `fork-only-paths`: fork plans
 under `docs/plans/` and anything else the sync runbook's
@@ -265,9 +272,10 @@ git push --force-with-lease="refs/heads/upstream/<slug>:$PREV" origin upstream/<
 ```
 
 Update the message file whenever the change alters what the body says (verification, known
-gaps). Force-pushing is allowed for `upstream/*` port branches on `origin` and nothing else:
-this runbook is the request `AGENTS.md` requires, and the target is verified by its name. Never
-force-push fork `main`, a fork feature branch, or a sync branch.
+gaps). Force-pushing is allowed for `upstream/*` port branches on `origin` and nothing else,
+as the standing exception in the [Fork section of `AGENTS.md`](../AGENTS.md#fork) records
+against its force-push rule. Never force-push fork `main`, a fork feature branch, or a sync
+branch.
 
 Then give the human the work-machine commands again, with `<previous sha>` filled in as the
 full `$PREV`:

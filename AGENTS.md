@@ -426,7 +426,13 @@ any entry it links that bears on your task.
 This checkout is a fork of `teamupstart/mission-control`. What the fork changes is recorded on
 GitHub, one `fork-feature` tracking issue per feature, joined to its PRs by a `fork:<slug>` label
 ([docs/fork/README.md](docs/fork/README.md)); upstream commits come in only through the
-[upstream-sync runbook](docs/upstream-sync.md).
+[upstream-sync runbook](docs/upstream-sync.md), and a fork feature goes upstream only through
+the [upstream-contribution runbook](docs/upstream-contribution.md).
+
+**Standing force-push exception.** The upstream-contribution runbook's review rounds may
+force-push an `upstream/<slug>` port branch on `origin`, with a lease pinned to the port commit
+it replaces, without asking each time. It is the only exception to the force-push rule under
+Boundaries: no other branch, and never the `upstream` remote.
 
 A fork PR that adds or changes a feature carries the feature's `fork:<slug>` label and a
 "Fork feature changes" section in its body, in the format `docs/fork/README.md` describes. It
