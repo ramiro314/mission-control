@@ -166,6 +166,61 @@ test("Resume opens a terminal in the original directory, and a pending launch bl
   await expect.poll(() => workspaces(daemon).length, { timeout: 15_000 }).toBe(2);
 });
 
+test("Resume in the Agent SDK starts an embedded session in the original directory that turns the conversation Live", async ({
+  dashboard,
+  daemon,
+}) => {
+  const original = join(daemon.home, "projects", "resume-sdk");
+  mkdirSync(original, { recursive: true });
+  const id = writeSession(daemon, { cwd: original, title: "Finish the changelog", at: "2026-10-31T15:00:00.000Z" });
+  await indexed(daemon, id);
+
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${id}`);
+  const view = detail(dashboard);
+  await view.getByRole("button", { name: "Resume", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
+  const sdk = dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "Agent SDK" });
+  await expect(sdk).toBeEnabled();
+  await expect(sdk).toContainText("Runs inside Mission Control, as a card in the Fleet.");
+  await expectContentClearsBorder(dialog);
+  await capture(dashboard, "20-sdk-dialog");
+
+  await sdk.click();
+  await expect(dialog.getByRole("status")).toHaveText(
+    `Started in the Agent SDK, in ${original}. Its card is in the Fleet, waiting for your next message.`,
+  );
+  await capture(dashboard, "21-sdk-started");
+
+  // The embedded session continues THIS conversation, in the original directory, and no
+  // terminal was asked for.
+  await expect.poll(async () => {
+    const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Array<{ runtime: string; agentSessionId: string | null; cwd: string }>;
+    return sessions.filter((session) => session.runtime === "sdk").map((session) => [session.agentSessionId, session.cwd]);
+  }, { timeout: 15_000 }).toEqual([[id, original]]);
+  expect(workspaces(daemon)).toHaveLength(0);
+
+  // Live status is read when the row is served, so the detail says so once it is read again.
+  await dialog.locator(".modal-foot").getByRole("button", { name: "Close", exact: true }).click();
+  await dashboard.reload();
+  await expect(view.getByRole("button", { name: "Open in Fleet" })).toBeVisible({ timeout: 15_000 });
+  await expect(view.getByRole("button", { name: "Resume", exact: true })).toHaveCount(0);
+});
+
+test("the Agent SDK is not offered for a typed directory, which resumes a fork", async ({ dashboard, daemon }) => {
+  const id = writeSession(daemon, { cwd: join(daemon.home, "projects", "sdk-deleted"), title: "Rename the flag", at: "2026-10-27T12:00:00.000Z" });
+  await indexed(daemon, id);
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${id}`);
+  await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
+  const typed = join(daemon.home, "projects", "sdk-typed");
+  mkdirSync(typed, { recursive: true });
+  await dialog.getByRole("textbox", { name: "Resume in another directory" }).fill(typed);
+  const sdk = dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "Agent SDK" });
+  await expect(sdk).toBeDisabled();
+  await expect(sdk).toContainText("Agent SDK cannot fork a conversation into another directory: choose a terminal.");
+  await expect(dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "cmux" })).toBeEnabled();
+});
+
 test("Resume is offered only on conversations whose transcript is present, and a directory that is gone opens the picker", async ({
   dashboard,
   daemon,

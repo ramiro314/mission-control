@@ -4,6 +4,7 @@ import { dirname, isAbsolute } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createReadStream } from "node:fs";
 import {
+  HISTORY_RESUME_SDK,
   isHistoryConversationKind,
   type HistoryResumeBody,
   type HistoryResumeCheckout,
@@ -48,6 +49,11 @@ import type { HistoryStore } from "./store.ts";
  * Mission Control minted, so the fork's identity is known before launch and the original is
  * never touched. That copy is History's only write into the agent's store, and an unofficial
  * workaround that may break with an agent format change.
+ *
+ * The Agent SDK (`HISTORY_RESUME_SDK`) is the one host that is not a terminal: the launcher
+ * starts an embedded session that continues the conversation, whose card joins the Fleet and
+ * binds the launch as soon as it registers. It takes the original directory or a slot, never a
+ * fork.
  */
 
 /** The fields of a session a managed terminal resume is prepared from. */
@@ -55,6 +61,18 @@ export type HistoryResumeSession = Pick<Session, "id" | "agent" | "agentSessionI
   /** Set for a fork: the id Mission Control minted for it, which the agent starts under. */
   forkSessionId?: string | null;
 };
+
+/** What an Agent SDK Resume starts its embedded session from. */
+export interface HistoryResumeSdkStart {
+  agent: HistorySessionSummary["agent"];
+  agentSessionId: string;
+  /** What the card is called. */
+  name: string;
+  cwd: string;
+  permissionMode: Session["permissionMode"];
+  branch: string | null;
+  repoRoot: string | null;
+}
 
 /** The terminal half of a Resume, supplied by the routes so this file never opens a window itself. */
 export interface HistoryResumeLauncher {
@@ -71,6 +89,21 @@ export interface HistoryResumeLauncher {
    * terminal has claimed it yet, so a window that opens late finds nothing to start.
    */
   abandon(owner: string): void;
+  /**
+   * Why `agent` cannot be resumed in the Agent SDK, or null when it can. Absent, with
+   * `startSdk`, in a build that has no session supervisor.
+   */
+  sdkUnavailable?(agent: HistorySessionSummary["agent"]): string | null;
+  /** Start the embedded session that continues the conversation. Throws when it cannot. */
+  startSdk?(input: HistoryResumeSdkStart): Promise<unknown>;
+}
+
+const SDK_LABEL = "the Agent SDK";
+
+/** Why a Resume cannot run in the Agent SDK with this launcher, or null when it can. */
+function sdkUnavailable(launcher: HistoryResumeLauncher | null, agent: HistorySessionSummary["agent"]): string | null {
+  if (!launcher?.startSdk || !launcher.sdkUnavailable) return "This build has no session supervisor to run the Agent SDK.";
+  return launcher.sdkUnavailable(agent);
 }
 
 /** The `session.id` a launch's environment is prepared, and later revoked, under. */
@@ -205,6 +238,7 @@ export class HistoryResume {
     id: string,
     live: HistoryLiveLookup,
     slots: HistoryResumeSlots | null = null,
+    launcher: HistoryResumeLauncher | null = null,
   ): Promise<HistoryResumeOptionsRead> {
     const found = this.deps.find(agent, id);
     if (!found) return { ok: false, status: 404, error: NOT_FOUND };
@@ -220,6 +254,7 @@ export class HistoryResume {
         original: { ...original, refusal: originalRefusal },
         openLaunch,
         refusal: refused,
+        sdkUnavailable: sdkUnavailable(launcher, summary.agent),
         picker: refused || !originalRefusal
           ? null
           : { directory: canFork(summary.agent), slots: await this.picker(summary, observed) },
@@ -252,7 +287,13 @@ export class HistoryResume {
     const resolved = await this.target(body.target, summary, reader, entry.transcriptPath, new SlotObservation(slots));
     if (!resolved.ok) return this.refuse(resolved.refusal, summary);
     const { cwd, fork, slot } = resolved.target;
-    const hostRefusal = launcher.hostUnavailable(body.backend);
+    const { backend } = body;
+    const sdk = backend === HISTORY_RESUME_SDK;
+    const hostRefusal = !sdk
+      ? launcher.hostUnavailable(backend)
+      : fork
+        ? "The Agent SDK cannot fork a conversation into another directory: choose a terminal."
+        : sdkUnavailable(launcher, summary.agent);
     if (hostRefusal) return this.refuse(refusal("host_unavailable", hostRefusal), summary);
 
     const claimed = this.deps.launches.claim(
@@ -306,11 +347,33 @@ export class HistoryResume {
       launch = this.deps.launches.get(launch.launchId) ?? launch;
     }
 
+    // The recorded mode is carried when there is one; an unreadable record renders no flag
+    // rather than a guess, as for every other resume.
+    const permissionMode = await reader.spec.permissionMode(entry.transcriptPath).catch(() => null);
+    if (sdk) {
+      try {
+        await launcher.startSdk!({
+          agent: summary.agent,
+          agentSessionId: summary.agentSessionId,
+          name: summary.customTitle ?? summary.aiTitle ?? `resume-${summary.agentSessionId.slice(0, 8)}`,
+          cwd,
+          permissionMode,
+          branch: checkout?.state === "branch" ? checkout.branch : summary.branch,
+          repoRoot: summary.repoRoot,
+        });
+      } catch (error) {
+        return await failed(error instanceof Error ? error.message : String(error));
+      }
+      // The session binds the launch as it registers, so this reads it `bound`. A cancel that
+      // landed first leaves an ordinary embedded session, as a terminal that already opened does.
+      if (this.cancelled(launch)) {
+        return this.cancelledOutcome(launch, "Cancel pending resume closed this launch while the Agent SDK session was starting. It runs as an ordinary session.");
+      }
+      return { ok: true, status: 200, launch: this.deps.launches.get(launch.launchId) ?? launch, label: SDK_LABEL, checkout };
+    }
+
     let prepared: PreparedResume;
     try {
-      // The recorded mode is carried when there is one; an unreadable record renders no flag
-      // rather than a guess, as for every other resume.
-      const permissionMode = await reader.spec.permissionMode(entry.transcriptPath).catch(() => null);
       prepared = await launcher.prepare({
         id: historyResumeOwner(launch.launchId),
         agent: summary.agent,
@@ -337,7 +400,7 @@ export class HistoryResume {
 
     let result: TerminalLaunchOutcome;
     try {
-      result = await launcher.launch(body.backend, { name: `resume-${summary.agentSessionId.slice(0, 8)}`, prepared });
+      result = await launcher.launch(backend, { name: `resume-${summary.agentSessionId.slice(0, 8)}`, prepared });
     } catch (error) {
       if (error instanceof TerminalLaunchError && !error.outcomeUnknown) return await failed(error.message);
       return this.unknown(launch, error instanceof Error ? error.message : String(error));

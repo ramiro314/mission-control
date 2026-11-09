@@ -631,6 +631,11 @@ export interface HistoryResumeOptions {
   /** Why no Resume can run right now, whatever the target, or null. */
   refusal: HistoryResumeRefusal | null;
   /**
+   * Why this Resume cannot run in the Agent SDK (`HISTORY_RESUME_SDK`), or null when it can.
+   * A typed directory is refused there whatever this says: the Agent SDK does not fork.
+   */
+  sdkUnavailable: string | null;
+  /**
    * The other targets the dialog offers when the original directory cannot be used (gone,
    * reused or unrecorded) and nothing else refuses: idle, clean slots of the session's
    * repository (none for a session with no resolvable repository), and a typed directory when
@@ -652,10 +657,16 @@ export const HistoryResumeTargetSchema = z.discriminatedUnion("kind", [
 ]);
 export type HistoryResumeTarget = z.infer<typeof HistoryResumeTargetSchema>;
 
+/**
+ * The `backend` that resumes in the Agent SDK instead of a terminal: Mission Control starts an
+ * embedded session that continues the conversation, and its card joins the Fleet.
+ */
+export const HISTORY_RESUME_SDK = "sdk";
+
 /** `POST /api/history/sessions/:agent/:id/resume`. */
 export const HistoryResumeBodySchema = z
   .object({
-    backend: z.enum(TERMINAL_BACKEND_IDS),
+    backend: z.union([z.enum(TERMINAL_BACKEND_IDS), z.literal(HISTORY_RESUME_SDK)]),
     target: HistoryResumeTargetSchema,
   })
   .strict();
@@ -722,7 +733,7 @@ export function historyResumeCheckoutWarning(checkout: HistoryResumeCheckout): s
 export interface HistoryResumeStarted {
   ok: true;
   launch: HistoryResumeLaunch;
-  /** The terminal backend that took it, for the confirmation the page shows. */
+  /** The terminal backend that took it, or the Agent SDK, for the confirmation the page shows. */
   label: string;
   /** What a slot target checked out, or null for a directory outside the pool. */
   checkout: HistoryResumeCheckout | null;

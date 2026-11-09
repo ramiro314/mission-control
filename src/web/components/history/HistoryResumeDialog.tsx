@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  HISTORY_RESUME_SDK,
   historyResumeCancellable,
   historyResumeCheckoutWarning,
   type HistoryResumeCheckout,
@@ -17,6 +18,7 @@ import { api } from "../../lib/api.ts";
 import { useTerminalTargets } from "../../lib/terminalTargets.ts";
 import { agentRowUnavailable, LaunchList } from "../LaunchMenu.tsx";
 import { Overlay, OVERLAY_IDS } from "../Overlay.tsx";
+import { RUNTIME_LABEL } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 
 /**
@@ -38,6 +40,10 @@ import { Tooltip } from "../Tooltip.tsx";
  * project folder and starts the fork under an id it minted, so the fork appears in History as
  * its own session. A refusal about the typed directory keeps the field and the terminals up,
  * so the person can correct the path rather than reopen the dialog.
+ *
+ * The Agent SDK is offered above the terminals: Mission Control starts an embedded session that
+ * continues the conversation, and its card joins the Fleet. It never forks, so it is unavailable
+ * while a typed directory is the target.
  */
 
 /** Refusals about a typed directory, which leave the picker up for another path. */
@@ -109,7 +115,7 @@ export function HistoryResumeDialog({
     return () => controller.abort();
   }, [read]);
 
-  async function launch(target: TerminalTargetView): Promise<void> {
+  async function launch(backend: TerminalTargetView["id"] | typeof HISTORY_RESUME_SDK): Promise<void> {
     setBusy(true);
     setRefused(null);
     setCancelError(null);
@@ -119,7 +125,7 @@ export function HistoryResumeDialog({
       : chosenSlot
         ? { kind: "slot", slotId: chosenSlot.slotId }
         : { kind: "directory", path: directory.trim() };
-    const result = await api.historyResume(agent, agentSessionId, { backend: target.id, target: where });
+    const result = await api.historyResume(agent, agentSessionId, { backend, target: where });
     setBusy(false);
     if (result.ok) setStarted({ launch: result.launch, label: result.label, checkout: result.checkout ?? null });
     else setRefused(result);
@@ -154,6 +160,9 @@ export function HistoryResumeDialog({
   const refusal = (directoryError ? null : refused) ?? options?.refusal ?? (picker ? null : options?.original.refusal) ?? null;
   // The launch a Cancel would close: the one just started, or the open one a refusal named.
   const pending = started?.launch ?? refused?.launch ?? options?.openLaunch ?? null;
+  const sdkUnavailable = typing
+    ? `${RUNTIME_LABEL} cannot fork a conversation into another directory: choose a terminal.`
+    : options?.sdkUnavailable ?? null;
 
   return (
     <Overlay
@@ -175,13 +184,14 @@ export function HistoryResumeDialog({
 
       <div className="history-resume-body">
         <p className="history-resume-lead">
-          Opens a new terminal that reopens this conversation in {AGENT_IDENTITY[agent].label},{" "}
+          Reopens this conversation in {AGENT_IDENTITY[agent].label},{" "}
           {!picker
             ? "in the directory it was recorded in"
             : picker.slots.length > 0
               ? "in a worktree slot or a directory you choose, because the original cannot be used"
               : "in a directory you choose, because the original cannot be used"}.
-          It runs outside Mission Control: no task, and no Mission Control tools.
+          In the {RUNTIME_LABEL} it runs inside Mission Control as a card in the Fleet; in a terminal it runs
+          outside. Either way: no task, and no Mission Control tools.
         </p>
         <dl className="history-resume-place">
           <div>
@@ -201,8 +211,10 @@ export function HistoryResumeDialog({
 
         {started && started.launch.expectedAgentSessionId === started.launch.sourceSessionId ? (
           <p className="history-resume-started" role="status">
-            Started in {started.label}, in <span className="mono">{started.launch.cwd}</span>. This session turns Live
-            here once Mission Control finds the agent.
+            Started in {started.label}, in <span className="mono">{started.launch.cwd}</span>.{" "}
+            {started.launch.state === "bound"
+              ? "Its card is in the Fleet, waiting for your next message."
+              : "This session turns Live here once Mission Control finds the agent."}
             {started.launch.slotId !== null
               ? " The slot stays leased to this Resume until you Return it from its card in Settings, Worktrees."
               : null}
@@ -305,12 +317,29 @@ export function HistoryResumeDialog({
         {options && !refusal && !started && (!picker || chosenSlot || directory.trim() !== "") ? (
           <div className="history-resume-targets" role="menu" aria-label="Resume in">
             <span className="launch-head">Resume in</span>
+            <Tooltip label={sdkUnavailable ?? `Resume this conversation in the ${RUNTIME_LABEL}`}>
+              <button
+                type="button"
+                role="menuitem"
+                className="launch-row"
+                disabled={busy || sdkUnavailable !== null}
+                onClick={() => void launch(HISTORY_RESUME_SDK)}
+              >
+                <span className="launch-glyph" aria-hidden>◈</span>
+                <span className="launch-text">
+                  <span className="launch-label">{RUNTIME_LABEL}</span>
+                  <span className="launch-note">
+                    {sdkUnavailable ?? `Resume this conversation in the ${RUNTIME_LABEL}. Runs inside Mission Control, as a card in the Fleet.`}
+                  </span>
+                </span>
+              </button>
+            </Tooltip>
             <LaunchList
               targets={terminals.targets}
               failed={terminals.failed}
               verb="Resume this conversation in"
               rowUnavailable={agentRowUnavailable}
-              onChoose={(target) => void launch(target)}
+              onChoose={(target) => void launch(target.id)}
             />
           </div>
         ) : null}
