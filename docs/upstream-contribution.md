@@ -255,11 +255,13 @@ with `gh pr view <n> --repo teamupstart/mission-control --comments`, or from wha
 passes on when that read is refused.
 
 ```sh
+git fetch origin
+PREV=$(git rev-parse origin/upstream/<slug>)   # the port commit the work machine last pushed
 git add -A
 git commit --amend --cleanup=whitespace -F "$SCRATCH/upstream-<slug>.msg"
 git fetch upstream
 git rebase upstream/main            # only when upstream moved or the pull request conflicts
-git push --force-with-lease origin upstream/<slug>
+git push --force-with-lease="refs/heads/upstream/<slug>:$PREV" origin upstream/<slug>
 ```
 
 Update the message file whenever the change alters what the body says (verification, known
@@ -267,18 +269,26 @@ gaps). Force-pushing is allowed for `upstream/*` port branches on `origin` and n
 this runbook is the request `AGENTS.md` requires, and the target is verified by its name. Never
 force-push fork `main`, a fork feature branch, or a sync branch.
 
-Then give the human the work-machine commands again:
+Then give the human the work-machine commands again, with `<previous sha>` filled in as the
+full `$PREV`:
 
 ```sh
 git fetch https://github.com/ramiro314/mission-control.git upstream/<slug>
-git push --force-with-lease origin FETCH_HEAD:refs/heads/<slug>
+git push --force-with-lease=refs/heads/<slug>:<previous sha> origin FETCH_HEAD:refs/heads/<slug>
 gh pr edit <slug> --repo teamupstart/mission-control \
   --title "$(git log -1 --format=%s FETCH_HEAD)" --body "$(git log -1 --format=%b FETCH_HEAD)"
 ```
 
-If the lease refuses the push, someone else pushed to the upstream branch, for example a
-maintainer's suggested change. Do not force past it: bring that commit into the port commit
-first.
+Both leases name the commit expected on the remote explicitly. A bare `--force-with-lease`
+compares against the clone's remote-tracking ref instead, and on the work machine, the
+operator's everyday `teamupstart` checkout, any `git fetch` or `git pull` between rounds moves
+that ref onto a maintainer's commit, so the lease would pass and overwrite it.
+
+If the work-machine lease refuses the push, the upstream branch no longer holds the last port
+commit: someone else pushed to it, for example a maintainer's suggested change, or the previous
+round's commands were never run. Do not force past it. Read the branch with
+`git fetch upstream <slug>` and `git log upstream/main..FETCH_HEAD`, bring any commit that is
+not the port's into the port commit, and hand off again with the SHA the branch holds now.
 
 ## 6. Close the loop
 
