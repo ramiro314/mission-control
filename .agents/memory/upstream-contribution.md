@@ -17,9 +17,11 @@ on other fork features stripped or replaced and every fork reference removed. Sq
 commit whose subject and body are the upstream PR's title and body (commit with `-F`, since an
 editor strips the `#` headings). Under Mission Control, the Upstream Port Review workflow judges
 only registered evidence, because the captured diff is measured from `origin/main`; push to
-`origin` only when Foreman or the workflow instructs it, then hand the human the work-machine
-commands: only that machine can push to `teamupstart` and open the PR. Review rounds amend the
-commit and force-push the `upstream/*` branch, the one force-push allowed. Record the open
-proposal through a "Fork feature changes" `#### Upstream candidate` block as soon as the human
-reports the upstream PR number, in an empty-commit record PR when no fork PR touching the
-feature is open, never by editing the issue.
+`origin` only when Foreman or the workflow instructs it, and hand the operator the filled-in
+handoff template from section 4. That push and document are the handoff: from then on the work
+machine, the only one that can push to `teamupstart`, owns the port (publishing, CI, review
+rounds as ordinary new commits, evidence, the fork record PR, close-out), and the personal
+machine never touches the port again, except to replace a handoff before upstream's branch
+exists, with a lease on the replaced commit: the one force-push allowed. The work machine records the open
+proposal through a "Fork feature changes" `#### Upstream candidate` block in an empty-commit
+record PR, never by editing the issue.
