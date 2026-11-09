@@ -25693,13 +25693,8 @@ button.sc-row:focus-visible {
   align-items: center;
   justify-content: center;
 }
-/* Wraps rather than squeezing: the column is only what the four grant columns leave, and on a
-   narrow pane the "new" tag and the setup action alone fill it, which ellipsized the name to
-   nothing. Wrapped, the action drops under the name and the name keeps its own line. */
 .trust-repo {
   justify-content: flex-start;
-  flex-wrap: wrap;
-  row-gap: 4px;
   padding-left: 14px;
   min-width: 0;
 }
