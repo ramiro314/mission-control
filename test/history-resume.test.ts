@@ -882,7 +882,10 @@ function launchCount(): number {
 // ---- the Agent SDK ----
 
 /** A launcher whose Agent SDK start registers the embedded session, as the supervisor does. */
-function sdkLauncher(registry: InstanceType<typeof Registry>, script: { unavailable?: string | null; fail?: string } = {}) {
+function sdkLauncher(
+  registry: InstanceType<typeof Registry>,
+  script: { unavailable?: string | null; fail?: string; starting?: (input: HistoryResumeSdkStart) => Promise<void> } = {},
+) {
   const fake = fakeLauncher();
   const started: HistoryResumeSdkStart[] = [];
   const launcher: HistoryResumeLauncher = {
@@ -890,6 +893,7 @@ function sdkLauncher(registry: InstanceType<typeof Registry>, script: { unavaila
     sdkUnavailable: () => script.unavailable ?? null,
     async startSdk(input) {
       if (script.fail) throw new Error(script.fail);
+      await script.starting?.(input);
       started.push(input);
       return registry.registerSdkSession({ id: `sdk:${input.agentSessionId}`, agent: input.agent, name: input.name, cwd: input.cwd, agentSessionId: input.agentSessionId });
     },
@@ -986,6 +990,35 @@ test("an Agent SDK Resume refuses a typed directory, and one that fails to start
       ["launch_failed", "the driver could not start"]);
     assert.equal(f.history.launches.open("claude", work), null, "the claim is released, so the next Resume runs");
   } finally {
+    f.done();
+  }
+});
+
+test("Cancel pending resume that lands while the Agent SDK session starts is reported as cancelled, not started", async () => {
+  const registry = new Registry();
+  let f!: Awaited<ReturnType<typeof fixture>>;
+  const sdk = sdkLauncher(registry, {
+    async starting(input) {
+      const pending = f.history.launches.open("claude", input.agentSessionId)!;
+      const cancelled = await f.post(`/api/history/sessions/claude/${input.agentSessionId}/resume/cancel`, { launchId: pending.launchId });
+      assert.equal(cancelled.status, 200);
+    },
+  });
+  f = await fixture(sdk.launcher, registry);
+  try {
+    const id = sessionId();
+    writeConversation(f.projects, id, directory("work"));
+    await f.history.reconciler.trigger();
+    f.history.trackResumes(registry);
+    const res = await resumeInSdk(f, id);
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string; error: string; launch: { launchId: string; state: string } };
+    assert.equal(body.code, "cancelled");
+    assert.equal(body.error, "Cancel pending resume closed this launch while the Agent SDK session was starting. It runs as an ordinary session.");
+    assert.equal(body.launch.state, "released");
+    assert.equal(f.history.launches.get(body.launch.launchId)?.state, "released", "the session that registered after the cancel binds nothing");
+  } finally {
+    f.history.stop();
     f.done();
   }
 });
@@ -1507,6 +1540,44 @@ test("an original slot held by another owner opens the picker, which offers only
     assert.equal(symbolicHead(idle!.path), null);
     assert.deepEqual(launched, [{ backend: "cmux", cwd: idle!.path }]);
   } finally {
+    f.done();
+  }
+});
+
+test("an Agent SDK Resume into a slot starts in the slot, on the branch its checkout reports, and keeps the slot leased", async () => {
+  const registry = new Registry();
+  const p = pooled("mission-history-resume-sdk-slot-", registry);
+  const real = historyResumeSlots(p.m);
+  // The manager checks the recorded branch out under its own name, so the checkout this wrapper
+  // reports is renamed: only then can the test tell the checkout's branch from the recorded one.
+  const slots: HistoryResumeSlots = {
+    ...real,
+    async lease(slotId, owner, branch) {
+      const taken = await real.lease(slotId, owner, branch);
+      return taken.outcome === "leased" ? { ...taken, checkout: { state: "branch", branch: "slot-branch" } } : taken;
+    },
+  };
+  const sdk = sdkLauncher(registry);
+  const f = await fixture(sdk.launcher, registry, { repository: p.clone, slots });
+  await p.seed(1);
+  try {
+    const { id } = await orphaned(f);
+    await f.history.reconciler.trigger();
+    f.history.trackResumes(registry);
+    const slot = (await f.options(id)).picker!.slots[0]!;
+    const res = await resumeInSdk(f, id, { kind: "slot", slotId: slot.slotId });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as SlotStarted & { launch: { state: string; slotId: string | null } };
+    assert.equal(body.launch.state, "bound");
+    assert.equal(body.launch.slotId, slot.slotId, "the launch holds the slot");
+    assert.deepEqual(body.checkout, { state: "branch", branch: "slot-branch" });
+    assert.equal(sdk.started.length, 1);
+    assert.equal(sdk.started[0]!.cwd, realpathSync(slot.path), "the embedded session runs in the slot");
+    assert.equal(sdk.started[0]!.branch, "slot-branch", "the branch the slot checked out, not the recorded one");
+    assert.deepEqual(sdk.prepared, [], "no terminal environment is prepared");
+    assert.deepEqual(sdk.launched, [], "no terminal opens");
+  } finally {
+    f.history.stop();
     f.done();
   }
 });
