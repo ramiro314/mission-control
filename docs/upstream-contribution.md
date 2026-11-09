@@ -261,15 +261,32 @@ machine always pushes one commit whose message is the current title and body. Re
 with `gh pr view <n> --repo teamupstart/mission-control --comments`, or from what the human
 passes on when that read is refused.
 
+A round usually runs days later, in another session or checkout, so start it from the fork's
+copy of the port branch, which every hand-off ends by pushing. If a local `upstream/<slug>`
+already exists, `git log origin/upstream/<slug>..upstream/<slug>` must print nothing first:
+`switch -C` resets the local branch to the fork's copy.
+
 ```sh
 git fetch origin
 PREV=$(git rev-parse origin/upstream/<slug>)   # the port commit the work machine last pushed
+git switch -C upstream/<slug> origin/upstream/<slug>
+npm ci
+git log -1 --format=%B > "$SCRATCH/upstream-<slug>.msg"   # the current title and body
+```
+
+Make the change, run the section 3 checks it affects, update the message file, then:
+
+```sh
 git add -A
 git commit --amend --cleanup=whitespace -F "$SCRATCH/upstream-<slug>.msg"
 git fetch upstream
 git rebase upstream/main            # only when upstream moved or the pull request conflicts
-git push --force-with-lease="refs/heads/upstream/<slug>:$PREV" origin upstream/<slug>
+git push --force-with-lease="refs/heads/upstream/<slug>:$PREV" origin HEAD:refs/heads/upstream/<slug>
 ```
+
+The push names `HEAD` as its source rather than the bare name `upstream/<slug>`, which resolves
+to the `refs/remotes/upstream/<slug>` ref that `git fetch upstream` refreshes whenever no local
+branch of that name exists, and would send `teamupstart`'s commit instead of the amended port.
 
 Update the message file whenever the change alters what the body says (verification, known
 gaps). Force-pushing is allowed for `upstream/*` port branches on `origin` and nothing else,
