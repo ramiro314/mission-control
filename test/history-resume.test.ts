@@ -25,7 +25,7 @@ const { managedResumeRoot, recheckManagedResumes, revokeUnclaimedResumes } = awa
 const { beginResumeLaunch, claimResumeLease, createResumeLease } = await import("../src/server/terminal/resume-lease.ts");
 import { historyResumeCheckoutWarning, historyResumeSlotLabel, type HistoryResumeOptions } from "../src/shared/history.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
-import type { HistoryResumeLauncher, HistoryResumeSession } from "../src/server/history/resume.ts";
+import type { HistoryResumeLauncher, HistoryResumeSdkStart, HistoryResumeSession } from "../src/server/history/resume.ts";
 import type { HistoryResumeCandidate, HistoryResumeSlotPool, HistoryResumeSlotReturn } from "../src/server/history/resume-launches.ts";
 import type { HistoryResumeSlots } from "../src/server/history/resume-slots.ts";
 import type { PreparedResume } from "../src/server/harness/resume.ts";
@@ -878,6 +878,117 @@ async function orphaned(f: Awaited<ReturnType<typeof fixture>>, cwd = join(direc
 function launchCount(): number {
   return Number(openDb().prepare("SELECT COUNT(*) AS n FROM history_resume_launches").get()!.n);
 }
+
+// ---- the Agent SDK ----
+
+/** A launcher whose Agent SDK start registers the embedded session, as the supervisor does. */
+function sdkLauncher(registry: InstanceType<typeof Registry>, script: { unavailable?: string | null; fail?: string } = {}) {
+  const fake = fakeLauncher();
+  const started: HistoryResumeSdkStart[] = [];
+  const launcher: HistoryResumeLauncher = {
+    ...fake.launcher,
+    sdkUnavailable: () => script.unavailable ?? null,
+    async startSdk(input) {
+      if (script.fail) throw new Error(script.fail);
+      started.push(input);
+      return registry.registerSdkSession({ id: `sdk:${input.agentSessionId}`, agent: input.agent, name: input.name, cwd: input.cwd, agentSessionId: input.agentSessionId });
+    },
+  };
+  return { ...fake, launcher, started };
+}
+
+function resumeInSdk(f: Awaited<ReturnType<typeof fixture>>, id: string, target: unknown = { kind: "original" }) {
+  return f.post(`/api/history/sessions/claude/${id}/resume`, { backend: "sdk", target });
+}
+
+test("resume-options says whether the Agent SDK can host the Resume", async () => {
+  const plain = await fixture();
+  try {
+    const id = sessionId();
+    writeConversation(plain.projects, id, directory("work"));
+    await plain.history.reconciler.trigger();
+    assert.match((await plain.options(id)).sdkUnavailable ?? "", /no session supervisor/, "a build with no supervisor says so");
+  } finally {
+    plain.done();
+  }
+  const registry = new Registry();
+  const f = await fixture(sdkLauncher(registry, { unavailable: "Claude has no Agent SDK driver." }).launcher, registry);
+  try {
+    const id = sessionId();
+    writeConversation(f.projects, id, directory("work"));
+    await f.history.reconciler.trigger();
+    assert.equal((await f.options(id)).sdkUnavailable, "Claude has no Agent SDK driver.");
+    const refused = await resumeInSdk(f, id);
+    assert.equal(refused.status, 409);
+    assert.deepEqual(await refused.json(), { ok: false, code: "host_unavailable", error: "Claude has no Agent SDK driver." });
+    assert.equal(launchCount(), 0, "a host refusal claims nothing");
+  } finally {
+    f.done();
+  }
+});
+
+test("an Agent SDK Resume starts an embedded session in the resolved directory that binds its launch, and opens no terminal", async () => {
+  const registry = new Registry();
+  const sdk = sdkLauncher(registry);
+  const f = await fixture(sdk.launcher, registry);
+  try {
+    const real = directory("real");
+    const alias = join(directory("aliases"), "alias");
+    symlinkSync(real, alias);
+    const id = sessionId();
+    writeConversation(f.projects, id, alias, { mode: "acceptEdits", branch: "feature/x" });
+    await f.history.reconciler.trigger();
+    f.history.trackResumes(registry);
+    assert.equal((await f.options(id)).sdkUnavailable, null);
+
+    const res = await resumeInSdk(f, id);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as Started & { launch: { state: string; mcSessionId: string | null } };
+    assert.equal(body.label, "the Agent SDK");
+    assert.equal(body.launch.cwd, real);
+    assert.equal(body.launch.state, "bound", "the embedded session binds the launch as it registers");
+    assert.equal(body.launch.mcSessionId, `sdk:${id}`);
+    assert.deepEqual(sdk.started, [{
+      agent: "claude",
+      agentSessionId: id,
+      name: `resume-${id.slice(0, 8)}`,
+      cwd: real,
+      permissionMode: "acceptEdits",
+      branch: "feature/x",
+      repoRoot: null,
+    }], "started from the catalog row, carrying the recorded mode, in the resolved directory");
+    assert.deepEqual(sdk.prepared, [], "no terminal environment is prepared");
+    assert.deepEqual(sdk.launched, [], "no terminal opens");
+    assert.equal((await f.options(id)).refusal?.code, "live", "the conversation is now running");
+  } finally {
+    f.history.stop();
+    f.done();
+  }
+});
+
+test("an Agent SDK Resume refuses a typed directory, and one that fails to start releases its claim", async () => {
+  const registry = new Registry();
+  const failing = sdkLauncher(registry, { fail: "the driver could not start" });
+  const f = await fixture(failing.launcher, registry);
+  try {
+    const { id } = await orphaned(f);
+    const fork = await resumeInSdk(f, id, { kind: "directory", path: directory("typed") });
+    assert.equal(fork.status, 409);
+    assert.equal(((await fork.json()) as { code: string }).code, "host_unavailable");
+    assert.equal(launchCount(), 0, "a fork refusal claims nothing");
+
+    const work = sessionId();
+    writeConversation(f.projects, work, directory("work"));
+    await f.history.reconciler.trigger();
+    const failed = await resumeInSdk(f, work);
+    assert.equal(failed.status, 409);
+    assert.deepEqual(await failed.json().then((b) => [(b as { code: string }).code, (b as { error: string }).error]),
+      ["launch_failed", "the driver could not start"]);
+    assert.equal(f.history.launches.open("claude", work), null, "the claim is released, so the next Resume runs");
+  } finally {
+    f.done();
+  }
+});
 
 test("Claude forks under a given id: --fork-session with --session-id", () => {
   assert.deepEqual(resumeFor("claude")?.forkArgv?.("11111111-2222-4333-8444-555555555555"), [

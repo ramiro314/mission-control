@@ -434,6 +434,11 @@ export class SdkSupervisor {
     gitBranch?: string | null;
     gitRoot?: string | null;
     repoRoot?: string | null;
+    /**
+     * A conversation to continue rather than start: History Resume's Agent SDK launch. With
+     * an empty `prompt` the card starts idle, as a restored one does, waiting for a turn.
+     */
+    resume?: string | null;
   }): Promise<Session> {
     if (this.shuttingDown) throw new Error("the SDK supervisor is shutting down");
     const spec = sdkFor(input.agent);
@@ -475,7 +480,7 @@ export class SdkSupervisor {
         // that ordering is produced by `intentWithRepoManifest`, not by wrapping a finished
         // prompt. Empty unless there is an out-of-band delivery to fall back FROM.
         standingInstructionsPrompt: outOfBandStanding ? input.standingInstructions!.fallbackPrompt : "",
-        resume: null,
+        resume: input.resume ?? null,
         // Decided here, before the card exists, because the agent reads it once at launch.
         // `mission.session.started` is captured under the same derived ids when this id is
         // first published, so the agent's spans join that span's trace.
@@ -503,6 +508,8 @@ export class SdkSupervisor {
           agent: input.agent,
           name: input.name,
           cwd: input.cwd,
+          // A resume with no turn one owes no assistant frame; see the restore path's card.
+          ...(input.resume && !input.prompt ? { initialState: "idle" as const } : {}),
           permissionMode: input.permissionMode,
           gitBranch: input.gitBranch ?? null,
           gitRoot: input.gitRoot ?? null,
@@ -517,6 +524,7 @@ export class SdkSupervisor {
           model: input.model,
           effort: input.effort,
           advisorModel: input.advisorModel,
+          agentSessionId: input.resume ?? null,
           // The driver accepted turn one before `adopt` can persist anything. Recording it
           // here closes the startup window before the detached event pump catches up.
           turnInProgress: input.prompt.length > 0,

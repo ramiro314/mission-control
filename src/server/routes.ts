@@ -324,7 +324,7 @@ import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import type { HistoryLiveLookup, HistoryService } from "./history/service.ts";
-import type { HistoryResumeLauncher } from "./history/resume.ts";
+import type { HistoryResumeLauncher, HistoryResumeSdkStart } from "./history/resume.ts";
 import { historyResumeSlots, type HistoryResumeSlots } from "./history/resume-slots.ts";
 import {
   HistoryMessagesQuerySchema,
@@ -344,7 +344,7 @@ import {
 import { runRetro } from "./retro.ts";
 import { startShapeTicketsFollowup } from "./shape-tickets-followup.ts";
 import { setAffectedTestsCommand, startTestingSetup } from "./testing-setup.ts";
-import { harnessFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, sdkFor, sessionMessages } from "./harness/index.ts";
 import { prepareTerminalResume, recheckManagedResumes, resumeConversation, revokeUnclaimedResumes,
   type PreparedResume } from "./harness/resume.ts";
 import { resumeContext } from "./resume-context.ts";
@@ -358,7 +358,7 @@ import {
   interruptUnsupportedWhy,
   workQueueBlockedReason,
 } from "@shared/harness-capabilities.ts";
-import { AGENT_TYPES, SESSION_RUNTIMES } from "@shared/types.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES, type AgentType } from "@shared/types.ts";
 import {
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
@@ -4180,7 +4180,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return read.ok ? c.json(read.page) : c.json({ error: read.error }, read.status);
   });
   // Resume: a new unmanaged terminal running the agent's own resume command in the session's
-  // original directory or a worktree slot, with no task context and no Mission Control tools.
+  // original directory or a worktree slot, with no task context and no Mission Control tools,
+  // or an embedded Agent SDK session continuing it there, whose card joins the Fleet.
   // The directory is the catalog's, resolved by the daemon, and a slot is one the daemon
   // offered; the body names only a backend and a target.
   const resumeLauncher: HistoryResumeLauncher = historyResumeLauncher ?? {
@@ -4188,11 +4189,32 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     prepare: (session) => prepareTerminalResume(session, { managed: false, requiredTools: [], extraDirs: [] }),
     launch: (backend, input) => launchManagedAgentTerminal(backend, input, terminalLauncher),
     abandon: (owner) => { revokeUnclaimedResumes(owner); },
+    ...(sdkSessions
+      ? {
+        sdkUnavailable: (agent: AgentType) => sdkFor(agent) ? null : `${AGENT_IDENTITY[agent].label} has no Agent SDK driver.`,
+        startSdk: (input: HistoryResumeSdkStart) => sdkSessions.start({
+          agent: input.agent,
+          name: input.name,
+          cwd: input.cwd,
+          // No turn one: the conversation continues where it stopped, and waits for the operator.
+          prompt: "",
+          model: null,
+          effort: null,
+          permissionMode: input.permissionMode,
+          mcp: null,
+          taskId: null,
+          resume: input.agentSessionId,
+          gitBranch: input.branch,
+          gitRoot: input.repoRoot === null ? null : input.cwd,
+          repoRoot: input.repoRoot,
+        }),
+      }
+      : {}),
   };
   const resumeSlots = injectedResumeSlots ?? (worktreeOperations ? historyResumeSlots(worktreeOperations.manager) : null);
   app.get("/api/history/sessions/:agent/:id/resume-options", async (c) => {
     if (!history) return c.json({ error: "session history unavailable" }, 503);
-    const read = await history.resume.options(c.req.param("agent"), c.req.param("id"), liveHistorySessions(), resumeSlots);
+    const read = await history.resume.options(c.req.param("agent"), c.req.param("id"), liveHistorySessions(), resumeSlots, resumeLauncher);
     return read.ok ? c.json(read.options) : c.json({ error: read.error }, read.status);
   });
   app.post("/api/history/sessions/:agent/:id/resume", async (c) => {

@@ -1405,6 +1405,22 @@ test("restore carries durable task attribution through session telemetry", async
   }
 });
 
+test("start can continue an existing conversation: no turn one, an idle card, and the identity kept", async (t) => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  const session = await supervisor.start({ ...START, prompt: "", resume: "agent-history" });
+  assert.equal(fake.calls[0]!.resume, "agent-history");
+  assert.equal(fake.calls[0]!.prompt, "");
+  assert.equal(registry.getSession(session.id)?.state, "idle", "a resume with no turn one owes no frame");
+  assert.equal(registry.getSession(session.id)?.agentSessionId, "agent-history", "the card carries the identity it continues");
+  assert.equal(getSdkSession(session.id)?.agentSessionId, "agent-history");
+  assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+  await supervisor.stop(session.id).catch(() => {});
+});
+
 test("restore resumes the same conversation rather than starting a new one", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
