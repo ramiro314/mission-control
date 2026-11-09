@@ -68,6 +68,7 @@ import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency } from "@shared/task-dependency.ts";
 import {
+  baseBranchMoveRefusal,
   taskHasRepository,
   dispatchHasNoProvisionedResources,
   isLocalPlanningTask,
@@ -4202,15 +4203,24 @@ export class TaskManager {
    * network calls. A finished dependency source the registry no longer holds is read back from
    * the database, as the merge watcher reads it, so its dependents are not stranded.
    */
-  moveBaseBranch(id: string, from: string, to: string | null): Ok & { task?: Task } {
+  moveBaseBranch(id: string, from: string, to: string | null, movedSha: string | null = null): Ok & { task?: Task } {
     const t = this.registry.getTask(id) ?? getDurableTask(id);
     if (!t) return { ok: false, error: "no such task" };
     if (t.status === "backlog") return { ok: false, error: "a backlog task's base branch is changed by editing it" };
     if (this.assigningTasks.has(id)) return { ok: false, error: "task is being assigned" };
     if ((t.baseBranch ?? null) !== from) return { ok: false, error: `task's base branch is no longer ${from}` };
-    const task: Task = { ...t, baseBranch: to, baseBranchMovedFrom: from, updatedAt: Date.now() };
+    const task: Task = { ...t, baseBranch: to, baseBranchMovedFrom: from, baseBranchMovedSha: movedSha, updatedAt: Date.now() };
     this.registry.upsertTask(task);
     return { ok: true, task };
+  }
+
+  /**
+   * Why the operator may not move this task's base now, or null: the shared
+   * `baseBranchMoveRefusal` the session footer reads, plus the assignment only the daemon sees.
+   * The automatic sweep is not held to it: it also moves a finished dependency source.
+   */
+  operatorMoveRefusal(t: Task): string | null {
+    return baseBranchMoveRefusal(t) ?? (this.assigningTasks.has(t.id) ? "task is being assigned" : null);
   }
 
   /**
@@ -4362,7 +4372,9 @@ export class TaskManager {
       // Written only when the patch names it, so an edit that does not touch the base leaves
       // the task exactly as it was rather than adding a key it did not carry. A base the
       // operator names supersedes any earlier move, so the record of that move goes with it.
-      ...(patch.baseBranch !== undefined ? { baseBranch: patch.baseBranch, baseBranchMovedFrom: null } : {}),
+      ...(patch.baseBranch !== undefined
+        ? { baseBranch: patch.baseBranch, baseBranchMovedFrom: null, baseBranchMovedSha: null }
+        : {}),
       extraRepos,
       intent,
       // Emptying the title asks for one to be derived again - and from the intent as it

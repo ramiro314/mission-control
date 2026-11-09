@@ -19,7 +19,7 @@ process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const taskManager = trackedTaskManagers(TaskManager);
-const { moveMergedBaseBranches, mergedPrListArgs, parseMergedPullRequestBase } =
+const { moveMergedBaseBranches, mergedPrListArgs, parseMergedPullRequest } =
   await import("../src/server/base-branch-move.ts");
 const { changedPathsSince, computeSessionDiff } = await import("../src/server/diff.ts");
 const { resetPreview } = await import("../src/server/actions.ts");
@@ -73,32 +73,47 @@ function stackedThenMerged(name: string, parent: "main" | "release/2.0") {
   git(repo, "worktree", "add", "-q", "-b", "feat/b", wt, "origin/feat/a");
   commit(wt, "b.txt", "feature b");
 
+  const head = git(repo, "rev-parse", "feat/a");
   git(repo, "push", "-q", "origin", `feat/a:${parent}`);
   git(repo, "push", "-q", "origin", "--delete", "feat/a");
   git(repo, "fetch", "-q", "--prune", "origin");
-  return { repo: realpathSync(repo), wt: realpathSync(wt) };
+  return { repo: realpathSync(repo), wt: realpathSync(wt), head };
 }
+
+const PR = "https://github.com/example/repo/pull/1";
+/** `gh`'s answer for a merged pull request into `base` whose head commit was `head`. */
+const merged = (base: string, head = "h".repeat(40)) => ({ url: PR, base, head });
+/** What a fake origin says beyond its branches: the merge is this task's, and fetches work. */
+const fakeOrigin = {
+  carries: async () => ({ ok: true as const, value: true }),
+  fetch: async () => ({ ok: true as const, value: undefined }),
+  tip: async () => ({ ok: true as const, value: "t".repeat(40) }),
+};
+/** The commit every fake-origin task's base was taken at. */
+const ANCHOR = "a".repeat(40);
 
 function inFlight(repoRoot: string, over: Partial<Task> = {}) {
   const registry = new Registry();
   const tasks = taskManager(registry);
+  const id = over.id ?? "stacked";
   registry.upsertTask(mkTask({ id: "stacked", status: "running", repoRoot, baseBranch: "feat/a", ...over }));
   const sweepTasks = {
-    candidates: () => registry.baseBranchMoveCandidates(),
-    move: (id: string, from: string, to: string | null) => tasks.moveBaseBranch(id, from, to),
+    candidates: () => registry.baseBranchMoveCandidates().filter((t) => t.id === id),
+    move: (taskId: string, from: string, to: string | null, movedSha?: string | null) =>
+      tasks.moveBaseBranch(taskId, from, to, movedSha),
   };
   return { registry, tasks, sweepTasks };
 }
 
 test("a task whose base merged into origin's default and was deleted moves to the default", async () => {
-  const { repo, wt } = stackedThenMerged("to-default", "main");
-  const { registry, sweepTasks } = inFlight(repo);
+  const { repo, wt, head } = stackedThenMerged("to-default", "main");
+  const { registry, sweepTasks } = inFlight(repo, { baseSha: head });
   const before = await computeSessionDiff(wt, undefined, "feat/a");
   assert.equal(before.ok, false, "the deleted base cannot be measured from");
 
   const asked: string[] = [];
   const moves = await moveMergedBaseBranches(sweepTasks, {
-    mergedInto: async (_root, branch) => (asked.push(branch), "main"),
+    mergedInto: async (_root, branch) => (asked.push(branch), merged("main", head)),
   });
 
   assert.deepEqual(asked, ["feat/a"]);
@@ -107,6 +122,7 @@ test("a task whose base merged into origin's default and was deleted moves to th
   assert.equal(moved.baseBranch, null, "origin's default is stored as null");
   assert.equal(moved.baseBranchMovedFrom, "feat/a", "the move is recorded on the task");
   assert.equal(getTask("stacked")?.baseBranchMovedFrom, "feat/a", "and persisted");
+  assert.equal(moved.baseBranchMovedSha, git(repo, "rev-parse", "origin/main"), "the tip it moved onto anchors the next move");
 
   const after = await computeSessionDiff(wt, undefined, moved.baseBranch ?? null);
   assert.equal(after.ok, true, after.error ?? "");
@@ -120,10 +136,10 @@ test("a task whose base merged into origin's default and was deleted moves to th
 });
 
 test("a task whose base merged into another branch moves there, and every later instruction names it", async () => {
-  const { repo, wt } = stackedThenMerged("to-release", "release/2.0");
-  const { registry, sweepTasks } = inFlight(repo);
+  const { repo, wt, head } = stackedThenMerged("to-release", "release/2.0");
+  const { registry, sweepTasks } = inFlight(repo, { baseSha: head });
 
-  await moveMergedBaseBranches(sweepTasks, { mergedInto: async () => "release/2.0" });
+  await moveMergedBaseBranches(sweepTasks, { mergedInto: async () => merged("release/2.0", head) });
 
   const moved = registry.getTask("stacked")!;
   assert.equal(moved.baseBranch, "release/2.0");
@@ -141,10 +157,10 @@ test("a task whose base merged into another branch moves there, and every later 
 });
 
 test("a base branch origin still has is never moved, even with a merged pull request behind it", async () => {
-  const { repo } = stackedThenMerged("still-there", "main");
-  const { registry, sweepTasks } = inFlight(repo, { baseBranch: "release/2.0" });
+  const { repo, head } = stackedThenMerged("still-there", "main");
+  const { registry, sweepTasks } = inFlight(repo, { baseBranch: "release/2.0", baseSha: head });
 
-  const moves = await moveMergedBaseBranches(sweepTasks, { mergedInto: async () => "main" });
+  const moves = await moveMergedBaseBranches(sweepTasks, { mergedInto: async () => merged("main", head) });
 
   assert.deepEqual(moves, []);
   assert.equal(registry.getTask("stacked")?.baseBranch, "release/2.0");
@@ -152,9 +168,9 @@ test("a base branch origin still has is never moved, even with a merged pull req
 });
 
 test("a deleted base with no merged pull request, or a gh failure, leaves the task alone", async () => {
-  const { repo } = stackedThenMerged("unmerged", "main");
+  const { repo, head } = stackedThenMerged("unmerged", "main");
   for (const answer of [null, "error"] as const) {
-    const { registry, sweepTasks } = inFlight(repo);
+    const { registry, sweepTasks } = inFlight(repo, { baseSha: head });
     assert.deepEqual(await moveMergedBaseBranches(sweepTasks, { mergedInto: async () => answer }), []);
     assert.equal(registry.getTask("stacked")?.baseBranch, "feat/a");
   }
@@ -163,8 +179,8 @@ test("a deleted base with no merged pull request, or a gh failure, leaves the ta
 test("backlog tasks and tasks without a base are not candidates, and each base is asked about once", async () => {
   const registry = new Registry();
   const tasks = taskManager(registry);
-  registry.upsertTask(mkTask({ id: "one", status: "running", repoRoot: "/repo", baseBranch: "feat/a" }));
-  registry.upsertTask(mkTask({ id: "two", status: "failed", repoRoot: "/repo", baseBranch: "feat/a" }));
+  registry.upsertTask(mkTask({ id: "one", status: "running", repoRoot: "/repo", baseBranch: "feat/a", baseSha: ANCHOR }));
+  registry.upsertTask(mkTask({ id: "two", status: "failed", repoRoot: "/repo", baseBranch: "feat/a", baseSha: ANCHOR }));
   registry.upsertTask(mkTask({ id: "shelved", status: "backlog", repoRoot: "/repo", baseBranch: "feat/a" }));
   registry.upsertTask(mkTask({ id: "plain", status: "running", repoRoot: "/repo", baseBranch: null }));
   // The registry also loads the rows earlier tests in this file persisted, on other roots.
@@ -175,10 +191,10 @@ test("backlog tasks and tasks without a base are not candidates, and each base i
   const moves = await moveMergedBaseBranches(
     { candidates, move: (id, from, to) => tasks.moveBaseBranch(id, from, to) },
     {
+      ...fakeOrigin,
       remoteBranch: async (root, branch) => (asked.push(`${root} ${branch}`), { ok: true, value: null }),
-      mergedInto: async () => "main",
+      mergedInto: async () => merged("main"),
       resolve: async () => ({ ok: true, baseBranch: null }),
-      fetch: async () => {},
     },
   );
   assert.deepEqual(asked, ["/repo feat/a"]);
@@ -214,23 +230,23 @@ test("an unreachable origin, a refused new base, or a base merged into itself le
       remoteBranch: async (_root, branch) => ({ ok: true, value: branch === "feat/a" ? null : "f".repeat(40) }),
       resolve: async () => ({ ok: false, error: "could not check base branch main on origin: timed out" }),
     }],
-    ["merged into itself", { mergedInto: async (_root, branch) => branch }],
+    ["merged into itself", { mergedInto: async (_root, branch) => merged(branch) }],
   ];
   for (const [name, override] of cases) {
     const registry = new Registry();
     const tasks = taskManager(registry);
     const id = `alone-${name.replaceAll(" ", "-")}`;
-    registry.upsertTask(mkTask({ id, status: "running", repoRoot: "/repo-alone", baseBranch: "feat/a" }));
+    registry.upsertTask(mkTask({ id, status: "running", repoRoot: "/repo-alone", baseBranch: "feat/a", baseSha: ANCHOR }));
     const moves = await moveMergedBaseBranches(
       {
         candidates: () => registry.baseBranchMoveCandidates().filter((t) => t.id === id),
         move: (taskId, from, to) => tasks.moveBaseBranch(taskId, from, to),
       },
       {
+        ...fakeOrigin,
         remoteBranch: async () => ({ ok: true, value: null }),
-        mergedInto: async () => "main",
+        mergedInto: async () => merged("main"),
         resolve: async () => ({ ok: true, baseBranch: null }),
-        fetch: async () => {},
         ...override,
       },
     );
@@ -248,21 +264,21 @@ async function sweepChain(
 ) {
   const registry = new Registry();
   const tasks = taskManager(registry);
-  registry.upsertTask(mkTask({ id, status: "running", repoRoot: "/repo-chain", baseBranch: "feat/a" }));
+  registry.upsertTask(mkTask({ id, status: "running", repoRoot: "/repo-chain", baseBranch: "feat/a", baseSha: ANCHOR }));
   const moves = await moveMergedBaseBranches(
     {
       candidates: () => registry.baseBranchMoveCandidates().filter((t) => t.id === id),
       move: (taskId, from, to) => tasks.moveBaseBranch(taskId, from, to),
     },
     {
+      ...fakeOrigin,
       remoteBranch: async (_root, branch) => unreachable.has(branch)
         ? { ok: false, reason: "timed out", outcomeUnknown: true }
         : { ok: true, value: present.has(branch) ? "f".repeat(40) : null },
-      mergedInto: async (_root, branch) => merges[branch] ?? null,
+      mergedInto: async (_root, branch) => (merges[branch] ? merged(merges[branch]) : null),
       resolve: async (_root, branch) => present.has(branch)
         ? { ok: true, baseBranch: branch === "main" ? null : branch }
         : { ok: false, error: `base branch ${branch} does not exist on /repo-chain's origin` },
-      fetch: async () => {},
     },
   );
   return { moves, task: registry.getTask(id)! };
@@ -293,40 +309,102 @@ test("a chain that cannot be followed to a branch origin has leaves the task alo
 test("a failed fetch of the new base still moves the task", async () => {
   const registry = new Registry();
   const tasks = taskManager(registry);
-  registry.upsertTask(mkTask({ id: "fetch-fails", status: "running", repoRoot: "/repo-fetch", baseBranch: "feat/a" }));
+  registry.upsertTask(mkTask({ id: "fetch-fails", status: "running", repoRoot: "/repo-fetch", baseBranch: "feat/a", baseSha: ANCHOR }));
   const moves = await moveMergedBaseBranches(
     {
       candidates: () => registry.baseBranchMoveCandidates().filter((t) => t.id === "fetch-fails"),
       move: (taskId, from, to) => tasks.moveBaseBranch(taskId, from, to),
     },
     {
+      ...fakeOrigin,
       remoteBranch: async () => ({ ok: true, value: null }),
-      mergedInto: async () => "main",
+      mergedInto: async () => merged("main"),
       resolve: async () => ({ ok: true, baseBranch: null }),
       fetch: async () => { throw new Error("fetch failed"); },
     },
   );
   assert.deepEqual(moves, [{ taskId: "fetch-fails", from: "feat/a", to: null }]);
   assert.equal(registry.getTask("fetch-fails")?.baseBranchMovedFrom, "feat/a");
+  assert.equal(registry.getTask("fetch-fails")?.baseBranchMovedSha, null, "no tip was read to anchor a next move");
 });
 
 test("editing a backlog task's base drops the record of an earlier move", async () => {
   const registry = new Registry();
   const tasks = taskManager(registry);
-  registry.upsertTask(mkTask({ id: "requeued", status: "backlog", baseBranch: null, baseBranchMovedFrom: "feat/a" }));
+  registry.upsertTask(mkTask({
+    id: "requeued", status: "backlog", baseBranch: null, baseBranchMovedFrom: "feat/a", baseBranchMovedSha: ANCHOR,
+  }));
   const edited = await tasks.update("requeued", { baseBranch: "release/2.0" });
   assert.equal(edited.ok, true, edited.error);
   assert.equal(registry.getTask("requeued")?.baseBranchMovedFrom, null);
+  assert.equal(registry.getTask("requeued")?.baseBranchMovedSha, null);
 });
 
-test("the merged pull request's base is read from gh for the named repository", () => {
+test("the merged pull request is read from gh for the named repository, newest merge first", () => {
   assert.deepEqual(mergedPrListArgs("feat/a", "example/repo"), [
-    "pr", "list", "--repo", "example/repo", "--head", "feat/a", "--state", "merged", "--json", "baseRefName", "--limit", "1",
+    "pr", "list", "--repo", "example/repo", "--head", "feat/a", "--state", "merged",
+    "--json", "url,state,mergedAt,baseRefName,headRefOid", "--limit", "20",
   ]);
-  assert.equal(parseMergedPullRequestBase(`[{"baseRefName":"main"}]`), "main");
-  assert.equal(parseMergedPullRequestBase("[]"), null);
-  assert.equal(parseMergedPullRequestBase(""), null);
-  assert.equal(parseMergedPullRequestBase(`[{"baseRefName":""}]`), "error");
-  assert.equal(parseMergedPullRequestBase("{}"), "error");
-  assert.equal(parseMergedPullRequestBase("not json"), "error");
+  const row = (url: string, mergedAt: string, baseRefName: string, headRefOid = "h".repeat(40)) =>
+    ({ url, state: "MERGED", mergedAt, baseRefName, headRefOid });
+  // Listed by creation, oldest merge first: the newer merge decides.
+  assert.deepEqual(
+    parseMergedPullRequest(JSON.stringify([row("u/1", "2026-10-01T10:00:00Z", "main", "1".repeat(40)), row("u/2", "2026-11-01T10:00:00Z", "feat/x", "2".repeat(40))])),
+    { url: "u/2", base: "feat/x", head: "2".repeat(40) },
+  );
+  assert.deepEqual(parseMergedPullRequest(JSON.stringify([{ ...row("u/3", "2026-11-01T10:00:00Z", "main"), headRefOid: "" }])), { url: "u/3", base: "main", head: null });
+  assert.equal(parseMergedPullRequest("[]"), null);
+  assert.equal(parseMergedPullRequest(""), null);
+  assert.equal(parseMergedPullRequest(JSON.stringify([row("u/4", "2026-11-01T10:00:00Z", "")])), "error");
+  assert.equal(parseMergedPullRequest("{}"), "error");
+  assert.equal(parseMergedPullRequest("not json"), "error");
+});
+
+test("a merge that is not the merge of the branch the task was stacked on moves nothing", async () => {
+  // feat/a was reused: an older feat/a merged into main, and this task's feat/a was deleted
+  // unmerged. The listing answers with the older one, whose head predates the task's start.
+  const { repo, head } = stackedThenMerged("reused-name", "main");
+  const older = git(repo, "rev-list", "--max-parents=0", "main");
+  const { registry, sweepTasks } = inFlight(repo, { baseSha: head });
+  assert.deepEqual(await moveMergedBaseBranches(sweepTasks, { mergedInto: async () => merged("main", older) }), []);
+  assert.equal(registry.getTask("stacked")?.baseBranch, "feat/a");
+  assert.equal(registry.getTask("stacked")?.baseBranchMovedFrom ?? null, null);
+
+  // Nor is any merge, for a task that recorded no commit to compare its head against, nor one
+  // whose check could not run.
+  for (const [name, over, deps] of [
+    ["no start commit", { baseSha: null }, {}],
+    ["check failed", {}, { carries: async () => ({ ok: false as const, reason: "git fetch origin failed", outcomeUnknown: true }) }],
+  ] as const) {
+    const alone = inFlight(repo, { id: `alone-${name.replaceAll(" ", "-")}`, baseSha: head, ...over });
+    assert.deepEqual(await moveMergedBaseBranches(alone.sweepTasks, { mergedInto: async () => merged("main", head), ...deps }), [], name);
+  }
+});
+
+test("a base an earlier move put there is checked against the tip it moved onto, not the start commit", async () => {
+  const registry = new Registry();
+  const tasks = taskManager(registry);
+  const moved = "m".repeat(40);
+  registry.upsertTask(mkTask({
+    id: "second-hop", status: "running", repoRoot: "/repo-hop", baseBranch: "feat/x",
+    baseSha: ANCHOR, baseBranchMovedFrom: "feat/a", baseBranchMovedSha: moved,
+  }));
+  const asked: string[] = [];
+  const moves = await moveMergedBaseBranches(
+    {
+      candidates: () => registry.baseBranchMoveCandidates().filter((t) => t.id === "second-hop"),
+      move: (taskId, from, to, movedSha) => tasks.moveBaseBranch(taskId, from, to, movedSha),
+    },
+    {
+      ...fakeOrigin,
+      remoteBranch: async () => ({ ok: true, value: null }),
+      mergedInto: async () => merged("main"),
+      resolve: async () => ({ ok: true, baseBranch: null }),
+      carries: async (_root, anchor) => (asked.push(anchor), { ok: true, value: anchor === moved }),
+    },
+  );
+  assert.deepEqual(asked, [moved]);
+  assert.deepEqual(moves, [{ taskId: "second-hop", from: "feat/x", to: null }]);
+  assert.equal(registry.getTask("second-hop")?.baseBranchMovedFrom, "feat/x");
+  assert.equal(registry.getTask("second-hop")?.baseBranchMovedSha, "t".repeat(40));
 });

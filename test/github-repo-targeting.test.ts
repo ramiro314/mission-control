@@ -76,7 +76,7 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
     { fn: "latestMainCommit", argv: "UPDATE_GH_ARGS.mainCommit()", how: "explicit", why: "`repos/${CANONICAL_REPO}/commits/main`, through `runGh`" },
   ],
   "src/server/base-branch-move.ts": [
-    { fn: "mergedPullRequestBase", argv: "mergedPrListArgs(branch, repo.repo)", how: "resolver", why: "`--repo` from `checkoutGitHubRepository`; no gh call when it fails" },
+    { fn: "newestMergedPullRequest", argv: "mergedPrListArgs(branch, repo.repo)", how: "resolver", why: "`--repo` from `checkoutGitHubRepository`; no gh call when it fails" },
   ],
   "src/server/inspector/github.ts": [
     { fn: "authenticatedLogin", argv: '["api", "user", "--jq", ".login"]', how: "none", why: "the token's own login" },

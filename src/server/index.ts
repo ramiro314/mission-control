@@ -723,7 +723,7 @@ const stopPrPoller = startPrPoller(registry, prConflicts);
 // deleted it, so the merge watcher above counts the task's own merge there.
 const stopBaseBranchMover = startMergedBaseBranchMover({
   candidates: () => registry.baseBranchMoveCandidates(),
-  move: (id, from, to) => tasks.moveBaseBranch(id, from, to),
+  move: (id, from, to, movedSha) => tasks.moveBaseBranch(id, from, to, movedSha),
 });
 const stopInspector = startInspector(registry, {
   workflowGate: (prKey) => workflows.mergeGate(prKey),

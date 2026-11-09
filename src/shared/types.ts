@@ -2493,6 +2493,13 @@ export interface Task {
    * `baseBranch` is then the new base. Optional on the type for the reason `baseBranch` is.
    */
   baseBranchMovedFrom?: string | null;
+  /**
+   * The commit `origin/<baseBranch>` was at when a move put the base there, or null. It already
+   * holds the merge that caused the move, so the NEXT move down a stack checks the new base's
+   * merged pull request against it: a squash leaves `baseSha` out of that branch's history.
+   * Null for a task whose base never moved, and when the tip could not be read at the move.
+   */
+  baseBranchMovedSha?: string | null;
   /** Isolated Git worktree (realpath). Null before provisioning and for repo-less residents. */
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
@@ -2794,6 +2801,11 @@ export interface TaskSummary {
    * failed, so every other card's payload is what it was before claims existed.
    */
   claimWarnings?: TaskClaimWarning[];
+  /**
+   * `Task.baseBranch`, carried to the session footer's move base control. Absent when the task
+   * has none, so every other card's payload is unchanged.
+   */
+  baseBranch?: string;
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */

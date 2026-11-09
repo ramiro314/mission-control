@@ -637,6 +637,7 @@ import {
 } from "./actions.ts";
 import { driverClearFor, resetSession } from "./reset.ts";
 import { resolveBaseBranch } from "./git/remote-default.ts";
+import { moveBaseBranchNow } from "./base-branch-move.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
   invalidateReposCache,
@@ -10060,6 +10061,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     if (!t) return c.json({ error: "no such task" }, 404);
     return c.json({ ...t, sessionClosureRequested: taskHasWorktrees(t) && t.sessionId !== null });
+  });
+
+  // An in-flight task's base branch, moved by the operator to where its base branch's pull
+  // request merged. No body: the daemon reads the target from `gh` (`moveBaseBranchNow`).
+  // `movedTo` names the target even when it is origin's default, which the task stores as null.
+  app.post("/api/tasks/:id/base-branch/move", async (c) => {
+    const r = await moveBaseBranchNow({
+      get: (id) => registry.getTask(id),
+      refusal: (task) => tasks.operatorMoveRefusal(task),
+      move: (id, from, to, movedSha) => tasks.moveBaseBranch(id, from, to, movedSha),
+    }, c.req.param("id"));
+    return r.ok ? c.json({ ...r.task, movedTo: r.to }) : c.json({ error: r.error }, r.status);
   });
 
   app.delete("/api/tasks/:id", async (c) => {

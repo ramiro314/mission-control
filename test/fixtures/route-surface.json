@@ -271,6 +271,7 @@
   "POST /api/task-sources/:id/writeback/retry": "404 {\"error\":\"no such task source\"}",
   "POST /api/tasks": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"expected\\\": \\\"string\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"path\\\": [\\n      \\\"repoRoot\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  },\\n  {\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"expected\\\": \\\"string\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"path\\\": [\\n      \\\"intent\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  }\\n]\"}",
   "POST /api/tasks/:id/assign": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"expected\\\": \\\"string\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"path\\\": [\\n      \\\"sessionId\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  }\\n]\"}",
+  "POST /api/tasks/:id/base-branch/move": "404 {\"error\":\"no such task\"}",
   "POST /api/tasks/:id/cancel": "404 {\"error\":\"no such task\",\"ok\":false}",
   "POST /api/tasks/:id/complete": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"expected\\\": \\\"string\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"path\\\": [\\n      \\\"outcome\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  }\\n]\"}",
   "POST /api/tasks/:id/dispatch": "404 {\"error\":\"no such task\"}",

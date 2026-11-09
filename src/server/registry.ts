@@ -7922,6 +7922,7 @@ export class Registry extends EventEmitter {
               : taskRepoPrSummaries(t, primaryPr!, (repoRoot, prUrl) =>
                   this.repoPrFeedbackFor(sessionId, repoRoot, prUrl)),
           ...(t.claimWarnings && t.claimWarnings.length > 0 ? { claimWarnings: t.claimWarnings } : {}),
+          ...(t.baseBranch ? { baseBranch: t.baseBranch } : {}),
         }
       : null;
   }

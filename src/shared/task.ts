@@ -441,6 +441,31 @@ export const DISPATCH_TASK_KINDS = TASK_KINDS.filter(
   (kind) => taskKindCreator(kind) !== "resident-launch",
 );
 
+/**
+ * Why this task's base branch may not move to where it merged, or null when it may.
+ *
+ * One answer for the daemon's refusal (`TaskManager.moveBaseBranch`, which adds only its own
+ * assignment state) and the footer's control (`movableBaseBranch`), so the button is never
+ * offered on a click the route would reject. A backlog task changes its base by editing it; a
+ * cancelled or failed one may still move, because a merge can still complete it.
+ */
+export function baseBranchMoveRefusal(task: Pick<Task, "status" | "baseBranch">): string | null {
+  if (task.status === "backlog") return "task is in the backlog; edit its base branch instead";
+  if (task.status === "dispatching") return "task is still dispatching";
+  if (task.status === "done") return "task is done";
+  if (!task.baseBranch) return "task has no base branch to move";
+  return null;
+}
+
+/**
+ * The base branch the session footer offers to move, or null when it offers none: exactly the
+ * tasks `baseBranchMoveRefusal` allows. A move onto origin's default stores no base, so the
+ * offer ends there by itself. The daemon checks the merge.
+ */
+export function movableBaseBranch(task: Pick<Task, "status" | "baseBranch">): string | null {
+  return baseBranchMoveRefusal(task) === null ? task.baseBranch! : null;
+}
+
 /** The fields `taskRequeueRefusal` reads, so a `TaskSummary` answers as well as a `Task`. */
 export type RequeueCandidate = Pick<Task, "kind" | "status"> & {
   pipelineCommissionId?: Task["pipelineCommissionId"];
