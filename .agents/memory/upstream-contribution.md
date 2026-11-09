@@ -17,4 +17,6 @@ and body are the upstream PR's title and body (commit with `-F`, since an editor
 `#` headings), push it to `origin` only, and hand the human the work-machine commands: only that
 machine can push to `teamupstart` and open the PR. Review rounds amend the commit and
 force-push the `upstream/*` branch, the one force-push allowed. Record the open proposal through a
-"Fork feature changes" `#### Upstream candidate` block, never by editing the issue.
+"Fork feature changes" `#### Upstream candidate` block as soon as the human reports the upstream
+PR number, in an empty-commit record PR when no fork PR touching the feature is open, never by
+editing the issue.

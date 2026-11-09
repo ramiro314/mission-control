@@ -292,8 +292,9 @@ not the port's into the port commit, and hand off again with the SHA the branch 
 
 ## 6. Close the loop
 
-**While the upstream pull request is open**, record it in the feature's tracking issue. Do not
-edit the issue: the next fork pull request that touches the feature carries an
+**While the upstream pull request is open**, record it in the feature's tracking issue, so the
+fork status snapshot shows the proposal and the sync that brings it in can tie the upstream
+merge to the feature. Do not edit the issue: a fork pull request carries an
 `#### Upstream candidate` block in its "Fork feature changes" section
 ([format](fork/README.md#fork-feature-changes-in-a-pull-request)), which the refresh applies
 after it merges. The block replaces the whole section, so keep what still holds and add the
@@ -307,10 +308,23 @@ Proposed as teamupstart/mission-control#<n> (opened <date>): <the pieces it carr
 stays in the fork, and why.>
 ```
 
+Record it as soon as the human reports the upstream pull request's number, without waiting for
+a fork change to the feature, since the next paragraph asks for none. If a fork pull request
+that touches the feature is already open, add the block to it. Otherwise open a record pull
+request against fork `main` that carries only the record: an empty commit on a branch off
+`origin/main`, the `fork:<slug>` label, and a "Fork feature changes" section holding just this
+block. Like any fork pull request, it needs a pull-request grant.
+
+```sh
+git switch -c upstream-record/<slug> origin/main
+git commit --allow-empty -m "docs(fork): record the upstream proposal of <feature>"
+```
+
 Avoid changing the feature in the fork while the proposal is open, because every fork change is
 one more difference between the two versions. A fix that cannot wait goes into both: the fork
 pull request, and a review round (section 5) on the upstream one. If upstream closes the pull
-request without merging it, record that the same way, with the reason.
+request without merging it, record that the same way, with the reason, in another record pull
+request when no fork pull request touching the feature is open.
 
 **After upstream merges it**, the weekly sync brings it in, and upstream's version wins
 ([section 4 of the sync runbook](upstream-sync.md#4-resolve-conflicts-upstream-wins)). That
