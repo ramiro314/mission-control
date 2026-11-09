@@ -13,6 +13,8 @@ There are two readers:
 - **The upstream-sync agent** checks each new upstream commit against every active feature's
   contracts, assumptions and surfaces ([the upstream-sync runbook](../upstream-sync.md),
   section 2).
+- **The upstream-contribution agent** reads a feature's scope and "Upstream candidate" section
+  before proposing it upstream ([proposing a fork feature upstream](../upstream-contribution.md)).
 - **The human** reads the [Mission Control fork status](https://claude.ai/code/artifact/e4edd7ae-0dfa-4071-a6c3-27778ec4c949) Claude doc, the snapshot
   that `scripts/fork-report.mjs` renders (see [The status snapshot](#the-status-snapshot)).
 
@@ -61,6 +63,9 @@ sections, in this order, each a `###` heading so the refresh can replace it by n
 - **Upstream surfaces touched**: modules, routes, protocol types, database columns, MCP tools
   and UI views the feature changes.
 - **Fork-only files**: paths upstream does not have.
+- **Upstream candidate**: whether the feature, or which of its pieces, could go upstream, and
+  once proposed, the upstream pull request
+  ([proposing a fork feature upstream](../upstream-contribution.md#6-close-the-loop)).
 
 An issue may carry further `###` sections after these, such as "Why it was removed". The
 issue body holds no PR list: the PRs are whatever GitHub returns for the label.

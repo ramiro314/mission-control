@@ -23,3 +23,6 @@
   remote is already authorized and needs no separate confirmation.
 - [upstream-sync](upstream-sync.md) - this repository is a fork; bring in upstream commits only
   by following `docs/upstream-sync.md` (merge, upstream wins, ask before removing a fork feature).
+- [upstream-contribution](upstream-contribution.md) - propose a fork feature upstream only by
+  following `docs/upstream-contribution.md` (one squashed commit on `upstream/<slug>` off
+  `upstream/main`, pushed to `origin`; the work machine opens the PR).

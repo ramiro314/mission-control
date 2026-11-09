@@ -4,6 +4,8 @@ This repository is a fork. `ramiro314/mission-control` (`origin`) is upstream
 `teamupstart/mission-control` (`upstream`) plus a small, deliberate layer of fork changes. This
 runbook is how an agent brings upstream's new commits into the fork. It is the source of truth
 for every sync; the plan that set it up is [docs/plans/upstream-sync/plan.md](plans/upstream-sync/plan.md).
+Its counterpart, [proposing a fork feature upstream](upstream-contribution.md), sends a fork
+feature the other way, as one upstream pull request per feature.
 
 What the fork changes, feature by feature, is recorded in GitHub `fork-feature` tracking issues
 ([docs/fork/README.md](fork/README.md)). Every sync reads them before merging (section 2) and
@@ -208,9 +210,10 @@ issues (section 2); the highlights are:
 - **Wait for CI**: the workflow block that waits for pull-request CI and reads flakes in the
   Inspector (`src/shared/wait-for-ci.ts`).
 - **The fork-only `package.json` entries** in section 5.
-- **Fork-only docs**: this runbook, [docs/fork/README.md](fork/README.md),
-  `.agents/memory/upstream-sync.md`, and the plans under `docs/plans/` that upstream does not
-  have.
+- **Fork-only docs**: this runbook, [docs/upstream-contribution.md](upstream-contribution.md),
+  [docs/fork/README.md](fork/README.md), `.agents/memory/upstream-sync.md`,
+  `.agents/memory/upstream-contribution.md`, and the plans under `docs/plans/` that upstream
+  does not have.
 - **Fork tracking scripts**: `scripts/fork-delta.mjs`, `scripts/fork-report.mjs` and
   `scripts/fork-migrate.mjs`, with their tests.
 
@@ -223,8 +226,9 @@ which the refresh applies to the issues after the human merges the PR:
 
 1. **Statuses.** A `#### Status` block for each feature the sync changes: `superseded` for one
    upstream replaced, `removed` for one the sync removed, `upstreamed` for one upstream accepted
-   from the fork, with a note naming the upstream PR (for example "superseded by upstream
-   #1148"). The refresh adds the date and the sync PR's number when it closes the issue.
+   from the fork ([proposing a fork feature upstream](upstream-contribution.md#6-close-the-loop)),
+   with a note naming the upstream PR (for example "superseded by upstream #1148"). The refresh
+   adds the date and the sync PR's number when it closes the issue.
 2. **Moved surfaces.** For an active feature whose paths moved, a replacement
    `#### Upstream surfaces touched` block with the corrected text.
 3. **Bases.** Each block's `base:` line comes from `node scripts/fork-delta.mjs base <slug>
