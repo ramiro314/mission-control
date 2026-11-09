@@ -482,7 +482,7 @@ which the work machine fills:
 | `<title>` | `git log -1 --format=%s`. |
 | `<date>` | The date the handoff is written. |
 | `<verification>` | Each check section 3 ran, with its test and spec counts, as the commit body states them. |
-| `<fork-only paths>` | The paths in `$SCRATCH/fork-only-paths`, space-separated. |
+| `<fork-only paths>` | The paths in `$SCRATCH/fork-only-paths`, space-separated. When the file is empty, delete step 5's `git log` line instead: with no paths it lists every fork commit since the handoff, and step 5's label query still finds the feature's fixes. |
 | `<feature>` | The feature's short name, for the record commit's subject. |
 | `<pieces>`, `<what stays>` | What the port carries, and what stays fork-only and why ("Nothing stays fork-only." for the whole feature). |
 
@@ -675,11 +675,14 @@ In both cases, finish with a short report to the operator:
 ### Replace a handoff before it is published
 
 Sometimes the fork side must replace a handoff before the work machine has published it: the
-work task stopped on a SHA mismatch, for example, or the operator asked for a change. This
-machine then rebuilds the commit through sections 3 and 4, including the Upstream Port Review
-and fresh evidence under new `clientItemId`s, replaces the fork branch with a lease on the
-commit it replaces, and issues a new handoff naming the new commit. The operator discards the
-old handoff and stops its task if it is still running.
+work task stopped on a SHA mismatch, for example, or the operator asked for a change. First the
+operator discards the old handoff and stops its task if it is still running, so nothing can
+publish the old commit while the fork branch changes. This machine then rebuilds the commit
+through sections 3 and 4, including the Upstream Port Review and fresh evidence under new
+`clientItemId`s, checks that upstream still has no branch for it, replaces the fork branch with a
+lease on the commit it replaces, and issues a new handoff naming the new commit. If upstream
+already has the branch, the old task published it before it stopped: do not push, and send the
+change to the work machine as the last paragraph below says.
 
 ```sh
 git ls-remote upstream refs/heads/<slug>   # must print nothing: upstream has no branch yet
