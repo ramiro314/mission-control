@@ -372,10 +372,24 @@ Before completing the task, after the commit above, register this evidence with
   - `git show upstream/main:.github/PULL_REQUEST_TEMPLATE.md`.
   - The output of every check the body says was run.
 
-Each command output and each text artifact holds at most 64 KiB, and one call takes at most 48
-of them and 384 KiB of each kind (`WORKFLOW_TEXT_EVIDENCE_LIMITS` in `src/shared/workflow.ts`).
-A larger diff, such as the pilot's 131 KiB port, goes in as several text artifacts under the
-gitignored `.evidence/` directory, split by path with `git diff upstream/main...HEAD -- <paths>`.
+Each command output and each text artifact holds at most 64 KiB, so a larger diff, such as the
+pilot's 131 KiB port, goes in as several text artifacts under the gitignored `.evidence/`
+directory, split by path with `git diff upstream/main...HEAD -- <paths>`. The total is capped too,
+and per submission rather than per call: everything registered that applies to the submission,
+command outputs and artifacts together, may hold at most 48 items and 384 KiB
+(`WORKFLOW_TEXT_EVIDENCE_LIMITS` in `src/shared/workflow.ts`, enforced when the task is submitted
+in `src/server/workflows/store.ts`). Registering across several calls does not raise it, and a
+port over it fails at submission, not at registration. The Port Fidelity list fills it fastest,
+since the port, each pull request's merge diff and the fork's final hunks overlap. Keep it under
+the cap by registering only what the judge reads line by line:
+
+- each merge diff limited to the paths in `$SCRATCH/scope`, as section 2 applies it;
+- only this feature's hunks of `git diff upstream/main...origin/main`, never the whole diff;
+- `git diff --stat` instead of the full text for a path the port copies unchanged from fork
+  `main`, with a note saying so.
+
+After a repair, register the new text at the same path: a later registration of a path replaces
+the earlier one instead of adding to the total.
 
 The Personas' guidance lives in the daemon's database, not in this repository, and names the
 commands above. If a change to this runbook changes one of them, ask the operator before
