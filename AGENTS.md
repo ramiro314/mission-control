@@ -429,10 +429,13 @@ GitHub, one `fork-feature` tracking issue per feature, joined to its PRs by a `f
 [upstream-sync runbook](docs/upstream-sync.md), and a fork feature goes upstream only through
 the [upstream-contribution runbook](docs/upstream-contribution.md).
 
-**Standing force-push exception.** The upstream-contribution runbook's review rounds may
-force-push an `upstream/<slug>` port branch on `origin`, with a lease pinned to the port commit
-it replaces, without asking each time. It is the only exception to the force-push rule under
-Boundaries: no other branch, and never the `upstream` remote.
+**Standing force-push exception.** When the upstream-contribution runbook replaces a handoff
+before the work machine has published it
+([section 4](docs/upstream-contribution.md#replace-a-handoff-before-it-is-published)), the
+personal machine may force-push that `upstream/<slug>` port branch on `origin`, while upstream
+has no branch for it yet, with a lease pinned to the port commit it replaces, without asking
+each time. It is the only exception to the force-push rule under Boundaries: no other branch,
+never after the upstream branch exists, and never the `upstream` remote.
 
 A fork PR that adds or changes a feature carries the feature's `fork:<slug>` label and a
 "Fork feature changes" section in its body, in the format `docs/fork/README.md` describes. It

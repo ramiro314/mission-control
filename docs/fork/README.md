@@ -14,7 +14,8 @@ There are two readers:
   contracts, assumptions and surfaces ([the upstream-sync runbook](../upstream-sync.md),
   section 2).
 - **The upstream-contribution agent** reads a feature's scope and "Upstream candidate" section
-  before proposing it upstream ([proposing a fork feature upstream](../upstream-contribution.md)).
+  before porting it upstream, and after the handoff the work machine's task records the upstream
+  pull request there ([proposing a fork feature upstream](../upstream-contribution.md)).
 - **The human** reads the [Mission Control fork status](https://claude.ai/code/artifact/e4edd7ae-0dfa-4071-a6c3-27778ec4c949) Claude doc, the snapshot
   that `scripts/fork-report.mjs` renders (see [The status snapshot](#the-status-snapshot)).
 
@@ -64,7 +65,7 @@ sections, in this order, each a `###` heading so the refresh can replace it by n
   and UI views the feature changes.
 - **Fork-only files**: paths upstream does not have.
 - **Upstream candidate**: whether the feature, or which of its pieces, could go upstream, and
-  once proposed, the upstream pull request
+  once proposed, the upstream pull request, which the work machine's record pull request adds
   ([proposing a fork feature upstream](../upstream-contribution.md#6-close-the-loop)).
 
 An issue may carry further `###` sections after these, such as "Why it was removed". The

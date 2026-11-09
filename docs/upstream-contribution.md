@@ -7,11 +7,20 @@ this one sends a fork feature the other way. The remotes are the ones that runbo
 [Remotes](upstream-sync.md#remotes) table names: `origin` is the fork, and `upstream` is read
 only from this machine.
 
-The agent ports the feature and pushes a ready-to-open branch to the fork. It does not open the
-upstream pull request itself. Upstream accepts pull requests only from its collaborators
-(upstream's `CONTRIBUTING.md`), and only the operator's work machine holds a GitHub token
-authorized for the `teamupstart` organization's single sign-on. The work machine pushes the
-branch to `teamupstart` and opens the pull request (section 4).
+A port runs on two of the operator's machines, both signed in as the same GitHub user.
+Upstream accepts pull requests only from its collaborators (upstream's `CONTRIBUTING.md`), and
+only the work machine holds a GitHub token authorized for the `teamupstart` organization's
+single sign-on.
+
+- **The personal machine**, this checkout, runs sections 1 to 4: it scopes, ports and verifies
+  the feature, squashes it into one commit, passes the Upstream Port Review, and pushes the
+  branch `upstream/<slug>` to the fork. That push, with a handoff document, is the handoff.
+- **The work machine** also runs Mission Control. From the handoff on it owns everything else:
+  publishing the upstream pull request, its CI, review rounds and evidence, keeping the fork and
+  upstream in agreement, the fork's record pull request, and closing out (sections 5 and 6).
+
+After the handoff the personal machine never amends, rebases or pushes the port again, and it
+never watches the upstream pull request. Work resources are used only after the handoff.
 
 One upstream pull request carries one fork feature, as the feature's
 [tracking issue](fork/README.md#tracking-issue) records it. Two features are two pull requests,
@@ -140,7 +149,7 @@ npm ci
 ```
 
 `--no-track` keeps the branch from tracking `upstream/main`, which would aim a plain `git push`
-or `git pull` at `teamupstart` until the hand-off's `git push -u origin` (section 4) sets the
+or `git pull` at `teamupstart` until the handoff's `git push -u origin` (section 4) sets the
 fork as its upstream.
 
 `npm ci` is needed because upstream's lockfile is not the fork's; the fork's `node_modules`
@@ -340,6 +349,9 @@ feature as fork `main` holds it, and Port Handoff Judge (`74ab25cd-b257-466a-892
 which judges the commit's shape and message. A failure returns the task for changes. It ends
 without a pull request, since the upstream one is opened from the work machine.
 
+The review runs here, on the personal machine, before the handoff. The work machine does not
+rerun it, after the handoff or for a review round (section 5).
+
 The checks run `make check` and `make lint` in the check worktree, which reinstall dependencies
 there first, because the port's upstream lockfile differs from the fork's.
 
@@ -431,97 +443,295 @@ updating the Personas, in the Library or through `PATCH /api/personas/:id` with 
 
 ### Push and hand off
 
+The handoff is two things: the push of `upstream/<slug>` to the fork, and a handoff document
+the operator dispatches on the work machine. From then on the work machine owns the port, as the
+opening of this runbook says. The one exception is a handoff
+[replaced before it is published](#replace-a-handoff-before-it-is-published).
+
 Push the branch to the fork, and only to the fork, but not in the task's first turn. A Mission
-Control ship task forbids pushing then: commit locally, register the evidence, report, and end
-the turn. Run the push only when Foreman or the workflow later instructs it:
+Control ship task forbids pushing then: commit locally, register the evidence, write the handoff
+document, report, and end the turn. Run the push only when Foreman or the workflow later
+instructs it, and check that the fork holds the commit the handoff names:
 
 ```sh
 git push -u origin upstream/<slug>
+test "$(git rev-parse origin/upstream/<slug>)" = <handoff sha> && echo sha-ok
 ```
 
 Never push to the `upstream` remote, and never open the upstream pull request from this
-machine. Report to the human the branch, the scope, the prerequisites and how each was treated,
-and the commands for the work machine with `<slug>` filled in. They run once the push has
-happened, in a clone of `teamupstart/mission-control` whose `origin` is `teamupstart`; the fork
-is public, so the fetch needs no credentials:
+machine.
+
+Fill in the template below once the commit and its evidence are final. Because the push waits
+for an instruction, the handoff is written first and names the SHA the push will send; if a
+repair round changes the commit before the push, fill it in again. Write it outside the checkout,
+as `$SCRATCH/upstream-handoff-<slug>.md`, and hand it to the operator with the push, in the
+report that also gives the branch, the scope, and the prerequisites with how each was treated.
+The operator dispatches it on the work machine once the push has happened. Switching this
+checkout back to a fork branch needs `npm ci` again.
+
+Fill in every placeholder except the three in its step 6 (`<n>`, `<opened>` and `<base>`),
+which the work machine fills:
+
+| Placeholder | Fill in with |
+| --- | --- |
+| `<slug>`, `<issue>` | The feature's slug and its tracking issue's number. |
+| `<fork pull requests>` | Each in-scope fork pull request, as `ramiro314/mission-control#<n>`. |
+| `<handoff sha>` | `git rev-parse HEAD`: the full SHA the push sends. |
+| `<upstream base sha>` | `git rev-parse upstream/main`, after this section's fetch. |
+| `<fork main sha>` | `git rev-parse origin/main`. |
+| `<title>` | `git log -1 --format=%s`. |
+| `<date>` | The date the handoff is written. |
+| `<verification>` | Each check section 3 ran, with its test and spec counts, as the commit body states them. |
+| `<fork-only paths>` | The paths in `$SCRATCH/fork-only-paths`, space-separated. When the file is empty, delete step 5's `git log` line instead: with no paths it lists every fork commit since the handoff, and step 5's label query still finds the feature's fixes. |
+| `<feature>` | The feature's short name, for the record commit's subject. |
+| `<pieces>`, `<what stays>` | What the port carries, and what stays fork-only and why ("Nothing stays fork-only." for the whole feature). |
+
+The template is the pilot's handoff (2026-11-09) with its values replaced. Its Authorization
+section is part of the template: it lists exactly what the work-machine task may and may not do,
+and stays as written.
+
+````markdown
+# Upstream port handoff: <slug>
+
+Dispatch this as a task in Mission Control on the work machine, attached to a checkout of
+`teamupstart/mission-control`. If a checkout of the fork `ramiro314/mission-control` is also
+on that machine, attach it too. Otherwise the task clones the fork when step 6 needs it.
+
+## What this is
+
+The operator's personal machine ported the fork feature `fork:<slug>` to upstream. It reviewed
+the port and committed it as one commit, then pushed that commit to the fork as the handoff.
+**From the moment this task starts, it owns the upstream port.** The personal machine will not
+amend, rebase or push the port again, and it is not watching the upstream pull request.
+Everything left is yours: publishing, CI, review, the fork-side record, and closing out.
+
+| Field | Value |
+| --- | --- |
+| Feature | `fork:<slug>`, tracking issue `ramiro314/mission-control#<issue>` |
+| Fork pull requests it ports | <fork pull requests> |
+| Handoff ref (frozen) | `upstream/<slug>` on `https://github.com/ramiro314/mission-control.git` |
+| Handoff commit | `<handoff sha>` |
+| Built on | `teamupstart/mission-control` `main` at `<upstream base sha>` |
+| Fork `main` at handoff | `<fork main sha>` |
+| Upstream branch | `<slug>` |
+| Pull request title | `<title>` |
+| Handoff written | <date> |
+
+## Authorization
+
+The operator, who wrote this handoff, grants this task the following for this port only:
+
+- In `teamupstart/mission-control`: push the branch `<slug>`, open its one pull request, push
+  follow-up commits to it, edit its title and description, reply to and resolve review threads,
+  and close or link the issues it resolves.
+- In `ramiro314/mission-control`: open a record pull request for this feature on a new branch
+  off `main`, add the `fork:<slug>` label to it, and merge it once its CI passes.
+
+The grant does not cover any of the following:
+
+- merging the upstream pull request, which upstream's maintainers do;
+- force-pushing over someone else's commit;
+- pushing to the fork's `main` or to `upstream/<slug>`;
+- editing a fork tracking issue by hand;
+- anything outside this port.
+
+If Mission Control still asks for a pull-request grant, the operator gives it. That is
+expected, not a reason to stop.
+
+## Read first
+
+- Upstream's `AGENTS.md`, `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md`, in the
+  `teamupstart/mission-control` checkout. They govern every commit and reply on the upstream
+  side.
+- From the fork, read the runbook and the record format. You don't need a checkout for that:
+  `git fetch https://github.com/ramiro314/mission-control.git main`, then
+  `git show FETCH_HEAD:docs/upstream-contribution.md` (sections 5 and 6) and
+  `git show FETCH_HEAD:docs/fork/README.md` ("Fork feature changes" format).
+  Ignore its personal-machine steps: sections 1 to 4 already happened.
+
+## 1. Verify the handoff
 
 ```sh
+git remote get-url origin                     # teamupstart/mission-control
+gh auth status                                # same GitHub user, SSO-authorized for teamupstart
+git fetch origin
 git fetch https://github.com/ramiro314/mission-control.git upstream/<slug>
-git push origin FETCH_HEAD:refs/heads/<slug>
-gh pr create --repo teamupstart/mission-control --base main --head <slug> \
-  --title "$(git log -1 --format=%s FETCH_HEAD)" --body "$(git log -1 --format=%b FETCH_HEAD)"
+test "$(git rev-parse FETCH_HEAD)" = <handoff sha> && echo sha-ok
+git rev-list --count <upstream base sha>..FETCH_HEAD   # 1
+git merge-tree --write-tree origin/main FETCH_HEAD >/dev/null && echo merges-clean   # git >= 2.38
+git ls-remote origin refs/heads/<slug>                                     # empty
+gh pr list --repo teamupstart/mission-control --head <slug> --state all
 ```
 
-The human reports the upstream pull request's number back, which section 6 records. Switching
-this checkout back to a fork branch needs `npm ci` again.
+Act on the result:
+
+- **The handoff ref is missing.** The fork push has not happened yet. Stop and tell the
+  operator.
+- **The SHA differs.** Stop. A handoff only transfers the commit it names.
+- **The branch or a pull request already exists.** Stop and report it. Do not overwrite it.
+- **`main` moved and the commit no longer merges cleanly.** You own the port, so resolve it:
+  - create the branch from the handoff commit;
+  - rebase it onto `origin/main`, keeping upstream's newer code and this feature's lines;
+  - rerun the checks in step 3;
+  - say so in the pull request's verification section.
+
+## 2. Publish
+
+```sh
+git switch --no-track -c <slug> FETCH_HEAD   # or the rebased branch
+git push -u origin <slug>
+gh pr create --repo teamupstart/mission-control --base main --head <slug> \
+  --title "$(git log -1 --format=%s)" --body "$(git log -1 --format=%b)"
+```
+
+The commit body is the pull request description, already written to upstream's template, so
+`--body` keeps its Markdown headings. Check that `## For Humans` is the first line of the
+published body.
+
+## 3. Own CI
+
+Watch `gh pr checks --watch`. Any failure is yours to resolve:
+
+- **Caused by the port:** fix it in a new commit on the branch.
+- **Also fails on a clean `origin/main`:** it's upstream's own. Leave it, and record it under
+  the description's Known gaps.
+
+Run locally only what upstream's `AGENTS.md` asks for: the files you change, typecheck, lint,
+and build, smoke and the e2e spec when those surfaces change. CI runs the rest.
+
+The handoff commit already passed, on the personal machine at the base above:
+<verification>
+
+## 4. Own review
+
+Treat every review comment and thread as yours to resolve:
+
+1. Fix it in a new commit, following upstream's conventions. Upstream squash-merges, so
+   follow-up commits are fine and the history does not need rewriting.
+2. Rerun the affected checks.
+3. Reply on the thread with what changed.
+4. Keep the description true. Update its verification and Known gaps whenever a fix changes
+   them (`gh pr edit --body-file`).
+5. Attach evidence the way upstream's `AGENTS.md` says (pull request attachments, never
+   committed).
+
+When a review asks for something that changes the feature's behavior contract, rather than its
+implementation, ask the operator first. The fork has the same feature, and the two should not
+drift silently.
+
+## 5. Keep the fork and upstream in agreement
+
+While the pull request is open, check now and then whether the fork changed the feature:
+
+```sh
+git fetch https://github.com/ramiro314/mission-control.git main
+git log --oneline <fork main sha>..FETCH_HEAD -- <fork-only paths>
+gh pr list --repo ramiro314/mission-control --label fork:<slug> --state merged
+```
+
+A fork fix to the feature belongs in this pull request too. Port that fix's own hunks, and
+nothing from other fork features.
+
+## 6. Record the proposal in the fork
+
+As soon as the upstream pull request has a number, open the record pull request described in
+section 6 of the fork's runbook, from a fork checkout:
+
+```sh
+git switch -c upstream-record/<slug> origin/main   # in the fork checkout
+git commit --allow-empty -m "docs(fork): record the upstream proposal of <feature>"
+```
+
+Its body has a "Fork feature changes" section holding this, with the base read on the fork's
+`main` (`node scripts/fork-delta.mjs base <slug> "Upstream candidate"`):
+
+```markdown
+### fork:<slug>
+#### Upstream candidate
+base: <base>
+Proposed as teamupstart/mission-control#<n> (opened <opened>): <pieces>. <what stays>
+```
+
+Label it `fork:<slug>`, push it, open it against the fork's `main`, and merge it once its CI
+passes. Never edit the tracking issue yourself. The fork's daily refresh applies the block.
+
+## 7. Close out
+
+- **Upstream merges it:**
+  - close or confirm closed any upstream issues it resolves;
+  - delete the upstream branch if upstream does not do that automatically.
+
+  You don't record "upstreamed" in the fork. The fork's weekly upstream sync does that when it
+  brings the merge in.
+- **Upstream closes it without merging:** open another fork record pull request, as in step 6,
+  with the reason in its `Upstream candidate` block.
+
+In both cases, finish with a short report to the operator:
+- the upstream pull request number and its outcome;
+- the fork record pull requests opened;
+- anything still open.
+````
+
+### Replace a handoff before it is published
+
+Sometimes the fork side must replace a handoff before the work machine has published it: the
+work task stopped on a SHA mismatch, for example, or the operator asked for a change. First the
+operator discards the old handoff and stops its task if it is still running, so nothing can
+publish the old commit while the fork branch changes. This machine then rebuilds the commit
+through sections 3 and 4, including the Upstream Port Review and fresh evidence under new
+`clientItemId`s, checks that upstream still has no branch for it, replaces the fork branch with a
+lease on the commit it replaces, and issues a new handoff naming the new commit. If upstream
+already has the branch, the old task published it before it stopped: do not push, and send the
+change to the work machine as the last paragraph below says.
+
+```sh
+git ls-remote upstream refs/heads/<slug>   # must print nothing: upstream has no branch yet
+git push --force-with-lease="refs/heads/upstream/<slug>:<replaced sha>" origin HEAD:refs/heads/upstream/<slug>
+```
+
+The lease names the replaced commit explicitly, because a bare `--force-with-lease` compares
+against whatever the remote-tracking ref holds after the last fetch. The push names `HEAD` as
+its source, because the bare name `upstream/<slug>` resolves to a `refs/remotes/upstream/<slug>`
+ref whenever no local branch of that name exists. Under Mission Control this push waits for
+Foreman or the workflow too. It is the force-push the standing exception in the
+[Fork section of `AGENTS.md`](../AGENTS.md#fork) allows, and the only one: never force-push fork
+`main`, a fork feature branch, or a sync branch.
+
+Once upstream's branch `<slug>` exists, the fork's `upstream/<slug>` is frozen at the handoff
+commit and never pushed again, even with a lease. A change the operator wants after that goes to
+the work machine, as a new commit on the upstream pull request (section 5).
 
 ## 5. Review rounds
 
-Address upstream review by amending the one port commit, not by adding commits, so the work
-machine always pushes one commit whose message is the current title and body. Read the review
-with `gh pr view <n> --repo teamupstart/mission-control --comments`, or from what the human
-passes on when that read is refused.
+Review rounds run on the work machine, in the task the handoff started (its steps 3 to 5), and
+follow upstream's `AGENTS.md` rather than this repository's. Until 2026-11-09 this machine ran
+them by amending the port and force-pushing both branches; that flow is gone, because the work
+machine owns the upstream branch after the handoff. Read the review with
+`gh pr view <n> --repo teamupstart/mission-control --comments`.
 
-A round usually runs days later, in another session or checkout, so start it from the fork's
-copy of the port branch, which every hand-off pushes. If a local `upstream/<slug>`
-already exists, `git log origin/upstream/<slug>..upstream/<slug>` must print nothing first:
-`switch -C` resets the local branch to the fork's copy.
+- **A review fix is an ordinary new commit** on the upstream branch `<slug>`. Upstream
+  squash-merges, so follow-up commits are fine and the pushed history is never rewritten: no
+  amend, no rebase, no force-push. Rerun the checks the fix affects, as upstream's `AGENTS.md`
+  asks, and reply on the thread with what changed.
+- **The pull request description stays true.** It began as the handoff commit's body. When a
+  fix changes its verification or known gaps, edit it with `gh pr edit <n> --body-file`.
+- **A maintainer's commit on the branch stays.** Pull it before pushing, and never push over it.
+- **A change to the feature's behavior contract**, as opposed to its implementation, is asked
+  of the operator first. The fork has the same feature, and the two should not drift silently.
+- **A fork fix to the feature goes into both**: the fork pull request that makes it, and a new
+  commit on the upstream pull request that carries that fix's own hunks and nothing from other
+  fork features. The handoff's step 5 watches the fork for one.
 
-```sh
-git fetch origin
-PREV=$(git rev-parse origin/upstream/<slug>)   # the port commit the work machine last pushed
-git switch -C upstream/<slug> origin/upstream/<slug>
-npm ci
-git log -1 --format=%B > "$SCRATCH/upstream-<slug>.msg"   # the current title and body
-```
-
-Make the change, run the section 3 checks it affects, update the message file, then:
-
-```sh
-git add -A
-git commit --amend --cleanup=whitespace -F "$SCRATCH/upstream-<slug>.msg"
-git fetch upstream
-git rebase upstream/main            # only when upstream moved or the pull request conflicts
-git push --force-with-lease="refs/heads/upstream/<slug>:$PREV" origin HEAD:refs/heads/upstream/<slug>
-```
-
-The push names `HEAD` as its source rather than the bare name `upstream/<slug>`, which resolves
-to the `refs/remotes/upstream/<slug>` ref that `git fetch upstream` refreshes whenever no local
-branch of that name exists, and would send `teamupstart`'s commit instead of the amended port.
-
-Update the message file whenever the change alters what the body says (verification, known
-gaps). Force-pushing is allowed for `upstream/*` port branches on `origin` and nothing else,
-as the standing exception in the [Fork section of `AGENTS.md`](../AGENTS.md#fork) records
-against its force-push rule. Never force-push fork `main`, a fork feature branch, or a sync
-branch. Under Mission Control the push waits for an instruction exactly as in section 4: register
-fresh evidence for the amended commit, report, and push when Foreman or the workflow says so.
-
-Then give the human the work-machine commands again, with `<previous sha>` filled in as the
-full `$PREV`:
-
-```sh
-git fetch https://github.com/ramiro314/mission-control.git upstream/<slug>
-git push --force-with-lease=refs/heads/<slug>:<previous sha> origin FETCH_HEAD:refs/heads/<slug>
-gh pr edit <slug> --repo teamupstart/mission-control \
-  --title "$(git log -1 --format=%s FETCH_HEAD)" --body "$(git log -1 --format=%b FETCH_HEAD)"
-```
-
-Both leases name the commit expected on the remote explicitly. A bare `--force-with-lease`
-compares against the clone's remote-tracking ref instead, and on the work machine, the
-operator's everyday `teamupstart` checkout, any `git fetch` or `git pull` between rounds moves
-that ref onto a maintainer's commit, so the lease would pass and overwrite it.
-
-If the work-machine lease refuses the push, the upstream branch no longer holds the last port
-commit: someone else pushed to it, for example a maintainer's suggested change, or the previous
-round's commands were never run. Do not force past it. Read the branch with
-`git fetch upstream <slug>` and `git log upstream/main..FETCH_HEAD`, bring any commit that is
-not the port's into the port commit, and hand off again with the SHA the branch holds now.
+Upstream's CI and its maintainers' review check the rounds; the Upstream Port Review does not
+([section 4](#review-the-upstream-port-review-workflow)). Evidence goes on the upstream pull
+request as upstream's `AGENTS.md` says (attachments, never committed). The fork's `upstream/<slug>` keeps the handoff commit, so the
+upstream pull request, not the fork branch, holds the port's current state.
 
 ## 6. Close the loop
 
-**While the upstream pull request is open**, record it in the feature's tracking issue, so the
-fork status snapshot shows the proposal and the sync that brings it in can tie the upstream
-merge to the feature. Do not edit the issue: a fork pull request carries an
+**While the upstream pull request is open**, the work machine records it in the feature's
+tracking issue, so the fork status snapshot shows the proposal and the sync that brings it in can
+tie the upstream merge to the feature. Nobody edits the issue: a fork pull request carries an
 `#### Upstream candidate` block in its "Fork feature changes" section
 ([format](fork/README.md#fork-feature-changes-in-a-pull-request)), which the refresh applies
 after it merges. The block replaces the whole section, so keep what still holds and add the
@@ -535,12 +745,13 @@ Proposed as teamupstart/mission-control#<n> (opened <date>): <the pieces it carr
 stays in the fork, and why.>
 ```
 
-Record it as soon as the human reports the upstream pull request's number, without waiting for
-a fork change to the feature, since the next paragraph asks for none. If a fork pull request
-that touches the feature is already open, add the block to it. Otherwise open a record pull
-request against fork `main` that carries only the record: an empty commit on a branch off
-`origin/main`, the `fork:<slug>` label, and a "Fork feature changes" section holding just this
-block. Like any fork pull request, it needs a pull-request grant.
+The work machine records it as soon as the upstream pull request has a number, without waiting
+for a fork change to the feature, since the next paragraph asks for none. From a fork checkout,
+it opens a record pull request against fork `main` that carries only the record: an empty commit
+on a branch off `origin/main`, the `fork:<slug>` label, and a "Fork feature changes" section
+holding just this block. It merges the record pull request once its CI passes, as the handoff's
+Authorization grants (handoff step 6). A fork pull request that later writes its own
+`Upstream candidate` block for the feature keeps the proposal in it.
 
 ```sh
 git switch -c upstream-record/<slug> origin/main
@@ -549,9 +760,9 @@ git commit --allow-empty -m "docs(fork): record the upstream proposal of <featur
 
 Avoid changing the feature in the fork while the proposal is open, because every fork change is
 one more difference between the two versions. A fix that cannot wait goes into both: the fork
-pull request, and a review round (section 5) on the upstream one. If upstream closes the pull
-request without merging it, record that the same way, with the reason, in another record pull
-request when no fork pull request touching the feature is open.
+pull request, and a new commit on the upstream one, which the work machine ports
+([section 5](#5-review-rounds)). If upstream closes the pull request without merging it, the work
+machine records that the same way, with the reason, in another record pull request.
 
 **After upstream merges it**, the weekly sync brings it in, and upstream's version wins
 ([section 4 of the sync runbook](upstream-sync.md#4-resolve-conflicts-upstream-wins)). That
