@@ -108,7 +108,14 @@ whether to propose it upstream first, and do not fold it into this pull request.
 ## 2. Port the final state
 
 Branch from upstream, never from fork `main`. Fork `main` is about 1,276 commits ahead of
-upstream (2026-11-08), so a branch from it would propose the whole fork:
+upstream (2026-11-08), so a branch from it would propose the whole fork.
+
+This runbook is fork-only, so it is not on disk once the switch below runs. Read the rest of it
+from the fork's ref instead, including after a context summary or in a later review round:
+
+```sh
+git show origin/main:docs/upstream-contribution.md
+```
 
 ```sh
 git switch -c upstream/<slug> upstream/main   # the upstream/main section 1 fetched
