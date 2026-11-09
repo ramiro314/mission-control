@@ -351,14 +351,23 @@ it at `upstream/main`. The judges therefore read only registered evidence, and f
 request for the exact missing command when an item is absent or truncated.
 
 Before completing the task, after the commit above, register this evidence with
-`submit_workflow_evidence`, as command outputs with their exit codes or as text artifacts:
+`submit_workflow_evidence`, as command outputs with their exit codes or as text artifacts. Run
+each command from the repository root, since a `-- .` pathspec run from a subdirectory covers
+only that subdirectory, and wrap it in `bash -o pipefail -c '...'` when you record its exit
+code, since zsh does not set `PIPESTATUS`:
 
 - **Port Fidelity Judge**
   - The port: `git diff upstream/main...HEAD`.
   - The fork reference: each in-scope pull request's `git diff <merge>^1 <merge>`, plus the later
     fork changes to the feature's files (`git diff <last merge> origin/main -- <fork-only paths>`,
     and this feature's hunks of `git diff upstream/main...origin/main -- <changed upstream path>`).
-  - The scope: `node scripts/fork-delta.mjs show <slug>`.
+  - The scope: `fork-delta.mjs show <slug>`, run from fork `main`'s copy. The script is
+    fork-only, so the port branch does not have it, and copying the file alone fails because it
+    imports `scripts/checkout-repository.mjs`, which imports `src/shared/`:
+
+    ```sh
+    T=$(mktemp -d); git archive origin/main scripts src/shared | tar -x -C "$T"; node "$T/scripts/fork-delta.mjs" show <slug>
+    ```
   - The prerequisites from section 1, with each one's treatment.
 - **Port Handoff Judge**
   - `git rev-parse --abbrev-ref HEAD`.
@@ -375,11 +384,25 @@ Before completing the task, after the commit above, register this evidence with
 Each command output and each text artifact holds at most 64 KiB, so a larger diff, such as the
 pilot's 131 KiB port, goes in as several text artifacts under the gitignored `.evidence/`
 directory, split by path with `git diff upstream/main...HEAD -- <paths>`. The total is capped too,
-and per submission rather than per call: everything registered that applies to the submission,
-command outputs and artifacts together, may hold at most 48 items and 384 KiB
-(`WORKFLOW_TEXT_EVIDENCE_LIMITS` in `src/shared/workflow.ts`, enforced when the task is submitted
-in `src/server/workflows/store.ts`). Registering across several calls does not raise it, and a
-port over it fails at submission, not at registration. The Port Fidelity list fills it fastest,
+command outputs and artifacts together, at 48 items and 384 KiB (`WORKFLOW_TEXT_EVIDENCE_LIMITS`
+in `src/shared/workflow.ts`), and the cap is enforced at registration. Every
+`submit_workflow_evidence` call goes through `stageWorkflowEvidence` in
+`src/server/workflows/store.ts`, which adds the call's items to every item already staged under
+another `clientItemId`. When the total is over a limit it refuses the whole call with a 409 and
+stages nothing from it: `artifact_count` past 48 items, and `artifact_aggregate` past 384 KiB,
+which is the refusal the pilot hit. Registering across several calls therefore does not raise the
+cap. The submission counts again what applies to it, and can refuse a submission whose
+registrations all passed when that count takes in:
+
+- an item registered again unchanged under its existing ID, as the repair advice below allows,
+  because a call that only does that returns before the limit check;
+- an item an earlier submission of the same evidence group reserved;
+- an item a retained coverage claim still links.
+
+Carried items never refuse one: they compete last for what is left, and
+what does not fit is dropped and recorded as `evidence_carry_truncated`. The freeze in
+`captureSubmissionTextArtifacts` (`src/server/workflows/images.ts`) re-counts the same reserved
+bytes, so it adds no refusal of its own. The Port Fidelity list fills the cap fastest,
 since the port, each pull request's merge diff and the fork's final hunks overlap. Keep it under
 the cap by registering only what the judge reads line by line:
 
@@ -388,8 +411,18 @@ the cap by registering only what the judge reads line by line:
 - `git diff --stat` instead of the full text for a path the port copies unchanged from fork
   `main`, with a note saying so.
 
-After a repair, register the new text at the same path: a later registration of a path replaces
-the earlier one instead of adding to the total.
+After a repair or a rebase, register every changed item under a new `clientItemId`, for example
+with a `-<short sha>` suffix. Staged items are replaced by `clientItemId`, not by path. Once a
+submission has frozen an item, registering different content under its ID is refused with a 409
+`evidence_reserved`, and a new caption counts as different content, because
+`stageWorkflowEvidence` compares the caption along with the bytes. Unchanged content can be
+registered again under its existing ID, which returns it to the tray for the next submission. A
+new ID adds to the tray rather than replacing anything: an earlier staged item at the same path
+keeps counting toward the cap at registration, although a submission drops it once a later
+registration of that path has changed its bytes. A repair round's submission also carries
+forward the frozen items it did not supply again, as the carry-forward rules in
+[Workflows](workflows.md) describe, so items describing an older commit can appear beside the
+new ones. Put the commit SHA in every caption.
 
 The Personas' guidance lives in the daemon's database, not in this repository, and names the
 commands above. If a change to this runbook changes one of them, ask the operator before
