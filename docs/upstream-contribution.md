@@ -19,8 +19,18 @@ each reviewed and merged on its own.
 
 ## 1. Pick the scope
 
-Start from the feature's tracking issue, read as the refresh will see it once every merged fork
-pull request has applied:
+Fetch both remotes first. Every command from here on reads `origin/main`, `upstream/main` or a
+fork pull request's merge commit, and a stale checkout gets them wrong without an error: a
+recently merged feature pull request has no local merge commit, and a file upstream added since
+the last fetch looks fork-only.
+
+```sh
+git fetch origin
+git fetch upstream
+```
+
+Then read the feature's tracking issue as the refresh will see it once every merged fork pull
+request has applied:
 
 ```sh
 gh issue list --repo ramiro314/mission-control --label fork-feature --state open --limit 100
@@ -44,7 +54,7 @@ gh pr list --repo ramiro314/mission-control --label fork:<slug> --state merged -
   --json number,title,mergedAt --jq 'sort_by(.mergedAt)[] | "#\(.number) \(.title)"'
 gh pr list --repo ramiro314/mission-control --label fork:<slug> --state merged --limit 100 \
   --json mergeCommit --jq '.[].mergeCommit.oid' | while read -r m; do
-  git diff --name-only "$m^1" "$m"
+  git diff --name-only "$m^1" "$m" || echo "STOP: merge commit $m is missing; fetch origin" >&2
 done | sort -u | while read -r p; do
   git cat-file -e "origin/main:$p" 2>/dev/null || continue
   git cat-file -e "upstream/main:$p" 2>/dev/null && echo "changed   $p" || echo "fork-only $p"
@@ -101,9 +111,7 @@ Branch from upstream, never from fork `main`. Fork `main` is about 1,276 commits
 upstream (2026-11-08), so a branch from it would propose the whole fork:
 
 ```sh
-git fetch origin
-git fetch upstream
-git switch -c upstream/<slug> upstream/main
+git switch -c upstream/<slug> upstream/main   # the upstream/main section 1 fetched
 npm ci
 ```
 
