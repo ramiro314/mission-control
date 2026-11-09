@@ -388,12 +388,18 @@ command outputs and artifacts together, at 48 items and 384 KiB (`WORKFLOW_TEXT_
 in `src/shared/workflow.ts`), and the cap is enforced at registration. Every
 `submit_workflow_evidence` call goes through `stageWorkflowEvidence` in
 `src/server/workflows/store.ts`, which adds the call's items to every item already staged under
-another `clientItemId`. When the total is over the cap it refuses the whole call with a 409
-`artifact_aggregate` and stages nothing from it, which is the refusal the pilot hit. Registering
-across several calls therefore does not raise the cap. The submission counts again what applies
-to it, which can also take in an item an earlier submission of the same evidence group reserved,
-or one a retained coverage claim still links, so in those cases it can refuse a submission whose
-registrations all passed. Carried items never refuse one: they compete last for what is left, and
+another `clientItemId`. When the total is over a limit it refuses the whole call with a 409 and
+stages nothing from it: `artifact_count` past 48 items, and `artifact_aggregate` past 384 KiB,
+which is the refusal the pilot hit. Registering across several calls therefore does not raise the
+cap. The submission counts again what applies to it, and can refuse a submission whose
+registrations all passed when that count takes in:
+
+- an item registered again unchanged under its existing ID, as the repair advice below allows,
+  because a call that only does that returns before the limit check;
+- an item an earlier submission of the same evidence group reserved;
+- an item a retained coverage claim still links.
+
+Carried items never refuse one: they compete last for what is left, and
 what does not fit is dropped and recorded as `evidence_carry_truncated`. The freeze in
 `captureSubmissionTextArtifacts` (`src/server/workflows/images.ts`) re-counts the same reserved
 bytes, so it adds no refusal of its own. The Port Fidelity list fills the cap fastest,
