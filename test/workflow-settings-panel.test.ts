@@ -173,44 +173,13 @@ test("every control the search index points at is on the panel", () => {
   }
 });
 
-test("the settings panel offers one dispatch default per task kind", () => {
-  const html = renderToStaticMarkup(
-    withOverlayHost(createElement(WorkflowSettingsPanel, {
-      state: state({
-        ...ANSWERED,
-        config: { ...ANSWERED.config, kindWorkflowDefaults: { bugfix: "workflow-review", scout: null } },
-      }),
-      onNavigate: () => {},
-      foremanEnabled: true,
-      workflows: [{
-        id: "workflow-review",
-        name: "Release review",
-        description: "",
-        draftRevision: 2,
-        currentVersionId: "version-2",
-        publishedVersion: 2,
-        archivedAt: null,
-        updatedAt: 1,
-        errorCount: 0,
-        warningCount: 0,
-        nodeCount: 3,
-        personaCount: 1,
-        builtin: false,
-      }],
-    })),
-  );
-  assert.match(html, /Dispatch defaults/);
-  for (const kind of ["ship", "bugfix", "plan", "shape", "scout", "chat"]) {
-    assert.match(html, new RegExp(`aria-label="Default after-work Workflow for ${kind} tasks"`));
-  }
-  assert.doesNotMatch(html, /for pipeline tasks/, "Conductor owns what runs after a pipeline");
-  assert.match(html, /Release review · v2/);
-  // A row with nothing stored says what it resolves to; the built-in catalog is not in this
-  // fixture, so a built-in Workflow is named as unavailable and a None built-in as None.
-  assert.match(html, /Built-in default \(unavailable Workflow\)/);
-  assert.match(html, /Built-in default \(None\)/);
-  // The selected option of each row is the stored choice.
-  assert.match(html, /<option value="workflow-review" selected="">Release review · v2<\/option>/);
+// The per-kind rows moved to Settings › Tasks (`test/task-settings-panel.test.ts`). One home
+// only: a second copy here would be a second editor of the same map.
+test("the Workflows panel no longer carries the per-kind dispatch defaults", () => {
+  const html = render(ANSWERED);
+  assert.doesNotMatch(html, /Dispatch defaults/);
+  assert.doesNotMatch(html, /Default after-work Workflow for/);
+  assert.doesNotMatch(html, /data-anchor="workflows\/dispatch-default"/);
 });
 
 // The anchors have to survive the pre-poll render too: `settings-sidebar-render.test.ts`
@@ -645,7 +614,6 @@ test("policy sits in the control column and every live reading in the readings c
   const controls = html.slice(boundary + CONTROLS.length);
 
   for (const anchor of [
-    "workflows/dispatch-default",
     "workflows/live-delivery",
     "workflows/checks",
     "workflows/allowlist",

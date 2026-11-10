@@ -770,7 +770,7 @@ export function isShippingTaskKind(kind: TaskKind | null | undefined): boolean {
  * launches. `pipeline` has no entry: Conductor owns what runs after its work.
  *
  * These are the BUILT-IN answers. An operator overrides any of them under Settings ->
- * Workflows -> Dispatch defaults (`WorkflowPolicy.kindWorkflowDefaults`), and a kind left
+ * Tasks -> Dispatch defaults (`WorkflowPolicy.kindWorkflowDefaults`), and a kind left
  * unset there keeps following this record, so a later build can change a built-in and reach
  * everyone who never chose.
  */

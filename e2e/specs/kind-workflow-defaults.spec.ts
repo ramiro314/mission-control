@@ -15,7 +15,7 @@ async function shoot(target: Locator, name: string): Promise<void> {
 }
 
 /**
- * Settings -> Workflows -> Dispatch defaults: one after-work Workflow per task kind.
+ * Settings -> Tasks -> Dispatch defaults: one after-work Workflow per task kind.
  *
  * Driven through the browser because the claim spans two surfaces: a row chosen on the
  * Settings page is what the dispatch form preselects when that kind is picked, and what the
@@ -48,7 +48,7 @@ test("each kind's dispatch default is chosen in Settings and preselected at disp
   dashboard,
   daemon,
 }) => {
-  await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/tasks`);
 
   // One row per kind this app launches, each naming what its built-in resolves to.
   await expect(kindRow(dashboard, "bugfix")).toBeEnabled();
@@ -68,7 +68,7 @@ test("each kind's dispatch default is chosen in Settings and preselected at disp
   await expect(kindRow(dashboard, "scout")).toHaveValue(GENERAL_REVIEW);
   await expect(kindRow(dashboard, "plan")).toHaveValue("__none");
   expect(await selectedLabel(kindRow(dashboard, "ship"))).toBe("Built-in default (No-Mistakes Review (High Rigor))");
-  await shoot(dashboard.locator('[data-anchor="workflows/dispatch-default"]'), "01-settings-dispatch-defaults");
+  await shoot(dashboard.locator('[data-anchor="tasks/dispatch-defaults"]'), "01-settings-dispatch-defaults");
 
   await dashboard.goto(`${daemon.baseURL}/`);
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -109,7 +109,7 @@ test("each kind's dispatch default is chosen in Settings and preselected at disp
 });
 
 test("returning a row to its built-in follows the built-in again", async ({ dashboard, daemon }) => {
-  await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/tasks`);
   await expect(kindRow(dashboard, "bugfix")).toBeEnabled();
 
   await chooseRow(dashboard, "bugfix", GENERAL_REVIEW);
@@ -120,6 +120,28 @@ test("returning a row to its built-in follows the built-in again", async ({ dash
     kindWorkflowDefaults: Record<string, string | null>;
   };
   expect(config.kindWorkflowDefaults).toEqual({});
+});
+
+test("the rows live under Settings -> Tasks and nowhere under Workflows", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
+  await expect(dashboard.getByRole("tab", { name: "Workflows", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(dashboard.getByRole("heading", { name: "Live delivery" })).toBeVisible();
+  await expect(dashboard.getByRole("heading", { name: "Dispatch defaults" })).toHaveCount(0);
+  await expect(dashboard.getByRole("combobox", { name: /^Default after-work Workflow for / })).toHaveCount(0);
+
+  // Reached from the rail, in the Sessions group, by its own tab.
+  const tasks = dashboard.getByRole("tab", { name: "Tasks", exact: true });
+  await tasks.click();
+  await expect(dashboard).toHaveURL(/#\/settings\/tasks$/);
+  await expect(tasks).toHaveAttribute("aria-selected", "true");
+  const card = dashboard.locator('[data-anchor="tasks/dispatch-defaults"]');
+  await expect(card.getByRole("heading", { name: "Dispatch defaults" })).toBeVisible();
+  await expect(kindRow(dashboard, "ship")).toBeEnabled();
+  await expect(card.getByRole("combobox", { name: /^Default after-work Workflow for / })).toHaveCount(7);
+  const head = dashboard.locator(".settings-panel-head");
+  await expect(head.getByRole("heading", { name: "Tasks", exact: true })).toBeVisible();
+  await expect(head.getByText("This machine", { exact: true })).toBeVisible();
+  await shoot(dashboard.locator("main.settings-page"), "00-settings-tasks-category");
 });
 
 /**
