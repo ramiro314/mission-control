@@ -615,7 +615,8 @@ Act on the result:
 git switch --no-track -c <slug> FETCH_HEAD   # or the rebased branch
 npm ci   # only when something will run locally: upstream's lockfile is not the fork's
 git push -u origin <slug>
-git log -1 --format=%b > "$SCRATCH/pr-body.md"   # any directory outside the checkout
+SCRATCH=$(mktemp -d)   # the work machine's task has no $SCRATCH; any directory outside the checkout works
+git log -1 --format=%b > "$SCRATCH/pr-body.md"
 ```
 
 Read `get_pull_request_policy` immediately before creating the pull request. When it says drafts
