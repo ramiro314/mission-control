@@ -13,7 +13,7 @@ import type { ReviewManager } from "../src/server/reviews.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-plan-grill-first-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager, resolveGrillFirstPin } = await import("../src/server/tasks.ts");
 const { applySkillsConfig } = await import("../src/server/skills/config.ts");
 const { getTask } = await import("../src/server/db.ts");
 const { planGrillsFirst } = await import("../src/shared/task.ts");
@@ -141,6 +141,32 @@ test("an edit changes the pin, and a switch into plan pins the default then", as
   const switched = await tasks.update(ship.id, { kind: "plan" });
   assert.equal(switched.ok, true, switched.error);
   assert.equal(getTask(ship.id)?.grillFirst, true);
+
+  // Off plan the column holds 0, by edit as by creation: a switch out clears it, a pin named
+  // for a non-plan task is not stored, and an explicit off on the way back in is kept.
+  const out = await tasks.update(ship.id, { kind: "ship" });
+  assert.equal(out.ok, true, out.error);
+  assert.equal(getTask(ship.id)?.grillFirst, false);
+  const named = await tasks.update(ship.id, { grillFirst: true });
+  assert.equal(named.ok, true, named.error);
+  assert.equal(getTask(ship.id)?.grillFirst, false);
+  const back = await tasks.update(ship.id, { kind: "plan", grillFirst: false });
+  assert.equal(back.ok, true, back.error);
+  assert.equal(getTask(ship.id)?.grillFirst, false, "the named choice beats the default on the way in");
+});
+
+test("one rule resolves the pin for creation and edits alike", () => {
+  applySkillsConfig({ planGrillFirst: true });
+  const plan = (grillFirst: boolean) => mkTask({ kind: "plan", grillFirst });
+  assert.equal(resolveGrillFirstPin("ship", true), false, "off plan, nothing is pinned");
+  assert.equal(resolveGrillFirstPin("shape", undefined), false);
+  assert.equal(resolveGrillFirstPin("plan", false), false, "a named choice wins");
+  assert.equal(resolveGrillFirstPin("plan", undefined), true, "a new plan takes the default");
+  assert.equal(resolveGrillFirstPin("plan", undefined, mkTask({ kind: "ship" })), true, "entering plan takes the default");
+  assert.equal(resolveGrillFirstPin("plan", undefined, plan(false)), false, "a plan keeps its pin");
+  assert.equal(resolveGrillFirstPin("ship", undefined, plan(true)), false, "leaving plan clears it");
+  applySkillsConfig({ planGrillFirst: false });
+  assert.equal(resolveGrillFirstPin("plan", undefined, plan(true)), true, "a later default moves no plan");
 });
 
 /**

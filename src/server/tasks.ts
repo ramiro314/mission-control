@@ -312,6 +312,23 @@ export interface CreateTaskInput {
   backlog: boolean;
 }
 
+/**
+ * THE rule for a task's Grill me first pin, which creation and every edit ask, so the column
+ * holds what its schema says: 0 on every kind but plan. Off plan it is false. On plan it is
+ * the choice the caller named; otherwise a task that was already a plan keeps its pin, and a
+ * task entering plan (a new one, or one switched into it) takes the Settings default then.
+ */
+export function resolveGrillFirstPin(
+  kind: TaskKind,
+  explicit: boolean | undefined,
+  previous?: Pick<Task, "kind" | "grillFirst">,
+): boolean {
+  if (kind !== "plan") return false;
+  if (explicit !== undefined) return explicit;
+  if (previous?.kind === "plan") return previous.grillFirst ?? false;
+  return getSkillsConfig().planGrillFirst;
+}
+
 /** Daemon-resolved creation decisions, never accepted from a request body. */
 export interface TaskCreationPolicy {
   planPolicy: ManagedPlanPolicy | null;
@@ -3140,7 +3157,7 @@ export class TaskManager {
       planPolicy,
       workflowId: resolveTaskWorkflowId(input.workflowId, input.kind, planPolicy?.storage),
       // Pinned like the plan policy, so a default changed later never rewrites a filed task.
-      grillFirst: input.kind === "plan" && (input.grillFirst ?? getSkillsConfig().planGrillFirst),
+      grillFirst: resolveGrillFirstPin(input.kind, input.grillFirst),
     };
   }
 
@@ -4406,9 +4423,7 @@ export class TaskManager {
       dependencies,
       ...(patch.planInputs === undefined ? {} : { planInputs: patch.planInputs, planInputError: null }),
       ...(planPolicy === t.planPolicy ? {} : { planPolicy }),
-      // A switch into plan pins the default then, as creation does, unless the patch names it.
-      grillFirst: patch.grillFirst
-        ?? (patch.kind === "plan" && t.kind !== "plan" ? getSkillsConfig().planGrillFirst : t.grillFirst ?? false),
+      grillFirst: resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t),
       // Guarded by the status check above, like the provisioning fields and unlike
       // priority/labels: it is a statement about scheduling, and there is nothing left
       // to schedule once the task has left the backlog.

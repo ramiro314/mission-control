@@ -428,7 +428,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
       plan_inputs TEXT, plan_policy TEXT,
-      -- Grill me first, pinned when a plan task is created. 0 on every other kind.
+      -- Grill me first, a plan task's pin (resolveGrillFirstPin). 0 on every other kind.
       grill_first   INTEGER NOT NULL DEFAULT 0,
       dependencies  TEXT,               -- JSON TaskDependency[], NULL = none
       -- May the backlog autopilot schedule this? 1 unless somebody switched it off.

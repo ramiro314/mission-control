@@ -132,6 +132,11 @@ export function parseLabelInput(raw: string): string[] {
   return normalizeLabels(raw.split(/[,\n]/));
 }
 
+/** The Grill me first pin a task holds, as the form reads it: a plan task's, and none otherwise. */
+function grillFirstPin(task: Task): boolean | undefined {
+  return task.kind === "plan" ? task.grillFirst ?? false : undefined;
+}
+
 /**
  * The same form, seeded from a task already sitting in the backlog.
  *
@@ -164,8 +169,8 @@ export function draftFromTask(t: Task): DispatchDraft {
     advisorModel: t.advisorModel ?? "",
     workflowId: t.workflowId,
     // A plan task's pin reads back as a choice; any other kind has none, so switching the
-    // editor to plan shows, and the daemon pins, the Settings default.
-    grillFirst: t.kind === "plan" ? t.grillFirst ?? false : undefined,
+    // editor to plan shows the Settings default until the box is touched.
+    grillFirst: grillFirstPin(t),
     enabled: t.enabled,
     dependencies: t.dependencies.map(dependencyInputOf),
     attachments: [],
@@ -280,12 +285,10 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
     patch.workflowId = draft.workflowId;
   }
-  // A switch into plan sends a choice made on the form even when it matches the stored value:
-  // left out, the daemon pins the Settings default for the new plan instead.
-  if (
-    draft.grillFirst !== undefined
-    && ((draft.kind === "plan" && task.kind !== "plan") || draft.grillFirst !== (task.grillFirst ?? false))
-  ) {
+  // Compared like every other field: a choice on the box is sent when it is not the pin the
+  // task holds, and a task that is not a plan holds none. Whatever the daemon does with an
+  // omitted pin (`resolveGrillFirstPin`) is its business, not a rule restated here.
+  if (draft.kind === "plan" && draft.grillFirst !== undefined && draft.grillFirst !== grillFirstPin(task)) {
     patch.grillFirst = draft.grillFirst;
   }
   if (draft.enabled !== task.enabled) patch.enabled = draft.enabled;

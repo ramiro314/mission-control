@@ -233,7 +233,10 @@ test("every field on the form reaches the patch", () => {
   );
 
   for (const [field, value] of Object.entries(changed)) {
-    const t = field === "advisorModel" ? mkTask({ advisorModel: "opus" }) : mkTask();
+    // A pin is judged against a task that has one: only a plan task holds Grill me first.
+    const t = field === "advisorModel"
+      ? mkTask({ advisorModel: "opus" })
+      : field === "grillFirst" ? mkTask({ kind: "plan" }) : mkTask();
     // `intent` is the one field that does not reach the patch off the draft: what gets
     // stored is the typed text with the attachment paths appended, so the modal composes
     // it and passes it in. Changing the draft's copy alone must therefore do nothing.
@@ -281,5 +284,7 @@ test("Grill me first reads back as a plan task's choice and saves only when it c
     taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan", grillFirst: true }, ship.intent),
     { kind: "plan", grillFirst: true },
   );
+  // Off plan there is no pin to save, whatever the box last said.
+  assert.deepEqual(taskUpdatePatch(plan, { ...draftFromTask(plan), kind: "ship" }, plan.intent), { kind: "ship" });
   assert.ok(!draftsEqual(draftFromTask(plan), draftFromTask(mkTask({ kind: "plan", grillFirst: false }))));
 });
