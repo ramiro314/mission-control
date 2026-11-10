@@ -1,10 +1,13 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { AgentType } from "../src/shared/types.ts";
+import type { QueueManager } from "../src/server/queue.ts";
+import type { ReviewManager } from "../src/server/reviews.ts";
 
 // Throwaway state dir, set before anything reads config - see tasks-db.test.ts.
 const home = mkdtempSync(join(tmpdir(), "mission-plan-grill-first-"));
@@ -18,6 +21,7 @@ const { PLAN_APPENDIX_MARKER, PLAN_GRILL_SKILL_ID, planContractAppendix } = awai
 const { planDispatchBlock, planningSkillsForAgent } = await import("../src/server/plans/skills.ts");
 const { PLAN_DECISIONS_TOOL } = await import("../src/server/plans/tools.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
+const { buildApp } = await import("../src/server/routes.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -137,4 +141,63 @@ test("an edit changes the pin, and a switch into plan pins the default then", as
   const switched = await tasks.update(ship.id, { kind: "plan" });
   assert.equal(switched.ok, true, switched.error);
   assert.equal(getTask(ship.id)?.grillFirst, true);
+});
+
+/**
+ * The dispatch route's own refusal, which the form shows: an immediate plan dispatch that
+ * will grill first is refused with 409 when the grill skill is off, and that includes a
+ * dispatch that names nothing and takes Grill me first from the Settings default.
+ */
+test("an immediate plan dispatch that grills first is refused at the route when the grill skill is off", async () => {
+  const repo = join(home, "dispatch-repo");
+  mkdirSync(repo);
+  execFileSync("git", ["-C", repo, "init", "-q", "-b", "main"]);
+  execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "initial"]);
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const launched: string[] = [];
+  (tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } }).dispatcher.dispatch =
+    async (id: string) => void launched.push(id);
+  const app = buildApp({
+    registry,
+    reviews: {} as unknown as ReviewManager,
+    tasks,
+    queues: {} as unknown as QueueManager,
+  });
+  // After work None keeps the Workflow gate out of it, so a refusal is the skill gate's.
+  const dispatch = async (title: string, grillFirst?: boolean): Promise<Response> =>
+    app.request("/api/tasks", {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({ repoRoot: repo, intent: "Plan archive exports", title, kind: "plan", agent: "claude", workflowId: null, grillFirst }),
+    });
+
+  const synced = applySkillsConfig({
+    enabled: true,
+    planGrillFirst: true,
+    skills: { grill: false, "html-plans": true, "phased-plan": true },
+  });
+  assert.deepEqual(synced.problems, []);
+  const filedBefore = registry.listTasks().length;
+
+  // Grill me first from the Settings default, named nowhere in the request.
+  const refused = await dispatch("From the default");
+  assert.equal(refused.status, 409);
+  const error = ((await refused.json()) as { error: string }).error;
+  assert.match(error, /Enable Skills and the grill skill/);
+  assert.match(error, /Settings → Skills/);
+  // Named on the request, with the default off.
+  applySkillsConfig({ planGrillFirst: false });
+  assert.equal((await dispatch("Named on the form", true)).status, 409);
+  assert.equal(registry.listTasks().length, filedBefore, "a refusal files nothing");
+  assert.deepEqual(launched, []);
+
+  // The same dispatch with Grill me first off passes the gate: the grill skill is not needed.
+  applySkillsConfig({ planGrillFirst: true });
+  const accepted = await dispatch("Overridden off", false);
+  assert.equal(accepted.status, 200, await accepted.clone().text());
+  const task = (await accepted.json()) as { id: string; grillFirst: boolean; status: string };
+  assert.equal(task.grillFirst, false);
+  assert.equal(task.status, "dispatching");
+  assert.deepEqual(launched, [task.id]);
 });

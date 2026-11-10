@@ -96,6 +96,25 @@ test("new and upgraded settings exclude HTML; changing the preference never reco
   assert.deepEqual(links(), []);
 });
 
+test("Grill me first is a live preference: toggling it never reconciles skill links or reload generation", () => {
+  // The disk is behind the config - alpha is on and not linked - so anything that reconciled
+  // would link it and move the watermark, and every running session would owe a reload.
+  setAppConfig(APP_CONFIG_ENTRIES.skills, { enabled: true, skills: { alpha: true }, generation: 7, generationAt: 123 });
+  const before = getSkillsConfig();
+  assert.equal(before.planGrillFirst, false, "a saved record without the preference reads as off");
+  for (const planGrillFirst of [true, false]) {
+    const result = applySkillsConfig({ planGrillFirst }, NOW);
+    assert.deepEqual(result.refused, []);
+    assert.equal(result.changed, false);
+    assert.deepEqual(getSkillsConfig(), { ...before, planGrillFirst });
+    assert.deepEqual(links(), []);
+  }
+  // The control: the same config with a reconciling patch does link alpha and advance it.
+  assert.equal(applySkillsConfig({ skills: { beta: false } }, NOW).changed, true);
+  assert.deepEqual(links(), ["mission-alpha"]);
+  assert.equal(getSkillsConfig().generation, 8);
+});
+
 test("migration's daemon request passes the real patch schema and preserves disabled skill configuration", async () => {
   const {createMigrationIntegrationPorts} = await import('../src/main/migration-integration-ports.ts');
   const {SkillsConfigPatchSchema} = await import('../src/shared/protocol.ts');
