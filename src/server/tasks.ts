@@ -4396,6 +4396,7 @@ export class TaskManager {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return { ok: false, error: error.message };
       throw error;
     }
+    const grillFirst = resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t);
     const next: Task = {
       ...t,
       repoRoot: patch.repoRoot ?? t.repoRoot,
@@ -4423,7 +4424,9 @@ export class TaskManager {
       dependencies,
       ...(patch.planInputs === undefined ? {} : { planInputs: patch.planInputs, planInputError: null }),
       ...(planPolicy === t.planPolicy ? {} : { planPolicy }),
-      grillFirst: resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t),
+      // Written only when the pin moves, like the base branch above: an edit that leaves it
+      // alone (a retriage, a retitle) must not add a key the task did not carry.
+      ...(grillFirst === (t.grillFirst ?? false) ? {} : { grillFirst }),
       // Guarded by the status check above, like the provisioning fields and unlike
       // priority/labels: it is a statement about scheduling, and there is nothing left
       // to schedule once the task has left the backlog.
