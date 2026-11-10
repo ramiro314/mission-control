@@ -7,12 +7,6 @@ import {
 } from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
-import {
-  BUILTIN_KIND_WORKFLOW_DEFAULTS,
-  HARNESS_LAUNCHED_TASK_KINDS,
-  TASK_KIND_INFO,
-  taskDefaultWorkflowId,
-} from "@shared/task.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
 import { TestEvidenceReadinessCard } from "./TestEvidenceReadinessCard.tsx";
@@ -32,10 +26,6 @@ import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
 } from "../workflows/WorkflowConfirmModal.tsx";
-
-/** Select values for a dispatch-default row that follows its built-in, or is explicitly None. */
-const BUILTIN_OPTION = "__builtin";
-const NONE_OPTION = "__none";
 
 /**
  * Where workflow Commands are authored, as the hash the Library's own card produces.
@@ -71,8 +61,9 @@ const COMMANDS_LIBRARY_HASH = missionRouteHash({ page: "library", shelf: "comman
 //
 // So the two halves are split by how often what is in them CHANGES:
 //
-//   - Left, `.sc-controls`: set-once authorization. The dispatch default, the two switches
-//     that act outside this panel, the Trust grant summary, and where Commands are authored.
+//   - Left, `.sc-controls`: set-once authorization. Judge passes, the two switches that act
+//     outside this panel, the Trust grant summary, and where Commands are authored. The
+//     per-kind dispatch defaults live under Settings › Tasks (`TaskSettingsPanel.tsx`).
 //   - Right, `.wf-readings`: everything carrying a live number - the escalation strip, the
 //     health counters, and the Test Evidence Auditor's rates.
 //
@@ -325,15 +316,12 @@ export function workflowStripLinks(status: WorkflowStatus): ConsoleLink[] {
 export function WorkflowSettingsPanel({
   state,
   workflows = [],
-  foremanEnabled = false,
   onNavigate,
   onOpenRuns,
 }: {
   state: WorkflowSettingsState;
-  /** Live catalog; only active published workflows are valid dispatch defaults. */
+  /** Live catalog, for the Test Evidence Auditor's readiness card. */
   workflows?: WorkflowSummary[];
-  /** The completion detector that turns the default into an automatic run. */
-  foremanEnabled?: boolean;
   /**
    * Deep-link into Trust, for the grant summary that replaced this panel's repo editor.
    * The same prop Foreman, the Inspector and Shipping take for the same reason.
@@ -375,9 +363,6 @@ export function WorkflowSettingsPanel({
   const liveEnabled = config?.liveEnabled ?? false;
   const allowlist = config?.repoAllowlist ?? [];
   const checksEnabled = config?.checksEnabled ?? false;
-  const publishedWorkflows = workflows.filter(
-    (workflow) => workflow.archivedAt === null && workflow.currentVersionId !== null,
-  );
 
   const save = async (next: WorkflowConfig): Promise<void> => {
     setBusy(true);
@@ -722,74 +707,6 @@ export function WorkflowSettingsPanel({
           <TestEvidenceReadinessCard aggregate={testEvidenceAudit} workflows={workflows} />
         </div>
         <div className="sc-controls">
-          <ConsoleCard title="Dispatch defaults" anchor="workflows/dispatch-default">
-            <p className="settings-hint">
-              The Workflow each kind of task arms after its work. The dispatch form shows this
-              choice inline and can override it per task. Built-in defaults follow Mission
-              Control; a Workflow you choose here stays until you change it.
-            </p>
-            <div className="wf-default-rows">
-              {HARNESS_LAUNCHED_TASK_KINDS.map((kind) => {
-                const label = TASK_KIND_INFO[kind].label;
-                const chosen = config?.kindWorkflowDefaults[kind];
-                const builtinId = BUILTIN_KIND_WORKFLOW_DEFAULTS[kind];
-                const builtinName = builtinId
-                  ? workflows.find((workflow) => workflow.id === builtinId)?.name ?? "unavailable Workflow"
-                  : "None";
-                const unavailable = typeof chosen === "string"
-                  && !publishedWorkflows.some((workflow) => workflow.id === chosen);
-                return (
-                  <div className="wf-default-row" key={kind}>
-                    <span className="wf-default-kind" aria-hidden>{label}</span>
-                    <Tooltip label={`Workflow preselected for every new ${label} task`}>
-                      <select
-                        className="field-input wf-default-select"
-                        value={chosen === undefined ? BUILTIN_OPTION : chosen ?? NONE_OPTION}
-                        disabled={!config || busy}
-                        aria-label={`Default after-work Workflow for ${label} tasks`}
-                        onChange={(event) => {
-                          if (!config) return;
-                          const { [kind]: _previous, ...rest } = config.kindWorkflowDefaults;
-                          const value = event.target.value;
-                          void save({
-                            ...config,
-                            kindWorkflowDefaults: value === BUILTIN_OPTION
-                              ? rest
-                              : { ...rest, [kind]: value === NONE_OPTION ? null : value },
-                          });
-                        }}
-                      >
-                        <option value={BUILTIN_OPTION}>Built-in default ({builtinName})</option>
-                        <option value={NONE_OPTION}>None</option>
-                        {publishedWorkflows.map((workflow) => (
-                          <option key={workflow.id} value={workflow.id}>
-                            {workflow.name} · v{workflow.publishedVersion}
-                          </option>
-                        ))}
-                        {unavailable && <option value={chosen}>Unavailable Workflow</option>}
-                      </select>
-                    </Tooltip>
-                  </div>
-                );
-              })}
-            </div>
-            {config
-              && HARNESS_LAUNCHED_TASK_KINDS.some(
-                (kind) => taskDefaultWorkflowId(kind, config.kindWorkflowDefaults) !== null,
-              )
-              && !foremanEnabled && (
-              <p className="settings-warn wf-default-warning">
-                Foreman is off. Turn it on before dispatching with these defaults, or choose None
-                in the dispatch form.
-              </p>
-            )}
-            {publishedWorkflows.length === 0 && (
-              <p className="settings-hint wf-settings-empty">
-                Publish a Workflow before choosing a dispatch default.
-              </p>
-            )}
-          </ConsoleCard>
-
           <ConsoleCard title="Judge passes" anchor="workflows/judge-passes">
             <Tooltip label="Keep earned judge passes across repair rounds. Turn off to review every judge again.">
               <label className="wf-judge-passes">

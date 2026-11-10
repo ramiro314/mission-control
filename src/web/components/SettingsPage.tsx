@@ -22,6 +22,7 @@ import { ConductorPanel } from "./ConductorPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
 import { checksArmedReading } from "../lib/trust.ts";
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
+import { TaskSettingsPanel } from "./TaskSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { LayoutPanel } from "./LayoutPanel.tsx";
@@ -619,6 +620,14 @@ export function SettingsPage({
         return <SkillsPanel state={skills} />;
       case "harnesses":
         return <HarnessesPanel state={harnesses} setup={setup.view} />;
+      case "tasks":
+        return (
+          <TaskSettingsPanel
+            state={workflowSettings}
+            workflows={workflowSummaries}
+            foremanEnabled={foreman.config?.enabled ?? false}
+          />
+        );
       case "worktrees":
         return <WorktreeSettingsPanel state={worktrees} storageHealth={storageHealth} onOpenSession={onOpenSession} />;
       case "repositories":
@@ -662,7 +671,6 @@ export function SettingsPage({
           <WorkflowSettingsPanel
             state={workflowSettings}
             workflows={workflowSummaries}
-            foremanEnabled={foreman.config?.enabled ?? false}
             onNavigate={navigateWithAnchor}
             onOpenRuns={onOpenRuns}
           />

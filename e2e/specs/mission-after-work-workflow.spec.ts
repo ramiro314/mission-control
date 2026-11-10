@@ -344,7 +344,7 @@ for (const [kind, workflowId] of [
 }
 
 /**
- * Settings -> Workflows -> Dispatch defaults reaches the mission editor's kind switch.
+ * Settings -> Tasks -> Dispatch defaults reaches the mission editor's kind switch.
  *
  * The rows are set to an operator's choices that differ from every built-in, so an editor that
  * ignored the fetched config and armed the built-ins would fail each assertion. Ship's row is
