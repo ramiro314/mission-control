@@ -169,3 +169,86 @@ test("the backlog editor reads a plan task's pin back and saves a change to it",
   await expect(editor).toBeHidden();
   expect((await storedTask(daemon, dashboard, "Plan imports")).grillFirst).toBe(false);
 });
+
+test("an explicit Grill me first off survives switching a backlog task into plan", async ({ dashboard, daemon }) => {
+  const turnedOn = await dashboard.request.put(`${daemon.baseURL}/api/skills/config`, { data: { planGrillFirst: true } });
+  expect(turnedOn.ok()).toBe(true);
+  const created = await dashboard.request.post(`${daemon.baseURL}/api/tasks`, {
+    data: { repoRoot: daemon.repo, intent: "Work out the export format.", title: "Becomes a plan", kind: "ship", backlog: true },
+  });
+  expect(created.ok()).toBe(true);
+  const task = (await created.json()) as TaskRow;
+
+  const layout = await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });
+  expect(layout.ok()).toBe(true);
+  await dashboard.reload();
+  const card = dashboard.locator(".bl-card", { hasText: "Becomes a plan" });
+  await card.getByRole("button", { name: "Becomes a plan", exact: true }).click();
+  const editor = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  await expect(grillBox(editor)).toHaveCount(0);
+
+  // Into plan, the box follows the default; clearing it is the operator's answer, and it must
+  // reach the daemon even though it matches what the ship task stored.
+  await editor.getByRole("combobox", { name: "Kind", exact: true }).selectOption("plan");
+  await expect(grillBox(editor)).toBeChecked();
+  await grillBox(editor).uncheck();
+  await expect(editor.getByText("The agent drafts the plan straight from this request.")).toBeVisible();
+  const saved = dashboard.waitForResponse((response) =>
+    response.request().method() === "POST" && new URL(response.url()).pathname === `/api/tasks/${task.id}/update`);
+  await editor.getByRole("button", { name: "Save" }).click();
+  const response = await saved;
+  expect(response.ok()).toBe(true);
+  expect(JSON.parse(response.request().postData() ?? "{}")).toMatchObject({ kind: "plan", grillFirst: false });
+  await expect(editor).toBeHidden();
+  expect(await storedTask(daemon, dashboard, "Becomes a plan")).toMatchObject({ kind: "plan", grillFirst: false });
+});
+
+test("the dispatch form claims no answer until it knows the default", async ({ dashboard, daemon }) => {
+  const turnedOn = await dashboard.request.put(`${daemon.baseURL}/api/skills/config`, { data: { planGrillFirst: true } });
+  expect(turnedOn.ok()).toBe(true);
+  // A plan draft, kept by the dispatch surface across a close.
+  let dialog = await openPlanDispatch(dashboard, daemon, "Plan exports, waiting");
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("plan");
+  await expect(grillBox(dialog)).toBeChecked();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  // Reopened with the Skills read held: the box is indeterminate and cannot be used yet.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await dashboard.route("**/api/skills", async (route) => {
+    if (route.request().method() === "GET") await gate;
+    await route.continue();
+  });
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(grillBox(dialog)).toBeDisabled();
+  await expect(grillBox(dialog)).toBeChecked({ indeterminate: true });
+  await expect(dialog.getByText("Reading the default from Settings → Tasks…")).toBeVisible();
+  await shoot(dashboard, dialog, "04-dispatch-default-loading");
+  release();
+  await expect(grillBox(dialog)).toBeEnabled();
+  await expect(grillBox(dialog)).toBeChecked();
+  await dashboard.unroute("**/api/skills");
+});
+
+test("a default that cannot be read is said so, and the box still chooses for the task", async ({ dashboard, daemon }) => {
+  await dashboard.route("**/api/skills", (route) =>
+    route.request().method() === "GET" ? route.fulfill({ status: 500, body: "unavailable" }) : route.continue());
+  const dialog = await openPlanDispatch(dashboard, daemon, "Plan exports, unread default");
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("plan");
+  await expect(grillBox(dialog)).toBeEnabled();
+  await expect(grillBox(dialog)).toBeChecked({ indeterminate: true });
+  await expect(dialog.getByText("Follows the Settings → Tasks default, which could not be read.", { exact: false }))
+    .toBeVisible();
+  await expect(dialog.getByText("The agent drafts the plan straight from this request.")).toHaveCount(0);
+  await shoot(dashboard, dialog, "05-dispatch-default-unreadable");
+
+  await grillBox(dialog).check();
+  await expect(grillBox(dialog)).toBeChecked();
+  await grillBox(dialog).uncheck();
+  await addToBacklog(dashboard, dialog);
+  expect((await storedTask(daemon, dashboard, "Plan exports, unread default")).grillFirst).toBe(false);
+});

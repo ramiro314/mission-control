@@ -280,7 +280,12 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
     patch.workflowId = draft.workflowId;
   }
-  if (draft.grillFirst !== undefined && draft.grillFirst !== (task.grillFirst ?? false)) {
+  // A switch into plan sends a choice made on the form even when it matches the stored value:
+  // left out, the daemon pins the Settings default for the new plan instead.
+  if (
+    draft.grillFirst !== undefined
+    && ((draft.kind === "plan" && task.kind !== "plan") || draft.grillFirst !== (task.grillFirst ?? false))
+  ) {
     patch.grillFirst = draft.grillFirst;
   }
   if (draft.enabled !== task.enabled) patch.enabled = draft.enabled;

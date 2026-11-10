@@ -421,28 +421,50 @@ const AGENT_FIELD_TIP =
 /**
  * Grill me first, for a plan task: this dispatch's override of the Settings -> Tasks default.
  * The hint says what the choice does to the session, since the two outcomes look alike here.
+ *
+ * An untouched box sends nothing and the daemon pins the default, so the box only claims an
+ * answer once it knows the default: indeterminate, and disabled, while it loads; indeterminate
+ * but choosable when it could not be read. Either way it never shows an "off" it would not send.
  */
 function GrillFirstField({
-  checked,
+  choice,
+  fallback,
   className,
   onChange,
 }: {
-  checked: boolean;
+  /** The choice made on this form, or undefined to follow the default. */
+  choice: boolean | undefined;
+  /** The Settings default: undefined while loading, null when it could not be read. */
+  fallback: boolean | null | undefined;
   className: string;
   onChange: (grillFirst: boolean) => void;
 }): React.JSX.Element {
+  const value = choice ?? fallback;
+  const known = typeof value === "boolean";
   return (
     <div className={`dispatch-grill-first${className}`}>
       <Tooltip label="Interview me in rounds of decision forms before the plan is drafted. The default is on Settings → Tasks.">
         <label className="dispatch-grill-first-control">
-          <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={value === true}
+            disabled={value === undefined}
+            ref={(el) => {
+              if (el) el.indeterminate = !known;
+            }}
+            onChange={(e) => onChange(e.target.checked)}
+          />
           <span className="field-label">Grill me first</span>
         </label>
       </Tooltip>
       <span className="field-hint">
-        {checked
-          ? "The agent asks you every open question, a round at a time, before it drafts the plan."
-          : "The agent drafts the plan straight from this request."}
+        {value === undefined
+          ? "Reading the default from Settings → Tasks…"
+          : value === null
+            ? "Follows the Settings → Tasks default, which could not be read. Tick or clear the box to choose for this task."
+            : value
+              ? "The agent asks you every open question, a round at a time, before it drafts the plan."
+              : "The agent drafts the plan straight from this request."}
       </span>
     </div>
   );
@@ -1216,8 +1238,11 @@ function DispatchModal({
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
   const [planStorage, setPlanStorage] = useState<"repository" | "local" | null>(null);
-  /** Settings -> Tasks' Grill me first default, which a plan task the form leaves alone gets. */
-  const [planGrillFirstDefault, setPlanGrillFirstDefault] = useState(false);
+  /**
+   * Settings -> Tasks' Grill me first default, which a plan task the form leaves alone gets:
+   * undefined while it loads, null when it could not be read.
+   */
+  const [planGrillFirstDefault, setPlanGrillFirstDefault] = useState<boolean | null | undefined>(undefined);
   const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
   /**
    * What this MACHINE has to say about tooling a launched session will inherit - already
@@ -2227,7 +2252,7 @@ function DispatchModal({
     void fetchSkills().then((skills) => {
       if (!alive) return;
       setPlanStorage(skills?.planStorage ?? "repository");
-      setPlanGrillFirstDefault(skills?.planGrillFirst ?? false);
+      setPlanGrillFirstDefault(skills ? skills.planGrillFirst : null);
     });
     void workflowRequest<WorkflowConfig>("/api/workflows/config")
       .then((config) => {
@@ -3135,7 +3160,8 @@ function DispatchModal({
           {usesHarness && <ModelCatalogNotice agent={draft.agent} />}
           {draft.kind === "plan" && (
             <GrillFirstField
-              checked={draft.grillFirst ?? planGrillFirstDefault}
+              choice={draft.grillFirst}
+              fallback={planGrillFirstDefault}
               className={guidedDim}
               onChange={(grillFirst) => update({ grillFirst })}
             />

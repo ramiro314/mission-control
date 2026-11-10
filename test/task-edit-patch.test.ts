@@ -271,5 +271,15 @@ test("Grill me first reads back as a plan task's choice and saves only when it c
   const ship = mkTask();
   assert.equal(draftFromTask(ship).grillFirst, undefined);
   assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan" }, ship.intent), { kind: "plan" });
+  // A choice made on the switch is sent even when it matches the stored false, or the daemon
+  // would pin the Settings default over it.
+  assert.deepEqual(
+    taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan", grillFirst: false }, ship.intent),
+    { kind: "plan", grillFirst: false },
+  );
+  assert.deepEqual(
+    taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan", grillFirst: true }, ship.intent),
+    { kind: "plan", grillFirst: true },
+  );
   assert.ok(!draftsEqual(draftFromTask(plan), draftFromTask(mkTask({ kind: "plan", grillFirst: false }))));
 });
