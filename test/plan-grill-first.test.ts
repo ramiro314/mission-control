@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
-import type { AgentType } from "../src/shared/types.ts";
+import type { AgentType, ReviewItem } from "../src/shared/types.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 
@@ -22,6 +22,9 @@ const { planDispatchBlock, planningSkillsForAgent } = await import("../src/serve
 const { PLAN_DECISIONS_TOOL } = await import("../src/server/plans/tools.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+const { ReviewManager: LiveReviewManager } = await import("../src/server/reviews.ts");
+const { decisionLead, formatResponse } = await import("../src/shared/review-item.ts");
+const { ensureToken } = await import("../src/server/auth.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -226,4 +229,94 @@ test("an immediate plan dispatch that grills first is refused at the route when 
   assert.equal(task.grillFirst, false);
   assert.equal(task.status, "dispatching");
   assert.deepEqual(launched, [task.id]);
+});
+
+/**
+ * A grilling round across the process boundary, the way the agent's MCP bridge sends it: a
+ * session running a plan task pinned Grill me first posts an UNBOUND plan-decisions round to
+ * `/mcp/reviews` (the contract tells it to bind none to a managed plan), the daemon accepts
+ * it with nothing selected, and the agent's blocked wait returns what the human chose - here
+ * against every recommendation, so nothing can pass by echoing the recommended options.
+ */
+test("a grill-first plan session's unbound round is accepted and returns the human's own answers", async () => {
+  const token = ensureToken();
+  const registry = new Registry();
+  const reviews = new LiveReviewManager(registry);
+  const app = buildApp({ registry, reviews, tasks: new TaskManager(registry), queues: {} as unknown as QueueManager });
+  const sessionId = "sdk:grill-first-plan";
+  registry.registerSdkSession({ id: sessionId, agent: "claude", name: "plan exports", cwd: "/repo/grill" });
+  registry.upsertTask(mkTask({ id: "grill-plan", kind: "plan", grillFirst: true, status: "running", sessionId, repoRoot: "/repo/grill" }));
+  assert.equal(planGrillsFirst(registry.taskForSession(sessionId, "/repo/grill")), true, "the session runs a grill-first plan");
+
+  const decisions = [
+    {
+      id: "export-format",
+      question: "Which format should exports use?",
+      options: [
+        { id: "csv", label: "CSV", recommended: true },
+        { id: "json", label: "JSON" },
+      ],
+      allowOther: true,
+    },
+    {
+      id: "export-scope",
+      question: "What does an export include?",
+      options: [
+        { id: "visible", label: "What the view shows", recommended: true },
+        { id: "all", label: "Every record" },
+      ],
+      allowOther: true,
+    },
+  ];
+  const authed = { host: "127.0.0.1:7317", "content-type": "application/json", "x-harness-token": token };
+  const created = await app.request("/mcp/reviews", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({
+      env: {},
+      sessionId,
+      cwd: "/repo/grill",
+      kind: "plan-decisions",
+      title: "Round 1: export format",
+      body: "Nothing is settled yet. This round decides the format and the scope.",
+      decisions,
+    }),
+  });
+  assert.equal(created.status, 200, await created.clone().text());
+  const { id } = (await created.json()) as { id: string };
+
+  // Pending with the round intact and nothing answered for the human: no selections, no response.
+  const pending = ((await (await app.request("/api/reviews", { headers: { host: "127.0.0.1:7317" } })).json()) as ReviewItem[])
+    .find((review) => review.id === id);
+  assert.ok(pending, "the round reaches the dashboard");
+  assert.equal(pending.kind, "plan-decisions");
+  assert.equal(pending.sessionId, sessionId);
+  assert.equal(pending.status, "pending");
+  assert.deepEqual(pending.decisions, decisions);
+  assert.equal(pending.selections ?? null, null, "the daemon preselects nothing");
+  assert.equal(pending.response ?? null, null);
+
+  // The human answers against both recommendations: a listed option and an Other.
+  const selections = [
+    { decisionId: "export-format", selected: ["json"], other: null },
+    { decisionId: "export-scope", selected: [], other: "Only records changed since the last export" },
+  ];
+  const resolved = await app.request(`/api/reviews/${id}/resolve`, {
+    method: "POST",
+    headers: authed,
+    // What the decision form posts on Submit: the selections and the answer text built from them.
+    body: JSON.stringify({ action: "answer", selections, response: formatResponse(decisions, selections, decisionLead("plan-decisions")) }),
+  });
+  assert.equal(resolved.status, 200, await resolved.clone().text());
+
+  const waited = (await (await app.request(`/mcp/reviews/${id}/wait`, { headers: authed })).json()) as ReviewItem;
+  assert.equal(waited.status, "answered");
+  assert.deepEqual(
+    waited.selections?.map(({ decisionId, selected, other }) => ({ decisionId, selected, other })),
+    selections,
+    "the agent reads back exactly what the human chose",
+  );
+  assert.match(waited.response ?? "", /JSON/);
+  assert.match(waited.response ?? "", /Only records changed since the last export/);
+  assert.doesNotMatch(waited.response ?? "", /CSV|What the view shows/, "no recommendation stands in for an answer");
 });

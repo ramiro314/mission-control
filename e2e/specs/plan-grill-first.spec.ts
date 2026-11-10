@@ -191,6 +191,7 @@ test("an explicit Grill me first off survives switching a backlog task into plan
   // reach the daemon even though it matches what the ship task stored.
   await editor.getByRole("combobox", { name: "Kind", exact: true }).selectOption("plan");
   await expect(grillBox(editor)).toBeChecked();
+  await shoot(dashboard, editor, "06-editor-switched-into-plan");
   await grillBox(editor).uncheck();
   await expect(editor.getByText("The agent drafts the plan straight from this request.")).toBeVisible();
   const saved = dashboard.waitForResponse((response) =>
