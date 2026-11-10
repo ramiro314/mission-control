@@ -78,6 +78,11 @@ export type DispatchDraft = {
    * task, null explicitly opts out, and an id selects that published Workflow.
    */
   workflowId: string | null | undefined;
+  /**
+   * Grill me first, for a plan task. Undefined follows Settings -> Tasks on a fresh task (the
+   * daemon pins the default at creation); a boolean is the operator's choice on this form.
+   */
+  grillFirst: boolean | undefined;
   /** Whether Foreman's backlog autopilot may schedule the shelved task. */
   enabled: boolean;
   /** Selected prerequisite ids; the daemon resolves them to durable dependency edges. */
@@ -108,6 +113,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   effort: "",
   advisorModel: "",
   workflowId: undefined,
+  grillFirst: undefined,
   enabled: true,
   dependencies: [],
   attachments: [],
@@ -157,6 +163,9 @@ export function draftFromTask(t: Task): DispatchDraft {
     effort: t.effort ?? "",
     advisorModel: t.advisorModel ?? "",
     workflowId: t.workflowId,
+    // A plan task's pin reads back as a choice; any other kind has none, so switching the
+    // editor to plan shows, and the daemon pins, the Settings default.
+    grillFirst: t.kind === "plan" ? t.grillFirst ?? false : undefined,
     enabled: t.enabled,
     dependencies: t.dependencies.map(dependencyInputOf),
     attachments: [],
@@ -194,6 +203,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.effort === b.effort &&
     a.advisorModel === b.advisorModel &&
     a.workflowId === b.workflowId &&
+    a.grillFirst === b.grillFirst &&
     a.enabled === b.enabled &&
     dependencyInputsEqual(a.dependencies, b.dependencies) &&
     a.attachments.length === b.attachments.length &&
@@ -269,6 +279,9 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (task.advisorModel !== null && !draft.advisorModel) patch.advisorModel = null;
   if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
     patch.workflowId = draft.workflowId;
+  }
+  if (draft.grillFirst !== undefined && draft.grillFirst !== (task.grillFirst ?? false)) {
+    patch.grillFirst = draft.grillFirst;
   }
   if (draft.enabled !== task.enabled) patch.enabled = draft.enabled;
   const storedDependencies: TaskDependencyInput[] = task.dependencies.map(dependencyInputOf);

@@ -168,6 +168,7 @@ import {
 import { withTaskKindContract } from "./task-contract.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
+import { getSkillsConfig } from "./skills/config.ts";
 import { newLaunchFailure, type TaskLaunchFailure } from "@shared/launch-failure.ts";
 import { residentRunForTask } from "./residents/store.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
@@ -278,6 +279,11 @@ export interface CreateTaskInput {
    * the machine default; null explicitly means none.
    */
   workflowId?: string | null;
+  /**
+   * Grill me first, for a plan task. Omitted follows `SkillsConfig.planGrillFirst`, resolved
+   * once in `prepareCreationPolicy`; ignored for every other kind.
+   */
+  grillFirst?: boolean;
   /** Prerequisites selected from current backlog tasks or live sessions. */
   dependencies?: TaskDependencyInput[];
   planInputs?: TaskPlanInput[];
@@ -310,6 +316,8 @@ export interface CreateTaskInput {
 export interface TaskCreationPolicy {
   planPolicy: ManagedPlanPolicy | null;
   workflowId: string | null;
+  /** The plan task's Grill me first pin; false for every other kind. */
+  grillFirst: boolean;
 }
 
 export interface CreateRetroFollowupInput {
@@ -3126,9 +3134,14 @@ export class TaskManager {
   }
 
   /** Resolve once so pre-creation route checks and the persisted task use the same pair. */
-  prepareCreationPolicy(input: Pick<CreateTaskInput, "kind" | "workflowId">): TaskCreationPolicy {
+  prepareCreationPolicy(input: Pick<CreateTaskInput, "kind" | "workflowId" | "grillFirst">): TaskCreationPolicy {
     const planPolicy = isPlanningTaskKind(input.kind) ? newPlanPolicy() : null;
-    return { planPolicy, workflowId: resolveTaskWorkflowId(input.workflowId, input.kind, planPolicy?.storage) };
+    return {
+      planPolicy,
+      workflowId: resolveTaskWorkflowId(input.workflowId, input.kind, planPolicy?.storage),
+      // Pinned like the plan policy, so a default changed later never rewrites a filed task.
+      grillFirst: input.kind === "plan" && (input.grillFirst ?? getSkillsConfig().planGrillFirst),
+    };
   }
 
   /**
@@ -3274,7 +3287,7 @@ export class TaskManager {
       }
       if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }
-    const { planPolicy, workflowId } = creationPolicy ?? this.prepareCreationPolicy(input);
+    const { planPolicy, workflowId, grillFirst } = creationPolicy ?? this.prepareCreationPolicy(input);
     const planInputs = input.planInputs ?? [];
     validatePlanInputs(planInputs, [input.repoRoot, ...(input.extraRepoRoots ?? [])]);
     for (const edge of input.dependencies ?? []) {
@@ -3315,6 +3328,7 @@ export class TaskManager {
       labels: input.labels ?? [],
       dependencies,
       planInputs, planPolicy, planInputError: null, planPolicyError: null,
+      grillFirst,
       backlogRank,
       // Human and internal callers remain schedulable by default. A task source can make
       // the opposite choice explicit in its settings, so every item it files arrives on
@@ -4392,6 +4406,9 @@ export class TaskManager {
       dependencies,
       ...(patch.planInputs === undefined ? {} : { planInputs: patch.planInputs, planInputError: null }),
       ...(planPolicy === t.planPolicy ? {} : { planPolicy }),
+      // A switch into plan pins the default then, as creation does, unless the patch names it.
+      grillFirst: patch.grillFirst
+        ?? (patch.kind === "plan" && t.kind !== "plan" ? getSkillsConfig().planGrillFirst : t.grillFirst ?? false),
       // Guarded by the status check above, like the provisioning fields and unlike
       // priority/labels: it is a statement about scheduling, and there is nothing left
       // to schedule once the task has left the backlog.
@@ -5048,7 +5065,7 @@ export class TaskManager {
       planDiscovery = await taskPlanDiscovery(t, s.cwd);
     } catch (error) { return { ok: false, error: String(error), scope: "task" }; }
     const planSkills = isPlanningTaskKind(t.kind)
-      ? (opts.requirePlanSkills ?? planningSkillsForSession)(s, t.kind)
+      ? (opts.requirePlanSkills ?? planningSkillsForSession)(s, { kind: t.kind, grillFirst: t.grillFirst })
       : null;
     if (planSkills && !planSkills.ok) {
       return { ok: false, error: planSkills.message, scope: "task" };

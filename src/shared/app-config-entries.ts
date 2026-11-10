@@ -161,6 +161,7 @@ const skillsFields = {
   alwaysDraftPr: "setting",
   commitPlanHtml: "setting",
   planStorage: "setting",
+  planGrillFirst: "setting",
   enabled: "setting",
   defaultSkillEnabled: "setting",
   skills: "setting",

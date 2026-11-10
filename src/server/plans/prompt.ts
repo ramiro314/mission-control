@@ -48,6 +48,8 @@ export const PLAN_APPENDIX_MARKER = "--- Mission Control plan ---";
  */
 export const PLAN_HTML_SKILL_ID = "html-plans";
 export const PLAN_PHASED_SKILL_ID = "phased-plan";
+/** The interview skill a plan task runs before drafting when it was dispatched Grill me first. */
+export const PLAN_GRILL_SKILL_ID = "grill";
 
 /** Both, in the order they are needed - which is the order a refusal reports them in. */
 export const PLAN_SKILL_IDS = [PLAN_HTML_SKILL_ID, PLAN_PHASED_SKILL_ID] as const;
@@ -79,6 +81,33 @@ export interface PlanSkillInvocations {
   htmlPlans: string;
   /** `phased-plan`: how an approved plan becomes phases and scheduled tasks. */
   phasedPlan: string;
+  /**
+   * `grill`: how the human is interviewed before anything is drafted. Resolved, and required,
+   * only for a plan task pinned Grill me first (`planGrillsFirst`).
+   */
+  grill?: string;
+}
+
+/**
+ * Grill me first, as a plan contract states it: the interview, then the unchanged plan flow.
+ *
+ * Unnumbered and ahead of the numbered steps, so a plan task without it reads exactly as it
+ * always did. It says only what the skill cannot: that the interview comes before the plan
+ * skill, that its forms are not the plan review, and that an answer is only what the human
+ * selected. Nothing here assumes a form opens on the recommendation; it may open empty.
+ */
+function grillFirstLines(grill: string): string[] {
+  return [
+    `Grill me first. Before anything below, invoke the ${PLAN_GRILL_SKILL_ID} skill and interview the human with it.`,
+    `Draft nothing until it is done. Every round is one \`${PLAN_DECISIONS_TOOL}\` form. Ask at least one round, even when`,
+    "the request already looks complete, and keep asking until nothing is left to ask. On this harness:",
+    grill,
+    "A round's form may open with nothing selected: an answer is only what the human selected or wrote, never",
+    "your recommendation or an unanswered question. A dismissed round ends the work: draft no plan.",
+    "Grilling rounds are not the plan review: bind none to a managed plan and offer no phased implementation",
+    "follow-up in them. When nothing is left to ask, continue with the steps below unchanged, and record every",
+    "settled decision in the plan with the answer the human gave.",
+  ];
 }
 
 /**
@@ -89,10 +118,20 @@ export interface PlanSkillInvocations {
  * keep it short - every line spent explaining how to write a plan is a line arguing with the
  * skill this contract exists to hand the work to.
  */
-export function planContractAppendix(skills: PlanSkillInvocations, workflowBound = false, storage: "repository" | "local" = "repository"): string {
+export function planContractAppendix(
+  skills: PlanSkillInvocations,
+  workflowBound = false,
+  storage: "repository" | "local" = "repository",
+  grillFirst = false,
+): string {
+  if (grillFirst && !skills.grill) {
+    throw new Error("a Grill me first plan contract needs the resolved grill skill invocation");
+  }
+  const grill = grillFirst && skills.grill ? grillFirstLines(skills.grill) : [];
   if (storage === "local") {
     const contract = taskCompletionContract("plan", "local")!;
     return [PLAN_APPENDIX_MARKER,
+      ...grill,
       "This is a local plan-only task. Do not implement the plan. Invoke the html-plans skill:",
       skills.htmlPlans,
       "Call get_plan_context and save_plan with the complete Markdown and rendered HTML bundle. Local mode overrides the saved HTML-commit preference. Use read_plan for exact revisions and the returned scoped preview.",
@@ -112,6 +151,7 @@ export function planContractAppendix(skills: PlanSkillInvocations, workflowBound
     "rendered as a page, and refined with them until it is right. It is not a change: do not",
     "implement what you are planning, and do not treat writing the file as having delivered it.",
     "",
+    ...(grill.length > 0 ? [...grill, ""] : []),
     `1. Invoke the ${PLAN_HTML_SKILL_ID} skill and work from it. It owns how a plan is written,`,
     "   rendered and put in front of a person, and nothing here repeats it - so read it rather",
     "   than working from what you already believe a good plan looks like. On this harness:",

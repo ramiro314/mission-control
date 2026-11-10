@@ -524,7 +524,7 @@ export class Dispatcher {
       // is resolving for does not exist yet and will start after the current skill generation
       // by construction. See `skills/invoke.ts`.
       const planSkills = isPlanningTaskKind(task.kind)
-        ? (this.deps.planSkills ?? planningSkillsForAgent)(task.agent, task.kind)
+        ? (this.deps.planSkills ?? planningSkillsForAgent)(task.agent, { kind: task.kind, grillFirst: task.grillFirst })
         : null;
       if (planSkills && !planSkills.ok) throw new Error(planSkills.message);
       // `multiRepoDispatch`, enforced ONCE here for BOTH runtimes rather than per launch

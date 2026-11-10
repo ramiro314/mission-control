@@ -445,6 +445,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("workflow-policy"),
   },
   {
+    id: "plan-grill-first",
+    label: "Grill me first",
+    description: "New plan tasks interview you in rounds of decision forms before the plan is drafted.",
+    category: "tasks",
+    anchor: "tasks/grill-first",
+    keywords: ["grill", "interview", "plan", "questions", "decisions", "before drafting"],
+    kind: "toggle",
+    backup: backupDomains("skills"),
+  },
+  {
     id: "worktree-policy",
     label: "Worktree policy",
     description: "Default and repository-specific native checkout capacity and setup argv, and when a live lease counts as stale.",

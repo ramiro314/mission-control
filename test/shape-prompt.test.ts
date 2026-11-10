@@ -97,7 +97,7 @@ const config: SkillsConfig = {
   generationAt: 100,
   commitPlanHtml: false,
   alwaysDraftPr: false,
-  planStorage: "repository",
+  planStorage: "repository", planGrillFirst: false,
 };
 
 function deps(over: Partial<RequiredSkillCommandDeps> = {}): RequiredSkillCommandDeps {
@@ -369,12 +369,12 @@ test("dispatch is refused, naming the toggle, when any shape skill is off", () =
 
 test("the launch resolver renders each harness's own invocation", () => {
   const forAgent: typeof skillInvocationForAgent = (agent, id) => skillInvocationForAgent(agent, id, deps());
-  assert.deepEqual(planningSkillsForAgent("claude", "shape", forAgent), { ok: true, commands: CLAUDE_SKILLS });
-  assert.deepEqual(planningSkillsForAgent("pi", "shape", forAgent), {
+  assert.deepEqual(planningSkillsForAgent("claude", { kind: "shape" }, forAgent), { ok: true, commands: CLAUDE_SKILLS });
+  assert.deepEqual(planningSkillsForAgent("pi", { kind: "shape" }, forAgent), {
     ok: true,
     commands: { grill: "/skill:grill", htmlPlans: "/skill:html-plans", tickets: "/skill:tickets" },
   });
-  const off = planningSkillsForAgent("claude", "shape", (agent, id) =>
+  const off = planningSkillsForAgent("claude", { kind: "shape" }, (agent, id) =>
     skillInvocationForAgent(agent, id, deps({ config: () => ({ ...config, enabled: false }) })));
   assert.equal(off.ok, false);
 });
@@ -383,9 +383,9 @@ test("the assignment resolver refuses a session still holding the previous skill
   const stale = mkSession({ agent: "claude", startedAt: 1 });
   const forSession = (over: Partial<RequiredSkillCommandDeps> = {}): typeof requiredSkillCommand =>
     (session, id) => requiredSkillCommand(session, id, deps(over));
-  const refused = planningSkillsForSession(stale, "shape", forSession());
+  const refused = planningSkillsForSession(stale, { kind: "shape" }, forSession());
   assert.equal(refused.ok, false);
-  const current = planningSkillsForSession(stale, "shape", forSession({
+  const current = planningSkillsForSession(stale, { kind: "shape" }, forSession({
     acks: () => new Map([[noteKeyFor(stale), config.generation]]),
   }));
   assert.deepEqual(current, { ok: true, commands: CLAUDE_SKILLS });
@@ -394,10 +394,10 @@ test("the assignment resolver refuses a session still holding the previous skill
 test("each delivery seam resolves planning skills through the one shared resolver", () => {
   // Plan and shape share one resolve-or-refuse path per seam, keyed by the task's kind.
   const dispatcher = src("src/server/dispatcher.ts");
-  assert.match(dispatcher, /planningSkillsForAgent\)\(task\.agent, task\.kind\)/);
+  assert.match(dispatcher, /planningSkillsForAgent\)\(task\.agent, \{ kind: task\.kind, grillFirst: task\.grillFirst \}\)/);
   assert.ok(!dispatcher.includes("planningSkillsForSession"));
   const tasks = src("src/server/tasks.ts");
-  assert.match(tasks, /planningSkillsForSession\)\(s, t\.kind\)/);
+  assert.match(tasks, /planningSkillsForSession\)\(s, \{ kind: t\.kind, grillFirst: t\.grillFirst \}\)/);
   assert.ok(!tasks.includes("planningSkillsForAgent"));
 });
 

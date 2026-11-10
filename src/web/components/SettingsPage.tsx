@@ -624,6 +624,7 @@ export function SettingsPage({
         return (
           <TaskSettingsPanel
             state={workflowSettings}
+            skills={skills}
             workflows={workflowSummaries}
             foremanEnabled={foreman.config?.enabled ?? false}
           />

@@ -454,6 +454,23 @@ toggle and where to find it, rather than launching an agent that would improvise
 asked for. Backlogging a plan task is always allowed - the check is asked again at the moment
 it launches.
 
+**Grill me first** makes a plan task interview you before it drafts. When it is on, the plan
+contract hands the work to the bundled [Grill skill](skills-and-settings.md) before HTML Plans:
+the agent asks in rounds, each one `request_plan_decisions` form holding every question that can
+be asked so far, with its recommended option listed first and a free-text **Other**. There is
+always at least one round, rounds continue until nothing is left to ask, and dismissing a round
+stops the session without a plan. A round may open with nothing selected, so an answer is only
+what you selected or wrote. Grilling rounds are not the plan review and never carry the phased
+follow-up. Once the interview is done, the plan task runs exactly as above, review and phased
+follow-up included, with the settled decisions recorded in the plan. When it is off, a plan task
+is unchanged. The default is the **Grill me first** box on **Settings → Tasks**; the dispatch
+form shows a **Grill me first** checkbox whenever **Kind** is plan, so one task can differ from
+the default, and the backlog editor can change it while the task is shelved. The choice is
+pinned on the task when it is filed, so changing the default later moves no existing task. A
+plan filed by a task source, a recurring mission or MCP `create_task` takes the default. With
+it on, the Grill skill must be switched on as well, or the dispatch is refused on the form like
+the two skills above.
+
 A repository plan with a bound workflow finishes its approved artifacts and requested scheduling, then
 ends its planning turn before creating a PR. Foreman judges that planning boundary and starts
 the automatic workflow; its PR action owns publication. With no workflow bound the plan ends its

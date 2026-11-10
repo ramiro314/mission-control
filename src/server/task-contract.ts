@@ -1,4 +1,4 @@
-import { taskHasRepository, type PlanningTaskKind } from "@shared/task.ts";
+import { planGrillsFirst, taskHasRepository, type PlanningTaskKind } from "@shared/task.ts";
 import type { Task, TaskKind } from "@shared/types.ts";
 import { openPullRequestCommand } from "@shared/pr-command.mjs";
 import {
@@ -129,7 +129,7 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   bugfix: () => SHIP_COMPLETION_HANDOFF,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
   plan: planningContract("plan", (skills, workflowBound, task) =>
-    planContractAppendix(skills, workflowBound, task.planPolicy?.storage)),
+    planContractAppendix(skills, workflowBound, task.planPolicy?.storage, planGrillsFirst(task))),
   pipeline: () => null,
   chat: (task) => (task.workflowId === null ? UNBOUND_CHAT_PUBLICATION : null),
   // A tickets follow-up (a row in `shape_ticket_followups`) gets the tickets-only variant.

@@ -543,6 +543,15 @@ export function isLocalPlanningTask(task: Pick<Task, "kind" | "planPolicy"> | nu
 }
 
 /**
+ * Whether a plan task's session interviews the human with the `grill` skill before drafting:
+ * Grill me first, as the task was pinned with. The one reading the skill gate, both delivery
+ * seams and the dashboard take. Plan only: shape always grills, and no other kind plans.
+ */
+export function planGrillsFirst(task: Pick<Task, "kind" | "grillFirst"> | null | undefined): boolean {
+  return task?.kind === "plan" && task.grillFirst === true;
+}
+
+/**
  * Whether a dispatch still has no durable milestone proving provisioning or launch began.
  *
  * Live failure handling and startup reconciliation share this resource proof; live handling

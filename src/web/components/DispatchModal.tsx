@@ -294,6 +294,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
     d.advisorModel === EMPTY_DISPATCH_DRAFT.advisorModel &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
+    d.grillFirst === EMPTY_DISPATCH_DRAFT.grillFirst &&
     d.enabled === EMPTY_DISPATCH_DRAFT.enabled &&
     d.dependencies.length === 0
   );
@@ -417,6 +418,36 @@ export function defaultEffortOptionLabel(
  */
 const AGENT_FIELD_TIP =
   "Which harness this task is dispatched to - switching resets the model and effort overrides";
+/**
+ * Grill me first, for a plan task: this dispatch's override of the Settings -> Tasks default.
+ * The hint says what the choice does to the session, since the two outcomes look alike here.
+ */
+function GrillFirstField({
+  checked,
+  className,
+  onChange,
+}: {
+  checked: boolean;
+  className: string;
+  onChange: (grillFirst: boolean) => void;
+}): React.JSX.Element {
+  return (
+    <div className={`dispatch-grill-first${className}`}>
+      <Tooltip label="Interview me in rounds of decision forms before the plan is drafted. The default is on Settings → Tasks.">
+        <label className="dispatch-grill-first-control">
+          <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+          <span className="field-label">Grill me first</span>
+        </label>
+      </Tooltip>
+      <span className="field-hint">
+        {checked
+          ? "The agent asks you every open question, a round at a time, before it drafts the plan."
+          : "The agent drafts the plan straight from this request."}
+      </span>
+    </div>
+  );
+}
+
 /**
  * Which advisor this launch will get, and where that came from - read-only, because the
  * advisor is chosen per model on Settings -> Harnesses. The one action is for a pin a task
@@ -1185,6 +1216,8 @@ function DispatchModal({
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
   const [planStorage, setPlanStorage] = useState<"repository" | "local" | null>(null);
+  /** Settings -> Tasks' Grill me first default, which a plan task the form leaves alone gets. */
+  const [planGrillFirstDefault, setPlanGrillFirstDefault] = useState(false);
   const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
   /**
    * What this MACHINE has to say about tooling a launched session will inherit - already
@@ -2191,7 +2224,11 @@ function DispatchModal({
       setRepos(list);
       setReposLoading(false);
     });
-    void fetchSkills().then((skills) => { if (alive) setPlanStorage(skills?.planStorage ?? "repository"); });
+    void fetchSkills().then((skills) => {
+      if (!alive) return;
+      setPlanStorage(skills?.planStorage ?? "repository");
+      setPlanGrillFirstDefault(skills?.planGrillFirst ?? false);
+    });
     void workflowRequest<WorkflowConfig>("/api/workflows/config")
       .then((config) => {
         if (alive) setWorkflowConfig(config);
@@ -2464,6 +2501,8 @@ function DispatchModal({
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
           workflowId: submitted.workflowId,
+          // Omitted unless chosen here, so the daemon pins the Settings default itself.
+          grillFirst: submitted.kind === "plan" ? submitted.grillFirst : undefined,
           dependencies: submitted.dependencies,
           backlog: !launchesNow,
           // The switch governs a task left in the backlog. An immediate dispatch is
@@ -3094,6 +3133,13 @@ function DispatchModal({
                 : kindBehavior.constraint}
           </span>
           {usesHarness && <ModelCatalogNotice agent={draft.agent} />}
+          {draft.kind === "plan" && (
+            <GrillFirstField
+              checked={draft.grillFirst ?? planGrillFirstDefault}
+              className={guidedDim}
+              onChange={(grillFirst) => update({ grillFirst })}
+            />
+          )}
           {kindUnavailable && (
             <span className={`dispatch-workflow-warning${guidedDim}`}>
               This kind is available only when conductor is enabled for the selected repository.

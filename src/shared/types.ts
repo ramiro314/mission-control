@@ -1915,6 +1915,8 @@ export interface SkillsView {
   alwaysDraftPr: boolean;
   commitPlanHtml: boolean;
   planStorage: "repository" | "local";
+  /** Grill me first: the default new plan tasks are pinned with. */
+  planGrillFirst: boolean;
   /** The master switch. Off means nothing is symlinked, whatever the rows say. */
   enabled: boolean;
   skills: SkillRow[];
@@ -2372,6 +2374,13 @@ export interface Task {
   planInputError?: string | null;
   /** Independent policy corruption must not be cleared by replacing plan inputs. */
   planPolicyError?: string | null;
+  /**
+   * Grill me first, pinned at creation from the dispatch or `SkillsConfig.planGrillFirst`.
+   * Read only through `planGrillsFirst` (`@shared/task.ts`), which also asks the kind: it
+   * means something on a plan task alone. Optional on the type so hand-built fixtures need
+   * not name it; absent means off.
+   */
+  grillFirst?: boolean;
   /**
    * Where this item sits in the backlog, ascending - the operator's order and the only one.
    *

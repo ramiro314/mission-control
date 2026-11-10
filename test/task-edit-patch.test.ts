@@ -214,6 +214,7 @@ test("every field on the form reaches the patch", () => {
     // moved to Settings -> Harnesses, so it is judged against a task that has one.
     advisorModel: "",
     workflowId: "workflow-review",
+    grillFirst: true,
     enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],
   };
@@ -256,4 +257,19 @@ test("a working copy is stale exactly when the row's editable fields moved", () 
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", labels: ["bug"] }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", title: "Renamed" }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", enabled: false }))));
+});
+
+test("Grill me first reads back as a plan task's choice and saves only when it changes", () => {
+  const plan = mkTask({ kind: "plan", grillFirst: true });
+  assert.equal(draftFromTask(plan).grillFirst, true);
+  assert.equal(taskUpdatePatch(plan, draftFromTask(plan), plan.intent), null, "an untouched pin is not resent");
+  assert.deepEqual(taskUpdatePatch(plan, { ...draftFromTask(plan), grillFirst: false }, plan.intent), { grillFirst: false });
+  // A row filed before the column existed reads as off, not as a choice nobody made.
+  assert.equal(draftFromTask(mkTask({ kind: "plan" })).grillFirst, false);
+  // Any other kind has no pin, so switching the editor to plan leaves the daemon to pin the
+  // Settings default, and the patch carries the kind alone.
+  const ship = mkTask();
+  assert.equal(draftFromTask(ship).grillFirst, undefined);
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan" }, ship.intent), { kind: "plan" });
+  assert.ok(!draftsEqual(draftFromTask(plan), draftFromTask(mkTask({ kind: "plan", grillFirst: false }))));
 });
