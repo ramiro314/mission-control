@@ -4,12 +4,16 @@ import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import type { SkillsState } from "../useSkills.ts";
 import {
   BUILTIN_KIND_WORKFLOW_DEFAULTS,
+  GRILL_FIRST_TASK_KINDS,
   HARNESS_LAUNCHED_TASK_KINDS,
   TASK_KIND_INFO,
   taskDefaultWorkflowId,
 } from "@shared/task.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { ConsoleCard } from "./settings-console.tsx";
+import { InfoTip } from "./InfoTip.tsx";
+import { GRILL_FIRST_TIP } from "../lib/grill-first.ts";
+import { GRILL_SKILL } from "@shared/skills.ts";
 
 /** Select values for a dispatch-default row that follows its built-in, or is explicitly None. */
 const BUILTIN_OPTION = "__builtin";
@@ -23,9 +27,9 @@ const NONE_OPTION = "__none";
 // the Workflow config's `kindWorkflowDefaults`, through the same `useWorkflowSettings` state
 // Settings › Workflows and Trust read, so no screen polls a second copy of that blob.
 //
-// Grill me first is the Plan kind's own setting. It is stored with the other plan policy in
-// the Skills config, because like Plan storage it is pinned on each plan task at creation,
-// and it is drawn from the same `useSkills` state Settings › Skills reads.
+// Grill me first's per-kind defaults are stored in the Skills config, beside the skill they
+// need, because like Plan storage they are pinned on each task at creation; they are drawn
+// from the same `useSkills` state Settings › Skills reads.
 export function TaskSettingsPanel({
   state,
   skills,
@@ -33,7 +37,7 @@ export function TaskSettingsPanel({
   foremanEnabled = false,
 }: {
   state: WorkflowSettingsState;
-  /** The Skills config and catalog, which carry the Grill me first default. */
+  /** The Skills config and catalog, which carry the Grill me first defaults. */
   skills?: SkillsState;
   /** Live catalog; only active published workflows are valid dispatch defaults. */
   workflows?: WorkflowSummary[];
@@ -144,44 +148,51 @@ export function TaskSettingsPanel({
   );
 }
 
-/** The `grill` skill a Grill me first plan task invokes before drafting. */
-const GRILL_SKILL_ID = "grill";
-
 /**
- * Plan tasks: the Grill me first default every new plan task is pinned with. The dispatch
- * form overrides it per task. Says so when the skill it needs is off, because the dispatch
- * gate then refuses every plan task this default turns it on for.
+ * Grill me first: one default per kind that offers it, all off until chosen here. The dispatch
+ * form overrides it per task. Says so when the skill it needs is off, because the dispatch gate
+ * then refuses every task a checked kind turns it on for.
  */
 function GrillFirstCard({ skills }: { skills: SkillsState }): React.JSX.Element {
   const { view, update, error } = skills;
-  const grill = view?.skills.find((row) => row.id === GRILL_SKILL_ID);
+  const grill = view?.skills.find((row) => row.id === GRILL_SKILL);
   const grillOff = view !== null && (!view.enabled || grill?.enabled !== true);
+  const chosen = view?.grillFirstKinds ?? [];
   return (
-    <ConsoleCard title="Plan tasks" anchor="tasks/grill-first">
-      <div className="kb-row">
-        <div className="kb-row-text">
-          <label className="kb-row-label" htmlFor="plan-grill-first">Grill me first</label>
-          <span className="kb-row-desc">
-            A new plan task interviews you in rounds of decision forms, each asking every
-            question that can be asked so far, before it drafts the plan. The plan is then
-            written, reviewed and optionally phased as usual. The dispatch form can turn it on
-            or off per task; existing tasks keep what they were filed with.
-          </span>
-        </div>
-        <Tooltip label="Default for new plan tasks: interview me before the plan is drafted">
-          <input
-            id="plan-grill-first"
-            type="checkbox"
-            checked={view?.planGrillFirst ?? false}
-            disabled={!view}
-            onChange={(event) => void update({ planGrillFirst: event.target.checked })}
-          />
-        </Tooltip>
+    <ConsoleCard
+      title="Grill me first"
+      anchor="tasks/grill-first"
+      action={<InfoTip about="Grill me first" text={GRILL_FIRST_TIP} />}
+    >
+      <p className="settings-hint">
+        Which kinds of task start with Grill me first on. The dispatch form can turn it on or off
+        per task; existing tasks keep what they were filed with.
+      </p>
+      <div className="grill-first-kinds">
+        {GRILL_FIRST_TASK_KINDS.map((kind) => {
+          const label = TASK_KIND_INFO[kind].label;
+          return (
+            <label className="grill-first-kind" key={kind}>
+              <input
+                type="checkbox"
+                checked={chosen.includes(kind)}
+                disabled={!view}
+                aria-label={`Grill me first for ${label} tasks`}
+                onChange={(event) => void update({
+                  grillFirstKinds: event.target.checked
+                    ? GRILL_FIRST_TASK_KINDS.filter((k) => k === kind || chosen.includes(k))
+                    : chosen.filter((k) => k !== kind),
+                })}
+              />
+              <span aria-hidden>{label}</span>
+            </label>
+          );
+        })}
       </div>
-      {view?.planGrillFirst && grillOff && (
+      {chosen.length > 0 && grillOff && (
         <p className="settings-warn">
-          The grill skill is off, so a plan task that grills first is refused at dispatch.
-          Turn it on under Settings › Skills.
+          The grill skill is off, so a task that grills first is refused at dispatch. Turn it on
+          under Settings › Skills.
         </p>
       )}
       {error && <p className="settings-error" role="alert">{error}</p>}

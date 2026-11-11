@@ -42,6 +42,7 @@ import {
   dispatchHasNoProvisionedResources,
   isLocalPlanningTask,
   isPlanningTaskKind,
+  taskGrillsFirst,
   TASK_KIND_BEHAVIOR,
   taskKindAllowsBacklog,
   taskKindForcedRuntime,
@@ -91,6 +92,7 @@ import {
   type MissionMcpRequirement,
 } from "./mission-mcp.ts";
 import { planningSkillsForAgent, type PlanningSkillsForAgent } from "./plans/skills.ts";
+import { grillAction, grillFirstForAgent } from "./grill-first.ts";
 import { withTaskKindContract } from "./task-contract.ts";
 import { stampShapeTicketsAwaitingReview, withShapeTicketsCompletion } from "./shape-tickets.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
@@ -524,9 +526,15 @@ export class Dispatcher {
       // is resolving for does not exist yet and will start after the current skill generation
       // by construction. See `skills/invoke.ts`.
       const planSkills = isPlanningTaskKind(task.kind)
-        ? (this.deps.planSkills ?? planningSkillsForAgent)(task.agent, { kind: task.kind, grillFirst: task.grillFirst })
+        ? (this.deps.planSkills ?? planningSkillsForAgent)(task.agent, task.kind)
         : null;
       if (planSkills && !planSkills.ok) throw new Error(planSkills.message);
+      // Grill me first's skill, resolved in the same place and for the same reason: a launch
+      // that cannot invoke it cannot run the interview its contract opens with.
+      const grillFirst = taskGrillsFirst(task)
+        ? grillFirstForAgent(task.agent, grillAction((id) => this.registry.getSessionAction(id)))
+        : null;
+      if (grillFirst && !grillFirst.ok) throw new Error(grillFirst.message);
       // `multiRepoDispatch`, enforced ONCE here for BOTH runtimes rather than per launch
       // path. A task that attaches repositories and cannot be given write access to them
       // must not start at all: the worktrees would be provisioned and the intent manifest
@@ -706,6 +714,7 @@ export class Dispatcher {
         claimNote +
         withTaskKindContract(provisioned, intentWithRepoManifest(provisioned, standingBlock), {
           planSkills: planSkills?.ok ? planSkills.commands : null,
+          grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
           workflowEvidence,
           planDiscovery,
         });

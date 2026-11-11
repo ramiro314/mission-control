@@ -14,6 +14,7 @@ import { CI_STRICTNESS } from "./ci-checks.ts";
 import { WORKTREE_HISTORY_LIMITS, WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
+  GRILL_FIRST_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
   RESIDENT_TASK_REFUSAL,
@@ -26,7 +27,7 @@ import {
   taskKindCreator,
 } from "./task.ts";
 import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
-import type { HarnessLaunchedTaskKind } from "./task.ts";
+import type { GrillFirstTaskKind, HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
@@ -1269,8 +1270,9 @@ export const DispatchSchema = z
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
     /**
-     * Grill me first, for a plan task. Omitted follows `SkillsConfig.planGrillFirst`; either
-     * way the answer is pinned on the task at creation. Ignored for every other kind.
+     * Grill me first. Omitted follows the kind's default (`SkillsConfig.grillFirstKinds`);
+     * either way the answer is pinned on the task at creation. Ignored for a kind that does
+     * not offer it (`GRILL_FIRST_TASK_KINDS`).
      */
     grillFirst: z.boolean().optional(),
     backlog: z.boolean().optional().default(false),
@@ -1572,7 +1574,7 @@ const UpdateTaskFieldsSchema = z
     effort: EffortLevelSchema.nullable().optional(),
     advisorModel: z.null().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
-    /** Grill me first, for a plan task. Provisioning intent, like `workflowId`. */
+    /** Grill me first. Provisioning intent, like `workflowId`. */
     grillFirst: z.boolean().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
@@ -2574,11 +2576,13 @@ export const SkillsConfigSchema = z.object({
   commitPlanHtml: z.boolean().default(false),
   planStorage: z.enum(["repository", "local"]).default("repository"),
   /**
-   * Grill me first: the default for new plan tasks, pinned on each one at creation and
-   * overridable per dispatch. On, a plan session interviews the human with the `grill` skill
-   * before drafting. Off, a plan task is exactly the plan task it always was.
+   * Grill me first: the kinds whose new tasks start with it on, from Settings -> Tasks. Empty,
+   * so every kind starts off. Pinned on each task at creation and overridable per dispatch.
+   * On, the session runs the Grill session action before its work; off, the task is exactly
+   * the task it always was.
    */
-  planGrillFirst: z.boolean().default(false),
+  grillFirstKinds: z.array(z.enum(GRILL_FIRST_TASK_KINDS as unknown as [GrillFirstTaskKind, ...GrillFirstTaskKind[]]))
+    .default([]),
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
   /** Missing row overrides use this policy. Legacy stored rows default to off. */
@@ -2614,7 +2618,7 @@ export const SkillsConfigSchema = z.object({
 export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /** Partial update of the skills config from the dashboard. */
-export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, planGrillFirst: true, alwaysDraftPr: true })
+export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, grillFirstKinds: true, alwaysDraftPr: true })
   .partial()
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;

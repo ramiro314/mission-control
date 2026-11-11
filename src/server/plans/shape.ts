@@ -2,7 +2,7 @@ import type { PlanIdentity } from "@shared/managed-plans.ts";
 import { PLAN_PAGE_FILENAME, PLAN_SOURCE_PATH_SHAPE } from "@shared/plans.ts";
 import { SHAPE_TICKETS_OUTCOMES } from "@shared/protocol.ts";
 import { deferredImperativeList, taskCompletionContract } from "@shared/task-completion.ts";
-import { PLAN_GRILL_SKILL_ID, PLAN_HTML_SKILL_ID } from "./prompt.ts";
+import { PLAN_HTML_SKILL_ID } from "./prompt.ts";
 import {
   COMPLETE_SHAPE_TICKETS_TOOL,
   PLAN_CONTEXT_TOOL,
@@ -34,11 +34,10 @@ import {
 export const SHAPE_APPENDIX_MARKER = "--- Mission Control shape ---";
 
 /**
- * The bundled interview skill, `skills/grill/SKILL.md`, the one a Grill me first plan task
- * runs too. Which skills a shape task needs, and in what order, is `PLANNING_SKILLS.shape` in
- * `plans/skills.ts`, not a list here.
+ * The bundled interview skill, `skills/grill/SKILL.md`. Which skills a shape task needs, and
+ * in what order, is `PLANNING_SKILLS.shape` in `plans/skills.ts`, not a list here.
  */
-export const SHAPE_GRILL_SKILL_ID = PLAN_GRILL_SKILL_ID;
+export const SHAPE_GRILL_SKILL_ID = "grill";
 
 /** The bundled slicing skill, `skills/tickets/SKILL.md`: breakdown review, then tasks. */
 export const SHAPE_TICKETS_SKILL_ID = "tickets";

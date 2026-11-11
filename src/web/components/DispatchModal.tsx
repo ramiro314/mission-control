@@ -37,8 +37,10 @@ import {
   TASK_KIND_BEHAVIOR,
   TASK_PRIORITIES,
   hasReviewableDiff,
+  isGrillFirstTaskKind,
   taskDefaultWorkflowId,
   taskKindAllowsBacklog,
+  type GrillFirstTaskKind,
 } from "@shared/task.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
 import {
@@ -92,6 +94,8 @@ import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { DeleteButton } from "./DeleteButton.tsx";
 import { LabelChips, ScheduleSwitch } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { InfoTip } from "./InfoTip.tsx";
+import { GRILL_FIRST_TIP } from "../lib/grill-first.ts";
 import { DispatchModeToggle } from "./DispatchModeToggle.tsx";
 import type { ResidentProfile } from "@shared/residents.ts";
 import { ResidentDispatch } from "../residents/ResidentDispatch.tsx";
@@ -419,12 +423,13 @@ export function defaultEffortOptionLabel(
 const AGENT_FIELD_TIP =
   "Which harness this task is dispatched to - switching resets the model and effort overrides";
 /**
- * Grill me first, for a plan task: this dispatch's override of the Settings -> Tasks default.
- * The hint says what the choice does to the session, since the two outcomes look alike here.
+ * Grill me first: this dispatch's override of its kind's default on Settings -> Tasks. What it
+ * does is said once, on the "i" beside it, so the crew row stays one line.
  *
- * An untouched box sends nothing and the daemon pins the default, so the box only claims an
- * answer once it knows the default: indeterminate, and disabled, while it loads; indeterminate
- * but choosable when it could not be read. Either way it never shows an "off" it would not send.
+ * An untouched box sends nothing and the daemon pins the kind's default, so the box only claims
+ * an answer once it knows that default: indeterminate, and disabled, while it loads;
+ * indeterminate but choosable when it could not be read. It never shows an "off" it would not
+ * send.
  */
 function GrillFirstField({
   choice,
@@ -434,38 +439,33 @@ function GrillFirstField({
 }: {
   /** The choice made on this form, or undefined to follow the default. */
   choice: boolean | undefined;
-  /** The Settings default: undefined while loading, null when it could not be read. */
+  /** The kind's default: undefined while loading, null when it could not be read. */
   fallback: boolean | null | undefined;
   className: string;
   onChange: (grillFirst: boolean) => void;
 }): React.JSX.Element {
   const value = choice ?? fallback;
   const known = typeof value === "boolean";
+  const tip = value === undefined
+    ? `${GRILL_FIRST_TIP} Reading this kind's default from Settings → Tasks…`
+    : value === null
+      ? `${GRILL_FIRST_TIP} This kind's default could not be read, so an untouched box follows it; tick or clear it to choose for this task.`
+      : GRILL_FIRST_TIP;
   return (
     <div className={`dispatch-grill-first${className}`}>
-      <Tooltip label="Interview me in rounds of decision forms before the plan is drafted. The default is on Settings → Tasks.">
-        <label className="dispatch-grill-first-control">
-          <input
-            type="checkbox"
-            checked={value === true}
-            disabled={value === undefined}
-            ref={(el) => {
-              if (el) el.indeterminate = !known;
-            }}
-            onChange={(e) => onChange(e.target.checked)}
-          />
-          <span className="field-label">Grill me first</span>
-        </label>
-      </Tooltip>
-      <span className="field-hint">
-        {value === undefined
-          ? "Reading the default from Settings → Tasks…"
-          : value === null
-            ? "Follows the Settings → Tasks default, which could not be read. Tick or clear the box to choose for this task."
-            : value
-              ? "The agent asks you every open question, a round at a time, before it drafts the plan."
-              : "The agent drafts the plan straight from this request."}
-      </span>
+      <label className="dispatch-grill-first-control">
+        <input
+          type="checkbox"
+          checked={value === true}
+          disabled={value === undefined}
+          ref={(el) => {
+            if (el) el.indeterminate = !known;
+          }}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span className="field-label">Grill me first</span>
+      </label>
+      <InfoTip about="Grill me first" text={tip} />
     </div>
   );
 }
@@ -1239,10 +1239,10 @@ function DispatchModal({
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
   const [planStorage, setPlanStorage] = useState<"repository" | "local" | null>(null);
   /**
-   * Settings -> Tasks' Grill me first default, which a plan task the form leaves alone gets:
-   * undefined while it loads, null when it could not be read.
+   * The kinds Settings -> Tasks starts with Grill me first on, which a task the form leaves
+   * alone gets: undefined while it loads, null when it could not be read.
    */
-  const [planGrillFirstDefault, setPlanGrillFirstDefault] = useState<boolean | null | undefined>(undefined);
+  const [grillFirstKinds, setGrillFirstKinds] = useState<readonly GrillFirstTaskKind[] | null | undefined>(undefined);
   const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
   /**
    * What this MACHINE has to say about tooling a launched session will inherit - already
@@ -2252,7 +2252,7 @@ function DispatchModal({
     void fetchSkills().then((skills) => {
       if (!alive) return;
       setPlanStorage(skills?.planStorage ?? "repository");
-      setPlanGrillFirstDefault(skills ? skills.planGrillFirst : null);
+      setGrillFirstKinds(skills ? skills.grillFirstKinds : null);
     });
     void workflowRequest<WorkflowConfig>("/api/workflows/config")
       .then((config) => {
@@ -2527,7 +2527,7 @@ function DispatchModal({
           effort: submitted.effort || undefined,
           workflowId: submitted.workflowId,
           // Omitted unless chosen here, so the daemon pins the Settings default itself.
-          grillFirst: submitted.kind === "plan" ? submitted.grillFirst : undefined,
+          grillFirst: isGrillFirstTaskKind(submitted.kind) ? submitted.grillFirst : undefined,
           dependencies: submitted.dependencies,
           backlog: !launchesNow,
           // The switch governs a task left in the backlog. An immediate dispatch is
@@ -3158,10 +3158,10 @@ function DispatchModal({
                 : kindBehavior.constraint}
           </span>
           {usesHarness && <ModelCatalogNotice agent={draft.agent} />}
-          {draft.kind === "plan" && (
+          {isGrillFirstTaskKind(draft.kind) && (
             <GrillFirstField
               choice={draft.grillFirst}
-              fallback={planGrillFirstDefault}
+              fallback={grillFirstKinds ? grillFirstKinds.includes(draft.kind) : grillFirstKinds}
               className={guidedDim}
               onChange={(grillFirst) => update({ grillFirst })}
             />

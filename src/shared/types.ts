@@ -39,6 +39,7 @@ import type {
 // status can reuse the document contract without introducing an emitted module cycle.
 import type { ForemanInstructionsSource, HtmlBlockPathStep } from "./protocol.ts";
 import type { SkillEnforcement } from "./skills.ts";
+import type { GrillFirstTaskKind } from "./task.ts";
 import type { TaskSourceRef } from "./task-source.ts";
 import type { TelemetrySettingsSummary } from "./telemetry.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
@@ -1915,8 +1916,8 @@ export interface SkillsView {
   alwaysDraftPr: boolean;
   commitPlanHtml: boolean;
   planStorage: "repository" | "local";
-  /** Grill me first: the default new plan tasks are pinned with. */
-  planGrillFirst: boolean;
+  /** The kinds whose new tasks start with Grill me first on. */
+  grillFirstKinds: GrillFirstTaskKind[];
   /** The master switch. Off means nothing is symlinked, whatever the rows say. */
   enabled: boolean;
   skills: SkillRow[];
@@ -2375,10 +2376,10 @@ export interface Task {
   /** Independent policy corruption must not be cleared by replacing plan inputs. */
   planPolicyError?: string | null;
   /**
-   * Grill me first, pinned at creation from the dispatch or `SkillsConfig.planGrillFirst`.
-   * Read only through `planGrillsFirst` (`@shared/task.ts`), which also asks the kind: it
-   * means something on a plan task alone. Optional on the type so hand-built fixtures need
-   * not name it; absent means off.
+   * Grill me first, pinned at creation from the dispatch or the kind's default
+   * (`SkillsConfig.grillFirstKinds`). Read only through `taskGrillsFirst` (`@shared/task.ts`),
+   * which also asks the kind. Optional on the type so hand-built fixtures need not name it;
+   * absent means off.
    */
   grillFirst?: boolean;
   /**

@@ -223,8 +223,9 @@ let db: DatabaseSync | undefined;
 //    this entry above upstream's highest, as #618 and this sync did.
 // 20: fork - a moved base branch's record (`tasks.base_branch_moved_from` and
 //     `tasks.base_branch_moved_sha`), NULL with no backfill: no task moved before they existed.
-// 21: fork - a plan task's Grill me first pin (`tasks.grill_first`), 0 with no backfill: every
-//     plan task filed before it drafted without grilling.
+// 21: fork - a task's Grill me first pin (`tasks.grill_first`), 0 with no backfill: every task
+//     filed before it started without grilling; and the Grill action's operator text
+//     (`builtin_session_action_overrides`), empty on an upgraded database.
 export const CURRENT_DATABASE_SCHEMA_VERSION = 21;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
@@ -428,7 +429,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
       plan_inputs TEXT, plan_policy TEXT,
-      -- Grill me first, a plan task's pin (resolveGrillFirstPin). 0 on every other kind.
+      -- Grill me first (resolveGrillFirstPin). 0 on every kind that does not offer it.
       grill_first   INTEGER NOT NULL DEFAULT 0,
       dependencies  TEXT,               -- JSON TaskDependency[], NULL = none
       -- May the backlog autopilot schedule this? 1 unless somebody switched it off.
@@ -1125,6 +1126,16 @@ function createSchemaObjects(d: DatabaseSync): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_session_actions_normalized_name
       ON session_actions(normalized_name);
+
+    -- The operator's instruction for an editable built-in session action (today only Grill),
+    -- overlaid on the shipped one by WorkflowStore. prompt_md NULL is "reset to the shipped
+    -- text"; the row stays so the revision only ever moves forward.
+    CREATE TABLE IF NOT EXISTS builtin_session_action_overrides (
+      action_id  TEXT PRIMARY KEY,
+      prompt_md  TEXT,
+      revision   INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
 
     -- The Global Command catalog: what each portable workflow slot runs on this machine.
     --
@@ -3945,8 +3956,8 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "dependencies", "TEXT");
   addColumn(d, "tasks", "plan_inputs", "TEXT");
   addColumn(d, "tasks", "plan_policy", "TEXT");
-  // A plan task's Grill me first pin. NOT NULL DEFAULT 0 is the whole migration: every plan
-  // task filed before it drafted without grilling, and reads back exactly as it was.
+  // A task's Grill me first pin. NOT NULL DEFAULT 0 is the whole migration: every task filed
+  // before it started without grilling, and reads back exactly as it was.
   addColumn(d, "tasks", "grill_first", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "tasks", "workflow_id", "TEXT");
   // `enabled`: the backlog's autopilot toggle. NOT NULL DEFAULT 1, which is the whole

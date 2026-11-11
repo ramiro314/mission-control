@@ -77,7 +77,7 @@ function skills(view: Partial<SkillsView> | null): SkillsState {
       alwaysDraftPr: false,
       commitPlanHtml: false,
       planStorage: "repository",
-      planGrillFirst: false,
+      grillFirstKinds: [],
       enabled: true,
       skills: [{ id: "grill", name: "grill", description: "", category: "planning", enforcement: "triggered", enabled: true }],
       pending: 0,
@@ -89,28 +89,43 @@ function skills(view: Partial<SkillsView> | null): SkillsState {
   };
 }
 
-test("the Plan tasks card carries the Grill me first default on its anchor", () => {
-  const off = render(DEFAULT_WORKFLOW_CONFIG, { skills: skills({}) });
-  assert.match(off, /data-anchor="tasks\/grill-first"/);
-  assert.match(off, /Plan tasks/);
-  assert.match(off, /<label class="kb-row-label" for="plan-grill-first">Grill me first<\/label>/);
-  assert.match(off, /<input id="plan-grill-first" type="checkbox" aria-describedby="[^"]+"\/>/);
-  const on = render(DEFAULT_WORKFLOW_CONFIG, { skills: skills({ planGrillFirst: true }) });
-  assert.match(on, /<input id="plan-grill-first" type="checkbox"[^>]* checked=""/);
-  assert.doesNotMatch(on, /The grill skill is off/);
+/** The checkbox for one kind's default, as drawn. */
+function kindBox(html: string, kind: string): string {
+  return html.match(new RegExp(`<input type="checkbox"[^>]*aria-label="Grill me first for ${kind} tasks"[^>]*/>`))?.[0] ?? "";
+}
+
+test("the Grill me first card offers one default per kind but shape, all off, with an info tip", () => {
+  const html = render(DEFAULT_WORKFLOW_CONFIG, { skills: skills({}) });
+  assert.match(html, /data-anchor="tasks\/grill-first"/);
+  assert.match(html, /<h3 class="sc-card-title">Grill me first<\/h3>/);
+  for (const kind of ["ship", "bugfix", "document", "plan", "scout", "chat"]) {
+    const box = kindBox(html, kind);
+    assert.ok(box, `a box for ${kind}`);
+    assert.doesNotMatch(box, /checked/, `${kind} starts off`);
+  }
+  assert.equal(kindBox(html, "shape"), "", "shape grills on its own contract");
+  // The description is the "i"'s tooltip, not a paragraph on the card.
+  assert.match(html, /<button type="button" class="info-tip" aria-label="About Grill me first"[^>]*>i<\/button>/);
+  assert.match(html, /runs the Library&#x27;s Grill action/);
+
+  const chosen = render(DEFAULT_WORKFLOW_CONFIG, { skills: skills({ grillFirstKinds: ["plan", "bugfix"] }) });
+  assert.match(kindBox(chosen, "plan"), /checked=""/);
+  assert.match(kindBox(chosen, "bugfix"), /checked=""/);
+  assert.doesNotMatch(kindBox(chosen, "ship"), /checked/);
+  assert.doesNotMatch(chosen, /The grill skill is off/);
 });
 
 test("a Grill me first default whose skill is off says the dispatch would be refused", () => {
   const grillOff = skills({
-    planGrillFirst: true,
+    grillFirstKinds: ["ship"],
     skills: [{ id: "grill", name: "grill", description: "", category: "planning", enforcement: "triggered", enabled: false }],
   });
   assert.match(render(DEFAULT_WORKFLOW_CONFIG, { skills: grillOff }), /The grill skill is off/);
-  assert.match(render(DEFAULT_WORKFLOW_CONFIG, { skills: skills({ planGrillFirst: true, enabled: false }) }), /The grill skill is off/);
-  // Off, nothing is refused, so nothing is said.
-  assert.doesNotMatch(render(DEFAULT_WORKFLOW_CONFIG, { skills: { ...grillOff, view: { ...grillOff.view!, planGrillFirst: false } } }), /The grill skill is off/);
+  assert.match(render(DEFAULT_WORKFLOW_CONFIG, { skills: skills({ grillFirstKinds: ["ship"], enabled: false }) }), /The grill skill is off/);
+  // No kind on, nothing is refused, so nothing is said.
+  assert.doesNotMatch(render(DEFAULT_WORKFLOW_CONFIG, { skills: { ...grillOff, view: { ...grillOff.view!, grillFirstKinds: [] } } }), /The grill skill is off/);
 });
 
-test("before the Skills config answers, the Grill me first box is drawn disabled", () => {
-  assert.match(render(DEFAULT_WORKFLOW_CONFIG, { skills: skills(null) }), /<input id="plan-grill-first" type="checkbox"[^>]* disabled=""/);
+test("before the Skills config answers, the Grill me first boxes are drawn disabled", () => {
+  assert.match(kindBox(render(DEFAULT_WORKFLOW_CONFIG, { skills: skills(null) }), "plan"), /disabled=""/);
 });

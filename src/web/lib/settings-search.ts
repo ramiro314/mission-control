@@ -445,13 +445,13 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("workflow-policy"),
   },
   {
-    id: "plan-grill-first",
-    label: "Grill me first",
-    description: "New plan tasks interview you in rounds of decision forms before the plan is drafted.",
+    id: "grill-first-defaults",
+    label: "Grill me first per task kind",
+    description: "Which kinds of task start by interviewing you in rounds of decision forms.",
     category: "tasks",
     anchor: "tasks/grill-first",
-    keywords: ["grill", "interview", "plan", "questions", "decisions", "before drafting"],
-    kind: "toggle",
+    keywords: ["grill", "interview", "questions", "decisions", "before starting", "task kind", "per kind"],
+    kind: "jump",
     backup: backupDomains("skills"),
   },
   {

@@ -1,4 +1,4 @@
-import { isPlanningTaskKind, planGrillsFirst, type PlanningTaskKind } from "@shared/task.ts";
+import { isPlanningTaskKind, type PlanningTaskKind } from "@shared/task.ts";
 import type { AgentType, Session, Task, TaskKind } from "@shared/types.ts";
 import {
   requiredSkillCommand,
@@ -6,7 +6,6 @@ import {
   type RequiredSkillCommand,
 } from "../skills/invoke.ts";
 import {
-  PLAN_GRILL_SKILL_ID,
   PLAN_HTML_SKILL_ID,
   PLAN_PHASED_SKILL_ID,
   type PlanSkillInvocations,
@@ -63,21 +62,11 @@ export type PlanningSkillResolution<K extends PlanningTaskKind = PlanningTaskKin
   | { ok: true; commands: PlanningSkillInvocationsByKind[K] }
   | { ok: false; message: string };
 
-/**
- * What a planning task needs resolved: its kind's row, plus `grill` ahead of it for a plan
- * task pinned Grill me first. The task fields, not a second flag, so every seam asks
- * `planGrillsFirst` the same question.
- */
-export interface PlanningSkillNeed<K extends PlanningTaskKind = PlanningTaskKind> {
-  kind: K;
-  grillFirst?: boolean;
-}
-
 /** The launch-time resolver's shape, as the Dispatcher takes it for injection. */
-export type PlanningSkillsForAgent = (agent: AgentType, need: PlanningSkillNeed) => PlanningSkillResolution;
+export type PlanningSkillsForAgent = (agent: AgentType, kind: PlanningTaskKind) => PlanningSkillResolution;
 
 /** The assignment-time resolver's shape, as the TaskManager takes it for injection. */
-export type PlanningSkillsForSession = (session: Session, need: PlanningSkillNeed) => PlanningSkillResolution;
+export type PlanningSkillsForSession = (session: Session, kind: PlanningTaskKind) => PlanningSkillResolution;
 
 /** Back-compat name for the plan kind's resolution. */
 export type PlanSkillResolution = PlanningSkillResolution<"plan">;
@@ -112,16 +101,11 @@ function refusal(problem: string, kind: TaskKind = "plan"): string {
  * invoked. The single resolve-or-refuse path both delivery seams and the dispatch gate share.
  */
 function resolvePlanningSkills<K extends PlanningTaskKind>(
-  need: PlanningSkillNeed<K>,
+  kind: K,
   resolveOne: (id: string) => RequiredSkillCommand,
 ): PlanningSkillResolution<K> {
-  const { kind } = need;
-  // Grill first is needed first, so it is resolved, and refused, ahead of the kind's row.
-  const row: Record<string, string> = planGrillsFirst(need)
-    ? { grill: PLAN_GRILL_SKILL_ID, ...PLANNING_SKILLS[kind] }
-    : PLANNING_SKILLS[kind];
   const commands: Record<string, string> = {};
-  for (const [field, id] of Object.entries(row)) {
+  for (const [field, id] of Object.entries(PLANNING_SKILLS[kind])) {
     const resolved = resolveOne(id);
     if (!resolved.ok) return { ok: false, message: refusal(resolved.message, kind) };
     commands[field] = resolved.command;
@@ -137,10 +121,10 @@ function resolvePlanningSkills<K extends PlanningTaskKind>(
  */
 export function planningSkillsForAgent<K extends PlanningTaskKind>(
   agent: AgentType,
-  need: PlanningSkillNeed<K>,
+  kind: K,
   resolve: typeof skillInvocationForAgent = skillInvocationForAgent,
 ): PlanningSkillResolution<K> {
-  return resolvePlanningSkills(need, (id) => resolve(agent, id));
+  return resolvePlanningSkills(kind, (id) => resolve(agent, id));
 }
 
 /**
@@ -152,10 +136,10 @@ export function planningSkillsForAgent<K extends PlanningTaskKind>(
  */
 export function planningSkillsForSession<K extends PlanningTaskKind>(
   session: Session,
-  need: PlanningSkillNeed<K>,
+  kind: K,
   resolve: typeof requiredSkillCommand = requiredSkillCommand,
 ): PlanningSkillResolution<K> {
-  return resolvePlanningSkills(need, (id) => resolve(session, id));
+  return resolvePlanningSkills(kind, (id) => resolve(session, id));
 }
 
 /** The plan kind's launch-time resolution. */
@@ -163,7 +147,7 @@ export function planSkillsForAgent(
   agent: AgentType,
   resolve: typeof skillInvocationForAgent = skillInvocationForAgent,
 ): PlanSkillResolution {
-  return planningSkillsForAgent(agent, { kind: "plan" }, resolve);
+  return planningSkillsForAgent(agent, "plan", resolve);
 }
 
 /** The plan kind's assignment-time resolution. */
@@ -171,7 +155,7 @@ export function planSkillsForSession(
   session: Session,
   resolve: typeof requiredSkillCommand = requiredSkillCommand,
 ): PlanSkillResolution {
-  return planningSkillsForSession(session, { kind: "plan" }, resolve);
+  return planningSkillsForSession(session, "plan", resolve);
 }
 
 /**
@@ -183,10 +167,10 @@ export function planSkillsForSession(
  * or scout dispatch is untouched by this gate.
  */
 export function planDispatchBlock(
-  task: Pick<Task, "kind" | "agent" | "grillFirst">,
+  task: Pick<Task, "kind" | "agent">,
   resolve: typeof skillInvocationForAgent = skillInvocationForAgent,
 ): string | null {
   if (!isPlanningTaskKind(task.kind)) return null;
-  const resolved = planningSkillsForAgent(task.agent, { kind: task.kind, grillFirst: task.grillFirst }, resolve);
+  const resolved = planningSkillsForAgent(task.agent, task.kind, resolve);
   return resolved.ok ? null : resolved.message;
 }

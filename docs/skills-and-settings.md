@@ -203,7 +203,8 @@ that is not installed points at nothing, and an agent left to improvise a plan l
 like one that followed a procedure.
 
 The **Grill** row carries the interview a [shape task](dispatch-and-backlog.md) opens with, and
-that a plan task dispatched with **Grill me first** runs before drafting. It
+that any task dispatched with [Grill me first](dispatch-and-backlog.md#grill-me-first) runs
+through the Library's Grill session action before its work. It
 maps the work as a design tree and asks every question whose prerequisites are settled as one
 `request_plan_decisions` form per round, each question with its recommended option first and a
 free-text Other. Facts go to the agent and its subagents; only decisions go to you. It always
@@ -552,11 +553,11 @@ after-work Workflow rows (see [Dispatch an agent](dispatch-and-backlog.md), unde
 work**). Those rows used to be a card under **Settings → Workflows**, and they are no longer
 there: they describe a task kind rather than the Workflow subsystem's policy. They are
 daemon-backed, so they reach tasks from the API, task sources and recurring missions as well as
-the dispatch form. Its **Plan tasks** card holds **Grill me first**, the default for whether a new
-plan task interviews you with the Grill skill before drafting (see
-[Dispatch an agent](dispatch-and-backlog.md), under **plan**). It is stored with the other plan
-policy in the Skills config, is pinned on each plan task when it is filed, and warns when it is
-on while the Grill skill is off, because such a plan task is refused at dispatch.
+the dispatch form. Its **Grill me first** card holds one checkbox per kind - every kind but
+shape, all off until chosen - for whether a new task of that kind interviews you before it
+starts (see [Grill me first](dispatch-and-backlog.md#grill-me-first)). The defaults are stored in
+the Skills config, are pinned on each task when it is filed, and the card warns when any is on
+while the Grill skill is off, because such a task is refused at dispatch.
 
 **GitHub Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the

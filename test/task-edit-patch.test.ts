@@ -233,10 +233,7 @@ test("every field on the form reaches the patch", () => {
   );
 
   for (const [field, value] of Object.entries(changed)) {
-    // A pin is judged against a task that has one: only a plan task holds Grill me first.
-    const t = field === "advisorModel"
-      ? mkTask({ advisorModel: "opus" })
-      : field === "grillFirst" ? mkTask({ kind: "plan" }) : mkTask();
+    const t = field === "advisorModel" ? mkTask({ advisorModel: "opus" }) : mkTask();
     // `intent` is the one field that does not reach the patch off the draft: what gets
     // stored is the typed text with the attachment paths appended, so the modal composes
     // it and passes it in. Changing the draft's copy alone must therefore do nothing.
@@ -262,29 +259,25 @@ test("a working copy is stale exactly when the row's editable fields moved", () 
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", enabled: false }))));
 });
 
-test("Grill me first reads back as a plan task's choice and saves only when it changes", () => {
-  const plan = mkTask({ kind: "plan", grillFirst: true });
-  assert.equal(draftFromTask(plan).grillFirst, true);
-  assert.equal(taskUpdatePatch(plan, draftFromTask(plan), plan.intent), null, "an untouched pin is not resent");
-  assert.deepEqual(taskUpdatePatch(plan, { ...draftFromTask(plan), grillFirst: false }, plan.intent), { grillFirst: false });
+test("Grill me first reads back as a task's choice and saves only when it moves", () => {
+  const ship = mkTask({ kind: "ship", grillFirst: true });
+  assert.equal(draftFromTask(ship).grillFirst, true);
+  assert.equal(taskUpdatePatch(ship, draftFromTask(ship), ship.intent), null, "an untouched pin is not resent");
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), grillFirst: false }, ship.intent), { grillFirst: false });
   // A row filed before the column existed reads as off, not as a choice nobody made.
   assert.equal(draftFromTask(mkTask({ kind: "plan" })).grillFirst, false);
-  // Any other kind has no pin, so switching the editor to plan leaves the daemon to pin the
-  // Settings default, and the patch carries the kind alone.
-  const ship = mkTask();
-  assert.equal(draftFromTask(ship).grillFirst, undefined);
+  // Between kinds that both offer it the pin goes with the task, so the patch is the kind.
   assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan" }, ship.intent), { kind: "plan" });
-  // A choice made on the switch is sent even when it matches the stored false, or the daemon
-  // would pin the Settings default over it.
+  // Shape has no pin, so switching it to plan untouched leaves the daemon to pin plan's
+  // default, and a choice made on the switch is sent even when it is off.
+  const shape = mkTask({ kind: "shape" });
+  assert.equal(draftFromTask(shape).grillFirst, undefined);
+  assert.deepEqual(taskUpdatePatch(shape, { ...draftFromTask(shape), kind: "plan" }, shape.intent), { kind: "plan" });
   assert.deepEqual(
-    taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan", grillFirst: false }, ship.intent),
+    taskUpdatePatch(shape, { ...draftFromTask(shape), kind: "plan", grillFirst: false }, shape.intent),
     { kind: "plan", grillFirst: false },
   );
-  assert.deepEqual(
-    taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan", grillFirst: true }, ship.intent),
-    { kind: "plan", grillFirst: true },
-  );
-  // Off plan there is no pin to save, whatever the box last said.
-  assert.deepEqual(taskUpdatePatch(plan, { ...draftFromTask(plan), kind: "ship" }, plan.intent), { kind: "ship" });
-  assert.ok(!draftsEqual(draftFromTask(plan), draftFromTask(mkTask({ kind: "plan", grillFirst: false }))));
+  // Leaving for shape there is no pin to save, whatever the box last said.
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "shape" }, ship.intent), { kind: "shape" });
+  assert.ok(!draftsEqual(draftFromTask(ship), draftFromTask(mkTask({ kind: "ship", grillFirst: false }))));
 });

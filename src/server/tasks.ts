@@ -71,7 +71,9 @@ import {
   baseBranchMoveRefusal,
   taskHasRepository,
   dispatchHasNoProvisionedResources,
+  isGrillFirstTaskKind,
   isLocalPlanningTask,
+  taskGrillsFirst,
   isPlanningTaskKind,
   RESIDENT_TASK_REFUSAL,
   providerOwnsTaskCompletion,
@@ -157,6 +159,7 @@ import {
   verifyMissionMcpToolsForRunningSession,
 } from "./mission-mcp.ts";
 import { planDispatchBlock, planningSkillsForSession, type PlanningSkillsForSession } from "./plans/skills.ts";
+import { grillAction, grillFirstDispatchBlock, grillFirstForSession } from "./grill-first.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
@@ -280,8 +283,8 @@ export interface CreateTaskInput {
    */
   workflowId?: string | null;
   /**
-   * Grill me first, for a plan task. Omitted follows `SkillsConfig.planGrillFirst`, resolved
-   * once in `prepareCreationPolicy`; ignored for every other kind.
+   * Grill me first. Omitted follows the kind's default (`SkillsConfig.grillFirstKinds`),
+   * resolved once in `prepareCreationPolicy`; ignored for a kind that does not offer it.
    */
   grillFirst?: boolean;
   /** Prerequisites selected from current backlog tasks or live sessions. */
@@ -314,26 +317,27 @@ export interface CreateTaskInput {
 
 /**
  * THE rule for a task's Grill me first pin, which creation and every edit ask, so the column
- * holds what its schema says: 0 on every kind but plan. Off plan it is false. On plan it is
- * the choice the caller named; otherwise a task that was already a plan keeps its pin, and a
- * task entering plan (a new one, or one switched into it) takes the Settings default then.
+ * holds what its schema says: 0 on every kind that does not offer it. On a kind that does, it
+ * is the choice the caller named; otherwise a task that already offered it keeps its pin, and
+ * a task arriving at such a kind (a new one, or one switched from a kind without it) takes
+ * that kind's default from Settings -> Tasks then.
  */
 export function resolveGrillFirstPin(
   kind: TaskKind,
   explicit: boolean | undefined,
   previous?: Pick<Task, "kind" | "grillFirst">,
 ): boolean {
-  if (kind !== "plan") return false;
+  if (!isGrillFirstTaskKind(kind)) return false;
   if (explicit !== undefined) return explicit;
-  if (previous?.kind === "plan") return previous.grillFirst ?? false;
-  return getSkillsConfig().planGrillFirst;
+  if (isGrillFirstTaskKind(previous?.kind)) return previous?.grillFirst ?? false;
+  return getSkillsConfig().grillFirstKinds.includes(kind);
 }
 
 /** Daemon-resolved creation decisions, never accepted from a request body. */
 export interface TaskCreationPolicy {
   planPolicy: ManagedPlanPolicy | null;
   workflowId: string | null;
-  /** The plan task's Grill me first pin; false for every other kind. */
+  /** The task's Grill me first pin; false for a kind that does not offer it. */
   grillFirst: boolean;
 }
 
@@ -3781,7 +3785,7 @@ export class TaskManager {
     // that is not redundancy: this is the answer the operator's click and the autopilot's
     // pass both read, and that one is the backstop for every door that does not come
     // through here. Null for every other kind, so nothing else changes.
-    return planDispatchBlock(t);
+    return planDispatchBlock(t) ?? grillFirstDispatchBlock(t);
   }
 
   /** Re-run readiness for the same reserved provider attempt without minting a retry. */
@@ -4358,9 +4362,11 @@ export class TaskManager {
     const missionToolsTask = {
       kind: patch.kind ?? t.kind,
       workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,
+      grillFirst: resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t),
     };
     if (
-      (patch.agent !== undefined || patch.kind !== undefined || patch.workflowId !== undefined) &&
+      (patch.agent !== undefined || patch.kind !== undefined || patch.workflowId !== undefined
+        || patch.grillFirst !== undefined) &&
       kindMissionMcpRequirement(
         missionToolsTask,
         null,
@@ -5083,10 +5089,17 @@ export class TaskManager {
       planDiscovery = await taskPlanDiscovery(t, s.cwd);
     } catch (error) { return { ok: false, error: String(error), scope: "task" }; }
     const planSkills = isPlanningTaskKind(t.kind)
-      ? (opts.requirePlanSkills ?? planningSkillsForSession)(s, { kind: t.kind, grillFirst: t.grillFirst })
+      ? (opts.requirePlanSkills ?? planningSkillsForSession)(s, t.kind)
       : null;
     if (planSkills && !planSkills.ok) {
       return { ok: false, error: planSkills.message, scope: "task" };
+    }
+    // Grill me first's skill, against this session's watermark like the planning skills above.
+    const grillFirst = taskGrillsFirst(t)
+      ? grillFirstForSession(s, grillAction((id) => this.registry.getSessionAction(id)))
+      : null;
+    if (grillFirst && !grillFirst.ok) {
+      return { ok: false, error: grillFirst.message, scope: "task" };
     }
 
     // A reused agent starts the new task from origin's default branch with a cleared
@@ -5249,6 +5262,7 @@ export class TaskManager {
           fallbackRoot: s.cwd,
           planDiscovery,
           planSkills: planSkills?.ok ? planSkills.commands : null,
+          grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
           workflowEvidence,
         }),
         undefined,

@@ -87,7 +87,7 @@ test("new and upgraded settings exclude HTML; changing the preference never reco
   assert.equal(Object.hasOwn(JSON.parse(stored.value), "commitPlanHtml"), false, "the saved legacy record lacks the new preference");
   const before = getSkillsConfig();
   assert.equal(skillsConfigProblem(), null);
-  assert.deepEqual(before, { ...legacy, defaultSkillEnabled: false, alwaysDraftPr: false, commitPlanHtml: false, planStorage: "repository", planGrillFirst: false }, "parsing defaults the new preference and preserves legacy values");
+  assert.deepEqual(before, { ...legacy, defaultSkillEnabled: false, alwaysDraftPr: false, commitPlanHtml: false, planStorage: "repository", grillFirstKinds: [] }, "parsing defaults the new preference and preserves legacy values");
   const changed = applySkillsConfig({ commitPlanHtml: true }, NOW);
   assert.equal(changed.config.commitPlanHtml, true);
   assert.equal(changed.changed, false);
@@ -101,12 +101,12 @@ test("Grill me first is a live preference: toggling it never reconciles skill li
   // would link it and move the watermark, and every running session would owe a reload.
   setAppConfig(APP_CONFIG_ENTRIES.skills, { enabled: true, skills: { alpha: true }, generation: 7, generationAt: 123 });
   const before = getSkillsConfig();
-  assert.equal(before.planGrillFirst, false, "a saved record without the preference reads as off");
-  for (const planGrillFirst of [true, false]) {
-    const result = applySkillsConfig({ planGrillFirst }, NOW);
+  assert.deepEqual(before.grillFirstKinds, [], "a saved record without the preference starts every kind off");
+  for (const grillFirstKinds of [["plan", "ship"], []] as const) {
+    const result = applySkillsConfig({ grillFirstKinds: [...grillFirstKinds] }, NOW);
     assert.deepEqual(result.refused, []);
     assert.equal(result.changed, false);
-    assert.deepEqual(getSkillsConfig(), { ...before, planGrillFirst });
+    assert.deepEqual(getSkillsConfig(), { ...before, grillFirstKinds: [...grillFirstKinds] });
     assert.deepEqual(links(), []);
   }
   // The control: the same config with a reconciling patch does link alpha and advance it.
