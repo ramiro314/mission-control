@@ -597,6 +597,7 @@ async function processPr(
   now: number,
   onObserved: ((snapshot: PrSnapshot, observedAt: number) => void) | null = null,
   workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
+  taskBaseBranch: (prUrl: string) => string | null = () => null,
 ): Promise<boolean> {
   const tick: TickState = { failed: false };
   const backedOff = pr.nextAttemptAt !== null && now < pr.nextAttemptAt;
@@ -832,7 +833,7 @@ async function processPr(
   if (
     baseReview === "current" &&
     gated.reviewComplete !== false &&
-    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate)
+    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate, taskBaseBranch)
   ) return true;
 
   // 3. Nothing pushed: reuse the completed review and finish any pending publication.
@@ -1558,6 +1559,8 @@ function reconcilePosting(
  */
 export interface InspectorStartOptions {
   workflowGate?: (prKey: string) => WorkflowGateStanding;
+  /** The base branch the task owning a pull request names (`Task.baseBranch`), or null. */
+  taskBaseBranch?: (prUrl: string) => string | null;
 }
 
 export function startInspector(registry: Registry, options: InspectorStartOptions = {}): () => void {
@@ -1645,6 +1648,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
               if (codeRabbitEnabled()) registry.refreshInspections();
             },
             options.workflowGate ?? (() => "none"),
+            options.taskBaseBranch,
           ));
           // Re-read after every completed review or failure. The immediate signal above
           // reports the fetched GitHub head; this one carries the resulting durable ledger.

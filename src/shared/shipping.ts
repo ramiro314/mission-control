@@ -78,7 +78,8 @@ export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
   // kind of wait this is before it says why.
   "stacked-base": "stacked on another pull request's branch - it merges once its base is the default branch",
   "stack-hold": "stacked pull request held until it is restacked onto the default branch",
-  "base-not-default": "its base is not, or is not known to be, the default branch, so it never merges itself",
+  "base-not-default":
+    "its base is not, or is not known to be, the default branch or its task's base branch, so it never merges itself",
   "workflow-gate-pending": "an active workflow still owns the GitHub Inspector final gate",
   // Front-loaded deliberately. The Merge queue's standing column is one ellipsized line
   // (`.sc-standing`), so roughly the first forty characters are all an operator reads
@@ -142,6 +143,12 @@ export interface MergeInput {
    * stacking gate.
    */
   stack: { lineage: boolean; releasedForHead: boolean };
+  /**
+   * The base branch the owning task recorded (`Task.baseBranch`) and was told to open its pull
+   * request against, or null for a task with none (or a pull request no task owns). A pull
+   * request on it is accepted as one on the default branch is.
+   */
+  taskBaseBranch?: string | null;
   /** The base `reviewedSha`'s review was made against; null for reviews recorded before it was. */
   reviewedBase: string | null;
   /**
@@ -275,12 +282,16 @@ export function mergeVerdict(input: MergeInput): MergeVerdict {
       return blocked("stacked-base");
     }
     if (!input.stack.releasedForHead) return blocked("stack-hold");
-  } else if (!pr.baseRefName || !pr.defaultBranch || pr.baseRefName !== pr.defaultBranch) {
+  } else if (
+    !pr.baseRefName ||
+    (pr.baseRefName !== input.taskBaseBranch && (!pr.defaultBranch || pr.baseRefName !== pr.defaultBranch))
+  ) {
     // The same rule for a pull request with no stack lineage: YOLO mode lands work on the
-    // default branch and nowhere else, whoever chose the base. Not a stacking gate (those
-    // read lineage, and this one never does). Fail closed: a base or default branch GitHub
-    // did not report cannot be shown to be the default branch, and a review recorded
-    // against that same unknown-default base must not be enough to merge.
+    // default branch, or on the base branch its task recorded and was told to target, and
+    // nowhere else, whoever chose the base. Not a stacking gate (those read lineage, and this
+    // one never does). Fail closed: a base or default branch GitHub did not report cannot be
+    // shown to be the default branch, and a review recorded against that same unknown-default
+    // base must not be enough to merge.
     return blocked("base-not-default");
   }
   // Both values veto; they differ only in what the operator should do about it, which is

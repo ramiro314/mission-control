@@ -385,7 +385,7 @@ test("a finished prerequisite with an open pull request releases a stacked depen
   // Its task contract names the base its pull request belongs on.
   await expect.poll(async () => {
     const transcript = await api<{ messages: Array<{ role: string; text: string }> }>(daemon, `/api/sessions/${childSession.id}/transcript`);
-    return transcript.messages.some((m) => m.role === "user" && m.text.includes("gh pr create --base feat/parser-groundwork") && m.text.includes("Stacked on #31"));
+    return transcript.messages.some((m) => m.role === "user" && m.text.includes("-f base=feat/parser-groundwork ") && m.text.includes("Stacked on #31"));
   }, { timeout: 30_000 }).toBe(true);
   // Until the child opens a pull request, nothing is written to GitHub at all.
   const gh = () => recordsIn<{ argv: string[] }>(daemon.recordDir, (file) => file.startsWith("gh-") && !file.startsWith("gh-patch-"));
@@ -744,7 +744,7 @@ test("a child closed while its parent is open offers Reopen on the parent's bran
   await expect.poll(async () => {
     const transcript = await api<{ messages: Array<{ role: string; text: string }> }>(daemon, `/api/sessions/${childSession.id}/transcript`);
     return transcript.messages.some((m) => m.role === "user"
-      && m.text.includes("gh pr create --base feat/stack-parent") && m.text.includes("Stacked on #91") && m.text.includes("Do NOT force-push"));
+      && m.text.includes("-f base=feat/stack-parent ") && m.text.includes("Stacked on #91") && m.text.includes("Do NOT force-push"));
   }, { timeout: 30_000, message: "the reopen prompt reached the child's session" }).toBe(true);
 });
 

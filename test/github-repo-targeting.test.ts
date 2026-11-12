@@ -1295,6 +1295,8 @@ const AGENT_TEXT_SOURCES = [
   "src/server/foreman/review-followup.ts",
   "src/server/skills/pull-request-policy.ts",
   "src/mcp/server.ts",
+  "src/shared/stacking.ts",
+  "src/server/stacking/lineage.ts",
 ];
 
 /**

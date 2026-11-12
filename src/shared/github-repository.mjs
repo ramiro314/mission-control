@@ -143,6 +143,16 @@ const slug = ({ owner, repo }) => `${owner}/${repo}`;
  * different repository reports `gh-default`.
  */
 export function pickCheckoutRepository(remotes, checkout) {
+  const picked = pickCheckoutRemote(remotes, checkout);
+  return picked.ok ? { ok: true, repo: picked.repo, source: picked.source } : picked;
+}
+
+/**
+ * `pickCheckoutRepository`, with the name of the remote the answer was read from: the remote
+ * carrying the pin, or `origin`. For a caller that has to fetch from that repository, such as
+ * Stacked pull requests fetching a parent branch, so it fetches from the remote the answer names.
+ */
+export function pickCheckoutRemote(remotes, checkout) {
   const origin = remotes.find((remote) => remote.name === "origin");
   const originRepository = githubRepositoryOf(origin);
   for (const remote of remotes) {
@@ -150,9 +160,9 @@ export function pickCheckoutRepository(remotes, checkout) {
     if (!pinned) continue;
     const sameAsOrigin =
       originRepository !== null && slug(originRepository).toLowerCase() === slug(pinned).toLowerCase();
-    return { ok: true, repo: slug(pinned), source: sameAsOrigin ? "origin" : "gh-default" };
+    return { ok: true, repo: slug(pinned), source: sameAsOrigin ? "origin" : "gh-default", remote: remote.name };
   }
-  if (originRepository) return { ok: true, repo: slug(originRepository), source: "origin" };
+  if (originRepository) return { ok: true, repo: slug(originRepository), source: "origin", remote: "origin" };
 
   const listed = remotes.length
     ? remotes.map((remote) => `${remote.name} is ${remote.urls[0] === undefined ? "(no url)" : redactUrl(remote.urls[0])}`).join(", ")

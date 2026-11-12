@@ -71,6 +71,7 @@ export async function maybeMerge(
   rows: Map<string, InspectorComment>,
   now: number,
   workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
+  taskBaseBranch: (prUrl: string) => string | null = () => null,
 ): Promise<boolean> {
   const cfg = getShippingConfig();
   const verdict = mergeVerdict({
@@ -98,6 +99,7 @@ export async function maybeMerge(
       lineage: Boolean(pr.stack?.parentPrUrl),
       releasedForHead: Boolean(s.headSha) && pr.stack?.releasedHeadSha === s.headSha,
     },
+    taskBaseBranch: taskBaseBranch(pr.url),
     reviewedBase: pr.reviewedBaseRef ?? null,
     reviewedSha: pr.headSha,
     reviewPosture: pr.reviewPosture,

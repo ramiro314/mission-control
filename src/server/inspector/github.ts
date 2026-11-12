@@ -232,8 +232,6 @@ export function parsePrUrl(
 
 // Moved to the shared resolver module; re-exported so this file's importers keep working.
 export { parseGitHubRemoteUrl, type GitHubRepositoryIdentity } from "@shared/github-repository.mjs";
-// The same for the remote reader, whose one implementation is the checkout resolver's.
-export { configuredGitHubRepositories } from "../github/repository.ts";
 
 export interface PrSnapshot {
   state: "OPEN" | "CLOSED" | "MERGED";

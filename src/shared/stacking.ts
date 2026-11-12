@@ -1,6 +1,7 @@
 import type { ShippingConfig } from "./protocol.ts";
 import type { Task, TaskDependency } from "./types.ts";
 import { isWorkDependency } from "./task-dependency.ts";
+import { openPullRequestCommand } from "./pr-command.mjs";
 
 // Stacked pull requests: the shared rules that decide when a dependent task may start on
 // its prerequisite's open pull request instead of waiting for it to merge, which branch its
@@ -63,6 +64,7 @@ export type StackWaitCode =
   | "several-unmerged"
   | "cross-repository-unmerged"
   | "secondary-unmerged"
+  | "base-branch"
   | "too-deep";
 
 export type StackEligibility =
@@ -164,6 +166,19 @@ export function stackCandidate(
       edge,
     };
   }
+  // A task that names its own base branch (`Task.baseBranch`) opens its pull request against
+  // that branch, and a stack would point one of the two pull requests at the other's head
+  // instead. So neither side of the edge stacks: it waits for merge, whatever its mode.
+  if (task.baseBranch || parent.baseBranch) {
+    return {
+      ok: false,
+      code: "base-branch",
+      reason: task.baseBranch
+        ? `this task targets ${task.baseBranch}, so ${parent.title} has to merge first`
+        : `${parent.title} targets ${parent.baseBranch}, so it has to merge first`,
+      edge,
+    };
+  }
   return { ok: true, edge, parent };
 }
 
@@ -172,7 +187,8 @@ export function stackCandidate(
  *
  * Every condition of the Stacked pull requests rule: the edge is in stack mode; it is the
  * only unmerged same-repository prerequisite; every prerequisite in another repository and
- * every secondary repository the parent changed has merged; and the stack under the parent
+ * every secondary repository the parent changed has merged; neither task names its own base
+ * branch; and the stack under the parent
  * is shorter than the depth cap. Whether the parent has an open pull request and an idle
  * agent is not asked here: that is the daemon's readiness stamp.
  */
@@ -703,6 +719,9 @@ export interface StackPromptFacts {
 export function buildStackPrompt(kind: StackPromptKind | StackPromptActionKind, f: StackPromptFacts): string {
   const parent = f.parentNumber === null ? f.parentUrl : `#${f.parentNumber} (${f.parentUrl})`;
   const base = f.defaultBranch || "the default branch";
+  // Opened with the fork's REST create, which names origin's repository; `gh pr create` reads
+  // the parent's, which an SSO-protected parent refuses (see `openPullRequestCommand`).
+  const open = (onto: string | null): string => `\`${openPullRequestCommand(onto || "<default-branch>")}\``;
   const branch = f.headRefName ? `\`${f.headRefName}\`` : "its branch";
   const noForce = "Do NOT force-push and do NOT rebase: merge, so the branch only moves forward.";
   const steps = (lines: string[]): string => lines.map((line, i) => `${i + 1}. ${line}`).join("\n");
@@ -726,18 +745,18 @@ export function buildStackPrompt(kind: StackPromptKind | StackPromptActionKind, 
         `Fetch, then create a new branch from \`origin/${base}\`.`,
         `Cherry-pick only this task's own commits from ${branch} onto it - none of ${parent}'s.`,
         "Resolve conflicts and run focused checks.",
-        `Push the new branch and open a replacement pull request with \`gh pr create --base ${base}\`.`,
-        `Then close PR #${f.prNumber} with \`gh pr close ${f.prNumber}\`, saying it was replaced. ${noForce}`,
+        `Push the new branch and, from it, open a replacement pull request against ${base} with ${open(f.defaultBranch)}.`,
+        `Then close PR #${f.prNumber} with \`gh pr close ${f.prUrl}\`, saying it was replaced. ${noForce}`,
       ]);
     case "reopen-on-parent":
       return `PR #${f.prNumber} (${f.prUrl}) was closed, but ${parent} is still open, so this work is still stacked on it. Open it again against ${f.parentNumber === null ? "the parent" : `#${f.parentNumber}`}'s branch.\n\n` + steps([
-        `Open a new pull request from the same branch, ${branch}, with \`gh pr create --base ${f.parentHeadRefName ?? "<parent branch>"}\`, and start its description with "Stacked on ${f.parentNumber === null ? "its parent" : `#${f.parentNumber}`}".`,
+        `Open a new pull request from the same branch, ${branch}, with ${open(f.parentHeadRefName ?? "<parent-branch>")}, and start its description with "Stacked on ${f.parentNumber === null ? "its parent" : `#${f.parentNumber}`}".`,
         "Do not reopen it against the default branch: it merges after its parent does.",
         noForce,
       ]);
     case "reopen-against-main":
       return `GitHub closed PR #${f.prNumber} (${f.prUrl}) when ${parent} merged and its branch was deleted. Open it again against ${base}.\n\n` + steps([
-        `Open a new pull request from the same branch, ${branch}, with \`gh pr create --base ${base}\`.`,
+        `Open a new pull request from the same branch, ${branch}, with ${open(f.defaultBranch)}.`,
         `Then fetch and merge \`origin/${base}\` into ${branch}, resolve any conflicts, run focused checks and push.`,
         noForce,
       ]);

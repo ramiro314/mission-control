@@ -280,8 +280,14 @@ test("base correction with an unreadable parent changes nothing", async () => {
 test("the PR-opening instruction names the same expected base", async () => {
   const g = gh();
   // The first child, at dispatch: the open parent's branch.
-  assert.match(stackPrInstruction(stackedTask(), undefined) ?? "", /--base feat\/parent/);
-  assert.match(stackPrInstruction(stackedTask(), undefined) ?? "", /Stacked on #7/);
+  const launch = stackPrInstruction(stackedTask(), undefined) ?? "";
+  assert.match(launch, /targets `feat\/parent`, not the default branch/);
+  assert.match(launch, /-f base=feat\/parent /);
+  assert.match(launch, /Stacked on #7/);
+  // A fact about the stack, not an order: the initial prompt's task authorization leaves
+  // opening the pull request to its grant holders, and gh is never left to pick the repository.
+  assert.doesNotMatch(launch, /\bopen (?:its|this|the) pull request\b/i);
+  assert.doesNotMatch(launch, /gh pr create/);
   assert.equal(stackPrInstruction(mkTask({ id: "x" }), undefined), null);
   // A replacement child after the current parent closed or merged: the default branch.
   const key = await stackedRow(g);
@@ -289,8 +295,8 @@ test("the PR-opening instruction names the same expected base", async () => {
   for (const observed of ["CLOSED", "MERGED"] as const) {
     updateInspectorPr(parentKey, { observedState: observed, headRefName: "feat/parent" }, 4_000);
     const text = stackPrInstruction(stackedTask(), "ep1") ?? "";
-    assert.match(text, /against the repository's default branch/, observed);
-    assert.doesNotMatch(text, /--base feat\/parent/, observed);
+    assert.match(text, /targets the repository's default branch/, observed);
+    assert.doesNotMatch(text, /base=feat\/parent/, observed);
   }
   assert.ok(getInspectorPr(key)?.stack);
 });

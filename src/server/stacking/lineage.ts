@@ -1,4 +1,5 @@
 import type { InspectorPr, Task } from "@shared/types.ts";
+import { openPullRequestCommand } from "@shared/pr-command.mjs";
 import { expectedStackBase, stackPrNumber, stackReleased, type Ancestry } from "@shared/stacking.ts";
 import {
   getInspectorPr,
@@ -260,7 +261,13 @@ function ledgerParentState(parentPrUrl: string): "OPEN" | "CLOSED" | "MERGED" | 
 }
 
 /**
- * What to tell a stacked task's session about the base of the pull request it opens.
+ * What to tell a stacked task's session about the base of its pull request.
+ *
+ * Stated as a fact about the stack, never as an instruction to open the pull request: the
+ * initial task prompt carries it too, and there the task authorization leaves opening it to
+ * the workflow's Pull Request action, Foreman's wrap-up or the human. The command names
+ * origin's repository (`openPullRequestCommand`), so it works on a fork whose parent enforces
+ * SAML SSO.
  *
  * Computed from the same expected-base rule base correction uses, at the moment the text is
  * built: the current parent (the most recently adopted lineage row of this task's current
@@ -283,21 +290,21 @@ export function stackPrInstruction(task: Task, episodeId: string | null | undefi
   const parentRow = parentKey ? getInspectorPr(parentKey) : null;
   const branch = parentRow?.headRefName ?? (lineage ? null : task.stackBaseBranch ?? null);
   const state = ledgerParentState(parentUrl) ?? (lineage ? null : "OPEN");
-  const stackedLine = `Start the pull request description with "Stacked on #${number ?? "?"}" (${parentUrl}).`;
+  const stackedLine = `The description of this task's pull request starts with "Stacked on #${number ?? "?"}" (${parentUrl}).`;
   const lines = ["## Stacked pull request", `This task is stacked on ${parentUrl}.`];
   if (state === "OPEN" && branch) {
     lines.push(
-      `Open its pull request in this repository with \`gh pr create --base ${branch}\`, not against the default branch.`,
+      `Its work is based on \`${branch}\`, that pull request's head branch, so this task's pull request targets \`${branch}\`, not the default branch, and is opened with \`${openPullRequestCommand(branch)}\`.`,
       stackedLine,
     );
   } else if (state === "MERGED" || state === "CLOSED") {
     lines.push(
-      `That pull request has ${state === "MERGED" ? "merged" : "closed"}, so open this one against the repository's default branch.`,
+      `That pull request has ${state === "MERGED" ? "merged" : "closed"}, so this task's pull request targets the repository's default branch.`,
       stackedLine,
     );
   } else {
     lines.push(
-      `While #${number ?? "?"} is open, open this pull request with \`--base\` set to its head branch${branch ? ` (${branch})` : ""}. If it has merged or closed, open it against the repository's default branch.`,
+      `While #${number ?? "?"} is open, this task's pull request targets its head branch${branch ? ` (\`${branch}\`)` : ""} and is opened with \`${openPullRequestCommand(branch ?? "<parent-branch>")}\`. Once it has merged or closed, this task's pull request targets the repository's default branch.`,
       stackedLine,
     );
   }

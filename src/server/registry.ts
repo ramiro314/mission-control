@@ -6197,6 +6197,20 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * The base branch the task owning pull request `url` names, or null when it names none (or no
+   * task owns it). YOLO mode accepts a pull request on that branch as one on the default branch.
+   */
+  prTaskBaseBranch(url: string): string | null {
+    // By pull request key, so a URL spelled with a trailing path or fragment still matches.
+    const key = parsePrUrl(url)?.key;
+    if (!key) return null;
+    for (const [prUrl, base] of this.prMergeBases()) {
+      if (parsePrUrl(prUrl)?.key === key) return base;
+    }
+    return null;
+  }
+
+  /**
    * Does a merge of pull request `url` into `baseRef` count as its task's work landing?
    *
    * Always, for a task with no base branch. For one that names a base, only a merge into that

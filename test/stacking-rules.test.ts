@@ -134,6 +134,27 @@ test("stackEligibility: the eligibility table", () => {
   assert.equal(!sessionVerdict.ok && sessionVerdict.code, "not-a-task");
 });
 
+test("a task that names its own base branch never stacks and is never stacked on", () => {
+  const releaseParent = { ...parentA, baseBranch: "release/2.0" };
+  const dependent = mkTask({ id: "C", dependencies: [edge("A", { mode: "stack", ...stamp })] });
+  const onRelease = stackEligibility(dependent, [releaseParent, dependent], STACK);
+  assert.equal(!onRelease.ok && onRelease.code, "base-branch");
+  assert.match(!onRelease.ok ? onRelease.reason : "", /Phase 1 targets release\/2\.0/);
+
+  const releaseDependent = { ...dependent, baseBranch: "release/2.0" };
+  const fromRelease = stackEligibility(releaseDependent, [parentA, releaseDependent], STACK);
+  assert.equal(!fromRelease.ok && fromRelease.code, "base-branch");
+  assert.match(!fromRelease.ok ? fromRelease.reason : "", /this task targets release\/2\.0/);
+
+  // A stamp left from before cannot release the start either: it waits for merge.
+  assert.equal(stackStartEdge(dependent, byId(releaseParent, dependent)), null);
+  assert.equal(stackStartEdge(releaseDependent, byId(parentA, releaseDependent)), null);
+  assert.equal(declaredBlockers(dependent, [releaseParent, dependent]).length, 1);
+  // Neither side naming one: the same edge stacks.
+  assert.equal(stackEligibility(dependent, [parentA, dependent], STACK).ok, true);
+  assert.equal(stackStartEdge(dependent, byId(parentA, dependent))?.taskId, "A");
+});
+
 test("the depth cap counts unmerged stacked ancestors", () => {
   const root = mkTask({ id: "R", status: "running" });
   const a = mkTask({ id: "A", status: "running", stackParentTaskId: "R", dependencies: [edge("R")] });

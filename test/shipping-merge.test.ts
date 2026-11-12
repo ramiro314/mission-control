@@ -360,6 +360,25 @@ test("YOLO mode never merges a pull request whose base is not the default branch
   assert.equal(mergeVerdict(ready()).merge, true);
 });
 
+test("YOLO mode merges a pull request on its task's own base branch, and on no other non-default base", () => {
+  const onTaskBase = stacked({ baseRefName: "release/2.0" }, { lineage: false, releasedForHead: false }, {
+    reviewedBase: "release/2.0",
+    taskBaseBranch: "release/2.0",
+  });
+  assert.deepEqual(mergeVerdict(onTaskBase), { merge: true, block: null, waitMs: 0 });
+  // GitHub not naming the default branch does not matter: the base is the one the task named.
+  assert.equal(mergeVerdict({ ...onTaskBase, pr: { ...onTaskBase.pr, defaultBranch: null } }).merge, true);
+  // Any other non-default base is still refused, and so is an unknown base.
+  assert.equal(blockOf({ ...onTaskBase, pr: { ...onTaskBase.pr, baseRefName: "release/1.9" }, reviewedBase: "release/1.9" }), "base-not-default");
+  assert.equal(blockOf({ ...onTaskBase, pr: { ...onTaskBase.pr, baseRefName: null } }), "base-not-default");
+  // A task with a base branch whose pull request targets the default branch merges as before.
+  assert.equal(mergeVerdict(ready({ taskBaseBranch: "release/2.0" })).merge, true);
+  // The review still has to be against that base.
+  assert.equal(blockOf({ ...onTaskBase, reviewedBase: "main" }), "not-reviewed");
+  // Stack lineage keeps its own gate: a task base is not a release for a stacked child.
+  assert.equal(blockOf({ ...onTaskBase, stack: { lineage: true, releasedForHead: true } }), "stacked-base");
+});
+
 test("the stacking gates come after the consent and draft gates", () => {
   assert.equal(
     blockOf(stacked({ baseRefName: "feat/parent", isDraft: true }, { lineage: true, releasedForHead: false })),

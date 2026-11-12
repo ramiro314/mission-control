@@ -493,7 +493,7 @@ Every one of these, on the same read of the pull request:
 |---|---|
 | The GitHub Inspector reviewed **this** push, against **this** base | a review of the previous head is not a review of what would land, and the same head against another base is a different diff |
 | The GitHub Inspector **published** that review | on, **live**, and the repo on *its* allowlist - see below |
-| The pull request targets the repository's **default branch** (`base-not-default`) | YOLO mode lands work on the default branch and nowhere else, whoever chose the base. A base or default branch GitHub did not report fails closed. Stacked pull requests answer this through the next two gates instead |
+| The pull request targets the repository's **default branch**, or the base branch its task names (`base-not-default`) | YOLO mode lands work on the default branch, or on the base branch the task was told to open its pull request against, and nowhere else, whoever chose the base. A base or default branch GitHub did not report fails closed. Stacked pull requests answer this through the next two gates instead |
 | A [stacked pull request](#stacked-pull-requests) targets the **default branch** (`stacked-base`) | merging a child into its parent's branch would fold it into the parent's pull request and skip its own review. Only a pull request with stack lineage is evaluated |
 | A stacked pull request has been **released** for its current head (`stack-hold`) | a base change alone proves nothing: GitHub retargets a child by itself when the parent's branch is deleted. Only a pull request with stack lineage is evaluated |
 | No active GitHub Inspector-gated workflow owns the PR | YOLO mode cannot merge around incomplete Personas or final-gate handling |
@@ -595,22 +595,24 @@ A dependency stacks only when all of these hold. Otherwise it waits for merge as
   repository has merged, and every secondary repository the prerequisite changed has merged.
   A secondary repository counts as changed unless the daemon has observed it unchanged, so a
   change with no pull request yet, or one it could not read, keeps the dependent waiting.
+- Neither the dependent nor the prerequisite names its own base branch. A task with one opens
+  its pull request against that branch, so its dependencies wait for merge (`base-branch`).
 - The stack under the prerequisite is shorter than the depth cap.
 
 The dependent is released to **start** (not completed: the edge is still unsatisfied, and
 *Mark done* and *Unblock dependents* are unchanged) once the prerequisite's current episode
 has an open, non-draft pull request in its primary repository and its agent has finished
-the episode: idle, nothing queued. The primary repository is the one `origin` names when
-`origin` is a GitHub remote, otherwise the checkout's only GitHub remote. A pull request in any
-other remote's repository is never stacked on, and a checkout where neither rule names one
-stacks on nothing, because the child's own pull request would open somewhere else and get no
+the episode: idle, nothing queued. The primary repository is the one the checkout's `gh` calls
+target: the repository `gh repo set-default` pinned, otherwise `origin`'s when `origin` is a
+GitHub remote. A pull request in any other remote's repository is never stacked on, and a
+checkout where neither rule names one stacks on nothing, because the child's own pull request would open somewhere else and get no
 stack lineage. The daemon records that readiness on the dependency edge,
 and the backlog card and the Line row read *Stacked on #N*. It clears the readiness when the
 prerequisite starts a new turn, or when the edge stops qualifying, for example when the
 default is switched back to *Wait for merge*. Dispatch reads the parent pull request again
 before it starts: it must still be open, not a draft, on the same branch and episode, and its
 agent still finished. The dispatch then fetches the parent branch at the repository root (from
-`origin`, or from the primary GitHub remote when `origin` is another remote that lacks it) and
+`origin`, or from the pinned GitHub remote when `origin` is another remote that lacks it) and
 pins the worktree to its current head, but only when that commit is exactly the head GitHub
 reports for the parent pull request. A branch name alone proves nothing: a pull request from a
 fork can share its name with an unrelated branch here. If the parent pushes while that check
@@ -628,8 +630,11 @@ back to the default branch silently: a stacked task that cannot be pinned is ref
 reason. A stacked task is always dispatched into a fresh worktree; it is never assigned to an
 existing agent.
 
-The task contract and the pull-request packets tell the session to open its pull request
-with `--base` set to the expected base and to start the description with "Stacked on #N".
+The task contract and the pull-request packets tell the session which base its pull request
+targets, with the REST create command that names `origin`'s repository and that base, and that
+the description starts with "Stacked on #N". The task contract states this as a fact about the
+stack: opening the pull request is still left to the workflow's Pull Request action, Foreman's
+wrap-up or the human.
 The expected base is the current parent's branch while that parent is open, and the default
 branch once it has merged or closed. When the pull request is adopted, the daemon records
 its **stack lineage** on the ledger row: the current parent pull request and the commit the

@@ -730,6 +730,7 @@ const stopBaseBranchMover = startMergedBaseBranchMover({
 });
 const stopInspector = startInspector(registry, {
   workflowGate: (prKey) => workflows.mergeGate(prKey),
+  taskBaseBranch: (prUrl) => registry.prTaskBaseBranch(prUrl),
 });
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 // Whether each live session has been corrected by its human, which is half of whether the

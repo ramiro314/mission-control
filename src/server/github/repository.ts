@@ -4,14 +4,16 @@ import {
   needsGhDefaultPin,
   parseGitHubRemoteUrl,
   parseRemoteConfig,
+  pickCheckoutRemote,
   pickCheckoutRepository,
   type CheckoutRemote,
   type CheckoutRepository,
+  type CheckoutRepositoryRemote,
   type GitHubRepositoryIdentity,
 } from "@shared/github-repository.mjs";
 import { run } from "../util/exec.ts";
 
-export type { CheckoutRepository, GitHubRepositoryIdentity };
+export type { CheckoutRepository, CheckoutRepositoryRemote, GitHubRepositoryIdentity };
 
 /** The checkout's remotes, or the reason its git config could not be read. */
 async function readCheckoutRemotes(
@@ -36,6 +38,13 @@ export async function checkoutGitHubRepository(repoRoot: string): Promise<Checko
   const remotes = await readCheckoutRemotes(repoRoot);
   if (!remotes.ok) return remotes;
   return pickCheckoutRepository(remotes.remotes, repoRoot);
+}
+
+/** `checkoutGitHubRepository`, with the name of the remote the answer was read from. */
+export async function checkoutGitHubRemote(repoRoot: string): Promise<CheckoutRepositoryRemote> {
+  const remotes = await readCheckoutRemotes(repoRoot);
+  if (!remotes.ok) return remotes;
+  return pickCheckoutRemote(remotes.remotes, repoRoot);
 }
 
 /**

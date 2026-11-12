@@ -28,4 +28,11 @@ export function parseRemoteConfig(stdout: string): CheckoutRemote[];
 
 export function pickCheckoutRepository(remotes: readonly CheckoutRemote[], checkout: string): CheckoutRepository;
 
+/** `CheckoutRepository`, with the name of the remote the answer was read from. */
+export type CheckoutRepositoryRemote =
+  | { ok: true; repo: string; source: "gh-default" | "origin"; remote: string }
+  | { ok: false; error: string };
+
+export function pickCheckoutRemote(remotes: readonly CheckoutRemote[], checkout: string): CheckoutRepositoryRemote;
+
 export function needsGhDefaultPin(remotes: readonly CheckoutRemote[]): boolean;
