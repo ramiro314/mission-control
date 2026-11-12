@@ -361,12 +361,23 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   else, so at startup every `warm` owner is definitely not referenced. The source goes back to
   the pool through the ordinary owner-authorized return as soon as its clone is staged, before
   anything is placed in the target. A source is only read, so its fingerprint stays valid.
-- **Copy-on-write only.** Each path is cloned with `cp -c -R` on macOS (clonefile) or
-  `cp -R --reflink=always` on Linux. Where the filesystem cannot clone, `cp` refuses and there is
-  no seed. It is never replaced by a byte copy, which would be slower than the install. The clone
-  runs from the pool's directory, never from inside a slot. `cp` is the pinned `/bin/cp`, never
-  a PATH search, because those flags are the platform's own: a GNU `cp` found first on a Mac
-  would not clone.
+- **Copy-on-write only.** On macOS each path is cloned with one `clonefile(2)` call for the whole
+  tree, through the `clone-tree` native addon (`native/clone-tree`, built by `npm run build:native`
+  into `dist/native/clone-tree.node`). `cp -c -R` clones one file at a time, and an endpoint
+  security agent that inspects every file creation can make that far slower than the install
+  the seed replaces; one call on the directory clones the hierarchy in the kernel. The call runs on the libuv thread pool,
+  never on the daemon's event loop. Where the volume cannot clone, `clonefile` refuses (`ENOTSUP`,
+  or `EXDEV` across volumes) and there is no seed: it never copies bytes. On Linux each path is
+  cloned with `cp -R --reflink=always`, which refuses the same way. A byte copy is never the plan,
+  because it would be slower than the install. The clone runs from the pool's directory, never
+  from inside a slot. `cp` is the pinned `/bin/cp`, never a PATH search, because those flags are
+  the platform's own: a GNU `cp` found first on a Mac would not clone.
+- **The macOS fallback is `cp -c -R`.** A daemon whose `dist/native/clone-tree.node` is missing or
+  fails to load logs `native tree clone unavailable` once and seeds with `cp -c -R`, as before
+  the addon existed. That fallback is not strictly copy-on-write: for a file it cannot clone,
+  macOS `cp -c` falls back to `copyfile(2)`, a byte copy, instead of refusing. On an APFS volume
+  every file clones, so it only costs time; run `npm run build:native` to get the one-call
+  clone back.
 - **Only ignored paths.** Every matched path must be ignored by Git in the target and hold
   nothing tracked (`git ls-files`, then `git check-ignore`, asked with a trailing slash for a
   directory). A path whose parent directory the target's commit does not have is left out.
@@ -401,7 +412,9 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   phase of a seed checks the Stop and that deadline: expanding the globs, proving the paths
   ignored (each Git call is bounded by what is left of the claim's time, and by a minute at
   most), each clone, the exclusion walk, and placement. Whichever lands first ends the seed as
-  `interrupted`. The interrupted wipe works within the same budget: it checks both before each
+  `interrupted`. A macOS `clonefile` call cannot be interrupted once it has started, so a Stop or
+  the deadline that lands during one is answered when the call returns, and the staging it was
+  writing into is removed only after that. A `cp` clone is signalled and waited for instead. The interrupted wipe works within the same budget: it checks both before each
   Git call and between the entries of every seed path it removes, so a large `node_modules`
   cannot hide a Stop, and a wipe that a Stop or the deadline ends leaves the slot `interrupted`.
 - **An exclusion walk that cannot read** a directory in the clone, or cannot look up the staged

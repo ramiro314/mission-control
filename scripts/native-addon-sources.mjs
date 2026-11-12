@@ -7,8 +7,8 @@
  *
  * A platform missing from an addon's entry has no sources, never a fallback to another
  * platform's. Whether that platform is then refused or skipped is the builder's decision: the
- * state lock is required, so `stateLockBuildTarget` refuses it, while Keep Awake is optional,
- * so `nativeBuildTarget` skips it.
+ * state lock is required, so `stateLockBuildTarget` refuses it, while Keep Awake and the seed's
+ * tree clone are optional, so `nativeBuildTarget` and `cloneTreeBuildTarget` skip it.
  *
  * File names are relative to the addon's `native/<addon>` directory and must not contain
  * spaces, because gyp splits the variable the way sh splits arguments.
@@ -20,6 +20,9 @@ export const NATIVE_ADDON_SOURCES = {
   },
   "keep-awake": {
     darwin: ["keep_awake.mm"],
+  },
+  "clone-tree": {
+    darwin: ["clone_tree.cc"],
   },
 };
 
