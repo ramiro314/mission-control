@@ -1,6 +1,6 @@
 ---
 name: grill
-description: Interview the human in rounds of selectable decisions before any plan is drafted, asking every question that can be asked now with a recommended answer, until nothing is left to ask. Use whenever a shape task starts, or whenever you are asked to grill, stress-test, or interview someone about a plan, idea, or decision before writing it down.
+description: Interview the human in rounds of selectable decisions before any plan is drafted, asking every question that can be asked now with a recommended answer, until nothing is left to ask. Use whenever a shape task starts, when any task was dispatched with Grill me first, or whenever you are asked to grill, stress-test, or interview someone about a plan, idea, or decision before writing it down.
 metadata:
   mission:
     category: planning
@@ -52,6 +52,10 @@ One call per round, carrying the whole frontier:
 
 The tool blocks until the human submits or dismisses the round, then returns their answers.
 
+Do not count on the form opening on your recommendation. It may open with nothing selected,
+so the human picks every answer, and `recommended: true` only marks your advice. An answer is
+what they selected or wrote, nothing else.
+
 - **Submitted:** record each answer, including any Other text, as settled, and compute the
   next frontier.
 - **A question marked `→ Chat about it`:** the human moved it to chat, so it is not settled.
@@ -71,9 +75,10 @@ silently, each as a decision with your reading recommended.
 ## When the frontier is empty
 
 Summarize the settled decisions and hand them to whatever asked for the interview. In a shape
-task, that is the plan the task contract describes. Record every decision in the plan with the
-answer the human gave, so the review that follows reads the decisions rather than
-rediscovering them.
+task, that is the plan the task contract describes; a task dispatched with Grill me first
+carries on with its own work, unchanged, with the settled decisions as part of its request.
+Record every decision, with the answer the human gave, in whatever the task produces - the plan,
+in a shape task - so the review that follows reads the decisions rather than rediscovering them.
 
 ## What not to do
 

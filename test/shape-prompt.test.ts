@@ -98,6 +98,7 @@ const config: SkillsConfig = {
   commitPlanHtml: false,
   alwaysDraftPr: false,
   planStorage: "repository",
+  grillFirstKinds: [],
 };
 
 function deps(over: Partial<RequiredSkillCommandDeps> = {}): RequiredSkillCommandDeps {

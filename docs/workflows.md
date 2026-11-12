@@ -336,7 +336,7 @@ change touched, and a [Wait for CI](#wait-for-ci) stage follows the Pull Request
 full suite runs in GitHub CI before the run can end. Everything else - judges, routing,
 completion policy, delivery, resumption, and repair rounds - matches High Rigor. Version 1 is
 authored on GPT-5.6 routing and version 2 moves it to `gpt-6-sol`, like the others. It is not a
-kind default: bind it, or choose it under **Settings → Tasks → Dispatch defaults**. It works on any repository whose
+kind default: bind it, or choose it as a kind's **After work** on **Settings → Tasks**. It works on any repository whose
 CI runs on pull requests. When that CI also publishes the
 ["Flaky tests" check](flaky-tests.md#the-flaky-tests-check), the run lists the flaky tests too.
 Their earlier versions remain available with their original review graphs and completion policies.
@@ -440,8 +440,8 @@ affordance off, Archive and Publish are disabled, the settings rail does not tak
 there is a line saying why. **Duplicate** is the way to a version you own - the copy is an
 ordinary workflow with its own name, editable, publishable, archivable, and never touched by
 an upgrade. Duplicating changes nothing about the built-in, which stays listed and stays
-bindable. To have new tasks use your copy, publish it and choose it for each task kind under
-**Settings → Tasks → Dispatch defaults** (see
+bindable. To have new tasks use your copy, publish it and choose it as each task kind's
+**After work** on **Settings → Tasks** (see
 [Dispatch an agent](dispatch-and-backlog.md), under **After work**).
 
 The one exception is **Maximum repair rounds**. On any built-in, that field stays live in the
@@ -668,7 +668,11 @@ Archive is soft: an archived action is read-only, leaves the add
 controls, keeps reserving its normalized name, and stays readable because drafts and published
 versions name its id. Built-in actions ship with the application, are listed under their own
 **Built-in** rail group and tagged in the editor's header, and are read-only; **Duplicate to
-edit** is the way to a copy you own.
+edit** is the way to a copy you own. The one exception is **Grill**, which
+[Grill me first](dispatch-and-backlog.md#grill-me-first) sends ahead of a task's work by id: its
+instruction is edited in place and saved as this machine's text (tagged **edited**), and **Reset
+to built-in** in its `⋯` menu restores the shipped one. Its name, description, required skill and
+completion stay as shipped, and the edit is not part of a settings backup.
 
 The authored Markdown behind the built-ins is in this repository under [`actions/`](../actions/) -
 Mission Control session actions, not GitHub Actions - one document per action, beside the

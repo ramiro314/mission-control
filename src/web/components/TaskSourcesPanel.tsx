@@ -77,7 +77,7 @@ function WorkflowPicker({
 }: {
   src: TaskSourceInstance;
   workflows: WorkflowSummary[];
-  /** Settings -> Tasks -> Dispatch defaults, or null while it is not known. */
+  /** Each kind's After work on Settings -> Tasks, or null while it is not known. */
   kindWorkflowDefaults: KindWorkflowDefaults | null;
   onChange: (next: TaskSourceInstance) => void;
 }): React.JSX.Element {
@@ -99,7 +99,7 @@ function WorkflowPicker({
   return (
     <label className="ts-field">
       <span className="ts-field-label">Workflow</span>
-      <Tooltip label="Which Workflow a swept task arms after its work. Kind default follows this kind's row on Settings - Tasks - Dispatch defaults, read as each row is filed.">
+      <Tooltip label="Which Workflow a swept task arms after its work. Kind default follows this kind's After work on Settings - Tasks, read as each row is filed.">
         <select
           className="harnesses-select"
           aria-label="Workflow for tasks this source files"
@@ -946,7 +946,7 @@ export function SourceCard({
   state: TaskSourcesState;
   /** The Workflow catalog, for the workflow picker. */
   workflows?: WorkflowSummary[];
-  /** Settings -> Tasks -> Dispatch defaults, or null while it is not known. */
+  /** Each kind's After work on Settings -> Tasks, or null while it is not known. */
   kindWorkflowDefaults?: KindWorkflowDefaults | null;
 }): React.JSX.Element {
   const { val, edit, commit, draft } = useDraftText();

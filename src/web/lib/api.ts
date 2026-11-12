@@ -1656,6 +1656,8 @@ export interface DispatchInput {
   effort?: import("@shared/types.ts").ThinkingLevel;
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
+  /** Grill me first, for a plan task; omitted follows the Settings -> Tasks default. */
+  grillFirst?: boolean;
   /** Backlog-task or live-session prerequisites. */
   dependencies?: TaskDependencyInput[];
   backlog?: boolean;

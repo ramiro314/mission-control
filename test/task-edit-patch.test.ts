@@ -214,6 +214,7 @@ test("every field on the form reaches the patch", () => {
     // moved to Settings -> Harnesses, so it is judged against a task that has one.
     advisorModel: "",
     workflowId: "workflow-review",
+    grillFirst: true,
     enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],
   };
@@ -256,4 +257,27 @@ test("a working copy is stale exactly when the row's editable fields moved", () 
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", labels: ["bug"] }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", title: "Renamed" }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", enabled: false }))));
+});
+
+test("Grill me first reads back as a task's choice and saves only when it moves", () => {
+  const ship = mkTask({ kind: "ship", grillFirst: true });
+  assert.equal(draftFromTask(ship).grillFirst, true);
+  assert.equal(taskUpdatePatch(ship, draftFromTask(ship), ship.intent), null, "an untouched pin is not resent");
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), grillFirst: false }, ship.intent), { grillFirst: false });
+  // A row filed before the column existed reads as off, not as a choice nobody made.
+  assert.equal(draftFromTask(mkTask({ kind: "plan" })).grillFirst, false);
+  // Between kinds that both offer it the pin goes with the task, so the patch is the kind.
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "plan" }, ship.intent), { kind: "plan" });
+  // Shape has no pin, so switching it to plan untouched leaves the daemon to pin plan's
+  // default, and a choice made on the switch is sent even when it is off.
+  const shape = mkTask({ kind: "shape" });
+  assert.equal(draftFromTask(shape).grillFirst, undefined);
+  assert.deepEqual(taskUpdatePatch(shape, { ...draftFromTask(shape), kind: "plan" }, shape.intent), { kind: "plan" });
+  assert.deepEqual(
+    taskUpdatePatch(shape, { ...draftFromTask(shape), kind: "plan", grillFirst: false }, shape.intent),
+    { kind: "plan", grillFirst: false },
+  );
+  // Leaving for shape there is no pin to save, whatever the box last said.
+  assert.deepEqual(taskUpdatePatch(ship, { ...draftFromTask(ship), kind: "shape" }, ship.intent), { kind: "shape" });
+  assert.ok(!draftsEqual(draftFromTask(ship), draftFromTask(mkTask({ kind: "ship", grillFirst: false }))));
 });

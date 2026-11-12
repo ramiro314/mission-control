@@ -37,8 +37,10 @@ import {
   TASK_KIND_BEHAVIOR,
   TASK_PRIORITIES,
   hasReviewableDiff,
+  isGrillFirstTaskKind,
   taskDefaultWorkflowId,
   taskKindAllowsBacklog,
+  type GrillFirstTaskKind,
 } from "@shared/task.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
 import {
@@ -92,6 +94,8 @@ import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { DeleteButton } from "./DeleteButton.tsx";
 import { LabelChips, ScheduleSwitch } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { InfoTip } from "./InfoTip.tsx";
+import { GRILL_FIRST_TIP } from "../lib/grill-first.ts";
 import { DispatchModeToggle } from "./DispatchModeToggle.tsx";
 import type { ResidentProfile } from "@shared/residents.ts";
 import { ResidentDispatch } from "../residents/ResidentDispatch.tsx";
@@ -294,6 +298,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
     d.advisorModel === EMPTY_DISPATCH_DRAFT.advisorModel &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
+    d.grillFirst === EMPTY_DISPATCH_DRAFT.grillFirst &&
     d.enabled === EMPTY_DISPATCH_DRAFT.enabled &&
     d.dependencies.length === 0
   );
@@ -417,6 +422,56 @@ export function defaultEffortOptionLabel(
  */
 const AGENT_FIELD_TIP =
   "Which harness this task is dispatched to - switching resets the model and effort overrides";
+/**
+ * Grill me first: this dispatch's override of its kind's default on Settings -> Tasks. What it
+ * does is said once, on the "i" beside it, so the crew row stays one line.
+ *
+ * An untouched box sends nothing and the daemon pins the kind's default, so the box only claims
+ * an answer once it knows that default: indeterminate, and disabled, while it loads;
+ * indeterminate but choosable when it could not be read. It never shows an "off" it would not
+ * send.
+ */
+function GrillFirstField({
+  choice,
+  fallback,
+  className,
+  onChange,
+}: {
+  /** The choice made on this form, or undefined to follow the default. */
+  choice: boolean | undefined;
+  /** The kind's default: undefined while loading, null when it could not be read. */
+  fallback: boolean | null | undefined;
+  className: string;
+  onChange: (grillFirst: boolean) => void;
+}): React.JSX.Element {
+  const value = choice ?? fallback;
+  const known = typeof value === "boolean";
+  const tip = value === undefined
+    ? `${GRILL_FIRST_TIP} Reading this kind's default from Settings → Tasks…`
+    : value === null
+      ? `${GRILL_FIRST_TIP} This kind's default could not be read, so an untouched box follows it; tick or clear it to choose for this task.`
+      : GRILL_FIRST_TIP;
+  return (
+    <div className={`dispatch-grill-first${className}`}>
+      <label className="dispatch-grill-first-control">
+        <Tooltip label="Interview me before this task starts its work">
+          <input
+            type="checkbox"
+            checked={value === true}
+            disabled={value === undefined}
+            ref={(el) => {
+              if (el) el.indeterminate = !known;
+            }}
+            onChange={(e) => onChange(e.target.checked)}
+          />
+        </Tooltip>
+        <span className="field-label">Grill me first</span>
+      </label>
+      <InfoTip about="Grill me first" text={tip} />
+    </div>
+  );
+}
+
 /**
  * Which advisor this launch will get, and where that came from - read-only, because the
  * advisor is chosen per model on Settings -> Harnesses. The one action is for a pin a task
@@ -1185,6 +1240,11 @@ function DispatchModal({
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
   const [planStorage, setPlanStorage] = useState<"repository" | "local" | null>(null);
+  /**
+   * The kinds Settings -> Tasks starts with Grill me first on, which a task the form leaves
+   * alone gets: undefined while it loads, null when it could not be read.
+   */
+  const [grillFirstKinds, setGrillFirstKinds] = useState<readonly GrillFirstTaskKind[] | null | undefined>(undefined);
   const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
   /**
    * What this MACHINE has to say about tooling a launched session will inherit - already
@@ -1536,7 +1596,7 @@ function DispatchModal({
   const provisionalWorkflow = useRef<{ kind: TaskKind; workflowId: string | null } | null>(null);
 
   /**
-   * A kind switch arms that kind's row under Settings -> Tasks -> Dispatch defaults.
+   * A kind switch arms that kind's After work on Settings -> Tasks.
    *
    * Ship is the kind the stash belongs to: leaving it puts the current choice aside, and
    * returning hands it back, unless the operator chose an after-work Workflow by hand in
@@ -2191,7 +2251,11 @@ function DispatchModal({
       setRepos(list);
       setReposLoading(false);
     });
-    void fetchSkills().then((skills) => { if (alive) setPlanStorage(skills?.planStorage ?? "repository"); });
+    void fetchSkills().then((skills) => {
+      if (!alive) return;
+      setPlanStorage(skills?.planStorage ?? "repository");
+      setGrillFirstKinds(skills ? skills.grillFirstKinds : null);
+    });
     void workflowRequest<WorkflowConfig>("/api/workflows/config")
       .then((config) => {
         if (alive) setWorkflowConfig(config);
@@ -2464,6 +2528,8 @@ function DispatchModal({
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
           workflowId: submitted.workflowId,
+          // Omitted unless chosen here, so the daemon pins the Settings default itself.
+          grillFirst: isGrillFirstTaskKind(submitted.kind) ? submitted.grillFirst : undefined,
           dependencies: submitted.dependencies,
           backlog: !launchesNow,
           // The switch governs a task left in the backlog. An immediate dispatch is
@@ -3094,6 +3160,14 @@ function DispatchModal({
                 : kindBehavior.constraint}
           </span>
           {usesHarness && <ModelCatalogNotice agent={draft.agent} />}
+          {isGrillFirstTaskKind(draft.kind) && (
+            <GrillFirstField
+              choice={draft.grillFirst}
+              fallback={grillFirstKinds ? grillFirstKinds.includes(draft.kind) : grillFirstKinds}
+              className={guidedDim}
+              onChange={(grillFirst) => update({ grillFirst })}
+            />
+          )}
           {kindUnavailable && (
             <span className={`dispatch-workflow-warning${guidedDim}`}>
               This kind is available only when conductor is enabled for the selected repository.
