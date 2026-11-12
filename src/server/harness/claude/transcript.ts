@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { HISTORY_TOOL_INPUT_CAP } from "@shared/history.ts";
 import type { Session, ToolCall, TranscriptAdvisor, TranscriptMessage } from "@shared/types.ts";
@@ -27,8 +27,10 @@ const NL = 0x0a; // "\n"
  * dirs and to compaction/resume/rename. As a fallback for a session whose hook
  * predates transcript reporting, we reconstruct Claude's documented layout:
  * the project dir is `claudeProjectDir(cwd)`, and the file is named by the session id.
+ * Last, a conversation resumed from another worktree is found in its original folder
+ * (`elsewhere`).
  *
- * Returns null when neither locates a file (no hook yet, or a session with no id or cwd
+ * Returns null when none locates a file (no hook yet, or a session with no id or cwd
  * to derive from). It no longer checks the agent: this function is only reachable
  * THROUGH `HARNESSES.claude`, so a non-Claude session cannot arrive here, and a guard
  * restating that would be the hardcode this migration removes.
@@ -47,7 +49,35 @@ export function resolveTranscriptPath(
     const derived = join(dir, `${session.agentSessionId}.jsonl`);
     if (existsSync(derived)) return derived;
   }
-  return null;
+  return elsewhere(session.agentSessionId, projectsDir);
+}
+
+/**
+ * The conversation's file in ANOTHER project folder, when its own cwd has none.
+ *
+ * A resume does not have to run where the conversation began. Claude Code resumes a session
+ * from any worktree of the same repository and keeps appending to the ORIGINAL file, so a
+ * History Resume into a pool slot leaves the transcript under the first worktree's folder,
+ * never the slot's. The hook reports that path once a turn runs; until then - and after
+ * every daemon restart, which keeps no hook path for an embedded session - only a search
+ * finds it. A session id is a UUID, so a file named by it is that conversation wherever it
+ * sits. Several (a source and History's copy of it) resolve to the most recently written,
+ * the one a running agent appends to.
+ */
+function elsewhere(agentSessionId: string, projectsDir: string): string | null {
+  let dirs: string[];
+  try {
+    dirs = readdirSync(projectsDir);
+  } catch {
+    return null;
+  }
+  let found: { path: string; mtimeMs: number } | null = null;
+  for (const dir of dirs) {
+    const path = join(projectsDir, dir, `${agentSessionId}.jsonl`);
+    const stat = statSync(path, { throwIfNoEntry: false });
+    if (stat?.isFile() && (!found || stat.mtimeMs > found.mtimeMs)) found = { path, mtimeMs: stat.mtimeMs };
+  }
+  return found?.path ?? null;
 }
 
 /**

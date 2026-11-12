@@ -156,7 +156,10 @@ the agent like any other terminal session, which turns the row **Live**.
   daemon starts an embedded session that continues the conversation (the Agent SDK's `resume`,
   with no turn one and the recorded permission mode) in the same directory or slot. Its card
   joins the Fleet idle, waiting for the operator's next message, and binds the launch as it
-  registers, so the dialog reports it started and the row turns **Live**. Like a terminal
+  registers, so the dialog reports it started and the row turns **Live**. In a slot, Claude
+  Code keeps appending to the transcript in the original directory's project folder, so the
+  card finds the conversation there by its session id, before the first prompt and after a
+  daemon restart, when no hook has reported a path yet. Like a terminal
   Resume it has no task and no Mission Control tools. It never forks: with a typed directory as
   the target the row is disabled, and the route refuses it with `host_unavailable`, as it does
   for an agent with no Agent SDK driver or a build with no session supervisor.
