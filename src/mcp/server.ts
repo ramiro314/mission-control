@@ -7,6 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { boundedRecord } from "@shared/zod-shapes.ts";
 import type { ReviewItem, Task } from "@shared/types.ts";
 import { SESSION_BLOCKER_KINDS, SESSION_BLOCKER_LIMITS } from "@shared/types.ts";
 import { reviewToolResult } from "@shared/review-item.ts";
@@ -1503,7 +1504,9 @@ server.registerTool(
       "\"\" is the root. An affected-tests argv needs one element exactly {files} and one containing " +
       "{junit}. The answer is the preview the human will see, including any problem to fix.",
     inputSchema: {
-      document: z.record(z.string(), z.unknown()).describe("The Command document, version 1."),
+      // Bounded like every MCP collection; a document has three top-level keys, and the daemon
+      // refuses any it does not know with the preview's own wording.
+      document: boundedRecord(z.string(), z.unknown(), 16).describe("The Command document, version 1."),
       repository: z
         .string()
         .min(1)

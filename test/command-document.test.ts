@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   COMMAND_DOCUMENT_LIMITS,
   COMMAND_DOCUMENT_SLOTS,
+  CommandDocumentBasisSchema,
   CommandDocumentSchema,
   commandDocumentChangeSummary,
   parseCommandDocumentText,
@@ -347,4 +348,16 @@ test("export lists this repository's rows only, sorted, and importing it back ch
   assert.deepEqual([plan.preview.commands, plan.preview.testing, plan.commandWrites, plan.testingWrites], [[], [], [], []]);
   assert.equal(plan.preview.unchanged, 4);
   assert.equal(commandDocumentChangeSummary(plan.preview), "No changes");
+});
+
+test("the apply basis names only Command slots and is bounded like every request collection", () => {
+  assert.ok(CommandDocumentBasisSchema.safeParse({ commands: { lint: 3, "affected-tests": 0 }, testing: { "": 1 } }).success);
+  assert.ok(CommandDocumentBasisSchema.safeParse({ commands: {}, testing: {} }).success, "a basis may name no slot");
+  assert.ok(!CommandDocumentBasisSchema.safeParse({ commands: { deploy: 1 }, testing: {} }).success);
+  const testing = Object.fromEntries(
+    Array.from({ length: COMMAND_DOCUMENT_LIMITS.testingEntries + 1 }, (_, i) => [`apps/${i}`, 0]),
+  );
+  const oversized = CommandDocumentBasisSchema.safeParse({ commands: {}, testing });
+  assert.ok(!oversized.success);
+  assert.equal(oversized.error.issues.length, 1, "refused as one too_big, before the entries are parsed");
 });

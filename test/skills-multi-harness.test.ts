@@ -196,6 +196,7 @@ test("the refusal names a fix the caller can apply", () => {
 const GUARD_PROBE = `
 import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 const { reconcileSkillLinks, uninstallSkillLinks } = await import("./src/server/skills/reconcile.ts");
 
 const home = homedir();

@@ -2802,6 +2802,7 @@ export const SkillsConfigSchema = z.object({
    * the task it always was.
    */
   grillFirstKinds: z.array(z.enum(GRILL_FIRST_TASK_KINDS as unknown as [GrillFirstTaskKind, ...GrillFirstTaskKind[]]))
+    .max(GRILL_FIRST_TASK_KINDS.length)
     .default([]),
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
