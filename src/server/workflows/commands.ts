@@ -8,6 +8,7 @@ import type {
   WorkflowCommandView,
   WorkflowRun,
 } from "@shared/workflow.ts";
+import { commandTemplateProblem } from "@shared/workflow.ts";
 import type { ReviewItem } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
 import { WorkflowStore } from "./store.ts";
@@ -70,7 +71,9 @@ export type ConfigureRepositoryCommandResult =
     }
   | {
       ok: false;
-      reason: "finished" | "no_repository" | "check_running" | "unconfirmed" | "not_found" | "conflict" | "refused";
+      reason:
+        | "finished" | "no_repository" | "check_running" | "unconfirmed" | "not_found" | "conflict" | "refused"
+        | "invalid_template";
       message: string;
       /** On `unconfirmed`: the card to show the operator, which `configure_workflow_command` does. */
       confirmation?: CommandConfirmationCard;
@@ -340,6 +343,10 @@ export class WorkflowCommandManager {
   configureRepositoryCommand(input: ConfigureRepositoryCommandInput): ConfigureRepositoryCommandResult {
     const { runs, run, binding, slot, command } = input;
     const now = input.now ?? Date.now();
+    // Fork (flake-aware-testing): the same template rule every other writer of the slot applies,
+    // checked first so the operator is never asked to confirm a Command that cannot run.
+    const problem = commandTemplateProblem(slot as WorkflowCheckSlot, command);
+    if (problem) return { ok: false, reason: "invalid_template", message: problem };
     if (["completed", "cancelled", "failed"].includes(run.status)) {
       return { ok: false, reason: "finished", message: "This workflow run has finished; configure the Command in Library › Commands" };
     }

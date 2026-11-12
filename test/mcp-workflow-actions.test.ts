@@ -17,6 +17,7 @@ import { WorkflowActionRequestSchema, workflowActionPath } from "../src/shared/w
 import { WORKFLOW_ACTION_ROUTES } from "../src/shared/workflow-actions.ts";
 import type { WorkflowManagerOptions } from "../src/server/workflows/manager.ts";
 import type { WorkflowBinding, WorkflowCompletionPolicy, WorkflowInspectorGateState } from "../src/shared/workflow.ts";
+import { commandTemplateProblem } from "../src/shared/workflow.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-mcp-workflow-"));
@@ -461,6 +462,24 @@ test("MCP configures the Command for its own run's repository and frees the slot
   await f.call("configure_workflow_command", { runId: own.run.id, slot: "coderabbit", command: ["x"] }, /Invalid|invalid_enum|Expected/i);
   await f.call("configure_workflow_command", { runId: own.run.id, slot: "lint", command: [] }, /Invalid|too_small|at least/i);
   assert.deepEqual(f.workflowCommands.get("lint")!.overrides, []);
+
+  // Fork (flake-aware-testing): an affected-tests argv that is not a template is refused with the
+  // wording every other writer of that slot uses, before any confirmation card is raised.
+  const notTemplate = ["npm", "test"];
+  const affectedRevision = f.workflowCommands.get("affected-tests")!.revision;
+  const cardsBefore = f.store.listEvents(own.run.id).filter((e) => e.kind === "workflow_command_confirmation_requested").length;
+  const invalid = await f.app.request("/mcp/workflows/configure-command", { method: "POST",
+    headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+      "x-mission-scout-credential": f.credential() },
+    body: JSON.stringify({ runId: own.run.id, slot: "affected-tests", command: notTemplate }) });
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(await invalid.json(), {
+    error: commandTemplateProblem("affected-tests", notTemplate),
+    code: "workflow_command_invalid_template",
+  });
+  assert.equal(f.workflowCommands.get("affected-tests")!.revision, affectedRevision);
+  assert.equal(f.store.listEvents(own.run.id).filter((e) => e.kind === "workflow_command_confirmation_requested").length,
+    cardsBefore, "no confirmation card for a Command that cannot run");
 });
 
 async function waitFor(predicate: () => boolean, message: string, timeoutMs = 10_000): Promise<void> {

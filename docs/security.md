@@ -52,7 +52,7 @@ writes among them, including the ones that decide what runs: worktree pool polic
 testing settings (`PUT /api/testing-settings`), and both of those for a whole repository at once
 through a Command document (`POST /api/command-documents/apply`). The
 per-machine token above guards ingress only. The narrow agent tools, such as
-`set_affected_tests_command`, bound what an agent may do **through MCP**; they do not stop the
+`set_affected_tests_command` and `configure_workflow_command`, bound what an agent may do **through MCP**; they do not stop the
 same agent from calling the `/api/*` route directly. The same holds for
 `propose_command_document`: the operator's review of a proposed Command document is an approval
 step on the MCP surface, and the apply route it leads to accepts a document from any loopback

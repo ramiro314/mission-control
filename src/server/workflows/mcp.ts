@@ -161,6 +161,9 @@ export function registerWorkflowMcpRoutes(
         : undefined,
     });
     if (!result.ok) {
+      if (result.reason === "invalid_template") {
+        return c.json({ error: result.message, code: "workflow_command_invalid_template" }, 400);
+      }
       const status = result.reason === "unconfirmed" ? 403 : result.reason === "not_found" ? 404 : 409;
       return c.json({
         error: result.message,

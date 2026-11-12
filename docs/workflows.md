@@ -23,7 +23,8 @@ opaque ids from run detail and following `nextCursor` until it is null. A page i
 KiB. The same owning-session and **Control other sessions** authorization applies.
 
 `configure_workflow_command({runId, slot, command})` sets the argv one slot (`test`, `lint`,
-`typecheck`, `build`, or `documentation`) runs for the repository of the caller's **own** run. The
+`typecheck`, `build`, `documentation`, or `affected-tests`, whose argv must carry the `{files}` /
+`{junit}` template) runs for the repository of the caller's **own** run. The
 operator confirms it on a `request_input` card that Mission Control itself raises on the session,
 not one the session writes: the card names the run, the slot, the repository, and the argv as a
 JSON array, so arguments that read the same when joined with spaces stay distinct. The daemon
