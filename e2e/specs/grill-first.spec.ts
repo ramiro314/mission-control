@@ -86,13 +86,17 @@ test("each kind's default is chosen on Settings -> Tasks, all off until then, an
   daemon,
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/tasks`);
-  const card = dashboard.locator('[data-anchor="tasks/grill-first"]');
-  await expect(card.getByRole("heading", { name: "Grill me first" })).toBeVisible();
+  // Each kind's own section holds its box; shape's says it always grills.
   for (const kind of ["ship", "bugfix", "document", "plan", "scout", "chat"]) {
-    await expect(kindBox(dashboard, kind)).toBeEnabled();
-    await expect(kindBox(dashboard, kind)).not.toBeChecked();
+    const box = dashboard.locator(`[data-anchor="tasks/kind-${kind}"]`)
+      .getByRole("checkbox", { name: `Grill me first for ${kind} tasks`, exact: true });
+    await expect(box).toBeEnabled();
+    await expect(box).not.toBeChecked();
   }
   await expect(kindBox(dashboard, "shape")).toHaveCount(0);
+  await expect(dashboard.locator('[data-anchor="tasks/kind-shape"]'))
+    .toContainText("Always: a shape task grills on its own contract.");
+  const card = dashboard.locator('[data-anchor="tasks/kind-plan"]');
   // What it does is the "i"'s tooltip.
   const info = card.getByRole("button", { name: "About Grill me first" });
   await expect(info).toHaveAccessibleDescription(TIP);
@@ -116,7 +120,7 @@ test("each kind's default is chosen on Settings -> Tasks, all off until then, an
     grillFirstKinds: string[];
   };
   expect(skills.grillFirstKinds.sort()).toEqual(["bugfix", "plan"]);
-  await shoot(dashboard, dashboard.locator('[data-anchor="tasks/grill-first"]'), "01-settings-per-kind");
+  await shoot(dashboard, dashboard.locator("main.settings-page"), "01-settings-per-kind");
 });
 
 test("the dispatch form offers it for every kind but shape, follows each kind's default, and pins the choice", async ({

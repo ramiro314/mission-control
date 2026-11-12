@@ -1596,7 +1596,7 @@ function DispatchModal({
   const provisionalWorkflow = useRef<{ kind: TaskKind; workflowId: string | null } | null>(null);
 
   /**
-   * A kind switch arms that kind's row under Settings -> Tasks -> Dispatch defaults.
+   * A kind switch arms that kind's After work on Settings -> Tasks.
    *
    * Ship is the kind the stash belongs to: leaving it puts the current choice aside, and
    * returning hands it back, unless the operator chose an after-work Workflow by hand in

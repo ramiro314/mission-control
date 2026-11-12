@@ -244,8 +244,8 @@ anything the task delivers: a plan's review and phased follow-up still come afte
 interview is done the task carries on exactly as it would have, with the settled decisions as
 part of its request. When it is off, a task is delivered exactly as it always was.
 
-- **Where it is set.** Each kind's default is a checkbox in the **Grill me first** card on
-  **Settings → Tasks**, and every kind starts off. The dispatch form shows a **Grill me first**
+- **Where it is set.** Each kind's default is the **Grill me first** checkbox in that kind's
+  section on **Settings → Tasks**, and every kind starts off. The dispatch form shows a **Grill me first**
   checkbox for every kind that offers it, so one task can differ from its kind's default, and
   the backlog editor can change it while the task is shelved. What it does is the tooltip on the
   `i` beside it.
@@ -386,9 +386,10 @@ selection and add the task to the backlog while Foreman is off. When the task is
 Foreman must be enabled and the selected harness must support its completion boundary; the
 Workflow is then bound to the session and starts when Foreman reports **Complete**.
 
-**Settings → Tasks → Dispatch defaults** holds one row per task kind Mission Control
-launches: ship, bugfix, document, plan, shape, scout and chat. Pipeline has none, because Conductor owns
-what runs after its work. Each row holds one of three answers:
+**Settings → Tasks** gives each task kind Mission Control launches its own section - ship,
+bugfix, document, plan, shape, scout and chat - and its **After work** is the kind's dispatch
+Workflow. Pipeline has none, because Conductor owns what runs after its work. Each holds one of
+three answers:
 
 | Row | What a new task of that kind arms |
 | --- | --- |
@@ -1665,7 +1666,7 @@ turning it on is consent. Per source:
 | **Files tasks against** | the repo swept tasks are based on, resolved server-side so a typo can't enter |
 | **Sweep every** | how often, clamped to 1 minute - 24 hours. Default 15 minutes |
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
-| **What a swept task looks like** | the agent, kind, workflow, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. Every source kind offers every backlog kind, **shape** included, so a source that sweeps only issues labelled `needs-shaping` can file them as shape tasks. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Workflow** is the after-work Workflow each swept task binds: **Kind default** (the starting value, and what a source saved before this field reads as) takes the kind's row under [Settings → Tasks → Dispatch defaults](#dispatch-an-agent) as each row is filed, **None** files tasks with no Workflow, and any bindable published Workflow pins that one. A source naming an unknown, archived or unpublished Workflow is refused on save, and a Workflow a source names cannot be archived or deleted until the source names another. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
+| **What a swept task looks like** | the agent, kind, workflow, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. Every source kind offers every backlog kind, **shape** included, so a source that sweeps only issues labelled `needs-shaping` can file them as shape tasks. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Workflow** is the after-work Workflow each swept task binds: **Kind default** (the starting value, and what a source saved before this field reads as) takes the kind's row under its **After work** on [Settings → Tasks](#dispatch-an-agent) as each row is filed, **None** files tasks with no Workflow, and any bindable published Workflow pins that one. A source naming an unknown, archived or unpublished Workflow is refused on save, and a Workflow a source names cannot be archived or deleted until the source names another. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
 | **Sweep now** | run it once, right now, and see what it filed and refreshed |
 | **Keep imported backlog tasks updated** | off by default; refresh source details for unstarted backlog tasks on each sweep, preserving local edits and showing conflicts for review |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential, acli OAuth login, or UpstartClaw Jira skill for Jira |

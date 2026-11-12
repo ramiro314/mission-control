@@ -548,16 +548,17 @@ could not: the preference is now in ⌘K by name, flippable from a search result
 leaving the page you are on, and `#/settings/dispatch` is a link you can keep.
 
 **Tasks** (`#/settings/tasks`) sits beside Harnesses and holds what each kind of task starts
-with when nothing names its own choice. Its **Dispatch defaults** card is the per-kind
-after-work Workflow rows (see [Dispatch an agent](dispatch-and-backlog.md), under **After
-work**). Those rows used to be a card under **Settings → Workflows**, and they are no longer
-there: they describe a task kind rather than the Workflow subsystem's policy. They are
+with when nothing names its own choice, as one section per kind - ship, scout, plan, chat,
+bugfix, document and shape - holding every setting this page keeps for it. **After work** is the
+kind's after-work Workflow (see [Dispatch an agent](dispatch-and-backlog.md), under **After
+work**). These used to be a card under **Settings → Workflows**, and they are no longer there:
+they describe a task kind rather than the Workflow subsystem's policy. **Grill me first** is
+whether a new task of that kind interviews you before it starts (see
+[Grill me first](dispatch-and-backlog.md#grill-me-first)), off for every kind until chosen, with
+what it does on the `i` beside it; shape's section says it always grills. Both are
 daemon-backed, so they reach tasks from the API, task sources and recurring missions as well as
-the dispatch form. Its **Grill me first** card holds one checkbox per kind - every kind but
-shape, all off until chosen - for whether a new task of that kind interviews you before it
-starts (see [Grill me first](dispatch-and-backlog.md#grill-me-first)). The defaults are stored in
-the Skills config, are pinned on each task when it is filed, and the card warns when any is on
-while the Grill skill is off, because such a task is refused at dispatch.
+the dispatch form, and both are pinned on each task when it is filed. The page warns when a kind
+grills first while the Grill skill is off, because such a task is refused at dispatch.
 
 **GitHub Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the
