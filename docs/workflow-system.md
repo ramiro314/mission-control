@@ -54,8 +54,8 @@ registered text and the relevant unchanged comparison material.
 
 Task workflow defaults resolve through `taskDefaultWorkflowId` in `src/shared/task.ts`, used by
 the dispatch form, the Recurring Mission editor, **Shape this**, and server task creation. It
-reads the operator's per-kind rows (`WorkflowPolicy.kindWorkflowDefaults`, edited under Settings
-→ Tasks → Dispatch defaults) and falls back to `BUILTIN_KIND_WORKFLOW_DEFAULTS`: Ship
+reads the operator's per-kind rows (`WorkflowPolicy.kindWorkflowDefaults`, edited as each kind's
+After work on Settings → Tasks) and falls back to `BUILTIN_KIND_WORKFLOW_DEFAULTS`: Ship
 defaults to No-Mistakes Review, Bugfix to Bug Fix Review, Document to Documentation Review, Plan
 and Shape to Plan Validation, and Scout and Chat to None. A plan pinned to local storage always
 resolves to Local Plan Validation. Pipeline always resolves to None. Explicit IDs and null

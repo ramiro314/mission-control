@@ -68,7 +68,7 @@ test("each kind's dispatch default is chosen in Settings and preselected at disp
   await expect(kindRow(dashboard, "scout")).toHaveValue(GENERAL_REVIEW);
   await expect(kindRow(dashboard, "plan")).toHaveValue("__none");
   expect(await selectedLabel(kindRow(dashboard, "ship"))).toBe("Built-in default (No-Mistakes Review (High Rigor))");
-  await shoot(dashboard.locator('[data-anchor="tasks/dispatch-defaults"]'), "01-settings-dispatch-defaults");
+  await shoot(dashboard.locator('[data-anchor="tasks/kinds"]'), "01-settings-dispatch-defaults");
 
   await dashboard.goto(`${daemon.baseURL}/`);
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -134,10 +134,16 @@ test("the rows live under Settings -> Tasks and nowhere under Workflows", async 
   await tasks.click();
   await expect(dashboard).toHaveURL(/#\/settings\/tasks$/);
   await expect(tasks).toHaveAttribute("aria-selected", "true");
-  const card = dashboard.locator('[data-anchor="tasks/dispatch-defaults"]');
-  await expect(card.getByRole("heading", { name: "Dispatch defaults" })).toBeVisible();
+  // One section per kind, each holding that kind's own after-work Workflow.
+  const sections = dashboard.locator('[data-anchor="tasks/kinds"]');
   await expect(kindRow(dashboard, "ship")).toBeEnabled();
-  await expect(card.getByRole("combobox", { name: /^Default after-work Workflow for / })).toHaveCount(7);
+  await expect(sections.getByRole("combobox", { name: /^Default after-work Workflow for / })).toHaveCount(7);
+  for (const kind of ["ship", "scout", "plan", "chat", "bugfix", "document", "shape"]) {
+    const card = dashboard.locator(`[data-anchor="tasks/kind-${kind}"]`);
+    await expect(card.getByRole("heading", { name: kind, exact: true })).toBeVisible();
+    await expect(card.getByRole("combobox", { name: `Default after-work Workflow for ${kind} tasks`, exact: true }))
+      .toBeVisible();
+  }
   const head = dashboard.locator(".settings-panel-head");
   await expect(head.getByRole("heading", { name: "Tasks", exact: true })).toBeVisible();
   await expect(head.getByText("This machine", { exact: true })).toBeVisible();

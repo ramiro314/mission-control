@@ -2193,6 +2193,11 @@ export class Registry extends EventEmitter {
    * still addressable - drafts and published versions name its id, and history reports it -
    * so dropping it from the browser's map would make an existing node's source unnameable.
    */
+  /** One SessionAction as the catalog holds it now: an edited built-in carries its edit. */
+  getSessionAction(id: string): SessionAction | undefined {
+    return this.sessionActions.get(id);
+  }
+
   upsertSessionAction(action: SessionAction): void {
     this.sessionActions.set(action.id, action);
     this.emitEvent({ type: "session_action_upsert", action });

@@ -283,6 +283,39 @@ A [resident](residents.md) takes its Persona from its profile and never from thi
 `create_task` and `update_task` do not accept a Persona yet; `get_task` reports a task's
 `personaId`.
 
+## Grill me first
+
+**Grill me first** makes a task interview you before it starts its work. It is offered for every
+kind this app launches except shape, which always grills on its own. When it is on, the task's
+intent is delivered with the Library's built-in **Grill** session action in front of the kind's
+own contract: the agent asks in rounds, each one `request_plan_decisions` form holding every
+question that can be asked so far, with its recommended option listed first and a free-text
+**Other**. There is always at least one round, rounds continue until nothing is left to ask, and
+dismissing a round stops the session before the work starts. A round may open with nothing
+selected, so an answer is only what you selected or wrote. Grilling rounds are not the review of
+anything the task delivers: a plan's review and phased follow-up still come afterwards. Once the
+interview is done the task carries on exactly as it would have, with the settled decisions as
+part of its request. When it is off, a task is delivered exactly as it always was.
+
+- **Where it is set.** Each kind's default is the **Grill me first** checkbox in that kind's
+  section on **Settings → Tasks**, and every kind starts off. The dispatch form shows a **Grill me first**
+  checkbox for every kind that offers it, so one task can differ from its kind's default, and
+  the backlog editor can change it while the task is shelved. What it does is the tooltip on the
+  `i` beside it.
+- **Pinned when filed.** The choice is stored on the task when it is created, so changing a
+  default later moves no existing task. A task filed by a task source, a recurring mission or
+  MCP `create_task` takes its kind's default. Switching a shelved task between two kinds that
+  offer it keeps its choice; switching it in from shape takes the new kind's default.
+- **Editing the interview.** The Grill action is the one built-in session action edited in
+  place: open it under **Library → Actions**, change its instruction and **Save**, and every later
+  grill-first task is sent your text. **Reset to built-in**, in its `⋯` menu, restores the shipped
+  instruction. Its name, required skill and completion stay as shipped.
+- **It needs the Grill skill.** With Grill me first on, the bundled
+  [Grill skill](skills-and-settings.md) must be switched on as well, or the dispatch is refused on
+  the form naming it, and a launch that reaches the daemon anyway fails rather than starting an
+  interview the agent cannot load. A grill-first task of any kind is granted
+  `request_plan_decisions`.
+
 ## Attaching more than one repository
 
 Claude Code and Codex receive launch-time grants for secondary worktrees. Pi is also offered:
@@ -406,9 +439,10 @@ selection and add the task to the backlog while Foreman is off. When the task is
 Foreman must be enabled and the selected harness must support its completion boundary; the
 Workflow is then bound to the session and starts when Foreman reports **Complete**.
 
-**Settings → Tasks → Dispatch defaults** holds one row per task kind Mission Control
-launches: ship, bugfix, document, plan, shape, scout and chat. Pipeline has none, because Conductor owns
-what runs after its work. Each row holds one of three answers:
+**Settings → Tasks** gives each task kind Mission Control launches its own section - ship,
+bugfix, document, plan, shape, scout and chat - and its **After work** is the kind's dispatch
+Workflow. Pipeline has none, because Conductor owns what runs after its work. Each holds one of
+three answers:
 
 | Row | What a new task of that kind arms |
 | --- | --- |
@@ -508,6 +542,9 @@ plan can be dispatched. With either one off the dispatch is refused on the form,
 toggle and where to find it, rather than launching an agent that would improvise a plan nobody
 asked for. Backlogging a plan task is always allowed - the check is asked again at the moment
 it launches.
+
+With [Grill me first](#grill-me-first) on, a plan task interviews you before it drafts. The
+plan contract above follows the interview unchanged, review and phased follow-up included.
 
 A repository plan with a bound workflow finishes its approved artifacts and requested scheduling, then
 ends its planning turn before creating a PR. Foreman judges that planning boundary and starts
@@ -1755,7 +1792,7 @@ turning it on is consent. Per source:
 | **Files tasks against** | the repo swept tasks are based on, resolved server-side so a typo can't enter |
 | **Sweep every** | how often, clamped to 1 minute - 24 hours. Default 15 minutes |
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
-| **What a swept task looks like** | the agent, kind, workflow, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. Every source kind offers every backlog kind, **shape** included, so a source that sweeps only issues labelled `needs-shaping` can file them as shape tasks. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Workflow** is the after-work Workflow each swept task binds: **Kind default** (the starting value, and what a source saved before this field reads as) takes the kind's row under [Settings → Tasks → Dispatch defaults](#dispatch-an-agent) as each row is filed, **None** files tasks with no Workflow, and any bindable published Workflow pins that one. A source naming an unknown, archived or unpublished Workflow is refused on save, and a Workflow a source names cannot be archived or deleted until the source names another. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
+| **What a swept task looks like** | the agent, kind, workflow, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. Every source kind offers every backlog kind, **shape** included, so a source that sweeps only issues labelled `needs-shaping` can file them as shape tasks. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Workflow** is the after-work Workflow each swept task binds: **Kind default** (the starting value, and what a source saved before this field reads as) takes the kind's row under its **After work** on [Settings → Tasks](#dispatch-an-agent) as each row is filed, **None** files tasks with no Workflow, and any bindable published Workflow pins that one. A source naming an unknown, archived or unpublished Workflow is refused on save, and a Workflow a source names cannot be archived or deleted until the source names another. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
 | **Sweep now** | run it once, right now, and see what it filed and refreshed |
 | **Keep imported backlog tasks updated** | off by default; refresh source details for unstarted backlog tasks on each sweep, preserving local edits and showing conflicts for review |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential, acli OAuth login, or UpstartClaw Jira skill for Jira |

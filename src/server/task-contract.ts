@@ -1,4 +1,4 @@
-import { taskHasRepository, type PlanningTaskKind } from "@shared/task.ts";
+import { taskGrillsFirst, taskHasRepository, type PlanningTaskKind } from "@shared/task.ts";
 import type { Task, TaskKind } from "@shared/types.ts";
 import { openPullRequestCommand } from "@shared/pr-command.mjs";
 import {
@@ -18,6 +18,7 @@ import { shapeTicketsFollowupFacts } from "./shape-tickets.ts";
 import { scoutRepoSlots } from "./scouts/repos.ts";
 import { executionAuthorizationContract } from "./execution-authorization.ts";
 import { documentTaskAppendix } from "./documentation/prompt.ts";
+import { grillFirstAppendix, type GrillFirstDelivery } from "./grill-first.ts";
 import {
   workflowEvidenceContractAppendix,
 } from "./workflows/agent-contract.ts";
@@ -69,6 +70,11 @@ export interface TaskContractInputs {
    * here when they cannot be resolved (`plans/skills.ts`).
    */
   planSkills?: PlanningSkillInvocations | null;
+  /**
+   * The Grill action's instruction and this harness's grill skill line, for a task pinned
+   * Grill me first (`taskGrillsFirst`). Both seams resolve it, or refuse the delivery, first.
+   */
+  grillFirst?: GrillFirstDelivery | null;
   /** The server resolved a Persona node in the selected immutable workflow graph. */
   workflowEvidence?: boolean;
   planDiscovery?: string;
@@ -186,6 +192,16 @@ function requirePlanningSkills<K extends PlanningTaskKind>(
 }
 
 /**
+ * A grill-first task's resolved Grill action, or a loud failure: both seams refuse a delivery
+ * they cannot resolve the grill skill for, so arriving here without it means a third seam was
+ * added without that refusal - `requirePlanningSkills`' reason.
+ */
+function requireGrillFirst(task: Task, inputs: TaskContractInputs): GrillFirstDelivery {
+  if (inputs.grillFirst) return inputs.grillFirst;
+  throw new Error(`task ${task.id} reached delivery for Grill me first without its resolved Grill action`);
+}
+
+/**
  * Where a task with a base branch publishes, or null for one on origin's default branch.
  *
  * Told to the agent rather than enforced by the daemon because the agent is what opens the
@@ -230,6 +246,8 @@ export function withTaskKindContract(
     }) : null,
     baseBranchContract(task),
     inputs.planDiscovery ?? null,
+    // Ahead of the kind's contract, which follows it unchanged: the interview comes first.
+    taskGrillsFirst(task) ? grillFirstAppendix(requireGrillFirst(task, inputs)) : null,
     KIND_CONTRACT[task.kind](task, inputs),
     inputs.stackInstruction ?? null,
     // Whether a Persona will read evidence is the workflow's property, resolved once by the
