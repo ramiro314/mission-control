@@ -456,8 +456,9 @@ test("a failed read says so and recovers on Try again, and a refused Load more k
 });
 
 test.describe("a transcript deleted after its row was indexed", () => {
-  // No recurring scan: the one pass at startup indexes the row, and nothing marks it gone after.
-  test.use({ daemonEnv: { MISSION_HISTORY_RECONCILE_MS: "0" } });
+  // No recurring scan and no watcher: the one pass at startup indexes the row, and nothing marks
+  // it gone after. With the watcher on, the deletion itself starts a pass a second later.
+  test.use({ daemonEnv: { MISSION_HISTORY_RECONCILE_MS: "0", MISSION_HISTORY_WATCH: "0" } });
 
   test("shows the retention message on both tabs while its row still says present", async ({ dashboard, daemon }) => {
     const session = writeConversation(daemon, { cwd: "/projects/zeta", at: "2026-10-27T10:00:00.000Z", title: "Deleted between scans", pairs: 1 });

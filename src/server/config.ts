@@ -115,6 +115,16 @@ export function historyReconcileMs(raw = envVar("HISTORY_RECONCILE_MS")): number
 }
 
 /**
+ * Whether Session History watches the agents' transcript stores for a hint to rescan. On
+ * unless `MISSION_HISTORY_WATCH=0`, which exists so a browser spec that turns the recurring scan
+ * off can also be sure nothing walks the store behind it: with only the scan off, a deleted
+ * transcript is still marked gone a second later by the pass the watcher starts.
+ */
+export function historyWatch(raw = envVar("HISTORY_WATCH")): boolean {
+  return raw?.trim() !== "0";
+}
+
+/**
  * How many transcripts one History batch summarizes before it writes them in one short
  * transaction and yields. `MISSION_HISTORY_BATCH_SIZE` exists so a test can make a small
  * fixture store span several batches; an unusable value falls back to the shipped size.

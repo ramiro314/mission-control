@@ -20,7 +20,7 @@ import type { Context } from "hono";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import { HOST, PORT, residentLaunchWaitMs } from "./config.ts";
+import { HOST, PORT, historyWatch, residentLaunchWaitMs } from "./config.ts";
 import { closeDb, databaseMigratedOnOpen, listTaskWorktreeReturnRefusals, openDb } from "./db.ts";
 import {
   acquireStateOwnership,
@@ -333,7 +333,7 @@ registry.onSessionExit((session) => archives.reserveOnExit(session));
 // History pages as one content-free `history_changed` through the Registry.
 const history = new HistoryService({
   onChanged: () => registry.emitHistoryChanged(),
-  watch: true,
+  watch: historyWatch(),
 });
 // Resume's launch records follow the Registry from here, before any Resume can be made: a
 // resumed agent binds when discovery registers it, and the startup twin waits for the first

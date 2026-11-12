@@ -427,5 +427,6 @@ served and never stored.
 | Variable | Default | Effect |
 |---|---|---|
 | `MISSION_HISTORY_RECONCILE_MS` | `30000` | Rescan cadence; `0` turns the recurring scan off. |
+| `MISSION_HISTORY_WATCH` | on | `0` stops watching the transcript stores, so only the scan finds changes. |
 | `MISSION_HISTORY_BATCH_SIZE` | `25` | Transcripts summarized per batch. |
 | `MISSION_HISTORY_BATCH_PAUSE_MS` | `0` | Extra pause after each batch, for tests that watch a backfill. |
