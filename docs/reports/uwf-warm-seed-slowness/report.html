@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slow upstart-web-frontend Warm</title>
+<style>
+:root {
+  --bg: #12151a; --surface: #1b2028; --line: #2e3642;
+  --ink: #e6e9ee; --muted: #a7b0bd; --accent: #7cc4ff; --warn: #ffb86b; --good: #7fd99a;
+  --code-bg: #232a34;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fbfbfc; --surface: #f1f3f6; --line: #d5dae1;
+    --ink: #1a1f27; --muted: #4a5361; --accent: #0b5cad; --warn: #8a4b00; --good: #1d6b35;
+    --code-bg: #e7eaef;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+main { max-width: 920px; margin: 0 auto; padding: 32px 20px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 19px; margin: 36px 0 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+h3 { font-size: 16px; margin: 22px 0 8px; }
+p, li { color: var(--ink); }
+.muted { color: var(--muted); }
+.answer { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--warn); padding: 14px 18px; border-radius: 6px; margin: 18px 0; }
+.answer p { margin: 6px 0; }
+code { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg); color: var(--ink); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--code-bg); color: var(--ink); padding: 12px 14px; border-radius: 6px; overflow-x: auto; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre code { background: none; padding: 0; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0 14px; font-size: 14px; }
+th, td { border-bottom: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+a { color: var(--accent); }
+.bad { color: var(--warn); font-weight: 600; }
+.ok { color: var(--good); font-weight: 600; }
+svg text { font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+</style>
+</head>
+<body>
+<main>
+<h1>Slow upstart-web-frontend Warm</h1>
+<p class="muted">Question: "The warmup is taking very long for upstart-web-frontend. Can you look into it?" Investigated 2026-11-11 against Warm <code>63c465ad-79fc-462d-9f6c-646a0e62174e</code>.</p>
+
+<div class="answer">
+<p><strong>Almost all of the time is the copy-on-write seed, not the install.</strong> Each slot spends about 30 minutes in the seed step and about 20 seconds in <code>yarn workspaces focus</code>.</p>
+<p>The seed clones each seed path with <code>/bin/cp -c -R</code>, which clones one file at a time. A source slot holds about 509k entries, and on this machine the clone ran at about 165 entries per second. On the same tree, one <code>clonefile(2)</code> call on the directory took <strong>0.41 s against 77 s</strong> and produced an identical tree.</p>
+<p>At that rate the 7-slot Warm runs for about 3.5 hours. No code or config was changed: you chose a report only, with the live Warm and the pool config left alone.</p>
+</div>
+
+<p>Contents: <a href="#timeline">Timeline</a> · <a href="#where">Where the time goes</a> · <a href="#bench">Measurements</a> · <a href="#secondary">A secondary finding</a> · <a href="#options">Fix options</a> · <a href="#limits">Limits</a></p>
+
+<h2 id="timeline">Timeline of the running Warm</h2>
+<p>The Warm log at <code>~/.mission-control/logs/worktree-warm/63c465ad-….log</code> has no per-line timestamps. The times below come from the log's acceptance line, its file modification time at each read, <code>ps</code> elapsed times, and the wall clock.</p>
+<div class="scroll">
+<table>
+<tr><th>Time (PST)</th><th>Event</th><th>Source</th></tr>
+<tr><td>18:33:16</td><td>Warm accepted for slots 11 to 17</td><td>log line 1 (<code>02:33:16Z</code>)</td></tr>
+<tr><td>by 18:38</td><td>Slot 11 fetched and reset to <code>343fd119df8f</code>. Its last claim was cut off, so its seed paths were wiped first. Then "Seeding copy-on-write from the idle sibling …/15/…"</td><td>log mtime was 18:38 while that line was last</td></tr>
+<tr><td>about 19:08</td><td>Seed placed, then yarn ran: "Done with warnings in 19s 884ms"</td><td><code>ps</code>: yarn 7 s old at 19:09:14</td></tr>
+<tr><td>about 19:09</td><td>Slot 11 warmed. Slot 12 started seeding from slot 15</td><td>log</td></tr>
+<tr><td>19:24</td><td>Slot 12 still seeding. The daemon's <code>cp -c -R …/15/…/apps/personal-loans/node_modules</code> was 10 min 28 s old</td><td>log and <code>ps</code></td></tr>
+</table>
+</div>
+<p>For comparison, Warm <code>5c0da745</code> on 2026-10-30 found no idle sibling to seed from, so every slot ran yarn in place. Those installs took 57.6 s, 59.5 s, 3.9 s, 22.8 s and 23.0 s.</p>
+
+<h2 id="where">Where the time goes</h2>
+<svg viewBox="0 0 860 150" width="100%" role="img" aria-label="Per-slot time: about 30 minutes seeding versus about 20 seconds installing">
+  <rect x="0" y="0" width="860" height="150" fill="var(--surface)" rx="6"/>
+  <text x="16" y="34" fill="var(--ink)">Seed (cp -c -R of ~509k entries)</text>
+  <rect x="270" y="20" width="560" height="22" fill="var(--warn)" rx="3"/>
+  <text x="560" y="62" fill="var(--ink)" text-anchor="middle">about 30 min</text>
+  <text x="16" y="104" fill="var(--ink)">yarn workspaces focus</text>
+  <rect x="270" y="90" width="6" height="22" fill="var(--good)" rx="2"/>
+  <text x="286" y="106" fill="var(--ink)">about 20 s</text>
+  <text x="16" y="138" fill="var(--muted)">Bars to scale (1800 s against 20 s)</text>
+</svg>
+<p>The code path:</p>
+<ul>
+<li><a href="../../../src/server/worktrees/manager.ts"><code>src/server/worktrees/manager.ts:2626</code></a>, in <code>seedTree</code>, logs "Seeding copy-on-write…" once the source is held, then calls <code>stageSeed</code> and <code>placeSeed</code>.</li>
+<li><a href="../../../src/server/worktrees/seed.ts"><code>src/server/worktrees/seed.ts:497</code></a>: <code>stageSeed</code> clones each matched seed path one after another.</li>
+<li><a href="../../../src/server/worktrees/seed.ts"><code>src/server/worktrees/seed.ts:310</code></a>: on darwin the clone argv is <code>cp -c -R &lt;src&gt; &lt;dst&gt;</code>, spawned by <code>copyOnWriteClone</code> (line 320).</li>
+<li><a href="../../../src/server/worktrees/seed.ts"><code>src/server/worktrees/seed.ts:382</code></a>: then <code>removeExclusions</code> walks the whole staged clone in JS to remove <code>**/node_modules/.cache</code>. This step was not timed.</li>
+</ul>
+<p>This pool's claim, read-only from <code>app_config.worktrees</code>, seeds <code>node_modules</code>, <code>apps/{personal-loans,my-account,top-of-the-funnel}/node_modules</code>, <code>packages/*/node_modules</code> and <code>.yarn/install-state.gz</code>, with a 60-minute <code>timeoutMinutes</code>. That timeout leaves room for the seed to finish, which is why the Warm is slow rather than failing.</p>
+
+<h2 id="bench">Measurements</h2>
+<h3>Size of a seed source (slot 15)</h3>
+<div class="scroll">
+<table>
+<tr><th>Seed path</th><th>Entries (<code>find | wc -l</code>)</th></tr>
+<tr><td><code>node_modules</code></td><td class="num">148,979</td></tr>
+<tr><td><code>apps/personal-loans/node_modules</code></td><td class="num">180,812</td></tr>
+<tr><td><code>apps/top-of-the-funnel/node_modules</code></td><td class="num">155,293</td></tr>
+<tr><td><code>apps/my-account/node_modules</code></td><td class="num">13,095</td></tr>
+<tr><td>All seed paths, including 3 <code>packages/*/node_modules</code></td><td class="num">508,632 (51,066 directories)</td></tr>
+</table>
+</div>
+<p>The volume is APFS (<code>/System/Volumes/Data</code>), the same volume as the scratch directory used below, so both methods really cloned. The root <code>node_modules</code> is 1.8 GB.</p>
+
+<h3>Clone of <code>apps/my-account/node_modules</code> (13,095 entries)</h3>
+<div class="scroll">
+<table>
+<tr><th>Method</th><th>Wall time</th><th>Result</th></tr>
+<tr><td><code>/bin/cp -c -R</code> (what the daemon runs)</td><td class="num bad">77.21 s (user 0.10, sys 6.76)</td><td>13,095 entries</td></tr>
+<tr><td>One <code>clonefile(src, dst, CLONE_NOFOLLOW)</code> call through <code>libSystem</code></td><td class="num ok">0.41 s</td><td>13,095 entries</td></tr>
+</table>
+</div>
+<p>Equivalence check: sorted <code>stat -f '%N %HT %Lp %z %Y'</code> listings of both copies (name, type, mode, size, symlink target) were identical, and <code>diff -rq</code> found no content differences. The tree includes 18 symlinks.</p>
+<p>A clone of the root <code>node_modules</code> with <code>cp -c -R</code> reached 100,791 of 148,979 entries in about 10 minutes and was then stopped. That run overlapped the daemon's own clone for slot 12, so the two may have slowed each other.</p>
+
+<h3>Why per-file cloning is this slow here</h3>
+<p><code>cp</code> used under 10% CPU, so it was waiting rather than computing. CrowdStrike Falcon (<code>com.crowdstrike.falcon.Agent</code>) and <code>endpointsecurityd</code> are running. A per-file clone generates one file-creation event per entry, and a directory <code>clonefile</code> avoids those per-entry events. That fits the 190× gap, but it is an inference: see <a href="#limits">Limits</a>.</p>
+
+<h2 id="secondary">A secondary finding: <code>cp -c</code> can byte-copy</h2>
+<p>The comment at <a href="../../../src/server/worktrees/seed.ts"><code>src/server/worktrees/seed.ts:307</code></a> says the argv "clones and only clones", and the seed's design rule (line 17) is "copy-on-write or nothing". The macOS <code>cp(1)</code> man page on this machine contradicts that:</p>
+<pre><code>-c    copy files using clonefile(2).  Note that if the source and target
+      are on different filesystems, or the target filesystem does not
+      support cloning, cp will fallback to using copyfile(2) instead to
+      ensure the copy still succeeds.</code></pre>
+<p>Staging lives in the pool's directory, so source and target normally share a volume, and this is not today's cause. It does mean that a pool on a filesystem that cannot clone would get a silent byte copy instead of the refusal the code promises. This was not reproduced.</p>
+
+<h2 id="options">Fix options (not implemented)</h2>
+<ol>
+<li><strong>Clone each seed path with one directory <code>clonefile(2)</code>.</strong> Node exposes no directory clone, and macOS ships no CLI that makes one (<code>ditto --clone</code> clones "regular files", one at a time). This needs a small Node-API addon beside <code>native/keep-awake</code> and <code>native/state-lock</code>, built by <code>scripts/build-native.mjs</code> and published through <code>publishNativeAddon</code>. The call must run off the event loop (async work or a child process), because a single syscall over 180k entries cannot be interrupted and would otherwise block the daemon. If the addon cannot load, the clone falls back to today's <code>cp -c -R</code>. This option also removes the byte-copy fallback above, because <code>clonefile</code> fails instead of copying.</li>
+<li><strong>Operator workaround: drop <code>seed</code> from this pool's claim</strong> (<code>PUT /api/worktrees/config</code>, or Settings). Slots then run yarn in place, which took 4 to 60 s in October with yarn's cache warm. A truly empty slot would then pay a full install, which was not measured.</li>
+<li><strong>Cancel Warm <code>63c465ad</code></strong> if the remaining slots are not needed soon. Slots it already warmed stay warmed. You chose to leave it running.</li>
+</ol>
+
+<h2 id="limits">Limits</h2>
+<ul>
+<li>That Falcon causes the slowness is inferred, not proven. Proving it would take a run with a Falcon exclusion for the pool directory, which was not possible here.</li>
+<li>Only the clone was timed. The JS exclusion walk (<code>removeExclusions</code>), <code>placeSeed</code>'s renames, the staging cleanup and slot 11's pre-seed wipe were not timed separately. The 30-minute figure is the whole span from the "Seeding" line to yarn starting.</li>
+<li><code>clonefile</code> was benchmarked only on the 13k-entry tree, not on the 149k to 181k-entry trees. How long one call blocks on those, and whether it scales linearly, was not measured.</li>
+<li>The benchmark of the root <code>node_modules</code> overlapped the daemon's slot-12 clone for about 10 minutes, which probably slowed that slot slightly.</li>
+<li>Slots 12 to 17 had not finished when this was written, so the 3.5-hour total is an extrapolation from slot 11.</li>
+</ul>
+</main>
+</body>
+</html>
