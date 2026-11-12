@@ -462,12 +462,21 @@ test("MCP configures the Command for its own run's repository and frees the slot
   await f.call("configure_workflow_command", { runId: own.run.id, slot: "coderabbit", command: ["x"] }, /Invalid|invalid_enum|Expected/i);
   await f.call("configure_workflow_command", { runId: own.run.id, slot: "lint", command: [] }, /Invalid|too_small|at least/i);
   assert.deepEqual(f.workflowCommands.get("lint")!.overrides, []);
+});
 
-  // Fork (flake-aware-testing): an affected-tests argv that is not a template is refused with the
-  // wording every other writer of that slot uses, before any confirmation card is raised.
+// Fork (flake-aware-testing): upstream's configure_workflow_command is one more writer of the
+// affected-tests slot, so it applies the template rule every other writer of that slot does.
+test("MCP holds an affected-tests Command to its template rule, and no other slot", async (t) => {
+  const f = await fixture(t);
+  const own = f.seed(f.caller.id);
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const cards = () => f.store.listEvents(own.run.id)
+    .filter((e) => e.kind === "workflow_command_confirmation_requested").length;
+
+  // Not a template: refused with the shared wording before any card is raised, nothing written.
   const notTemplate = ["npm", "test"];
-  const affectedRevision = f.workflowCommands.get("affected-tests")!.revision;
-  const cardsBefore = f.store.listEvents(own.run.id).filter((e) => e.kind === "workflow_command_confirmation_requested").length;
+  const affected = f.workflowCommands.get("affected-tests")!;
+  const cardsBefore = cards();
   const invalid = await f.app.request("/mcp/workflows/configure-command", { method: "POST",
     headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
       "x-mission-scout-credential": f.credential() },
@@ -477,9 +486,25 @@ test("MCP configures the Command for its own run's repository and frees the slot
     error: commandTemplateProblem("affected-tests", notTemplate),
     code: "workflow_command_invalid_template",
   });
-  assert.equal(f.workflowCommands.get("affected-tests")!.revision, affectedRevision);
-  assert.equal(f.store.listEvents(own.run.id).filter((e) => e.kind === "workflow_command_confirmation_requested").length,
-    cardsBefore, "no confirmation card for a Command that cannot run");
+  assert.equal(f.workflowCommands.get("affected-tests")!.revision, affected.revision, "nothing is written");
+  assert.deepEqual(f.workflowCommands.get("affected-tests")!.overrides, affected.overrides);
+  assert.equal(cards(), cardsBefore, "no confirmation card for a Command that cannot run");
+
+  // A templated argv still goes through the operator's card and is stored for this repository.
+  const templated = ["env", "MISSION_TEST_JUNIT={junit}", "npm", "run", "test:run", "--", "{files}"];
+  assert.equal(commandTemplateProblem("affected-tests", templated), null);
+  await f.confirm(own.run.id, templated, "affected-tests");
+  const accepted = await f.call("configure_workflow_command", {
+    runId: own.run.id, slot: "affected-tests", command: templated,
+  });
+  assert.deepEqual(accepted.command, templated);
+  assert.deepEqual(f.workflowCommands.get("affected-tests")!.overrides.at(-1), { repoRoot: "/repo", command: templated });
+
+  // Another slot takes the same untemplated argv: the rule is affected-tests only.
+  await f.confirm(own.run.id, notTemplate, "lint");
+  const other = await f.call("configure_workflow_command", { runId: own.run.id, slot: "lint", command: notTemplate });
+  assert.deepEqual(other.command, notTemplate);
+  assert.deepEqual(f.workflowCommands.get("lint")!.overrides, [{ repoRoot: "/repo", command: notTemplate }]);
 });
 
 async function waitFor(predicate: () => boolean, message: string, timeoutMs = 10_000): Promise<void> {
