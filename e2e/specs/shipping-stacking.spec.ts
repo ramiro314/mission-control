@@ -45,6 +45,16 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/shipping-stacking/${name}.png`);
 }
 
+/**
+ * Add the GitHub remote stacking reads its primary repository from, pinned as gh's default.
+ * Fork: the primary repository comes from the checkout resolver (the gh pin, else a GitHub
+ * `origin`), so a remote beside `origin` counts only once `gh repo set-default` names it.
+ */
+function pinGitHubRemote(daemon: DaemonHandle): void {
+  execFileSync("git", ["-C", daemon.repo, "remote", "add", "github", "https://github.com/acme/mission-e2e.git"]);
+  execFileSync("git", ["-C", daemon.repo, "config", "remote.github.gh-resolved", "base"]);
+}
+
 function backlogTask(daemon: DaemonHandle, title: string, extra: object = {}): Promise<Task> {
   return api<Task>(daemon, "/api/tasks", {
     repoRoot: daemon.repo, title, intent: title, kind: "ship", agent: "claude", backlog: true,
@@ -311,9 +321,10 @@ test("an explicit After merge choice overrides a Stack Shipping default, and sur
 test("a finished prerequisite with an open pull request releases a stacked dependent that starts on its head", async ({ dashboard, daemon }) => {
   test.setTimeout(180_000);
   await api(daemon, "/api/shipping/config", { stacking: "stack" }, "PUT");
-  // The fixture's origin is a local bare repository. A GitHub remote beside it is what lets the
-  // daemon place the prerequisite's pull request in its PRIMARY repository; it is config only.
-  execFileSync("git", ["-C", daemon.repo, "remote", "add", "github", "https://github.com/acme/mission-e2e.git"]);
+  // The fixture's origin is a local bare repository. A GitHub remote beside it, pinned as gh's
+  // default the way `gh repo set-default` records it, is what lets the daemon place the
+  // prerequisite's pull request in its PRIMARY repository; it is config only.
+  pinGitHubRemote(daemon);
 
   const parent = await api<Task>(daemon, "/api/tasks", {
     repoRoot: daemon.repo, intent: "Build the parser groundwork", title: "Parser groundwork",
@@ -539,7 +550,7 @@ type LifecycleRow = { key: string; mergeBlock: string | null; stack: { parentPrU
  * parent's head and opens #`childNumber` against the parent's branch. Fake agents, fake `gh`.
  */
 async function openStack(daemon: DaemonHandle, parentNumber: number, childNumber: number) {
-  execFileSync("git", ["-C", daemon.repo, "remote", "add", "github", "https://github.com/acme/mission-e2e.git"]);
+  pinGitHubRemote(daemon);
   expect((await api<ShippingConfig>(daemon, "/api/shipping/config")).stacking, "nothing configured: the shipped default applies").toBeUndefined();
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const hook = async (s: Session, event: "PostToolUse" | "Stop", prUrl?: string) => {

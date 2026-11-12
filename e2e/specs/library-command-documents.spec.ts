@@ -130,7 +130,7 @@ test("a Command document is previewed, refused as stale after another window sav
   const box = importer.getByLabel("Document", { exact: true });
   await box.fill(JSON.stringify({ version: 1, maxRuns: 5 }));
   await importer.getByRole("button", { name: "Preview" }).click();
-  await expect(importer.getByRole("alert", { name: "Document problems" })).toContainText("Unrecognized key(s) in object: 'maxRuns'");
+  await expect(importer.getByRole("alert", { name: "Document problems" })).toContainText('Unrecognized key: "maxRuns"');
 
   // The affected-tests template rule is the Command editor's own.
   await box.fill(JSON.stringify({ version: 1, commands: { "affected-tests": [{ path: "", argv: ["yarn", "test"] }] } }));

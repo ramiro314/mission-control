@@ -133,7 +133,10 @@ test("a dependency on a task with its own base branch waits for merge, and its c
     return await response.json() as { id: string; title: string };
   };
   // An explicit Stack choice, so only the base branch can be what holds it back.
-  const parent = await create({ title: "Backport the lock", intent: "Backport the lock.", baseBranch: "release/next" });
+  // Enabled, so the card's reason is the stacking one rather than a disabled prerequisite.
+  const parent = await create({
+    title: "Backport the lock", intent: "Backport the lock.", baseBranch: "release/next", enabled: true,
+  });
   const child = await create({
     title: "Follow the backport",
     intent: "Follow the backport.",
