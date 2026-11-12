@@ -2984,7 +2984,14 @@ test("a restored session with no task keeps the repository its checkout belongs 
     realpathSync(main),
   );
   await supervisor.restore();
-  assert.equal(registry.getSession("sdk:restore-no-task")?.repoRoot, realpathSync(main));
+  const restored = registry.getSession("sdk:restore-no-task");
+  assert.equal(restored?.repoRoot, realpathSync(main));
+  // The workflow delivery gate asks exactly this (`deliveryBlock` in workflows/manager.ts):
+  // the pooled cwd is not on the allowlist by itself, so the restored root is what passes it.
+  const { repoAllowlisted } = await import("../src/shared/allowlist.ts");
+  const allowlist = [realpathSync(main)];
+  assert.equal(repoAllowlisted(restored!.cwd, null, allowlist), false, "the pooled cwd alone is refused");
+  assert.equal(repoAllowlisted(restored!.cwd, restored!.repoRoot, allowlist), true, "the restored session is authorized");
 });
 
 test("a restored session with no task outside any git checkout has no repository root", async (t) => {
