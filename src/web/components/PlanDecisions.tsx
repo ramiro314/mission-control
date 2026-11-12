@@ -667,6 +667,7 @@ export function DecisionForm({
         >
           <button
             className="btn btn-approve"
+            data-dialog-default
             disabled={busy || !complete}
             aria-describedby={summary ? `${namePrefix}-selected` : undefined}
             onClick={() => onSubmit(formatResponse(decisions, payload, lead), payload)}

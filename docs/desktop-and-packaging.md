@@ -488,18 +488,24 @@ Electron-only preload capability: the plain browser dashboard has no update brid
 update banner, and starts no update check.
 
 Stable discovery selects the newest complete eligible release within a bounded canonical
-inventory. If a newer release is pending and every complete release is at or below the installed
-version, automatic checks stay quiet and retry on the existing schedule (about six hours for
-stable updates, five minutes for alpha). Explicit **Check for Updates** commands show the pending
-release with **Check again**. An older complete release is offered only when it is still newer
-than the installed version.
+inventory. An older complete release is offered only when it is still newer than the installed
+version. A newer release is still publishing when it has no ready manifest yet or its assets are
+still uploading; an older complete offer then names it in its notes. If a newer release is still
+publishing and every complete release is at or below the installed version, the check reports up
+to date and names the release still being built and signed: in Settings, and in the notice an
+explicit **Check for Updates** opens. It is not an error, and the existing schedule (about six
+hours for stable updates, five minutes for alpha) offers the release once its binary is
+published. A newer release that is published and complete but cannot update this installation,
+such as one for the historical app layout, is not treated as in progress: automatic checks stay
+quiet, and an explicit check shows it with **Update Now** disabled and **Check again**.
 A ready manifest must name both published ZIP and DMG assets with the expected IDs,
 names and byte counts. A release object alone is not readiness. The offer pins the manifest
 digest, channel, tag, full commit and asset identity. Stable and exact-SHA alpha offers require
 the Agent Mission Control.app layout. Historical Mission Control.app manifests remain readable
 for existing receipts and recovery, but cannot become actionable update offers.
-On a manual check, missing assets or an unsupported app layout leave **Update Now** disabled
-with **Check again**; retry refreshes discovery. Automatic stable and alpha checks do not show
+On a manual check, an unsupported app layout, or missing assets for an alpha installation
+without source metadata, leave **Update Now** disabled with **Check again**; retry refreshes
+discovery. Automatic stable and alpha checks do not show
 an update offer until a usable binary is available. No desktop path probes host Node/npm, creates a
 source checkout, or falls back to compilation. Canonical schema-1 source receipts and schema-2
 binary receipts both use this path. Forks and source development retain explicit source commands.
@@ -568,8 +574,18 @@ selected main commit. A release-news lookup failure does not block a main update
 main lookup failure never substitutes a stable release. After installing the current tip,
 checking again reports that it is up to date.
 
-The offer pins a full SHA from the canonical repository's `commits/main` endpoint. The exact `alpha-<full SHA>` publication must be complete; otherwise the offer says pending or
-unavailable. Preparation and installation carry that SHA even if main advances while downloading. The
+The offer pins a full SHA from the canonical repository's `commits/main` endpoint. The exact `alpha-<full SHA>` publication must be complete.
+Every merge to main starts a signed build, and the publisher retires the previous alpha only after
+its replacement is verified. While main's tip is still building (it has no release yet, no ready
+manifest, or assets still uploading), the check therefore looks for the
+newest complete `alpha-<full SHA>` that strictly follows the installed commit and strictly precedes
+the tip on main, and offers it; its notes say which build is still being signed. When no complete
+build is newer than the installation, the check reports up to date and names the build in
+progress instead of an error. That answer is given only after the installed commit is verified
+on main behind the tip. An installation without source metadata, an installed commit the
+canonical repository cannot place on main, and a tip published complete for an app layout this
+installation cannot take all keep the blocked offer with **Check again**. Preparation and installation carry
+the offered SHA even if main advances while downloading. The
 staged bundle and installed app must match it. The detached helper also compares source
 identity during rollback, so two alpha builds with the same version remain distinguishable.
 
@@ -630,6 +646,14 @@ message first. A failed send or utility timeout requests forced termination and 
 if the overall deadline is reached, Electron reaps the remaining utilities. Workflow checks
 start draining before slower session shutdown. The detached helper then handles any verified
 survivors before replacing the bundle.
+
+The daemon's last shutdown step closes its HTTP server. Requests that never end on their own -
+the dashboard's `/events` stream, transcript streams, and MCP review long-polls - are ended at
+once: a stream finishes its body, and a long-poll answers as its timeout would, so the agent
+polls the next daemon. Any other request gets a five-second grace, and only one still open after
+that is cut. Without this, an open dashboard held every quit until the utility deadline
+force-killed the daemon. `daemon.log` records `shutdown finished in <ms>` after the database
+close and lock release, on every orderly exit.
 
 If a bundle wait times out, its diagnostic names the verified owner or falls back to a bounded
 summary of the executable and check-supervisor marker. The helper never prints command lines
@@ -800,6 +824,21 @@ under the existing helper lock before waiting for shutdown and immediately befor
   Foreground application. A label that merely resembles an application job is not sufficient.
 - Compare main executables with `lsappinfo list`. Electron helpers need not have their own
   Foreground registration. Any unregistered main instance blocks the update.
+- A main executable running as plain Node is not an instance. The MCP server and hooks that
+  Mission Control registers in `~/.claude.json` and `~/.claude/settings.json` run
+  `Contents/MacOS/Mission Control` with `ELECTRON_RUN_AS_NODE=1`, so a `claude` or `codex`
+  started in a terminal holds such a process. Only unregistered main processes are examined. Each
+  one's argv and environment are read from the kernel's own record (`KERN_PROCARGS2`) by the
+  `processArguments` export of the state-lock addon every app already ships. Per process that
+  costs two in-process `sysctl` calls (`KERN_ARGMAX` to size the buffer, then `KERN_PROCARGS2`),
+  plus a `kill(pid, 0)` only when the second call fails, and no child process. `ps -E` reads the
+  same record but joins its entries with unescaped spaces, so there a value such as
+  `NOTE=x ELECTRON_RUN_AS_NODE=1` is indistinguishable from the flag. The addon keeps every entry separate. A process is in Node
+  mode only when its first `ELECTRON_RUN_AS_NODE` entry is non-empty, matching how Electron itself
+  reads it with `getenv`. An argument naming the flag or a satellite script is not evidence, and
+  neither is another variable whose value contains it. A process LaunchServices lists in any role
+  stays an instance. A process whose record cannot be read is not treated as Node. The
+  environment is tested for that flag and discarded, never logged.
 
 A conflict names the job and the exact, quoted `launchctl bootout 'gui/<uid>/<label>'` command.
 Mission Control never removes the job itself. Inspection errors fail closed. A packaged start
@@ -809,7 +848,25 @@ This is diagnostic only: detecting an unmanaged start does not kill it. Parent P
 evidence, since ordinary LaunchServices launches also have launchd as their parent.
 
 After the parent exits, the helper waits up to two minutes for **all** processes whose executable
-is beneath the bundle, including orphan helpers and utility processes. After replacement it runs
+is beneath the bundle, including orphan helpers and utility processes. There is one exception: a
+Node-mode process that Mission Control does not own and whose first argument is one of this
+bundle's operator satellites. These are the scripts Mission Control registers in an operator's own
+agent configuration, listed once as `OPERATOR_SATELLITES` in `src/shared/owned-runtime.mjs`:
+`dist/mcp/server.mjs`, `dist/satellites/hook.mjs` and `dist/satellites/harness-statusline.mjs`.
+The integration installer resolves its paths from that list, and the daemon's MCP server path is
+tested against it. Such an MCP server
+can live as long as the operator's terminal session, and the updater has no authority to signal
+it. It also does not need to stop. Every swap renames bundles and never writes into one, so the
+process keeps the files it has open. Each satellite is a single bundle that imports only Node
+builtins, loads nothing beside itself and never opens the state database.
+`test/operator-satellites.test.ts` rebuilds each one from its `package.json` command and checks
+that. It also fails when the build emits a satellite the list neither includes nor names as
+daemon-launched, such as `dist/satellites/codex-hook.mjs`, which only dispatched sessions run. An
+operator satellite's next launch runs the new build. Any other
+Node-mode script, including an orphaned workflow check, is still waited on. A timeout names it as
+a script on Mission Control's bundled Node and names the program that started it, never as the
+app itself. Retry cleanup likewise neither refuses over nor signals a Node-mode main process.
+After replacement it runs
 `lsregister -f` using macOS's LaunchServices utility and waits up to 25 seconds for old bundle
 instances to disappear from `lsappinfo list`. It then rechecks launch conflicts and calls `open`
 on the exact bundle. It never directly executes the application binary or requests a new instance
@@ -927,10 +984,12 @@ published assets. The desktop consumer bounds release and asset pagination, excl
 prereleases from stable selection, and checks the accepted tag against the manifest commit.
 
 Tags created by the release workflow are pushed with the short-lived App installation token, so
-they start a new `ci.yml` run. Its `package` job builds the macOS dmg, checks that the tag and
-package versions agree, and uploads the dmg as a 90-day Actions artifact. This is a separate
-release build check; the dmg is not attached to the GitHub Release. The package job can also be run
-manually through `workflow_dispatch`.
+they start a new `ci.yml` run. That run executes the same Linux checks as a `main` push, plus a
+`gates` step that fails when the tag and package versions disagree. It builds no dmg. `ci.yml`'s
+`package` job builds an unsigned developer dmg and uploads it as an Actions artifact, but only
+when run manually through `workflow_dispatch`, on the same pinned macOS image as the signing
+producer. It never runs on a push: a job that ran only for tags once kept two stable releases
+from being signed (see [release verification](release-verification.md#tag-ci-cancelled-by-a-retired-runner-2026-11-06-utc)).
 
 The separate [signed distribution producer](release-verification.md) consumes successful
 canonical push CI, publishes a signed/notarized ZIP and DMG under an immutable identity,

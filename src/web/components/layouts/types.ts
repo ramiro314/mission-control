@@ -19,7 +19,7 @@ import {
   type PipelineRun,
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
-import type { BacklogTrustView } from "../../lib/backlog-copy.ts";
+import type { BacklogTrustView, StackShipping } from "../../lib/backlog-copy.ts";
 import type { ResidentReplacement, ResidentSessionMark } from "../../residents/marker.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
@@ -75,6 +75,8 @@ export interface SessionViewProps {
   backlogTrust?: BacklogTrustView | null;
   /** Route task-local trust explanations to the existing Trust matrix. */
   onManageForemanTrust?: () => void;
+  /** The Shipping stacking default and depth cap, for blocked stack cards. Absent: unknown. */
+  stackShipping?: StackShipping;
   /** Every workflow summary; the backlog bulk edit offers the published ones as After work. */
   workflowSummaries?: WorkflowSummary[];
   selectedId: string | null;
@@ -101,6 +103,19 @@ export interface SessionViewProps {
   onDeselect: () => void;
   /** Open detail id: the Console selection or the Board's drill-in. */
   detailId: string | null;
+  /**
+   * The session whose detail is open, from App's one `detailSession` lookup: the fleet list
+   * first, then an open resident that the Drawer placement keeps out of `sessions`. Absent in a
+   * static rendering, where the view falls back to finding `detailId` in `sessions`.
+   */
+  detailSession?: Session | null;
+  /**
+   * Residents drawn as visitor cards: they need you while the Residents drawer is closed. In
+   * `sessions` like any fleet member, but a view draws them as `ResidentVisitorCard`, which
+   * opens the resident's conversation through `onOpenResident`.
+   */
+  residentVisitors?: ReadonlySet<string>;
+  onOpenResident?: (sessionId: string) => void;
   onOpenReviews: (id: string) => void;
   /** One-shot request to reveal a session's integrated Diff tab, optionally at one fix. */
   diffTabRequest: { sessionId: string; commit: string | null; nonce: number } | null;

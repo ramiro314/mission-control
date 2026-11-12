@@ -921,7 +921,7 @@ export function ScheduleEditor({
           </button>
         </Tooltip>
         <Tooltip label="Preview the cadence, then create/update this mission enabled">
-          <button className="btn btn-primary" onClick={() => void save(true)} disabled={busy}>
+          <button data-dialog-default className="btn btn-primary" onClick={() => void save(true)} disabled={busy}>
             {busy ? "Saving…" : "Save & enable"}
           </button>
         </Tooltip>

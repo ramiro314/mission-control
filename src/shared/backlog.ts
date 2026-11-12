@@ -3,6 +3,7 @@ import type { TaskDependencyInput } from "./protocol.ts";
 import { dependencyInputOf, dependencyKey } from "./task-dependency.ts";
 import { backlogTasks } from "./session.ts";
 import { taskKindAllowsBacklog } from "./task.ts";
+import { stackStartEdge } from "./stacking.ts";
 
 // The backlog autopilot's predicates, defined once - the same reason
 // `foremanAllowlisted` and `reportBucket` live in src/shared rather than being
@@ -172,6 +173,12 @@ function dependencyState(target: Task): BlockerState {
 
 function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker[] {
   const out: BacklogBlocker[] = [];
+  // Stacked pull requests: the one unmerged same-repository prerequisite whose edge the daemon
+  // stamped ready (open, non-draft pull request; agent finished the episode) does not block
+  // STARTING. Its `satisfiedAt` stays null - completion, Mark done and Unblock dependents are
+  // unchanged - and an unstamped edge, including one stored before stacking existed, blocks
+  // exactly as it always did. See `stackStartEdge`.
+  const stackedOn = task.status === "backlog" ? stackStartEdge(task, byId)?.taskId ?? null : null;
   const planProblem = task.planInputError ?? task.planPolicyError;
   if (planProblem) out.push({ taskId: task.id, title: planProblem, state: "stopped", source: "declared" });
   for (const dependency of task.dependencies) {
@@ -215,6 +222,7 @@ function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker
       });
       continue;
     }
+    if (dependency.taskId === stackedOn) continue;
     const target = byId.get(dependency.taskId);
     out.push({
       taskId: dependency.taskId,
@@ -408,8 +416,11 @@ export interface DeadSourceBlocker {
   sourceId: string;
   externalId: string;
   url: string | null;
-  /** The owner's dependencies without this one: the update body that removes it. */
-  remainingDependencies: TaskDependencyInput[];
+  /**
+   * The edge to remove, and nothing else. A list of the owner's other edges, built when the
+   * card rendered, would erase any edge a sweep or another edit added before the click.
+   */
+  dependency: TaskDependencyInput;
 }
 
 /**
@@ -436,15 +447,14 @@ function walkDeadBlockers(
     visiting.add(current.id);
     for (const blocker of blockersIn(current, index)) {
       if (blocker.external) {
-        if (blocker.state === "stopped") {
+        const edge = current.dependencies.find((dependency) => dependencyKey(dependency) === blocker.taskId);
+        if (blocker.state === "stopped" && edge) {
           sources.set(`${current.id}\0${blocker.taskId}`, {
             ownerTaskId: current.id,
             key: blocker.taskId,
             title: blocker.title,
             ...blocker.external,
-            remainingDependencies: current.dependencies
-              .filter((dependency) => dependencyKey(dependency) !== blocker.taskId)
-              .map(dependencyInputOf),
+            dependency: dependencyInputOf(edge),
           });
         }
         continue;

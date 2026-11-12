@@ -73,12 +73,16 @@ export const MISSION_MCP_TOOLS = [
   "list_workflow_runs",
   "get_workflow_run",
   "read_workflow_command_output",
+  "configure_workflow_command",
   "trigger_workflow_action",
   "read_sessions",
   "control_session",
   PLAN_DECISIONS_TOOL,
   "request_review",
   PLAN_SCHEDULING_TOOL,
+  "dispatch_task",
+  "list_tasks",
+  "get_task",
   "update_task",
   "delete_task",
   PLAN_PUBLICATION_TOOL,
@@ -90,6 +94,8 @@ export const MISSION_MCP_TOOLS = [
   "request_input",
   "report_product_issue",
   "report_status",
+  "report_blocker",
+  "clear_blocker",
   "list_backlog_tasks",
   "push_task",
   // `COMPLETE_SHAPE_TICKETS_TOOL` in `plans/tools.ts`, spelled as a literal for the reason below.
@@ -146,7 +152,9 @@ export interface MissionMcpRequirement {
  *
  * `Record<TaskKind, …>` rather than a chain of comparisons, matching `KIND_CONTRACT` in
  * `task-contract.ts`: a new kind does not compile until it has said what its launch needs,
- * including saying it needs nothing. `ship` is that empty case and it is not a placeholder -
+ * including saying it needs nothing. Chat needs scheduling and dispatch so a conversation
+ * can hand separate work to another task without turning itself into a delivery task.
+ * `ship` is an empty case and it is not a placeholder -
  * it is the reason every existing dispatch's argv is unchanged.
  */
 /**
@@ -171,7 +179,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
   plan: PLANNING_MISSION_MCP_TOOLS,
   pipeline: [],
-  chat: [],
+  chat: [PLAN_SCHEDULING_TOOL, "dispatch_task"],
   // Grilling rounds, the plan review and the breakdown review are `request_plan_decisions`
   // forms; the approved tickets are filed with `create_task`, `list_backlog_tasks` finds the
   // open tasks a ticket may adopt instead, and `push_task` mirrors each filed ticket when the

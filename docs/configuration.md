@@ -249,8 +249,11 @@ a rotation.
 updates from the latest commit on `main`. It defaults off. Alpha checks about every five
 minutes and on **Check for updates**; stable mode retains its six-hour release checks.
 Both modes require an explicit **Update Now**, followed by **Restart and Install**. Stable selects
-complete signed release assets; alpha pins the exact observed main SHA and reports pending or
-unavailable when its binary is missing. Neither channel requires host Node/npm or compiles locally.
+complete signed release assets; alpha pins the exact observed main SHA. While the newest build is
+still being signed, either channel offers the newest complete build that is still newer than the
+installed app, or reports up to date and names the build in progress. A build that is published
+but cannot update this installation still reports pending or unavailable. Neither channel requires
+host Node/npm or compiles locally.
 A channel change clears an unaccepted offer; an accepted download keeps its immutable identity.
 Cancel waits for owned work to stop before another attempt can start.
 
@@ -293,6 +296,9 @@ change before applying it.
 
 Skills snapshots include the catalog-wide default and explicit row choices. Restoring an older
 snapshot with no catalog default keeps its previous opt-in meaning, so absent row choices stay off.
+
+Database backup counts and interval (the `database-backups` domain) were added after format v1
+shipped. Restoring a snapshot taken before them leaves the current backup settings unchanged.
 
 The daemon publishes a sibling temporary file atomically, verifies its schema and SHA-256 digest,
 then applies retention. It keeps the newest 90 `daily` files and, independently, the newest 10
@@ -417,6 +423,16 @@ Shipping stores `codeRabbitAutoResolve` as a default-false boolean in its existi
 Settings snapshots include it; restoring an older snapshot leaves it off. It authorizes only
 CodeRabbit follow-up observation and prompts through Foreman, independently of `autoMerge` and
 Inspector consent. See [CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).
+
+Shipping also stores the [Stacked pull requests](inspector-and-shipping.md#stacked-pull-requests)
+pair. `stacking` is `merge` (wait for the prerequisite to merge) or `stack` (start on its open
+pull request), and it has **no stored default**: an absent key means the shipped default,
+which is `stack`, so an install that never chose stacks eligible same-repository dependencies.
+An explicit `merge` is kept. Only an explicit choice on the
+Shipping card writes it, and saving another Shipping card leaves it absent. `maxStackDepth` is
+an integer from 1 to 5, default 3. Settings snapshots include both, and a snapshot taken before
+an explicit choice restores with `stacking` still absent. A dependency edge's own `mode`
+(`merge` or `stack`, absent meaning inherit) overrides `stacking` for that edge.
 
 ### CodeRabbit workflow reviews
 

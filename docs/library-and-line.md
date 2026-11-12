@@ -89,6 +89,14 @@ against any repository. This shelf is where *this machine* says what each slot r
 A slot with neither passes with a note rather than failing, which is what lets a shipped
 workflow name `typecheck` on a machine that has never configured one.
 
+An override can also arrive from a reviewed session. When a global default such as `make test`
+fails because the repository has no Makefile or no such target, the repair packet asks the
+session to find the repository's own command and set it with `configure_workflow_command`. That
+tool shows you a `request_input` card naming the run, the slot, the repository and the exact argv,
+and the daemon stores the command only when you choose **Configure this Command** on it. The result is an ordinary override for that repository,
+listed here, which you can edit or remove like any other. [Workflows](workflows.md#command-nodes)
+describes the repair.
+
 Saving replaces a slot's default, complete override list, run budget, timeout, and both
 skip-or-block policies in one compare-and-swap, so the parts can never be stored apart, and a second window's save is refused
 rather than silently overwriting your unsaved typing. Commands are stored as argv and executed without a
@@ -484,9 +492,8 @@ from the Line: clicking ⚑ **Shipped** opens the [Shipped drawer](ui.md#the-sta
 fleet, and its **Ship log →** header action lands here.
 
 The built-in `coderabbit` Command uses typed repository-root tuning in the existing Commands
-editor. YAML owns enablement: `.coderabbit.yaml` must explicitly contain boolean
-`reviews.auto_review.enabled: true`; no override is required. Tuning changes base ref/severity,
-not enablement, and removing it restores defaults. The editor previews the committed-review
+editor. Either a root `.coderabbit.yaml` or `.coderabbit.config.ts` enables it, unless the yaml
+turns it off with `reviews.auto_review.enabled: false`. The editor previews the committed-review
 argv and shows derived policies: enabled unavailability blocks; exhausted allowance warns and
 skips. The initial allowance is ten executions shared across nodes per workflow run. See
 [local CodeRabbit Command](workflows.md#local-coderabbit-command) for scope and retained findings.

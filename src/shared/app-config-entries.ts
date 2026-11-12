@@ -260,6 +260,8 @@ const shippingFields = {
   method: "setting",
   repoAllowlist: "setting",
   closeSessionAfterMerge: "setting",
+  stacking: "setting",
+  maxStackDepth: "setting",
 } satisfies Record<keyof ShippingConfig, AppConfigValueClass>;
 
 const pipelinesFields = {
@@ -273,6 +275,7 @@ const uiFields = {
   layout: "setting",
   conversationView: "setting",
   lineDensity: "setting",
+  lineHidden: "setting",
   skin: "setting",
   taskKindHeader: "setting",
   taskKindCard: "setting",
@@ -287,8 +290,9 @@ const uiFields = {
   hiddenDisplayItems: "setting",
   hiddenDisplayItemsSeed: "setting",
   groupBoardByRepo: "setting",
-  showEmptyColumnStash: "setting",
   boardSidebarAllSessions: "setting",
+  residentPlacement: "setting",
+  residentDrawerPinned: "setting",
   collapsedBoardColumns: "setting",
   hiddenTopbarItems: "setting",
   compactTopbarItems: "setting",
@@ -380,9 +384,10 @@ export const APP_CONFIG_ENTRIES = {
    * handle before migrations run (`src/server/database-backups/service.ts`), so the key and
    * schema must stay readable on a database that has not been upgraded yet.
    */
-  backups: fieldsEntry(
-    "backups", DatabaseBackupsConfigSchema, "database-backups", backupsFields,
-  ),
+  backups: {
+    ...fieldsEntry("backups", DatabaseBackupsConfigSchema, "database-backups", backupsFields),
+    optionalInSnapshot: true,
+  },
   /**
    * What the full-database backup captures last did: attempts, successes and the current
    * failure streak per kind. The daemon writes it through the same raw handle as the backup

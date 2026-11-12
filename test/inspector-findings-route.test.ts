@@ -234,7 +234,7 @@ test("Foreman's client reads the route through the shared schema, and a refusal 
     assert.deepEqual(read.findings.map((f) => f.fingerprint), ["f-open", "f-draft"]);
     assert.equal(read.findings[0]?.postedAt, 600);
     assert.equal(paths.at(-1), "/api/inspector/findings?pr=owner%2Frepo%237", "the key is encoded");
-    // D-16: a failed read must be distinguishable from an empty one, so the relay can hold.
+    // A failed read must be distinguishable from an empty one, so the relay can hold.
     await assert.rejects(client.inspectorFindings("owner/repo#404"), /404/);
   });
 });

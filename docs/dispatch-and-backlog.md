@@ -61,8 +61,9 @@ Conductor's background build daemon keeps its own tmux supervision.
 
 Conductor owns worktree creation and every downstream agent, model, and effort choice in both
 modes. Agent, Model, Effort, attached repositories, After work, and the generic runtime picker
-therefore remain unavailable for Pipeline. Pipeline tasks also stay out of Foreman's backlog
-autopilot. The SDK host is the task's current session, so Focus, questions, cancellation, and
+therefore remain unavailable for Pipeline. A [Persona](#a-persona-for-the-task) chosen under
+**Advanced** stays available, because it reaches the managed Engineer host Mission Control
+starts. Pipeline tasks also stay out of Foreman's backlog autopilot. The SDK host is the task's current session, so Focus, questions, cancellation, and
 restart recovery use the ordinary managed-session paths. A Terminal task instead records its
 home and no session id.
 
@@ -229,6 +230,58 @@ one starts from origin's default branch and targets it, exactly as before.
   task has no base branch left and the control disappears.
 - **Primary repository only.** On a multi-repo task the attached repositories start from, and
   open their pull requests against, their own default branch.
+
+## A Persona for the task
+
+Every kind the Dispatch form offers has an **Advanced** fold between the crew row and **After
+work**. It starts collapsed, and its summary names the task's Persona (and, for a plan, its
+[plan storage](managed-plans.md)). Opening it offers **Persona**: **No Persona**, which is the
+default for every kind, or any live Persona from the [Library](workflows.md). Built-in Personas
+are offered too; one shadowed by a Persona of your own with the same name is not.
+
+The Persona's guidance is delivered when the agent launches, as part of the session's [standing
+instructions](skills-and-settings.md): a `## Persona: <name>` section, followed by the Persona's
+Markdown, appended after any repository standing instructions. The Markdown is kept as written
+except that blank lines before it and whitespace after it are dropped, since the heading and
+separators stand in for them; everything else, including the indentation of a code block it opens
+with, reaches the agent unchanged. It rides the same channel those do for the harness and runtime
+the task launches on - a system prompt append on Claude, developer instructions on Codex in the
+Agent SDK, and the head of turn one on a pair with no channel of its own - so the agent reads it
+once. It reads it before your request, except in the managed Pipeline host's fallback described
+below. When no repository rules apply, the Persona section is the whole block. The form's
+**Standing instructions will be sent** note previews the composed text, Persona included, and the
+session's **See standing instructions** chip shows what the launch actually sent; a resume replays
+that record.
+
+The task stores the Persona's id, not a copy of its text. Like the model and effort, a backlogged
+task reads the Persona as it stands when it launches, so an edit made while the task waits reaches
+it. A Persona archived or deleted while the task waits refuses the dispatch with the reason. The
+reason stays on the task's backlog card and backlog autopilot passes the task over, so it cannot
+hold up the work behind it; reopen the task and choose another Persona or **No Persona**, which
+clears the reason and returns the task to autopilot. Saving a task with an archived Persona it
+already carries is allowed, so an unrelated edit is never blocked by it.
+
+A Persona is only delivered at launch, so a task that names one cannot be
+[handed to an agent that is already running](#hand-a-shelved-task-to-an-agent-thats-already-running):
+the drag is refused and backlog autopilot dispatches it into a fresh session instead.
+
+**Pipeline** carries a Persona to its managed Agent SDK Engineer host, on that session's own
+channel. Turn one still opens with the Engineer skill invocation, so if the channel turns out to
+be unusable the Persona section is placed at the end of turn one, after the complete Engineer
+prompt - the invocation, your request, the plan discovery and the launch context - rather than in
+front of it, where it would stop the skill from running. The Persona is never written into any
+idea Mission Control hands Conductor. Only the Engineer host receives it: the agents Conductor
+starts later are Conductor's to configure. The Terminal host is Conductor's own CLI, whose only
+input is its idea (your request and the plan discovery Mission Control adds to it), so it has no
+channel for a Persona: a pipeline task with one refuses to launch there, saying to switch
+**Settings → Conductor → Launch runtime** to Managed Agent SDK or choose **No Persona**.
+Repository standing instructions are not part of a Pipeline launch, so for a Pipeline task the
+**Standing instructions will be sent** note previews the Persona alone for the managed host, and
+nothing for the Terminal host.
+
+A [resident](residents.md) takes its Persona from its profile and never from this field. MCP
+`create_task` and `update_task` do not accept a Persona yet; `get_task` reports a task's
+`personaId`.
 
 ## Attaching more than one repository
 
@@ -403,8 +456,10 @@ diff is not suppressed as an incidental review artifact.
 like to talk about?**, and that opener is required and delivered exactly as written. A chat
 launches immediately from the manual single-agent Dispatch form. It cannot be added to the
 backlog, carry dependencies, be created by a Recurring Mission or task source, or be selected
-for an Ensemble member. Mission Control adds no task-kind prompt appendix, Mission MCP tool,
-artifact, or archive contract.
+for an Ensemble member. Mission Control adds no task-kind prompt appendix, artifact, or archive
+contract. Chat agents can still schedule separate work with Mission MCP's `create_task` and
+launch it with `dispatch_task`; both tools are pre-approved on chat launches. These tasks use
+the ordinary backlog and dispatch checks while the original conversation stays a chat.
 
 With **After work** left at **None**, chat completion stays human-ended. Foreman can recognize
 that the agent has answered, but it does not offer or send an automatic completion action; the
@@ -723,8 +778,9 @@ is incomplete, **Dispatch now** becomes **Schedule after dependencies** and the 
 forced into the backlog. Every task or standalone active session completes only when its
 PR is observed **merged** - and for a task with
 [several repositories attached](#attaching-more-than-one-repository), when *every*
-repository it changed has; merely opening a PR does not release dependents, and an
-ordinary **Mark done** does not either. Leaving **Unblock dependents** unchecked keeps
+repository it changed has; merely opening a PR does not release dependents (unless the
+dependency [stacks](#stacked-dependencies), which lets it start but still does not complete
+it), and an ordinary **Mark done** does not either. Leaving **Unblock dependents** unchecked keeps
 that merge guard; it does not disable later recovery. Completed prerequisites with unresolved
 edges are still checked for verified merges, including after a restart or session closure.
 An unresolved dependency also retains its earlier work episode's branch when the task moves
@@ -753,7 +809,8 @@ use it only when the prerequisite's work is already in place (see [Resolve a sto
 dependency](#resolve-a-stopped-dependency)). Active sessions without observable hook
 instrumentation are not eligible dependencies because Mission Control cannot distinguish
 their next work episode from an earlier merged PR. The board and Sitrep name what a task is
-waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it early.
+waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it early,
+except through a [stacked dependency](#stacked-dependencies).
 Reopen the backlog task to add or remove dependencies; cycles are refused. Recorded merge
 completion remains visible even after the originating session disappears. A prerequisite
 required by a retained exact plan input names that plan and revision in the editor and cannot
@@ -761,6 +818,47 @@ be removed while it is the pin's only matching prerequisite. Change the plan inp
 prerequisite together through the task API to replace the pair. The editor keeps the pin intact.
 A rejected save leaves the draft open; if Dispatch now triggered the save, the error says that
 dispatch was not attempted. A launch refusal after a successful save is reported separately.
+
+#### Stacked dependencies
+
+A same-repository task dependency can **stack**: the dependent starts as soon as its
+prerequisite has an open, non-draft pull request and its agent has finished the episode,
+instead of waiting for the merge. The chip of a same-repository task dependency that has not
+merged yet carries a **Stack** / **After merge** toggle. A prerequisite that has already merged
+(its task is finished, or its pull request merged) has nothing left to stack on, so its chip
+has no toggle, and neither does a dependency on a session with no task or on a task in
+another repository. Until you pick one the toggle shows the mode it inherits, marked *default*,
+from **Settings → Shipping → Stacked pull requests** (which ships as *Stack on its branch*).
+Changing the setting later moves every chip you never set. Set a chip, or the setting, to
+*After merge* / *Wait for merge* to keep today's wait for that dependency or for all of them.
+
+A stacked dependency releases only the dependent's **start**. The edge stays unsatisfied
+until the prerequisite's pull request merges, so completion, **Mark done** and **Unblock
+dependents** behave exactly as above. A released card reads *Stacked on #N*. A card whose
+dependency stacks, because its chip is set to Stack or it inherits a Stack default, but that
+cannot stack yet says why in place of *after X*. The usual reasons are two unmerged
+prerequisites in one repository, a prerequisite in another repository, or a stack at the
+depth cap. A stacked task is always **dispatched** into a fresh worktree cut from the
+prerequisite pull request's current head, and opens its pull request against that branch;
+drag-to-assign and Foreman never hand it to an existing agent. Session dependencies without
+a task, plan publications and cross-repository dependencies always wait for merge. See
+[Stacked pull requests](inspector-and-shipping.md#stacked-pull-requests) for how the stacked
+pull request is reviewed and released to merge.
+
+After it starts, a stacked task keeps itself current through the
+[stack lifecycle](inspector-and-shipping.md#the-stack-lifecycle). When its prerequisite pushes
+again, its session is asked to merge the prerequisite's branch in. When the prerequisite's pull
+request **merges**, the daemon retargets the stacked pull request to the default branch and asks
+the session to merge `origin/<default branch>` in and push, with no force-push. Once the
+restack is verified, the pull request is reviewed against the default branch and merges
+through the ordinary gates, so under YOLO mode a stack lands bottom-up under the conditions in
+[when a stack lands by itself](inspector-and-shipping.md#the-stack-lifecycle).
+The prompts go through Foreman; when it cannot send one, the merge queue says why and offers to
+send it by hand. If the task's session is gone the prompt waits for **Resume**, which gives it an
+owner again. If the prerequisite's pull
+request closes without merging, or its task is cancelled or rescheduled, the stacked pull
+request is held as *Stack broken* with an action that fixes it. Flipping the dependency to
+*After merge* after the task started changes nothing for it.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can leave the
@@ -956,6 +1054,27 @@ launch refusals outside that resource phase also remain failed, and once any lau
 exists recovery keeps the conservative behavior below instead of assuming whether an agent or
 checkout survived.
 
+### Search and filter the backlog
+
+The Board's Backlog column and the Line's **Backlog** drawer both carry a search button and a
+**Filter** menu in their header.
+
+- **Search** opens a field that matches every word you type against a task's title, task text,
+  labels, and repository name, ignoring case. Matching words are highlighted in each title.
+  `Esc` in the field, or the search button again, clears the search and hides the field.
+- **Filter** opens a menu with two groups. **Dependencies** offers **Ready to start** (no unmet
+  dependency) and **Blocked** (at least one). **Autopilot** offers **Autopilot on** and
+  **Autopilot off**, read from each task's own [autopilot switch](#hold-a-backlog-item-back).
+  Values in one group widen the view, the two groups narrow each other, and each row's count is
+  how many tasks it would show with the search and the other group applied. **Ready to start**
+  with **Autopilot on** is the list autopilot schedules from.
+
+While anything is filtered, the header count reads `3 of 23`, each active filter shows as a chip
+you can click to remove, and a line says how many tasks are hidden with a **Clear** link. The
+filter only hides tasks: the order, the **next up** mark, and what autopilot takes next do not
+change. Reordering, selecting, and `Cmd`-`A` act on the cards you can see. Search and filters
+reset when the dashboard reloads.
+
 ### Edit or delete several shelved tasks at once
 
 On the [Board](ui.md#layout-console-or-board-in-settings)'s Backlog column, **select several
@@ -1111,8 +1230,10 @@ cannot postpone cleanup forever.
 When a dispatched task should run *later* rather than now, press **backlog** (<kbd>b</kbd>)
 in its session detail's footer. A confirm names the one cost, then the task goes back into
 the Backlog column at the [position it had](#the-backlog-order-is-the-one-you-set) before it
-was dispatched: re-enabled, with no outcome, error or pull-request link, ready to dispatch
-again (`POST /api/tasks/:id/requeue`).
+was dispatched: with **Allow backlog autopilot** turned off and no outcome, error or
+pull-request link (`POST /api/tasks/:id/requeue`). It stays parked until you dispatch it
+manually or turn its autopilot permission back on, even when Foreman's backlog autopilot
+is enabled.
 
 On the way back the task is cancelled: the agent Mission Control launched for it is stopped,
 any scout report is archived, and its checkout is removed so the next attempt starts from a
@@ -1152,6 +1273,11 @@ list, so neither the fresh-worktree launch nor the assign-onto-an-idle-agent sho
 see one. The daemon then refuses `POST /api/tasks/:id/dispatch` and `/assign` for a parked
 item **unless the request explicitly claims an override** - which the dashboard's own
 buttons do, and Foreman never does.
+
+An agent calling Mission MCP's `dispatch_task` can also explicitly set `overrideDisabled: true`
+to launch a parked task. Chat pre-approves this tool, including that option: the disabled switch
+is an autopilot hold, not a human approval or permission boundary against the calling agent.
+Dependencies, workflow readiness, and the remaining launch checks still apply.
 
 The refusing default is the point. The Foreman worker is a separate process you start by
 hand, so it can outlive a daemon restart; one that predates this feature sends no override
@@ -1727,7 +1853,10 @@ so the agent's first prompt has the actual text rather than a number to go and l
 
 Blocking links come with it: the sweep asks `gh` for each issue's `blockedBy` and `parent`,
 and the issues blocking it arrive as the task's dependencies. See [Blocking links become
-dependencies](#blocking-links-become-dependencies).
+dependencies](#blocking-links-become-dependencies). Those fields need gh 2.101 or newer. An older
+`gh` refuses them, and the sweep then asks again without them: issues are still filed and kept
+updated, but without their blocking links or parent, and keep-updated leaves a task's existing
+dependencies and parent as they are until `gh` is upgraded.
 
 #### Sweeping the public product-feedback tracker
 
@@ -2165,6 +2294,9 @@ insert, so a swept task is never visible unblocked:
 - A blocker that is already one of your tasks, still backlogged or running under a live session,
   becomes an ordinary task dependency (the same rule that decides what you can select by hand). It follows that task to its merge like one you selected yourself. Blockers
   filed by the same sweep are filed first, so the order issues are listed in does not matter.
+  Issues that block each other upstream would leave two tasks waiting on each other, so the one
+  that would close the cycle is not filed: the sweep reports it as refused, and files it once the
+  cycle is broken upstream.
 - Any other blocker - outside the source's filter, in another repository, or linked to a task
   that is still starting, already finished, or stopped - becomes a **source dependency** on the
   external item. It
@@ -2177,12 +2309,17 @@ insert, so a swept task is never visible unblocked:
   sub-issue, and on every [keep-updated refresh](#keeping-imported-backlog-tasks-updated).
 
 Each sweep re-reads the external items that waiting source dependencies name (for GitHub, one
-`gh issue view` each), at most 25 per sweep, least recently checked first. A failed read
-changes nothing. Whether the source is enabled or not, **Sweep now** runs the same re-check.
-The links are read when an item is first filed; a blocking link added or removed upstream
-afterwards does not change the task's dependencies yet. The usual rules still hold: a
-dependency that would close a cycle is refused, and removing one in the task editor or from
-the warning is permanent. Only a sweep creates a source dependency: the task editor and the
+`gh issue view` each), at most 25 per sweep, least recently checked first, with a deadline of its
+own so a slow sweep or refresh cannot crowd it out. A failed read never changes a dependency's
+state. An item whose own read failed moves to the back of that queue, and so does a whole batch
+the deadline cut off, so a few slow links cannot hold the rest.
+Whether the source is enabled or not, **Sweep now** runs the same re-check.
+The links are read when an item is first filed. A blocking link added or removed upstream
+afterwards changes the task's dependencies only with
+[Keep imported backlog tasks updated](#keeping-imported-backlog-tasks-updated) on. The usual
+rules still hold: a dependency that would close a cycle is refused, and removing one in the task
+editor or from the warning stays removed: with that setting on, a later upstream change to the
+item's blocking links is offered for review rather than applied over it. Only a sweep creates a source dependency: the task editor and the
 task API can keep or remove one, never add one.
 
 A source dependency is stored in the task's existing dependency list, so no migration is
@@ -2213,9 +2350,10 @@ whose kind can relate (GitHub today) also updates **dependencies**: the task's e
 for the source's own items, a `source` edge to an item or a task edge to the task linked to one,
 follow the item's blocking links. A new blocker becomes a task edge when a task is linked to it
 and a `source` edge otherwise, exactly as on import. Every other edge (a session, a task with no
-link to this source, another source's item) is local and never touched. A synced edge that would
-close a cycle is refused like a hand edit: the whole update is held, the task is kept as it is,
-and the reason is shown beside it until a later sweep finds the cycle gone. Agent, model, task
+link to this source, another source's item) is local and never touched. A synced edge that a hand
+edit would refuse, most often one that would close a cycle, is refused the same way: the whole
+update is held, the task is kept as it is, and the reason is shown beside it until a later sweep
+no longer meets it. Agent, model, task
 kind, workflow, repositories, backlog position and autopilot eligibility remain local. Source defaults are captured when an item is imported; changing those defaults
 does not rewrite previously imported tasks. The item's **parent** (a GitHub sub-issue's parent
 issue) is source-owned display data outside every group: each refresh overwrites it from the

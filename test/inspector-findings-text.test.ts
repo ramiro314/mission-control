@@ -50,7 +50,7 @@ function finding(
 
 const ONLY_COPY = "Not posted on GitHub. This message is the only copy.";
 
-test("every phase 2 posted marker reads what the row proves", () => {
+test("every posted marker reads what the row proves", () => {
   const cases: Array<[string, Partial<InspectorComment>, string]> = [
     ["posted with a link", {}, "Posted on GitHub: https://github.com/owner/repo/pull/7#discussion_rf"],
     ["posted, link not captured", { githubUrl: null }, "Posted on GitHub (link not captured yet)"],
@@ -88,12 +88,12 @@ test("a draft posted earlier is never called the only copy", () => {
   }
   // A legacy-unknown row is reachable only once resolved, and says it is unknown, never "only copy".
   const unknown = inspectorFindingPostedLine(
-    finding("f", "major", { status: "resolved", postedAt: null, legacyPosted: "unknown" }),
+    finding("f", "major", { status: "resolved", postedAt: null, githubUrl: null, legacyPosted: "unknown" }),
   );
   assert.match(unknown, /^Not known whether this was posted on GitHub/);
 });
 
-// Phase 4's two refusal markers. A refused draft is still not on GitHub, so the session must
+// The two refusal markers. A refused draft is still not on GitHub, so the session must
 // read that, and why: from the first refusal, not only once the cap stops it being offered.
 const REASON = "Line could not be resolved (HTTP 422)";
 const neverPosted: Partial<InspectorComment> = { status: "drafted", postedAt: null, githubUrl: null };

@@ -501,6 +501,60 @@ export interface RestoringSession {
   createdAt: number;
 }
 
+/**
+ * What a session blocker is waiting on. There is deliberately no `user` / `operator` kind: a
+ * decision the operator can make goes through `request_input`, which already blocks the turn.
+ */
+export const SESSION_BLOCKER_KINDS = ["question", "dependency", "service", "other"] as const;
+export type SessionBlockerKind = (typeof SESSION_BLOCKER_KINDS)[number];
+
+/** Field limits a blocker is validated against, shared by the MCP tool and the daemon. */
+export const SESSION_BLOCKER_LIMITS = {
+  reason: 200,
+  waitingOn: 120,
+  resumeWhen: 200,
+  details: 4000,
+  note: 500,
+  resolution: 200,
+  url: 2048,
+} as const;
+
+/** A likely answer someone flagged on a blocker. It never clears the blocker by itself. */
+export interface SessionBlockerReply {
+  flaggedAt: number;
+  /** `"operator"` or `"session:<controller-id>"`. */
+  flaggedBy: string;
+  note: string | null;
+  referenceUrl: string | null;
+}
+
+/**
+ * A session waiting on someone or something other than the operator. Durable session state
+ * keyed by the note key, so it survives turn completion, daemon restarts and `/clear`; it ends
+ * when someone clears it or the session's task reaches a terminal status.
+ */
+export interface SessionBlocker {
+  /**
+   * This blocker's identity: minted when it is first reported and kept across re-reports, so
+   * a replacement is always distinguishable from the blocker a control was opened on, even
+   * within the same millisecond. Flag reply and Clear name it to refuse stale actions.
+   */
+  id: string;
+  kind: SessionBlockerKind;
+  reason: string;
+  waitingOn: string;
+  resumeWhen: string;
+  details: string | null;
+  referenceUrl: string | null;
+  /** First report; kept across re-reports. */
+  startedAt: number;
+  /** Last report. */
+  updatedAt: number;
+  /** Last re-report after a reply flag ("checked, still blocked"). */
+  checkedAt: number | null;
+  reply: SessionBlockerReply | null;
+}
+
 export interface Session {
   /**
    * Stable identity and Registry map key for the life of this entry. Discovery mints
@@ -756,6 +810,12 @@ export interface Session {
    * key. Null when the session has no queue.
    */
   queue: SessionQueueSummary | null;
+  /**
+   * What this session is waiting on outside the operator, or null. Denormalized like `goal`
+   * and keyed on the same note key. While it stands every idle-triggered automation leaves
+   * the session alone (`hasBlocker` in `session.ts`).
+   */
+  blocker: SessionBlocker | null;
   /** Human-authored turns Mission Control still owns, in FIFO delivery order. */
   pendingTurns: PendingTurn[];
   /**
@@ -2096,7 +2156,7 @@ export type TaskPriority = "low" | "med" | "high" | "blocker";
  */
 export type TaskDependency =
   | (PlanIdentity & { type: "plan"; title: string; selectedAt: number | null; satisfiedAt: number | null; sessionId: null; episodeId: null; agentSessionId: null; branch: null; prUrl: null })
-  | {
+  | ({
       type: "task";
       taskId: string;
       title: string;
@@ -2107,8 +2167,8 @@ export type TaskDependency =
       prUrl: string | null;
       selectedAt: number | null;
       satisfiedAt: number | null;
-    }
-  | {
+    } & StackEdgeFields)
+  | ({
       type: "session";
       sessionId: string;
       title: string;
@@ -2118,7 +2178,7 @@ export type TaskDependency =
       prUrl: string | null;
       selectedAt: number | null;
       satisfiedAt: number | null;
-    }
+    } & StackEdgeFields)
   | {
       /**
        * An item in an external tracker that blocks this task and has no Mission Control
@@ -2158,6 +2218,29 @@ export type TaskDependency =
       /** Always null when read: this build cannot tell whether the edge is met. */
       satisfiedAt: number | null;
     };
+
+/**
+ * Stacked pull requests, on a task or session edge. Every field is optional on read, so an
+ * edge stored before stacking existed parses unchanged and means "inherit, unstamped".
+ *
+ * `mode` is the operator's override; absent inherits the Shipping default when it is read
+ * (`effectiveEdgeMode`). The four `stack*` fields are the daemon's READINESS STAMP: written
+ * only when the prerequisite's current episode has an open, non-draft pull request in its
+ * primary repository and its agent finished the episode, and cleared when that stops being
+ * true before the dependent starts. Only a recorded `stackReadyAt` timestamp releases an edge
+ * to start, and `satisfiedAt` keeps meaning "the prerequisite merged" - stacking never
+ * touches it.
+ */
+export interface StackEdgeFields {
+  mode?: "merge" | "stack";
+  stackReadyAt?: number | null;
+  /** The prerequisite pull request's head branch when the stamp was written. */
+  stackBaseBranch?: string | null;
+  /** Its head commit when the stamp was written. Dispatch reads the branch afresh. */
+  stackBaseSha?: string | null;
+  /** The prerequisite's primary-repository pull request the stamp was read from. */
+  stackPrUrl?: string | null;
+}
 
 /**
  * An external item's state, as a task source reports it.
@@ -2436,6 +2519,17 @@ export interface Task {
    */
   advisorModel: AdvisorChoice | null;
   /**
+   * The Library Persona whose guidance this task's agent launches with, or null for none.
+   *
+   * An id, not a snapshot: like `model` and `effort`, a backlogged task reads the Persona as
+   * it stands when it LAUNCHES, and the launch records the composed text in the session's
+   * standing-instruction snapshot, which is what a resume replays. Every kind Dispatch offers
+   * may carry one: a harness-launched kind in its launch's standing instructions, a pipeline on
+   * its managed Engineer host's own channel (a Terminal host refuses it). A resident never does,
+   * because it takes its Persona from its resident profile (`taskKindPersonaRefusal`).
+   */
+  personaId: string | null;
+  /**
    * Published Workflow identity armed for this task's completion, or null for none.
    *
    * This is durable dispatch intent rather than a binding id: the binding cannot exist until
@@ -2519,6 +2613,21 @@ export interface Task {
    * too: it costs one column write and keeps one code path.
    */
   baseSha: string | null;
+  /**
+   * Stacked pull requests: what this task's CURRENT work episode was cut on, written at every
+   * dispatch. A stacked dispatch records the prerequisite task, its pull request's head
+   * branch and URL, and the exact parent commit the primary repository was pinned to (the same
+   * value as `baseSha`). An unstacked dispatch writes null to all four, so a rescheduled task's
+   * new episode records its own parent or none. Primary repository only: secondary
+   * repositories are always cut from their default branch.
+   *
+   * Optional on read for rows and fixtures from before the columns existed; absent and null
+   * both mean "not stacked".
+   */
+  stackParentTaskId?: string | null;
+  stackBaseBranch?: string | null;
+  stackBaseSha?: string | null;
+  stackPrUrl?: string | null;
   /**
    * Secondary repositories attached to this task, in `position` order. Empty for the
    * single-repo tasks that are nearly all of them.
@@ -3102,6 +3211,8 @@ export interface InspectorPr {
   cwd: string | null;
   /** The session that opened it. Nullable: a PR outlives the session, deliberately. */
   sessionId: string | null;
+  /** That session's agent id when it was bound, which survives the id re-minting on restart. */
+  noteKey?: string | null;
   source: InspectorSource;
   state: InspectorPrState;
   /**
@@ -3207,8 +3318,77 @@ export interface InspectorPr {
    * `headRefName` rather than treating null as an empty title.
    */
   title: string | null;
+  /** The branch the pull request targets, as of the last poll. Null until polled. */
+  baseRefName?: string | null;
+  /**
+   * The base the review recorded in `headSha` was made against. A base that changed under
+   * an unchanged head is a different diff, so the review no longer counts. Null on rows
+   * reviewed before this was recorded, which count only while the base is the default
+   * branch.
+   */
+  reviewedBaseRef?: string | null;
+  /**
+   * The base branch's tip when that review was made, or the latest tip since then that GitHub
+   * confirmed gives the same merge base. A stacked parent rebased under an unchanged child
+   * head moves the merge base, so the diff changed and the review no longer counts. Null when
+   * not recorded.
+   */
+  reviewedBaseSha?: string | null;
+  /** The merge commit GitHub reported once this pull request merged. */
+  mergeCommitSha?: string | null;
+  /** Stack lineage. See `StackLineage`. Absent or null `stackParentPrUrl` = no lineage. */
+  stack?: StackLineage | null;
   adoptedAt: number;
   updatedAt: number;
+}
+
+/**
+ * The stack lineage of one pull request row, written once when the row is adopted for a
+ * stacked task's primary repository.
+ *
+ * It outlives the session, a restart and the Shipping setting: switching stacking off decides
+ * whether a dependent STARTS early, never what an already-stacked pull request is built on.
+ * The first child pull request of a work episode is seeded from the task's dispatch; every
+ * later one in the same task, repository and episode copies the most recently adopted
+ * previous row's lineage unchanged.
+ */
+export interface StackLineage {
+  /** The stacked task this pull request belongs to. */
+  taskId: string;
+  /** The task's work episode when the row was adopted. Inheritance never crosses it. */
+  episode: string | null;
+  /** When the row was adopted. "Most recently adopted" is the highest value. */
+  adoptedAt: number;
+  /** The CURRENT parent pull request. */
+  parentPrUrl: string;
+  /** The parent commit the child was cut at. Never changes. */
+  baseSha: string | null;
+  /** The child head the release check passed for. Null or another head means held. */
+  releasedHeadSha: string | null;
+  /**
+   * The parent state that release was granted under. A release under a MERGED parent is final;
+   * one under a CLOSED parent is re-evaluated, because the parent can be reopened and then
+   * merge, and a merge brings its own ancestry requirement. Null on a release recorded before
+   * this was, which is treated as closed.
+   */
+  releasedBasis?: "merged" | "closed" | null;
+  /** Each change of the current parent. Empty until a replacement parent takes over. */
+  history: StackLineageChange[];
+  /** One line about the last base correction, for the merge queue. */
+  note: string | null;
+  /**
+   * What the Inspector tick last observed about the child and its current parent, from which
+   * the lifecycle state is derived (`deriveStackState`). Null until the first observation.
+   */
+  observation?: import("./stacking.ts").StackObservation | null;
+  /** When the operator chose *Wait for a replacement*; null when they have not. */
+  awaitReplacementAt?: number | null;
+}
+
+export interface StackLineageChange {
+  from: string;
+  to: string;
+  at: number;
 }
 
 /**
@@ -3296,6 +3476,8 @@ export interface InspectorSummary {
   codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
   /** Fork (ci-strictness): see `InspectorCiSummary`. Absent from an older daemon. */
   ci?: InspectorCiSummary;
+  /** Stacked pull requests: the lifecycle standing of a pull request with stack lineage. */
+  stack?: import("./stacking.ts").StackStanding | null;
   prKey: string;
   url: string;
   mode: InspectorMode;
@@ -3353,6 +3535,11 @@ export interface InspectorInspection extends InspectorPr {
   codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
   /** Fork (ci-strictness): the stored CI snapshot's compact projection. */
   ci?: InspectorCiProjection;
+  /**
+   * Stacked pull requests: the lifecycle standing of a row with lineage, computed on read. A
+   * separate field from `mergeBlock`, which keeps holding only gate values.
+   */
+  stackStanding?: import("./stacking.ts").StackStanding | null;
   openFindings: number;
   postedOpenFindings: number;
   resolvedFindings: number;
@@ -3448,8 +3635,22 @@ export interface LlmStatus {
 export interface SettingsStatus {
   /** The Inspector's two switches the dots care about; its allowlist is not a dot fact. */
   inspector: { enabled: boolean; mode: "dry-run" | "live" };
-  /** YOLO mode's master switch. Armed is an amber dot; the soak/method are not dot facts. */
-  shipping: { autoMerge: boolean };
+  /**
+   * YOLO mode's master switch (armed is an amber dot; the soak/method are not dot facts), and
+   * the EFFECTIVE Stacked pull requests default - the stored choice or the shipped default -
+   * which a dependency chip shows as the mode an edge inherits until the operator sets one.
+   * Optional so a snapshot from a daemon that predates stacking still parses; a reader then
+   * falls back to `STACKING_SHIPPED_DEFAULT`.
+   */
+  shipping: {
+    autoMerge: boolean;
+    stacking?: "merge" | "stack";
+    /**
+     * The Stacked pull requests depth cap, so a blocked card can say a stack is too deep
+     * rather than promise one. Optional for the same reason as `stacking`.
+     */
+    maxStackDepth?: number;
+  };
   /** How many configured task sources failed their last sweep. Nonzero is a red dot. */
   taskSources: { failing: number };
   /**
@@ -3858,6 +4059,22 @@ export type ServerEvent =
    * belongs in the reconnect snapshot.
    */
   | { type: "worktrees_changed" }
+  /**
+   * The database backup config was saved. Content-free: `GET /api/storage` is the one reader
+   * of that config, and `storage_health` cannot stand in, because a save that prunes nothing
+   * leaves the aggregate unchanged and publishes no frame.
+   */
+  | { type: "storage_config_changed" }
+  /**
+   * The operator dismissed attention-inbox rows. An invalidation signal: each open dashboard
+   * re-reads `GET /api/attention/dismissals`, so a row dismissed in one window leaves the
+   * inbox and the `to answer` count in every other.
+   *
+   * CONTENT-FREE and out of the reconnect snapshot, like `worktrees_changed`: the set is an
+   * HTTP read of one small row per inbox row ever dismissed, and the hook that holds it
+   * re-reads on every (re)connect, which covers a dismissal made while this stream was down.
+   */
+  | { type: "attention_dismissals_changed" }
   /**
    * The Keep Awake observation moved - a transition was requested, the OS assertion was
    * acquired or released, or a transition failed. Carries the whole status so every open dashboard

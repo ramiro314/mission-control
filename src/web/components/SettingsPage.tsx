@@ -25,9 +25,9 @@ import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
 import { TaskSettingsPanel } from "./TaskSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
+import { ResidentPlacementPanel } from "./ResidentPlacementPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
-import { LineDensityPanel } from "./LineDensityPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
 import { TopbarPanel } from "./TopbarPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
@@ -211,6 +211,7 @@ export function SettingsPage({
   onLayoutChange,
   settingsStatus,
   storageHealth = null,
+  storageConfigRevision = 0,
   harnessesRevision = 0,
   worktreesRevision = 0,
   workflowSummaries = [],
@@ -282,6 +283,8 @@ export function SettingsPage({
   settingsStatus: SettingsStatus | null;
   /** `MissionState.storageHealth`, the live aggregate Settings > Storage draws. */
   storageHealth?: StorageHealth | null;
+  /** `MissionState.storageConfigRevision`: Settings > Storage re-reads its config when it moves. */
+  storageConfigRevision?: number;
   /**
    * `MissionState.harnessesRevision` - bumped whenever the daemon announces a change to the
    * per-harness dispatch defaults. Handed to `useHarnesses` so this page reflects an edit
@@ -578,7 +581,8 @@ export function SettingsPage({
         return (
           <>
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
-            <LineDensityPanel />
+            {/* Beside Layout: where residents are drawn is part of how sessions are arranged. */}
+            <ResidentPlacementPanel />
             <ConversationViewPanel />
             <AppearancePanel />
             {/* Last, and inside out like the three above it: having chosen an arrangement,
@@ -680,7 +684,13 @@ export function SettingsPage({
       case "telemetry":
         return <TelemetrySettingsPanel state={telemetry} />;
       case "storage":
-        return <StorageSettingsPanel health={storageHealth} onNavigate={navigateWithAnchor} />;
+        return (
+          <StorageSettingsPanel
+            health={storageHealth}
+            configRevision={storageConfigRevision}
+            onNavigate={navigateWithAnchor}
+          />
+        );
       case "restore":
         return <RestoreSettingsPanel />;
       case "inspector":

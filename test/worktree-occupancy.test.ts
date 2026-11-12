@@ -814,3 +814,46 @@ test("a session's process is its process start, or its recorded SDK lifetime", (
     [{ id: "terminal", pid: 7, startMs: 7_000, name: "n" }, { id: "sdk:a", pid: 8, startMs: 8_000, name: "n" }],
   );
 });
+
+test("an overflowed cwd listing is not retried when the disappearance check then fails", async () => {
+  const { one } = fixture();
+  const overflowedCwds = async () => ({
+    cwds: new Map<number, string>(),
+    unknownReason: "cwd listing failed: the cwd listing was too large to buffer",
+    overflowed: true,
+  });
+  const first = {
+    processes: [process(10)],
+    unknownReason: null,
+    cwdScopePids: [10],
+    completedCollectorPids: [],
+  };
+
+  let listings = 0;
+  const failed = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () =>
+      ++listings === 1
+        ? first
+        : { ...first, unknownReason: "process listing failed: the process listing timed out after 30 s" },
+    readCwds: overflowedCwds,
+    pause: async () => assert.fail("an overflow is not retried"),
+  });
+  assert.deepEqual(failed.get(one), {
+    status: "unknown",
+    reason: "process listing failed: the process listing timed out after 30 s",
+  });
+
+  let throwingListings = 0;
+  const threw = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => {
+      if (++throwingListings === 1) return first;
+      throw new Error("ps vanished");
+    },
+    readCwds: overflowedCwds,
+    pause: async () => assert.fail("an overflow is not retried"),
+  });
+  assert.deepEqual(threw.get(one), {
+    status: "unknown",
+    reason: "process disappearance check failed: Error: ps vanished",
+  });
+});

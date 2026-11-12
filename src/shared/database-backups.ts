@@ -75,8 +75,8 @@ export const DatabaseBackupKindStatusSchema = z.object({
 export type DatabaseBackupKindStatus = z.output<typeof DatabaseBackupKindStatusSchema>;
 
 export const DatabaseBackupStatusSchema = z.object({
-  scheduled: DatabaseBackupKindStatusSchema.default({}),
-  manual: DatabaseBackupKindStatusSchema.default({}),
+  scheduled: DatabaseBackupKindStatusSchema.prefault({}),
+  manual: DatabaseBackupKindStatusSchema.prefault({}),
 });
 
 export type DatabaseBackupStatus = z.output<typeof DatabaseBackupStatusSchema>;

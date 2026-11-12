@@ -674,8 +674,10 @@ export function RepoGroupHead({
  *
  * `aria-hidden`, because the accessible name and `aria-expanded` on the button already say both
  * what this is and which way it points.
+ *
+ * Exported for the Residents drawer, whose card titles fold the same way a repository frame does.
  */
-function RepoGroupCaret(): React.JSX.Element {
+export function RepoGroupCaret(): React.JSX.Element {
   return (
     <svg className="brh-chevron" viewBox="0 0 12 12" aria-hidden focusable="false">
       <path
@@ -1441,10 +1443,12 @@ export function GoalLine({ session }: { session: Session }): React.JSX.Element |
     (session.goal.resolvedPromptRevision ?? 0) < (session.goal.promptRevision ?? 0);
   const unclear = session.goal.relationship === "unclear";
   const stateClass = resolving ? "resolving" : unclear ? "unclear" : session.goal.source ?? "heuristic";
+  // Both paused states name their exit, which lives in the Foreman drawer.
+  const exit = "Open Foreman intent to accept the objective as is.";
   const detail = resolving
-    ? `${session.goal.text} (reconciling the latest instruction with this objective)`
+    ? `${session.goal.text} (reconciling the latest instruction with this objective) ${exit}`
     : unclear
-      ? `${session.goal.text} (latest instruction may change this objective; automatic wrap-up is paused)`
+      ? `${session.goal.text} (latest instruction may change this objective; automatic wrap-up is paused) ${exit}`
       : session.goal.source === "heuristic"
         ? `${session.goal.text} (initial objective, being refined)`
         : session.goal.text;

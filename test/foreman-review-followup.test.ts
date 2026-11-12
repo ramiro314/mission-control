@@ -94,6 +94,7 @@ function queue(openCount: number): SessionQueueSummary {
 /** A session parked idle on an OPEN PR - the base case a nudge fires on. Override per test. */
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "s1",
     agent: "claude",
     name: "atlas",
@@ -434,6 +435,24 @@ test("reviewFollowupPrs keeps the card's PR first and appends an adopted PR on t
     headSha: null,
     conflictEscalated: false,
   });
+});
+
+test("reviewFollowupPrs follows an adopted row by its agent id across a session id re-mint", () => {
+  const card = { prUrl: null, prNumber: null, prState: null, inspector: null };
+  const byAgent = adoptedRow({ sessionId: "s1", noteKey: "agent-1" });
+  // The row names the predecessor's synthetic id; the restarted session kept its agent id.
+  const restarted = mkSession({ ...card, id: "s1-restarted", agentSessionId: "agent-1" });
+  assert.deepEqual(reviewFollowupPrs(restarted, [byAgent]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  // The same live session keeps it after its agent id binds or rotates: the id still names it.
+  const rebound = mkSession({ ...card, id: "s1", agentSessionId: "agent-after-clear" });
+  assert.deepEqual(reviewFollowupPrs(rebound, [byAgent]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  // Adopted before the agent id was bound: the session id is the only match, as before.
+  const provisional = adoptedRow({ sessionId: "s1", noteKey: null });
+  assert.deepEqual(reviewFollowupPrs(mkSession({ ...card, id: "s1", agentSessionId: "agent-1" }), [provisional]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  assert.deepEqual(reviewFollowupPrs(restarted, [provisional]), []);
+  // Another agent on another session is never this one.
+  const stranger = mkSession({ ...card, id: "s9", agentSessionId: "agent-9" });
+  assert.deepEqual(reviewFollowupPrs(stranger, [byAgent]), []);
 });
 
 test("reviewFollowupPrs ignores an adopted row that is not this session's open PR on this branch", () => {
@@ -1682,4 +1701,11 @@ test("a config without ciStrictness counts every check", () => {
   const d = decide({ session: ciSession("failing", ciProjection({ required: "passing" })), cfg: legacy });
   assert.equal(d.kind, "nudge");
   assert.deepEqual(ciFollowup(onlyPr(ciSession("failing", ciProjection({ headSha: null })))), { failing: true, required: false });
+});
+
+test("a blocked session is not nudged about review feedback until the blocker clears", () => {
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const held = decide({ session: mkSession({ blocker, inspector: inspector({ open: 2 }) }) });
+  assert.deepEqual(held, { kind: "skip", why: "the session is blocked" });
+  assert.equal(decide({ session: mkSession({ inspector: inspector({ open: 2 }) }) }).kind, "nudge");
 });

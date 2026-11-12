@@ -8,7 +8,7 @@ import type { TaskCandidate, TaskSourceInstance, TaskSourceRef } from "../src/sh
 import { sourceContent } from "../src/shared/task-source-sync.ts";
 import { dependencyInputOf } from "../src/shared/task-dependency.ts";
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager, TaskDependencyError } = await import("../src/server/tasks.ts");
 const { getTask, listTasks, deleteTask, openDb, countTaskSourceSeen, inTransaction } = await import("../src/server/db.ts");
 const { setTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
 const { ingestSweep } = await import("../src/server/task-sources/ingest.ts");
@@ -424,6 +424,57 @@ test("a synced edge that would close a cycle is refused whole and reported",asyn
   assert.equal(getTask(task.id)!.title,"Also renamed");
   assert.deepEqual(synced(task.id),[`task:${byRef(2).id}`]);
   assert.equal(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error,null);
+});
+test("a synced edge refused for another reason is reported with that reason, not as a cycle",async()=>{
+  const {src,tasks,task}=await setupRelated();
+  Object.assign(tasks,{resolveDependencies:()=>{throw new TaskDependencyError("dependency is no longer available");}});
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2)},candidate(2),candidate(3)])).skipped,1);
+  const error=sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error!;
+  assert.match(error,/dependency is no longer available/); assert.doesNotMatch(error,/cycle/);
+  assert.deepEqual(getTask(task.id)!.dependencies,[]);
+});
+test("a synced source edge to a failed blocker that waits on this task is refused as a cycle",async()=>{
+  const {src,registry,tasks,task,byRef}=await setupRelated();
+  await tasks.update(byRef(2).id,{dependencies:[{type:"task",taskId:task.id}]});
+  registry.upsertTask({...getTask(byRef(2).id)!,status:"failed"});
+  assert.equal(tasks.acceptsNewTaskEdgeTo(byRef(2).id),false);
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2)},candidate(2),candidate(3)])).skipped,1);
+  assert.deepEqual(getTask(task.id)!.dependencies,[]);
+  assert.match(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error!,/dependency cycle/);
+  assert.deepEqual(getSourceSync(task.id)!.baseline!.blockedBy,[]);
+});
+test("a synced edge past the dependency limit is refused whole and reported",async()=>{
+  const {src,registry,tasks,task}=await setupRelated();
+  const own=Array.from({length:50},(_,i)=>mkTask({id:`own-${i}`,status:"backlog",source:null}));
+  for(const t of own) registry.upsertTask(t);
+  assert.ok((await tasks.update(task.id,{dependencies:own.map((t)=>({type:"task" as const,taskId:t.id}))})).ok);
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(9)},candidate(2),candidate(3)])).skipped,1);
+  assert.match(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error!,/more than 50 dependencies/);
+  assert.equal(getTask(task.id)!.dependencies.length,50);
+});
+test("a finished blocker the registry evicted still stands for its source item",async()=>{
+  const {src,registry,tasks,task,byRef}=await setupRelated();
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2)}])).updated,1);
+  const blocker=byRef(2);
+  registry.upsertTask({...getTask(blocker.id)!,status:"done"});
+  for(let i=0;i<51;i++) registry.upsertTask(mkTask({id:`finished-${i}`,status:"done",source:null,updatedAt:Date.now()+1000+i}));
+  assert.equal(registry.getTask(blocker.id),undefined); assert.ok(getTask(blocker.id));
+  // Read through the live registry alone, the evicted edge looked like a local removal and
+  // this upstream addition became a conflict whose review could never be applied.
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2,3)}])).updated,1);
+  assert.deepEqual(synced(task.id),[`task:${blocker.id}`,`task:${byRef(3).id}`].sort());
+  assert.deepEqual(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.local.blockedBy!.map((b)=>b.externalId),
+    ["acme/demo#2","acme/demo#3"]);
+});
+test("a refresh read without the relation fields keeps the task's dependencies and parent",async()=>{
+  const {src,tasks,task,byRef}=await setupRelated();
+  const parent=candidate(9).ref;
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2),parent},candidate(2),candidate(3)])).updated,1);
+  assert.equal((await refresh(src,tasks,[{...candidate(),title:"Renamed upstream",relationsUnknown:true},candidate(2),candidate(3)])).updated,1);
+  assert.equal(getTask(task.id)!.title,"Renamed upstream");
+  assert.deepEqual(synced(task.id),[`task:${byRef(2).id}`]);
+  assert.ok(sameSourceRef(getTask(task.id)!.sourceParent,parent));
+  assert.deepEqual(getSourceSync(task.id)!.baseline!.blockedBy!.map((b)=>b.externalId),["acme/demo#2"]);
 });
 test("Use source on a dependencies conflict that would close a cycle is refused and changes nothing",async()=>{
   const {src,tasks,task,byRef}=await setupRelated();

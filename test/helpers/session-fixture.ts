@@ -67,6 +67,7 @@ export function mkEmuHandle(over: Partial<EmulatorHandle> = {}): EmulatorHandle 
 
 export function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "s1",
     agent: "claude",
     // Pane-backed, which is what every fixture here describes: it carries a tmux handle and
@@ -155,6 +156,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     model: null,
     effort: null,
     advisorModel: null,
+    personaId: null,
     source: null,
     sourceParent: null,
     pipelineRun: null,

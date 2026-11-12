@@ -13,6 +13,7 @@ import {
   newestSessionRun,
   sessionCanBindWorkflow,
   workflowBindChipTitle,
+  workflowCompletionStall,
 } from "../../lib/held.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
@@ -23,6 +24,7 @@ import { SessionWorkflowsPane } from "../SessionWorkflowsPane.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
+import { SessionBlockerBand } from "../SessionBlockerBand.tsx";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import {
@@ -151,30 +153,43 @@ export function intentRefreshStamp(goal: Session["goal"]): string {
   ].join(":");
 }
 
-/** Load the full completion contract only for the drawer that can render it. */
+/**
+ * Load the full completion contract only for the drawer that can render it. The setter lets
+ * a write that answers with the full record (accepting the objective) show it at once: an
+ * `unclear` verdict accepted with nothing pending moves no revision the stamp reads.
+ */
 function useIntent(
   sessionId: string,
   refreshStamp: string,
   open: boolean,
-): SessionGoal | null {
+): [SessionGoal | null, (goal: SessionGoal) => void] {
   const [intent, setIntent] = useState<SessionGoal | null>(null);
+  // Bumped by every fetch and by every record a write hands back. A read applies only while it
+  // is still the newest, so a GET that started before an accept cannot land after it and put
+  // the paused reading back.
+  const generation = useRef(0);
   useEffect(() => {
     if (!open) return;
-    let live = true;
+    const mine = ++generation.current;
+    const current = () => generation.current === mine;
     setIntent(null);
     void api
       .goal(sessionId)
       .then((goal) => {
-        if (live) setIntent(goal);
+        if (current()) setIntent(goal);
       })
       .catch(() => {
-        if (live) setIntent(null);
+        if (current()) setIntent(null);
       });
     return () => {
-      live = false;
+      if (current()) generation.current++;
     };
   }, [sessionId, refreshStamp, open]);
-  return intent;
+  const applyWritten = useCallback((goal: SessionGoal) => {
+    generation.current++;
+    setIntent(goal);
+  }, []);
+  return [intent, applyWritten];
 }
 
 /**
@@ -195,9 +210,16 @@ function useIntent(
 export function ConsoleDetail({
   view,
   session,
+  onBack,
 }: {
   view: SessionViewProps;
   session: Session;
+  /**
+   * The Board's way back, drawn at the head's leading edge. Given only when the Board opened
+   * this session with no rail beside it - its column had no card to list - so the rail head's
+   * back button is not on screen to do the job.
+   */
+  onBack?: () => void;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
   useEffect(() => {
@@ -213,6 +235,9 @@ export function ConsoleDetail({
   // gate above read every one. Derived from the same list so the two cannot disagree.
   const workflowRun = newestSessionRun(workflowRuns);
   const workflowBinding = view.workflowBindingBySession?.get(session.id) ?? null;
+  // A Foreman-complete binding whose cycle finished under an unresolved goal: the chip says so
+  // and its click opens the dialog that offers the ways forward.
+  const workflowStall = workflowCompletionStall(session, workflowBinding, workflowRuns);
   /** The guided workflows tour's handle on the binding chip. Inert unless a tour runs. */
   const tourBindChipRef = useTourTargetRef<HTMLButtonElement>("workflows:binding-chip");
   const ensembleLink = session.task?.ensemble ?? null;
@@ -252,7 +277,7 @@ export function ConsoleDetail({
    */
   const conversationView = useSessionConversationView(session.id);
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
-  const intent = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
+  const [intent, setIntent] = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   const timelineReviews = useTimelineReviews(session.id, view.reviews);
   const noteCompanionsOpenAsk = foremanNoteCompanionsOpenAsk({
     dialog: activePaneDialog(session),
@@ -372,6 +397,14 @@ export function ConsoleDetail({
     } finally {
       setInviteBusy(false);
     }
+  }
+
+  /** The drawer's exit from a paused goal. Returns the refusal sentence, or null on success. */
+  async function acceptObjective(): Promise<string | null> {
+    const res = await api.acceptGoal(session.id);
+    if (!res.ok) return `The objective was not accepted: ${res.error.replace(/[.\s]+$/, "")}.`;
+    setIntent(res.goal);
+    return null;
   }
 
   async function withdrawForeman(): Promise<void> {
@@ -525,6 +558,13 @@ export function ConsoleDetail({
         ref={headRef}
         style={kindMark === "tile" ? kindAccentStyle(session.task!.kind) : undefined}
       >
+        {onBack && (
+          <Tooltip label="Back to the board (Esc)">
+            <button className="board-back" aria-label="Back to the board" onClick={onBack}>
+              ‹
+            </button>
+          </Tooltip>
+        )}
         {kindMark === "tile" ? (
           <TaskKindMark kind={session.task!.kind} variant="tile">
             <AgentDot agent={session.agent} />
@@ -606,16 +646,23 @@ export function ConsoleDetail({
         {/* The shared gate: a terminal run releases the offer here
             too, and stands its outcome chip next to it rather than instead of it. */}
         {sessionCanBindWorkflow(workflowRuns) && view.onBindWorkflow && (
-          <Tooltip label={workflowBindChipTitle(workflowBinding)}>
+          <Tooltip label={workflowStall ?? workflowBindChipTitle(workflowBinding)}>
             <button
               ref={tourBindChipRef}
-              className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}
+              className={
+                workflowBinding
+                  ? `workflow-bind-chip armed${workflowStall ? " stalled" : ""}`
+                  : "workflow-bind-chip"
+              }
               onClick={() => view.onBindWorkflow?.(session.id)}
             >
               {workflowBinding
                 ? (
                   <>
-                    <span aria-hidden>⌘ </span>
+                    {/* The stalled chip trades the armed ⌘ for a pause mark, so the state does
+                        not rest on its amber alone. Still `aria-hidden`: the tooltip carries the
+                        stall in words, and the accessible name stays the workflow and version. */}
+                    <span className="wbc-mark" aria-hidden>{workflowStall ? "⏸\uFE0E " : "⌘ "}</span>
                     <span className="wbc-name">{workflowBinding.workflowName}</span>
                     <span className="wbc-version">{` v${workflowBinding.workflowVersion}`}</span>
                   </>
@@ -763,6 +810,7 @@ export function ConsoleDetail({
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
           onWithdraw={() => void withdrawForeman()}
+          onAcceptObjective={acceptObjective}
         />
       )}
 
@@ -861,7 +909,11 @@ export function ConsoleDetail({
                 conversation its height whether or not anything was running, and that
                 described the present at the top of a pane whose present is at the bottom.
                 Nothing may be added back above `.pane-dialog` here without checking the
-                child combinators that select through this container. */}
+                child combinators that select through this container. The blocker band
+                is the one exception: it takes its natural height up to 40% of the pane
+                and scrolls past that (`.detail-conv > .blocker-band`), so long details
+                cannot push the transcript or the reply box out of view. */}
+            <SessionBlockerBand session={session} />
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
             {session.note && !noteCompanionsOpenAsk && (
               <ForemanStrip

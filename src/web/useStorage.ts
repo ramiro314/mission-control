@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DatabaseBackupsConfigPatch } from "@shared/database-backups.ts";
 import type { StorageHealth, StorageView } from "@shared/storage-health.ts";
 import { api, fetchStorage } from "./lib/api.ts";
 
 // Settings > Storage. The live aggregate arrives over SSE as `storage_health`; this hook owns
 // what the event does not carry - the backup config - and the two writes. It reads the route
-// once on open, and again after each write, so the page is right even while the stream is
-// down. That read recomputes on the daemon, which is also what publishes a fresh event.
+// on open, after each write, and whenever any window saves the config (`storage_config_changed`),
+// so the page is right even while the stream is down. That read recomputes on the daemon,
+// which is also what publishes a fresh event.
 //
 // Both sources carry the same aggregate, so the page shows whichever ARRIVED last. Preferring
 // the stream whenever it had a value hid the re-read after a write while the stream was down,
@@ -40,7 +41,10 @@ function failure(result: { error?: string; message?: string }): string {
  * delivers a new value, so neither a stale stream value nor an old route read can outrank a
  * newer answer from the other.
  */
-export function useStorage(live: StorageHealth | null): StorageState & StorageActions {
+export function useStorage(
+  live: StorageHealth | null,
+  configRevision = 0,
+): StorageState & StorageActions {
   const [view, setView] = useState<StorageView | null>(null);
   const [health, setHealth] = useState<StorageHealth | null>(live);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -49,8 +53,13 @@ export function useStorage(live: StorageHealth | null): StorageState & StorageAc
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // Back up now is clickable before the first read lands, so reads can overlap; only the
+  // newest one may write.
+  const reloadSeq = useRef(0);
   const reload = useCallback(async (): Promise<void> => {
+    const seq = ++reloadSeq.current;
     const next = await fetchStorage();
+    if (seq !== reloadSeq.current) return;
     if (next) {
       setView(next);
       setLoadError(null);
@@ -59,9 +68,10 @@ export function useStorage(live: StorageHealth | null): StorageState & StorageAc
     }
   }, []);
 
+  // `configRevision` moves when any window saves the backup config, and on every reconnect.
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, configRevision]);
 
   useEffect(() => {
     if (live) setHealth(live);

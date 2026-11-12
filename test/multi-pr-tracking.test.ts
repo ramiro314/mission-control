@@ -735,7 +735,8 @@ test("the session card's Inspector summary is the shared projection, CI and Code
   }] });
   f.registry.refreshInspections();
 
-  const { codeRabbit, ...summary } = f.registry.getSession(f.id)!.inspector!;
+  const { codeRabbit, stack, ...summary } = f.registry.getSession(f.id)!.inspector!;
+  assert.equal(stack, null, "the card adds the stack standing the shared projection cannot read");
   assert.deepEqual(summary, {
     ci: { headSha: "head-10", required: "failing", inspectorEnabled: false },
     prKey: key,

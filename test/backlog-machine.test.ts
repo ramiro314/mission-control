@@ -53,6 +53,7 @@ let sessionSeq = 0;
 function mkSession(over: Partial<Session> = {}): Session {
   const n = ++sessionSeq;
   return {
+    blocker: null,
     id: `s${n}`,
     agent: "claude",
     name: `agent-${n}`,
@@ -394,6 +395,26 @@ test("a multi-repo task at the head does not block an assignable item behind it"
 
   assert.equal(a.kind, "assign");
   assert.equal(a.kind === "assign" ? a.task.id : "", ordinary.id);
+});
+
+test("a task that names a Persona is never offered for assignment, and is dispatched instead", () => {
+  // The same livelock as a multi-repo task: `TaskManager.assign` refuses a Persona task with
+  // `scope: "task"`, because its Persona rides the launch's standing instructions and a live
+  // process cannot take them on. Offered once, it would be offered every tick.
+  const role = mkTask({ personaId: "persona-reviewer" });
+  const ordinary = mkTask();
+  const free = mkSession();
+  const head = decide({ tasks: [role], sessions: [free], plan: mkPlan([[role.id, []]]) });
+  assert.equal(head.kind, "dispatch");
+  assert.equal(head.kind === "dispatch" ? head.task.id : "", role.id);
+
+  const behind = decide({
+    tasks: [role, ordinary],
+    sessions: [free],
+    plan: mkPlan([[role.id, []], [ordinary.id, []]]),
+  });
+  assert.equal(behind.kind, "assign");
+  assert.equal(behind.kind === "assign" ? behind.task.id : "", ordinary.id);
 });
 
 test("assignment still happens AT the ceiling - it consumes no new session", () => {
@@ -948,4 +969,33 @@ test("a session-scoped refusal parks it, and so does a refusal that will not say
   // so a skew between them is an ordinary upgrade-window state, and the wrong answer to
   // fail toward is the one that loops.
   assert.equal(assignRefusalParksSession(undefined), true);
+});
+
+// Stacked pull requests: a task released to start on its prerequisite's open pull request has
+// to be cut from that pull request's head, so it is never handed to an existing agent - the
+// autopilot dispatches it into a fresh worktree instead of repeating a refused assignment.
+test("a stack-released task is dispatched, never assigned to a free agent", () => {
+  const parent = mkTask({ status: "running", sessionId: "busy" });
+  const stacked = mkTask({
+    backlogRank: 1,
+    dependencies: [{
+      type: "task", taskId: parent.id, title: parent.title, sessionId: null, episodeId: null,
+      agentSessionId: null, branch: null, prUrl: null, selectedAt: 1, satisfiedAt: null,
+      stackReadyAt: 5, stackBaseBranch: "feat/parent", stackBaseSha: "a".repeat(40),
+      stackPrUrl: "https://github.com/acme/repo/pull/7",
+    }],
+  });
+  const free = mkSession();
+  const action = decide({ tasks: [parent, stacked], sessions: [free], plan: mkPlan([[stacked.id, []]]) });
+  assert.notEqual(action.kind, "assign");
+  assert.equal(action.kind, "dispatch");
+  assert.equal("task" in action ? action.task.id : null, stacked.id);
+});
+
+test("a blocked agent is not free for another task until its blocker clears", () => {
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const blocked = mkSession({ blocker });
+  assert.equal(agentIsFree(blocked, [blocked], [], CFG, NOW), false);
+  const cleared = mkSession({ blocker: null });
+  assert.equal(agentIsFree(cleared, [cleared], [], CFG, NOW), true);
 });

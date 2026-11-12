@@ -193,15 +193,16 @@ export interface ClaudeSdkQueryOptions {
   mcpServers?: Record<string, unknown>;
   /**
    * Only `mcpServers` - no user, local, project or plugin MCP configuration. Set for a resident
-   * run, whose set is its snapshot (`--strict-mcp-config`); absent on every other launch.
+   * run, whose set is its snapshot (`--strict-mcp-config`); absent on every other launch,
+   * including a resident whose profile imports all native sources.
    */
   strictMcpConfig?: boolean;
   /**
-   * Launch-scoped flag settings, merged over the operator's. A resident run sets
+   * Launch-scoped flag settings, merged over the operator's. A pinned resident run sets
    * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set; a
    * task's advisor pin sets `advisorModel`. One object carries both when both apply.
    */
-  settings?: { disableClaudeAiConnectors?: boolean; advisorModel?: string };
+  settings?: { disableClaudeAiConnectors?: boolean; advisorModel?: string; autoMemoryDirectory?: string; autoMemoryEnabled?: boolean };
   canUseTool: (
     toolName: string,
     input: Record<string, unknown>,
@@ -272,6 +273,16 @@ export interface ClaudeSdkDeps {
   env(cwd?: string, stateHome?: string): Record<string, string | undefined>;
   /** How long a resident's start waits to confirm its MCP servers. Production uses the default. */
   residentMcpSettleMs?: number;
+  /**
+   * How long an `authentication_failed` frame may wait for the `result` that normally
+   * closes its turn before the driver closes the turn itself. Production uses the default.
+   */
+  authFailureTurnGraceMs?: number;
+  /**
+   * How long authentication recovery waits for the stale subprocess to drain after its
+   * input closes, and again after `return()` asks it to stop. Production uses the default.
+   */
+  authRecoveryDrainMs?: number;
 }
 
 /** A one-shot only needs to consume frames; it drives none of the live query controls. */

@@ -188,10 +188,10 @@ test("valid installed skill links appear without stale symlink warnings", async 
   }
 });
 
-test("all ten pre-installed Mission skills appear despite stale global installation links", async ({ dashboard: page, daemon }) => {
-  // Upstream ships five; the fork ships five more (deflake, docs-only-ci, grill, testing-setup,
+test("all eleven pre-installed Mission skills appear despite stale global installation links", async ({ dashboard: page, daemon }) => {
+  // Upstream ships six; the fork ships five more (deflake, docs-only-ci, grill, testing-setup,
   // tickets), and the catalog's Mission source lists every shipped skill.
-  const names = ["html-plans", "html-report", "phased-plan", "pull-request", "retro", "deflake", "docs-only-ci", "grill", "testing-setup", "tickets"];
+  const names = ["html-plans", "html-report", "mockups", "phased-plan", "pull-request", "retro", "deflake", "docs-only-ci", "grill", "testing-setup", "tickets"];
   for (const global of [".claude/skills", ".agents/skills"]) {
     const root = join(daemon.home, global);
     mkdirSync(root, { recursive: true });

@@ -72,6 +72,14 @@ added with `addColumn`, so a database already stamped 14 gains it on its next op
 where the state is `pending` or `expired` allows one open launch per session, which is what makes
 the row's insert a Resume's claim. Rows are never deleted. It arrived with schema version 14, a
 fork entry created in `migrate()` and not gated by the number.
+`session_blockers` (schema 25) holds one durable [session blocker](sessions.md#blocked-sessions)
+per note key, the same key that carries notes, goals, invites and standing instructions across
+restarts, with the bound `task_id` recorded for reference. It is created in `migrate()`, so a
+schema 24 database gains an empty table on its next open. The Registry loads it at
+construction, moves a row on every note-key rotation, deletes it when the task it was reported
+for reaches a terminal status, and prunes a key no session has held for the goal pruning window.
+`last_held_at` records when a live session was last seen holding the key, so that window counts
+observed absence and a restart does not reset it.
 
 ## Full-database recovery points
 
@@ -81,7 +89,7 @@ backup, retention, validation, failure-handling, and offline-restore procedure.
 
 Backup status appears in **Settings > Storage**: the interval and counts, Back up now, the last
 success and last failure of each kind, the kept copies with their total size, and a Problems list
-that names a failing capture until a capture succeeds, and a worktree return refused for over an
+that names a failing capture until a capture of either kind succeeds, and a worktree return refused for over an
 hour (see [task worktree retention](worktrees-and-checks.md#task-worktree-retention)).
 
 ## Recovering the product database

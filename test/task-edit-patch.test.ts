@@ -5,6 +5,7 @@ import type { Task } from "../src/shared/types.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
   draftFromTask,
+  draftPersonaId,
   draftsEqual,
   taskUpdatePatch,
   type DispatchDraft,
@@ -213,6 +214,7 @@ test("every field on the form reaches the patch", () => {
     // The one change the form can make to a pin is clearing one saved before the advisor
     // moved to Settings -> Harnesses, so it is judged against a task that has one.
     advisorModel: "",
+    personaId: "persona-reviewer",
     workflowId: "workflow-review",
     enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],
@@ -245,6 +247,23 @@ test("every field on the form reaches the patch", () => {
   }
 });
 
+test("a Persona reads back, is cleared with null, and follows every kind the form offers", () => {
+  const t = mkTask({ personaId: "persona-reviewer" });
+  assert.equal(draftFromTask(t).personaId, "persona-reviewer");
+  assert.equal(draftFromTask(mkTask()).personaId, "", "no Persona is the empty option");
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { personaId: "" }), t.intent), { personaId: null });
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { personaId: "persona-other" }), t.intent), { personaId: "persona-other" });
+  // A harness-launched kind keeps it, so a kind change travels alone.
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { kind: "scout" }), t.intent), { kind: "scout" });
+  // A pipeline carries one to its Engineer host, so that move travels alone too.
+  assert.deepEqual(taskUpdatePatch(t, edited(t, { kind: "pipeline" }), t.intent), { kind: "pipeline" });
+  assert.equal(draftPersonaId({ kind: "pipeline", personaId: "persona-reviewer" }), "persona-reviewer");
+  // The one kind that cannot carry a dispatch Persona never sends the draft's value.
+  assert.equal(draftPersonaId({ kind: "resident", personaId: "persona-reviewer" }), null);
+  assert.equal(draftPersonaId({ kind: "chat", personaId: "persona-reviewer" }), "persona-reviewer");
+  assert.equal(draftPersonaId({ kind: "ship", personaId: "" }), null);
+});
+
 test("a working copy is stale exactly when the row's editable fields moved", () => {
   // What the editor consults on reopen. Editable fields only: a task whose status or
   // timestamps changed is still the task the form was written against, and dropping a
@@ -256,4 +275,21 @@ test("a working copy is stale exactly when the row's editable fields moved", () 
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", labels: ["bug"] }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", title: "Renamed" }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", enabled: false }))));
+});
+
+test("converting a non-plan task carries every explicit storage choice", () => {
+  const task = mkTask({ kind: "ship", planPolicy: null });
+  for (const planStorage of ["repository", "local", null] as const) {
+    const draft = edited(task, { kind: "plan", planStorage, workflowId: undefined });
+    assert.deepEqual(taskUpdatePatch(task, draft, task.intent), { kind: "plan", planStorage });
+  }
+  const existingPlan = mkTask({ kind: "plan", planPolicy: { storage: "repository", commitPlanHtml: false } });
+  assert.equal(taskUpdatePatch(existingPlan, draftFromTask(existingPlan), existingPlan.intent), null);
+});
+
+test("plan conversion carries an explicit None even when the ship task also had no workflow", () => {
+  const task = mkTask({ kind: "ship", workflowId: null });
+  assert.deepEqual(taskUpdatePatch(task, edited(task, { kind: "plan", workflowId: null }), task.intent), {
+    kind: "plan", workflowId: null,
+  });
 });

@@ -105,3 +105,34 @@ export function reviewAnswerVerb(review: ReviewItem): string {
       return `${who} answered`;
   }
 }
+
+// ---- naming a pending review on a surface that does not answer it ----
+
+/**
+ * What a surface that only points at a review prints for it: a short kind and one line on what
+ * answering it takes. The Residents drawer's card draws this as a row and opens the review modal
+ * on a click, so the modal stays the one place a resident's review is answered.
+ */
+export function reviewAskSummary(review: ReviewItem): { kind: string; detail: string | null } {
+  const decisions = reviewDecisions(review);
+  switch (review.kind) {
+    case "input": {
+      if (decisions && decisions.length > 1) return { kind: "input", detail: `${decisions.length} questions` };
+      const options = decisions?.[0]?.options.map((option) => option.label) ?? [];
+      if (options.length > 0) return { kind: "input", detail: options.join(" · ") };
+      return { kind: "input", detail: showsBody(review) ? firstLine(review.body) : "Needs a written answer" };
+    }
+    case "plan-decisions": {
+      const n = decisions?.length ?? 0;
+      return { kind: "decisions", detail: `${n} decision${n === 1 ? "" : "s"} to make` };
+    }
+    case "plan":
+      return { kind: "plan", detail: "Plan to approve" };
+    case "diff":
+      return { kind: "diff", detail: "Changes to review" };
+  }
+}
+
+function firstLine(text: string): string | null {
+  return text.split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? null;
+}

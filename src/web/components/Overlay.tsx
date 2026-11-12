@@ -89,6 +89,9 @@ export const OVERLAY_IDS = {
   // Report bug on a dispatch that did not start. A confirm over the board, so the fleet's
   // `k` and `r` must not reach the session behind it while it is up.
   launchFailureReport: "launch-failure-report",
+  // A resident profile's confirmation before it imports all native MCP sources. Opened over the
+  // Residents editor, so the fleet's `k` and `r` must not reach a session behind it.
+  residentMcpAllSources: "resident-mcp-all-sources",
   // Settings > GitHub Inspector's read-only findings for one pull request.
   inspectorFindings: "inspector-findings",
   // Library › Commands: import a Command document (preview, then apply) and export one.
@@ -255,6 +258,7 @@ export function Overlay({
   closable = true,
   onEscape,
   onKeyDown,
+  onDefaultAction,
   surfaceRef,
   children,
 }: {
@@ -282,6 +286,8 @@ export function Overlay({
    * every render.
    */
   onKeyDown?: (e: KeyboardEvent) => void;
+  /** Override activation for actions that require the original trusted keyboard gesture. */
+  onDefaultAction?: (e: KeyboardEvent) => void;
   /** Semantic owner ref for narrow integrations such as the product-tour spotlight. */
   surfaceRef?: (element: HTMLElement | null) => void;
   /**
@@ -294,6 +300,11 @@ export function Overlay({
 }): React.JSX.Element {
   const isTop = useOverlayRegistration(id);
   const backdropPress = useRef(false);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const setPanelRef = useCallback((element: HTMLElement | null) => {
+    panelRef.current = element;
+    surfaceRef?.(element);
+  }, [surfaceRef]);
 
   useEffect(() => {
     if (!isTop) return;
@@ -330,10 +341,38 @@ export function Overlay({
         return;
       }
       onKeyDown?.(e);
+      if (
+        e.defaultPrevented || e.key !== "Enter" || (!e.metaKey && !e.ctrlKey) ||
+        e.altKey || e.shiftKey || e.isComposing
+      ) return;
+      // Consume the chord even if this layer has no action, or its action is disabled.
+      // Never let a covered dialog or the session behind it answer the same keystroke.
+      e.preventDefault();
+      if (e.repeat) return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      // A queue can contain several independent questions. Focus owns its question;
+      // otherwise the first visible question is next. Do not skip a disabled default to
+      // submit a different question. Native form submit buttons already declare a default;
+      // non-form actions opt in with data-dialog-default, independent of their styling.
+      const selector = 'button[data-dialog-default], button[type="submit"]';
+      const focused = document.activeElement?.closest("[data-dialog-action-scope], form");
+      const scope = focused && panel.contains(focused) && focused.querySelector(selector) ? focused : panel;
+      const button = [...scope.querySelectorAll<HTMLButtonElement>(
+        selector,
+      )].find((candidate) =>
+        candidate.closest(".modal-backdrop") === panel.parentElement &&
+        !candidate.closest("[inert]") &&
+        candidate.getClientRects().length > 0 &&
+        getComputedStyle(candidate).visibility !== "hidden",
+      );
+      if (!button || button.matches(":disabled") || button.getAttribute("aria-disabled") === "true") return;
+      if (onDefaultAction) onDefaultAction(e);
+      else button.click();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isTop, closable, onClose, onEscape, onKeyDown]);
+  }, [isTop, closable, onClose, onEscape, onKeyDown, onDefaultAction]);
 
   return (
     <div
@@ -362,7 +401,7 @@ export function Overlay({
       }}
     >
       <Tag
-        ref={surfaceRef}
+        ref={setPanelRef}
         className={className}
         role={role}
         aria-label={ariaLabel}

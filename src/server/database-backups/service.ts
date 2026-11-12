@@ -130,11 +130,6 @@ export interface DatabaseBackupRecord {
   createdAt: string;
 }
 
-interface InFlightCapture {
-  kind: RecordedDatabaseBackupKind;
-  capture: Promise<DatabaseBackupRecord>;
-}
-
 interface OwnedCopy {
   filename: string;
   /** The capture time its filename names, in epoch milliseconds. */
@@ -156,6 +151,7 @@ interface DatabaseBackupServiceOptions {
   onlineBackup?: (source: DatabaseSync, destination: string) => Promise<void>;
   selfContain?: (temporary: string) => void;
   validate?: (temporary: string) => DatabaseBackupValidation;
+  removeFile?: (path: string) => void;
 }
 
 /** The one place a kind meets its filename prefix; the regex and reverse lookup derive from it. */
@@ -181,7 +177,6 @@ function copyTime(stamp: string): number {
   );
 }
 
-const OWNED_TEMPORARY = /^\.database-backup-[a-f0-9]{32}\.tmp(?:-wal|-shm|-journal)?$/;
 /** The files SQLite may leave beside a database, removed with the file they belong to. */
 const SQLITE_SIDECARS = ["-wal", "-shm", "-journal"] as const;
 
@@ -233,6 +228,8 @@ export function scrubWriteOnlySecrets(path: string): void {
   }
 }
 
+const OWNED_TEMPORARY = /^\.database-backup-[a-f0-9]{32}\.tmp(?:-wal|-shm|-journal)?$/;
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -258,10 +255,21 @@ function safeUnlink(path: string): void {
   }
 }
 
-/** Remove a capture's temporary file and every journal file SQLite may have left beside it. */
+/**
+ * Remove a capture's temporary file and every journal file SQLite may have left beside it.
+ * It runs in `finally`, so a removal failure is only logged: throwing would replace the
+ * capture's own error, or fail a capture that has already been published.
+ */
 function removeTemporary(temporary: string): void {
-  safeUnlink(temporary);
-  for (const suffix of SQLITE_SIDECARS) safeUnlink(`${temporary}${suffix}`);
+  for (const path of [temporary, ...SQLITE_SIDECARS.map((suffix) => `${temporary}${suffix}`)]) {
+    try {
+      safeUnlink(path);
+    } catch (error) {
+      console.warn(
+        `[mission-control] database backup temporary ${basename(path)} was not removed: ${errorMessage(error)}`,
+      );
+    }
+  }
 }
 
 /**
@@ -340,7 +348,10 @@ export class DatabaseBackupService {
   private readonly onlineBackup: (source: DatabaseSync, destination: string) => Promise<void>;
   private readonly selfContain: (temporary: string) => void;
   private readonly validate: (temporary: string) => DatabaseBackupValidation;
-  private inFlight: InFlightCapture | null = null;
+  private readonly removeFile: (path: string) => void;
+  private readonly pending = new Map<RecordedDatabaseBackupKind, Promise<DatabaseBackupRecord>>();
+  private queueTail: Promise<unknown> = Promise.resolve();
+  private stopping = false;
   private readonly changeListeners = new Set<() => void>();
 
   constructor(
@@ -355,6 +366,7 @@ export class DatabaseBackupService {
     });
     this.selfContain = options.selfContain ?? useRollbackJournal;
     this.validate = options.validate ?? validateDatabaseBackupForRestore;
+    this.removeFile = options.removeFile ?? safeUnlink;
     for (const [kind, count] of Object.entries(this.retention ?? {})) {
       if (!Number.isSafeInteger(count) || count < 1) {
         throw new RangeError(`Database backup retention for ${kind} must be a positive integer`);
@@ -427,7 +439,6 @@ export class DatabaseBackupService {
     this.validate(capture.temporary);
     renameSync(capture.temporary, capture.path);
     syncFile(this.root);
-    this.pruneCopies();
     const { temporary: _temporary, ...record } = capture;
     return record;
   }
@@ -436,17 +447,26 @@ export class DatabaseBackupService {
    * Remove temporary files and sidecars that an interrupted capture left in the backup root.
    * Call it once at startup, before the first capture: that is the only time no capture of
    * this daemon can be in flight. Published copies and unrelated files are never touched.
+   * One entry that cannot be removed does not stop the sweep: `readdirSync` order is stable,
+   * so stopping would strand every leftover after it on every start.
    */
   removeLeftoverTemporaries(): void {
     this.ensureRoot();
+    const failures: string[] = [];
     for (const filename of readdirSync(this.root)) {
       if (!OWNED_TEMPORARY.test(filename)) continue;
       const path = join(this.root, filename);
-      const stat = lstatSync(path);
-      if (stat.isSymbolicLink() || !stat.isFile()) continue;
-      safeUnlink(path);
+      try {
+        const stat = lstatSync(path);
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
+        this.removeFile(path);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+        failures.push(`${filename}: ${errorMessage(error)}`);
+      }
     }
     syncFile(this.root);
+    if (failures.length > 0) throw new Error(failures.join("; "));
   }
 
   private ownedCopies(): Record<DatabaseBackupKind, OwnedCopy[]> {
@@ -522,8 +542,10 @@ export class DatabaseBackupService {
         .map((copy) => copy.filename);
       for (const filename of expired) {
         const path = join(this.root, filename);
-        safeUnlink(path);
+        // Sidecars first: only the copy itself is listed, so a failure must leave it in place
+        // for the next prune to retry, never an orphaned journal no listing can find.
         for (const suffix of SQLITE_SIDECARS) safeUnlink(`${path}${suffix}`);
+        safeUnlink(path);
       }
     }
     syncFile(this.root);
@@ -553,6 +575,9 @@ export class DatabaseBackupService {
    * every wake, "now" would keep moving and the wait would never end.
    */
   scheduledDue(): boolean {
+    // A scheduled capture queued now would run right after it whatever the manual capture's
+    // outcome, skipping the backoff a failure records, so the next wake decides instead.
+    if (this.pending.has("manual")) return false;
     const now = this.now().getTime();
     const { intervalHours } = storedDatabaseBackupsConfig(this.source);
     const { consecutiveFailures, lastAttemptAt } = this.status().scheduled;
@@ -589,9 +614,8 @@ export class DatabaseBackupService {
 
   private recordSuccess(kind: RecordedDatabaseBackupKind, at: number): void {
     this.updateStatus((status) => {
-      // A manual success proves the capture path works, so it also ends the scheduled streak.
-      const cleared = kind === "manual" ? (["manual", "scheduled"] as const) : [kind];
-      for (const each of cleared) {
+      // Both kinds share one capture path, so any success ends both streaks.
+      for (const each of ["manual", "scheduled"] as const) {
         Object.assign(status[each], { consecutiveFailures: 0, failingSince: null, lastFailure: null });
       }
       status[kind].lastSuccessAt = at;
@@ -638,6 +662,7 @@ export class DatabaseBackupService {
       await this.onlineBackup(this.source, capture.temporary);
       const record = this.publish(capture);
       this.record(() => this.recordSuccess(kind, this.now().getTime()));
+      this.pruneAfterPublish();
       return record;
     } catch (error) {
       const label = kind === "manual" ? "Manual" : "Scheduled";
@@ -653,24 +678,37 @@ export class DatabaseBackupService {
   }
 
   /**
-   * One online capture at a time. A request for the kind already in flight joins it; a request
-   * for the other kind starts once the one in flight settles, so the two never write at once.
+   * One online capture at a time. A request for a kind already running or queued joins it; a
+   * request for the other kind queues behind the last capture, so the two never write at once.
    */
   private captureSingleFlight(kind: RecordedDatabaseBackupKind): Promise<DatabaseBackupRecord> {
-    if (this.inFlight?.kind === kind) return this.inFlight.capture;
-    const previous = this.inFlight?.capture.then(() => undefined, () => undefined);
+    const joined = this.pending.get(kind);
+    if (joined) return joined;
+    if (this.stopping) return Promise.reject(new Error("Database backups are stopping"));
+    const previous = this.queueTail.then(() => undefined, () => undefined);
     const capture = (async () => {
       await previous;
       return this.captureOnline(kind);
     })().finally(() => {
-      if (this.inFlight?.capture === capture) this.inFlight = null;
+      if (this.pending.get(kind) === capture) this.pending.delete(kind);
     });
-    this.inFlight = { kind, capture };
+    this.pending.set(kind, capture);
+    this.queueTail = capture;
     return capture;
   }
 
   captureScheduled(): Promise<DatabaseBackupRecord> {
     return this.captureSingleFlight("scheduled");
+  }
+
+  /**
+   * Refuse new captures and wait for the one in flight and any queued behind it. A Back up now
+   * runs inside an HTTP request, which shutdown only bounds, so without this SQLite could close
+   * under a capture before it published or recorded its outcome.
+   */
+  async stop(): Promise<void> {
+    this.stopping = true;
+    await this.queueTail.then(() => undefined, () => undefined);
   }
 
   /**
@@ -683,15 +721,30 @@ export class DatabaseBackupService {
 
   capturePreMigration(): DatabaseBackupRecord {
     const capture = this.paths("preMigration");
+    let record: DatabaseBackupRecord;
     try {
       this.source.prepare("VACUUM INTO ?").run(capture.temporary);
-      return this.publish(capture);
+      record = this.publish(capture);
     } catch (error) {
       throw new Error(`Pre-migration database backup failed: ${errorMessage(error)}`, {
         cause: error,
       });
     } finally {
       removeTemporary(capture.temporary);
+    }
+    this.pruneAfterPublish();
+    return record;
+  }
+
+  /**
+   * Once a copy is published the capture has succeeded, so a prune failure only warns: it
+   * leaves an extra copy for the next prune, and never fails the capture or blocks a migration.
+   */
+  private pruneAfterPublish(): void {
+    try {
+      this.pruneCopies();
+    } catch (error) {
+      console.warn(`[mission-control] database backup prune failed after capture: ${errorMessage(error)}`);
     }
   }
 }

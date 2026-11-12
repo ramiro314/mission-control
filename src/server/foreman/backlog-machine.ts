@@ -2,9 +2,10 @@ import { isActiveTask } from "@shared/task-status.ts";
 import type { AssignRefusalScope, BacklogPlan, Session, Task } from "@shared/types.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
+import { stackStartEdge } from "@shared/stacking.ts";
 import { cwdAllowlisted, foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
 import { hasPane } from "./queue-machine.ts";
-import { settledIdle } from "@shared/session.ts";
+import { hasBlocker, settledIdle } from "@shared/session.ts";
 import { allowsBacklogAutopilot } from "@shared/task.ts";
 
 // The backlog autopilot's decision core: given the fleet, the backlog and the stored
@@ -215,6 +216,8 @@ export function agentIsFree(
   now: number,
 ): boolean {
   if (reportBucket(s, sessions) !== "idle") return false;
+  // A blocked session is still working its own task; it is not free for another.
+  if (hasBlocker(s)) return false;
   if (!settledIdle(s, now, cfg.settleMs)) return false;
   if (!s.hooksSeen) return false;
   // Only sessions Mission Control created. Note this is the SELECTION side only: the
@@ -251,6 +254,14 @@ function freeAgentFor(
   // Returning null here makes the caller `continue` to the next candidate, and the task is
   // still reachable through the dispatch branch below - which is the only way it can start.
   if (task.extraRepos.length > 0) return null;
+  // The same reasoning for a task released to start on its prerequisite's open pull request:
+  // it has to be CUT from that pull request's head, which only a fresh worktree can be, so
+  // `TaskManager.assign` refuses it with `scope: "task"` and only the dispatch branch can
+  // start it.
+  if (stackStartEdge(task, new Map(tasks.map((candidate) => [candidate.id, candidate])))) return null;
+  // And for a task that names a Persona: it rides the launch's standing instructions, which a
+  // live process cannot take on, so `TaskManager.assign` refuses it and only dispatch starts it.
+  if (task.personaId) return null;
   for (const s of sessions) {
     if (unassignable.has(s.id)) continue;
     // Compared on repoRoot, not cwd - a linked worktree of the task's repo is a

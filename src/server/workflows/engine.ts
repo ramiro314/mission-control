@@ -88,6 +88,7 @@ import {
   type WaitForCiState,
 } from "@shared/wait-for-ci.ts";
 import { mergeConflictResolutionSteps } from "@shared/pr-mergeable.ts";
+import { defaultCommandFailureNote, misfitCommandRepair } from "./command-fit.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
@@ -134,7 +135,15 @@ function providerRetryDelayMs(failures: number): number {
  */
 export const CHECK_CLEANUP_UNRESOLVED_PHASE = WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE;
 
+import type { StackDiffBase } from "../stacking/diff-base.ts";
+
 export interface WorkflowEngineOptions {
+  /**
+   * Stacked pull requests: the verified base a stacked task's review compares against, for
+   * the CodeRabbit merge base. Null for every other binding. Throws when the base could not
+   * be refreshed, which the comparison reports as its error rather than using a stale ref.
+   */
+  stackDiffBase?: (binding: WorkflowBinding) => Promise<StackDiffBase | null>;
   /**
    * The daemon's shared review budget. Injected from `src/server/index.ts` so Persona
    * attempts and context compaction cannot each spend a private ceiling of their own.
@@ -394,7 +403,18 @@ export function checkVerdict(
     const verdict = failingTestsVerdict(summary, failures, total, attemptId);
     if (verdict) return verdict;
   }
-  const tail = tailBounded(outcome.output, WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
+  const coderabbit = outcome.slot === "coderabbit";
+  const fit = { slot: outcome.slot, command: outcome.command, commandSource: outcome.commandSource, runId };
+  // A Command the repository does not provide is a configuration repair, never a code one.
+  // `runCheck` classified it against the argv that ran and its complete output, so a nested
+  // command failing inside a real target stays an ordinary failure. The output tail is
+  // shortened so the procedure, which comes first, always fits.
+  const signal = coderabbit ? null : outcome.misfitSignal ?? null;
+  const misfit = signal ? misfitCommandRepair({ ...fit, signal }) : null;
+  const tail = tailBounded(
+    outcome.output,
+    misfit ? WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput / 2 : WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput,
+  );
   const quote = tail.text.trim() || "The command printed nothing before it failed.";
   const dropped = tail.droppedBytes + outcome.truncatedBytes;
   const reader = outcome.artifacts
@@ -403,18 +423,27 @@ export function checkVerdict(
       `read_workflow_command_output({ runId: ${JSON.stringify(runId)}, attemptId: `
       + `${JSON.stringify(attemptId)}, artifactId: ${JSON.stringify(artifact.id)} })`)
     .join("\n");
-  const rationale = (dropped > 0
+  const output = (dropped > 0
     ? `${quote}\n\n(${dropped} earlier bytes of output omitted.)`
     : quote) + (reader ? `\n\nRetained output:\n${reader}` : "");
+  const rationale = coderabbit
+    ? `${output}\nRead ALL retained findings, including advisory severities, before modifying code. Verify each claim. For false positives, explain your reasoning and request an explicit operator decision through node-disable/recovery controls. Do not clear findings or change the threshold to bypass the gate. Commit repairs and submit a fresh captured head.`
+    : misfit
+    ? `${misfit.guidance}\n\nCommand output:\n${output}`
+    : outcome.commandSource === "default"
+    ? `${output}\n\n${defaultCommandFailureNote(fit)}`
+    : output;
   return normalizePersonaVerdict({
     verdict: "fail",
     summary,
     requestedChanges: [{
-      title: outcome.slot === "coderabbit" ? "Verify all retained CodeRabbit findings and repair valid issues" : `Fix the failing ${outcome.slot} check`,
-      rationale: outcome.slot === "coderabbit" ? `${rationale}\nRead ALL retained findings, including advisory severities, before modifying code. Verify each claim. For false positives, explain your reasoning and request an explicit operator decision through node-disable/recovery controls. Do not clear findings or change the threshold to bypass the gate. Commit repairs and submit a fresh captured head.` : rationale,
+      title: coderabbit
+        ? "Verify all retained CodeRabbit findings and repair valid issues"
+        : misfit?.title ?? `Fix the failing ${outcome.slot} check`,
+      rationale,
       evidence: [{ kind: "check", path: attemptId, quote }],
     }],
-    confidence: outcome.slot === "coderabbit" ? 0.8 : 1,
+    confidence: coderabbit ? 0.8 : 1,
   }, new Set(), new Set(), new Set([attemptId]));
 }
 
@@ -616,6 +645,7 @@ export class WorkflowEngine {
   private readonly unresolvedCheckLease: NonNullable<WorkflowEngineOptions["unresolvedCheckLease"]>;
   private readonly workflowPolicy: () => WorkflowPolicy;
   private readonly workflowCommand: (slot: WorkflowCheckSlot) => WorkflowCommandView | null;
+  private readonly stackDiffBase: NonNullable<WorkflowEngineOptions["stackDiffBase"]>;
   private stopped = true;
   private checkShutdown = new AbortController();
   private pumping = false;
@@ -653,6 +683,7 @@ export class WorkflowEngine {
     this.workflowPolicy = options.workflowPolicy ?? getWorkflowPolicy;
     this.workflowCommand = options.workflowCommand
       ?? ((slot) => this.store.getWorkflowCommand(slot));
+    this.stackDiffBase = options.stackDiffBase ?? (async () => null);
   }
 
   start(): void {
@@ -1771,6 +1802,7 @@ export class WorkflowEngine {
             ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({
               repoRoot: binding.sessionRepoRoot!, headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
               yaml: context.data.evidence.coderabbit!, command: commandView!,
+              stackBase: () => this.stackDiffBase(binding),
             })),
         } : undefined,
         command: commandView,

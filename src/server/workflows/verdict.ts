@@ -1,6 +1,7 @@
 import { workflowFindingReason } from "@shared/workflow-reasons.ts";
 import { z } from "zod";
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
+import { LLM_REPLY_COLLECTION_MAX } from "@shared/llm.ts";
 import {
   EVIDENCE_REF_KINDS,
   PERSONA_FINDING_BASES,
@@ -31,7 +32,7 @@ const RequestedChangeInputSchema = z.object({
   basis: nullAsAbsent(z.enum(PERSONA_FINDING_BASES).optional()),
   title: z.string(),
   rationale: z.string(),
-  evidence: z.array(EvidenceInputSchema).min(1),
+  evidence: z.array(EvidenceInputSchema).min(1).max(LLM_REPLY_COLLECTION_MAX),
   path: nullAsAbsent(z.string().optional()),
   line: nullAsAbsent(z.number().finite().optional()),
 });
@@ -41,14 +42,14 @@ const PersonaVerdictInputSchema = z.discriminatedUnion("verdict", [
     summary: z.string(),
     approvalDetails: z.object({
       reason: z.string(),
-      evidence: z.array(EvidenceInputSchema),
+      evidence: z.array(EvidenceInputSchema).max(LLM_REPLY_COLLECTION_MAX),
     }),
     confidence: z.number().finite(),
   }),
   z.object({
     verdict: z.literal("fail"),
     summary: z.string(),
-    requestedChanges: z.array(RequestedChangeInputSchema).min(1),
+    requestedChanges: z.array(RequestedChangeInputSchema).min(1).max(LLM_REPLY_COLLECTION_MAX),
     confidence: z.number().finite(),
   }),
 ]);

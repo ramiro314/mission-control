@@ -100,6 +100,7 @@ import {
   activeWorkflowOwnsSession,
   advanceFollowupMark,
   decideReviewFollowup,
+  foremanSettleMs,
   followupPrs,
   heldFindingsCount,
   heldSkipReason,
@@ -230,7 +231,7 @@ const TRIAGE_TIMEOUT_MS = Number(process.env.FOREMAN_TRIAGE_TIMEOUT_MS || 30_000
  * (persisted, surfaced in ForemanBar); these are module constants with an env
  * override, following the FOREMAN_REVIEW_TIMEOUT_MS precedent.
  */
-const SETTLE_MS = Number(process.env.FOREMAN_QUEUE_SETTLE_MS || 10_000);
+const SETTLE_MS = foremanSettleMs();
 const PICKUP_TIMEOUT_MS = Number(process.env.FOREMAN_QUEUE_PICKUP_MS || 45_000);
 /** How often the background timer renews the lease (3 misses = expiry). */
 const LEASE_RENEW_MS = 30_000;
@@ -1135,12 +1136,15 @@ export async function runReviewFollowup(
         mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
         workflowOwnsSession: workflowHoldsReviewFollowup(workflowRuns),
         mark: marks.get(pr.prKey) ?? null,
+        // A session only a released run owns is followed through on without CodeRabbit and
+        // stack prompts, whose inject guards still refuse while any run is open.
         cfg: {
           trackReviewComments: cfg.trackReviewFeedback,
           codeRabbitAutoResolve: shipping?.codeRabbitAutoResolve === true && !workflowReleasedFollowupOnly(workflowRuns),
           trackCiFailures: cfg.trackCiFailures,
           ciStrictness: cfg.ciStrictness,
           trackMergeConflicts: cfg.trackMergeConflicts,
+          stackPrompts: !workflowReleasedFollowupOnly(workflowRuns),
           settleMs: SETTLE_MS,
         },
         now,
@@ -1211,6 +1215,7 @@ export async function runReviewFollowup(
           trackCiFailures: freshCfg.trackCiFailures,
           ciStrictness: freshCfg.ciStrictness,
           trackMergeConflicts: freshCfg.trackMergeConflicts,
+          stackPrompts: !workflowReleasedFollowupOnly(freshWorkflowRuns),
           settleMs: SETTLE_MS,
         },
         now: Date.now(),
@@ -1278,7 +1283,7 @@ async function deliverReviewFollowup(
   const prior = marks.get(nudge.prKey) ?? null;
   marks.set(nudge.prKey, nudge.mark);
   try {
-    await client.inject(session.id, nudge.payload, nudge.codeRabbit);
+    await client.inject(session.id, nudge.payload, nudge.codeRabbit, nudge.stack);
   } catch (err) {
     // Only a delivery the daemon POSITIVELY reported as undelivered frees this session: its
     // previous mark is restored so it re-nudges, and it is NOT claimed, so the target loop
