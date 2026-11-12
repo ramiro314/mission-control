@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
  * So a fake that only wrote to stdout would produce a live, idle, correctly-modelled card
  * with a permanently empty conversation. Writing that file is half of what this does.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -893,9 +893,23 @@ function runSession() {
 // Claude's own encoding (every non-alphanumeric to `-`), spelled out here rather than imported
 // from `claudeProjectDir`: this stands in for Claude, so it must not agree with the daemon's
 // helper by construction. Claude's 200-character cut never applies to a fixture's cwd.
-const projectDir = join(homedir(), ".claude", "projects", process.cwd().replace(/[^a-zA-Z0-9]/g, "-"));
+const projectsRoot = join(homedir(), ".claude", "projects");
+const projectDir = join(projectsRoot, process.cwd().replace(/[^a-zA-Z0-9]/g, "-"));
 mkdirSync(projectDir, { recursive: true });
-const transcriptPath = join(projectDir, `${SESSION_ID}.jsonl`);
+/**
+ * A resume run from another worktree of the conversation's repository continues the file IN
+ * PLACE, in the folder the conversation began in, as Claude does: nothing is written under
+ * this cwd's own folder. A History Resume into a pool slot is that case.
+ */
+function resumedElsewhere() {
+  if (RESUME_ID === undefined || existsSync(join(projectDir, `${SESSION_ID}.jsonl`))) return null;
+  for (const dir of existsSync(projectsRoot) ? readdirSync(projectsRoot) : []) {
+    const candidate = join(projectsRoot, dir, `${SESSION_ID}.jsonl`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+const transcriptPath = resumedElsewhere() ?? join(projectDir, `${SESSION_ID}.jsonl`);
 // Created eagerly: `resolveTranscriptPath` returns null for a path that does not exist yet,
 // and the `bound` event that carries it fires as soon as the first frame lands.
 // A resumed CLI appends to the existing native conversation. Preserving that file is also
