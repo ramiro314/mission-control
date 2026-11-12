@@ -25769,8 +25769,12 @@ button.sc-row:focus-visible {
   align-items: center;
   justify-content: center;
 }
+/* Wraps so a narrow repository track moves "Set up testing" to its own line rather than
+   squeezing the name beside it to zero width. */
 .trust-repo {
   justify-content: flex-start;
+  flex-wrap: wrap;
+  row-gap: 4px;
   padding-left: 14px;
   min-width: 0;
 }
@@ -25782,8 +25786,8 @@ button.sc-row:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* "Set up flake-aware testing": a quiet text action after the name, never shrunk so the path
-   ellipsizes first. */
+/* "Set up flake-aware testing": a quiet text action after the name. It never shrinks; when the
+   name and the action do not fit on one line the action wraps below (see `.trust-repo`). */
 .trust-setup {
   flex: none;
   margin-left: auto;
