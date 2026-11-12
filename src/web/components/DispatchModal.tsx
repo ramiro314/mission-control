@@ -454,15 +454,17 @@ function GrillFirstField({
   return (
     <div className={`dispatch-grill-first${className}`}>
       <label className="dispatch-grill-first-control">
-        <input
-          type="checkbox"
-          checked={value === true}
-          disabled={value === undefined}
-          ref={(el) => {
-            if (el) el.indeterminate = !known;
-          }}
-          onChange={(e) => onChange(e.target.checked)}
-        />
+        <Tooltip label="Interview me before this task starts its work">
+          <input
+            type="checkbox"
+            checked={value === true}
+            disabled={value === undefined}
+            ref={(el) => {
+              if (el) el.indeterminate = !known;
+            }}
+            onChange={(e) => onChange(e.target.checked)}
+          />
+        </Tooltip>
         <span className="field-label">Grill me first</span>
       </label>
       <InfoTip about="Grill me first" text={tip} />

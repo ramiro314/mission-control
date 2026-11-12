@@ -173,17 +173,19 @@ function GrillFirstCard({ skills }: { skills: SkillsState }): React.JSX.Element 
           const label = TASK_KIND_INFO[kind].label;
           return (
             <label className="grill-first-kind" key={kind}>
-              <input
-                type="checkbox"
-                checked={chosen.includes(kind)}
-                disabled={!view}
-                aria-label={`Grill me first for ${label} tasks`}
-                onChange={(event) => void update({
-                  grillFirstKinds: event.target.checked
-                    ? GRILL_FIRST_TASK_KINDS.filter((k) => k === kind || chosen.includes(k))
-                    : chosen.filter((k) => k !== kind),
-                })}
-              />
+              <Tooltip label={`Start every new ${label} task with Grill me first`}>
+                <input
+                  type="checkbox"
+                  checked={chosen.includes(kind)}
+                  disabled={!view}
+                  aria-label={`Grill me first for ${label} tasks`}
+                  onChange={(event) => void update({
+                    grillFirstKinds: event.target.checked
+                      ? GRILL_FIRST_TASK_KINDS.filter((k) => k === kind || chosen.includes(k))
+                      : chosen.filter((k) => k !== kind),
+                  })}
+                />
+              </Tooltip>
               <span aria-hidden>{label}</span>
             </label>
           );
