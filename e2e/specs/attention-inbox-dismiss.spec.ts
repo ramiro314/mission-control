@@ -866,7 +866,10 @@ test.describe("a row of agent questions", () => {
     dashboard,
     daemon,
   }) => {
-    test.setTimeout(240_000);
+    // fork: the fork's private-repository CI runners took 2.6 to 4.2 minutes here, against
+    // about 23 s on a workstation (upstream 8000d779d and this fork alike), so 240 s was a coin
+    // toss. The 5,001-question setup dominates; the assertions are unchanged.
+    test.setTimeout(480_000);
     const { beforeOwed, ids } = await askMoreThanOneRequestCarries(dashboard, daemon);
     const writes = trackDismissalWrites(dashboard);
     const inbox = await openInbox(dashboard);
@@ -900,7 +903,10 @@ test.describe("a row of agent questions", () => {
     dashboard,
     daemon,
   }) => {
-    test.setTimeout(240_000);
+    // fork: the fork's private-repository CI runners took 2.6 to 4.2 minutes here, against
+    // about 23 s on a workstation (upstream 8000d779d and this fork alike), so 240 s was a coin
+    // toss. The 5,001-question setup dominates; the assertions are unchanged.
+    test.setTimeout(480_000);
     const { beforeOwed, ids } = await askMoreThanOneRequestCarries(dashboard, daemon);
     const writes = trackDismissalWrites(dashboard);
     // The daemon takes the full request and refuses the one carrying the rest - which question
