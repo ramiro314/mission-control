@@ -39,6 +39,7 @@ import {
   TASK_PRIORITIES,
   hasReviewableDiff,
   isGrillFirstTaskKind,
+  isPlanningTaskKind,
   taskDefaultWorkflowId,
   taskKindAllowsBacklog,
   type GrillFirstTaskKind,
@@ -1549,14 +1550,19 @@ function DispatchModal({
       ),
     [workflowSummaries],
   );
+  // The plan storage this task would hold if saved now, as the daemon resolves it: the form's
+  // pick, else (untouched, `undefined`) the storage a planning task being edited already pinned,
+  // else the global default. `null` is "Use global default", so it never falls back to the pin.
+  const effectivePlanStorage: "repository" | "local" = draft.planStorage
+    ?? (draft.planStorage === undefined && isPlanningTaskKind(editing?.kind)
+      ? editing?.planPolicy?.storage ?? "repository"
+      : null)
+    ?? planStorage
+    ?? "repository";
   // Null while the config is out, as it always was: the rows are not known yet, and arming a
   // built-in the operator may have replaced would gate the launch on Foreman for nothing.
   const defaultWorkflowId = workflowConfig
-    ? taskDefaultWorkflowId(
-      draft.kind,
-      workflowConfig.kindWorkflowDefaults,
-      draft.planStorage ?? editing?.planPolicy?.storage ?? planStorage ?? "repository",
-    )
+    ? taskDefaultWorkflowId(draft.kind, workflowConfig.kindWorkflowDefaults, effectivePlanStorage)
     : null;
   const selectedWorkflowId = draft.workflowId === undefined ? defaultWorkflowId : draft.workflowId;
   const defaultWorkflow = workflowSummaries.find((workflow) => workflow.id === defaultWorkflowId) ?? null;
@@ -1639,7 +1645,10 @@ function DispatchModal({
    * returning hands it back, unless the operator chose an after-work Workflow by hand in
    * between (which clears the stash, so their choice stands). Every other kind arms its row.
    * Moving between two kinds with no diff whose rows agree leaves the choice alone, so a
-   * Workflow picked by hand on chat survives a hop to scout.
+   * Workflow picked by hand on chat survives a hop to scout. Plan arms its row by following
+   * the Dispatch default rather than pinning it: its default depends on plan storage, which
+   * the daemon resolves at save time (upstream #1362), so the row and the local variant are
+   * both read then rather than frozen at the click.
    */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
@@ -1650,7 +1659,7 @@ function DispatchModal({
       return stashed === NO_STASH ? {} : { workflowId: stashed };
     }
     const rows = workflowConfig?.kindWorkflowDefaults ?? {};
-    const storage = draft.planStorage ?? planStorage ?? "repository";
+    const storage = effectivePlanStorage;
     const target = taskDefaultWorkflowId(kind, rows, storage);
     if (
       !hasReviewableDiff(kind)
@@ -1660,6 +1669,7 @@ function DispatchModal({
       return {};
     }
     if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
+    if (kind === "plan") return { workflowId: undefined };
     if (!workflowConfig) provisionalWorkflow.current = { kind, workflowId: target };
     return { workflowId: target };
   }
@@ -1671,7 +1681,7 @@ function DispatchModal({
     if (!workflowConfig || !guess) return;
     provisionalWorkflow.current = null;
     if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
-    const resolved = taskDefaultWorkflowId(guess.kind, workflowConfig.kindWorkflowDefaults, draft.planStorage ?? planStorage ?? "repository");
+    const resolved = taskDefaultWorkflowId(guess.kind, workflowConfig.kindWorkflowDefaults, effectivePlanStorage);
     if (resolved !== guess.workflowId) update({ workflowId: resolved });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when the rows arrive
   }, [workflowConfig]);
@@ -3240,7 +3250,7 @@ function DispatchModal({
                     <select aria-label="Plan storage" className="field-input" value={draft.planStorage ?? "__default"} disabled={planStorage === null}
                       onChange={(event) => {
                         const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
-                        const previousDefault = taskDefaultWorkflowId("plan", workflowConfig?.kindWorkflowDefaults ?? {}, draft.planStorage ?? planStorage ?? "repository");
+                        const previousDefault = taskDefaultWorkflowId("plan", workflowConfig?.kindWorkflowDefaults ?? {}, effectivePlanStorage);
                         const savedDefault = editing?.kind === "plan"
                           && editing.workflowId === taskDefaultWorkflowId("plan", workflowConfig?.kindWorkflowDefaults ?? {}, editing.planPolicy?.storage ?? "repository");
                         update({ planStorage: storage,
