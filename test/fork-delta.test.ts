@@ -142,13 +142,13 @@ test("the attribution line that ends a PR body is not part of its last section",
   const block = (ending: string) =>
     parseForkChanges(`## Fork feature changes\n\n### fork:session-history\n#### Plan docs\nbase: new\nNone.\n\n${ending}`);
   assert.deepEqual(block(attribution), block(""));
-  assert.equal(block(attribution)?.features[0].blocks[0].text, "None.");
+  assert.equal(block(attribution)?.features[0]?.blocks[0]?.text, "None.");
 
   // Only a closing attribution line is dropped: inside a fence, or with text after it, it stays.
   const fenced = parseForkChanges(
     `## Fork feature changes\n\n### fork:session-history\n#### Plan docs\nbase: new\n\`\`\`\n${attribution}\n\`\`\`\n`,
   );
-  assert.equal(fenced?.features[0].blocks[0].text, `\`\`\`\n${attribution}\n\`\`\``);
+  assert.equal(fenced?.features[0]?.blocks[0]?.text, `\`\`\`\n${attribution}\n\`\`\``);
   assert.throws(
     () => parseForkChanges(`## Fork feature changes\n\nnone\n\n${attribution}\n\nmore\n`),
     (error: unknown) => error instanceof ForkDeltaFormatError,
