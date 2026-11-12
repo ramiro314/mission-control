@@ -610,7 +610,10 @@ It slices the plan into tickets (one ticket is one task is one pull request) and
 ticket with what blocks it and what it delivers, and, per ticket, **New task** or **Adopt** one of
 the repository's open backlog tasks. Nothing exists before you submit it, and dismissing it files
 nothing. On submit the agent files each ticket through `create_task` in dependency order, each
-waiting on its blocking tickets. Adopting a backlog task only adds those edges to it; its title,
+waiting on its blocking tickets. A ticket's edge to its shape task is always set to **After
+merge**, so a ticket never [stacks](inspector-and-shipping.md#stacked-pull-requests) on the
+planning pull request; its edges to other tickets follow the Shipping default like any other
+dependency. Adopting a backlog task only adds those edges to it; its title,
 intent, kind and labels stay yours. A ticket task can be `ship` or `bugfix` and carry labels; its
 priority is left for you. Ticket tasks are created switched on, so the backlog autopilot may
 start them once their dependencies release: approving the breakdown is that consent. No task
@@ -878,7 +881,8 @@ prerequisites in one repository, a prerequisite in another repository, or a stac
 depth cap. A stacked task is always **dispatched** into a fresh worktree cut from the
 prerequisite pull request's current head, and opens its pull request against that branch;
 drag-to-assign and Foreman never hand it to an existing agent. Session dependencies without
-a task, plan publications and cross-repository dependencies always wait for merge. See
+a task, plan publications, cross-repository dependencies, and a dependency where either task
+names its own base branch always wait for merge. See
 [Stacked pull requests](inspector-and-shipping.md#stacked-pull-requests) for how the stacked
 pull request is reviewed and released to merge.
 

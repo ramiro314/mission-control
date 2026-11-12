@@ -2997,7 +2997,7 @@ export class TaskManager {
         const followup = session.task ? shapeTicketFollowupForTask(session.task.id) : null;
         if (followup) {
           for (const edge of [
-            this.shapeTicketSourceEdge(followup, existing.get(`task:${followup.sourceTaskId}`), selectedAt),
+            withEdgeMode(this.shapeTicketSourceEdge(followup, existing.get(`task:${followup.sourceTaskId}`), selectedAt), input.mode),
             this.shapeTicketFollowupEdge(followup, session, existing.get(`task:${followup.followupTaskId}`), selectedAt),
           ]) {
             const key = dependencyKey(edge);
@@ -3155,7 +3155,7 @@ export class TaskManager {
     followup: ShapeTicketFollowupRelation,
     previous: TaskDependency | undefined,
     selectedAt: number,
-  ): TaskDependency {
+  ): WorkDependency {
     const source = this.registry.getTask(followup.sourceTaskId) ?? getDurableTask(followup.sourceTaskId);
     if (!source) {
       throw new TaskDependencyError("the shape task this follow-up slices is no longer available");

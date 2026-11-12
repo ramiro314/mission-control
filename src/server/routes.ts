@@ -365,6 +365,7 @@ import {
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { startShapeTicketsFollowup } from "./shape-tickets-followup.ts";
+import { ticketSessionEdge } from "./shape-tickets.ts";
 import { setAffectedTestsCommand, startTestingSetup } from "./testing-setup.ts";
 import { harnessFor, sdkFor, sessionMessages } from "./harness/index.ts";
 import { prepareTerminalResume, recheckManagedResumes, resumeConversation, revokeUnclaimedResumes,
@@ -5534,7 +5535,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (data.dependsOnCurrentSession) {
       const session = registry.findSessionByEnv(data.env, data.sessionId, data.cwd);
       if (!session) return c.json({ error: "no matching active session" }, 404);
-      dependencies.push({ type: "session", sessionId: session.id });
+      dependencies.push(ticketSessionEdge(session.id, session.task ? registry.getTask(session.task.id) : undefined));
     }
     return dependencies;
   }
@@ -5604,7 +5605,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (dependsOnCurrentSession) {
       const session = registry.findSessionByEnv(env, sessionId, cwd);
       if (!session || session.state === "exited") return c.json({ error: "no matching active session" }, 404);
-      dependencies.push({ type: "session", sessionId: session.id });
+      dependencies.push(ticketSessionEdge(session.id, session.task ? registry.getTask(session.task.id) : undefined));
     }
 
     let creationPolicy;
