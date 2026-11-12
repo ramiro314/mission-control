@@ -2954,3 +2954,103 @@ test("a capacity failure with a queued turn keeps the cycle open until that turn
   assert.equal(card?.workCycle?.active, false);
   assert.equal(card?.workCycle?.generation, generation! + 1);
 });
+
+test("a restored session with no task keeps the repository its checkout belongs to", async (t) => {
+  // A History Resume into a pooled worktree launches with a repoRoot and no task. The root
+  // used to live only in memory, so a restart left it null, and a workflow delivery to the
+  // pooled cwd was then refused as `live_not_authorized` by the repository allowlist.
+  const { execFileSync } = await import("node:child_process");
+  const { realpathSync } = await import("node:fs");
+  const main = mkdtempSync(join(tmpdir(), "mission-sdk-repo-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", main, ...args], { stdio: "ignore" });
+  git("init", "-q");
+  git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  const linked = join(mkdtempSync(join(tmpdir(), "mission-sdk-pool-")), "slot");
+  git("worktree", "add", "-q", "--detach", linked);
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  upsertSdkSession({
+    id: "sdk:restore-no-task", agent: "claude", agentSessionId: "resumed-history",
+    cwd: linked, taskId: null, model: null, effort: null, permissionMode: null,
+    status: "suspended", turnInProgress: false,
+  });
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  t.after(() => supervisor.stopAll());
+  supervisor.prepareRestore();
+  assert.equal(
+    registry.snapshot().restoringSessions.find((s) => s.id === "sdk:restore-no-task")?.repoRoot,
+    realpathSync(main),
+  );
+  await supervisor.restore();
+  const restored = registry.getSession("sdk:restore-no-task");
+  assert.equal(restored?.repoRoot, realpathSync(main));
+  // The workflow delivery gate asks exactly this (`deliveryBlock` in workflows/manager.ts):
+  // the pooled cwd is not on the allowlist by itself, so the restored root is what passes it.
+  const { repoAllowlisted } = await import("../src/shared/allowlist.ts");
+  const allowlist = [realpathSync(main)];
+  assert.equal(repoAllowlisted(restored!.cwd, null, allowlist), false, "the pooled cwd alone is refused");
+  assert.equal(repoAllowlisted(restored!.cwd, restored!.repoRoot, allowlist), true, "the restored session is authorized");
+});
+
+test("a restored session with no task outside any git checkout has no repository root", async (t) => {
+  const plain = mkdtempSync(join(tmpdir(), "mission-sdk-plain-"));
+  const rows = [
+    { id: "sdk:restore-no-repo", cwd: plain },
+    { id: "sdk:restore-missing-cwd", cwd: join(plain, "removed-slot") },
+  ];
+  for (const row of rows) {
+    upsertSdkSession({
+      id: row.id, agent: "claude", agentSessionId: `${row.id}-conversation`,
+      cwd: row.cwd, taskId: null, model: null, effort: null, permissionMode: null,
+      status: "suspended", turnInProgress: false,
+    });
+  }
+  const fake = withFakeDriver(async () => fakeHandle());
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  t.after(() => supervisor.stopAll());
+  supervisor.prepareRestore();
+  const restoring = registry.snapshot().restoringSessions;
+  for (const row of rows) {
+    assert.equal(restoring.find((s) => s.id === row.id)?.repoRoot, null, `${row.cwd} is announced without a root`);
+  }
+  await supervisor.restore();
+  for (const row of rows) {
+    assert.equal(registry.getSession(row.id)?.repoRoot, null, `${row.cwd} restores without a root`);
+  }
+});
+
+test("a taskless session that cannot be resumed still names its repository on the way out", async (t) => {
+  const { execFileSync } = await import("node:child_process");
+  const { realpathSync } = await import("node:fs");
+  const main = mkdtempSync(join(tmpdir(), "mission-sdk-repo-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", main, ...args], { stdio: "ignore" });
+  git("init", "-q");
+  git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  const linked = join(mkdtempSync(join(tmpdir(), "mission-sdk-pool-")), "slot");
+  git("worktree", "add", "-q", "--detach", linked);
+  const fake = withFakeDriver(async () => { throw new Error("conversation is gone"); });
+  t.after(fake.restore);
+  upsertSdkSession({
+    id: "sdk:restore-no-task-failed", agent: "claude", agentSessionId: "lost-history",
+    cwd: linked, taskId: null, model: null, effort: null, permissionMode: null,
+    status: "suspended", turnInProgress: false,
+  });
+  const registry = new Registry();
+  const announced: (string | null)[] = [];
+  registry.subscribe((event) => {
+    if (event.type === "session_upsert" && event.session.id === "sdk:restore-no-task-failed") {
+      announced.push(event.session.repoRoot);
+    }
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const supervisor = new SdkSupervisor(registry);
+  await supervisor.restore();
+  assert.ok(announced.length > 0, "the unresumable session is registered before it is evicted");
+  assert.ok(announced.every((root) => root === realpathSync(main)), `announced roots: ${announced.join(", ")}`);
+  t.mock.timers.tick(30_000);
+  await drain();
+});

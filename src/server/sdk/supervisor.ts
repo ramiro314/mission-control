@@ -1,5 +1,6 @@
 import { residentNativeCompactionForTask } from "../residents/launch.ts";
 import { taskHasRepository } from "@shared/task.ts";
+import { mainRepoRoot } from "../util/git.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import { darwinCheckIdentity } from "../../../scripts/darwin-process-identity.mjs";
@@ -137,6 +138,19 @@ function standingInstructionsForResume(noteKey: string): string {
     return "";
   }
   return snapshot.text;
+}
+
+/**
+ * The repository a restored row works in. A task answers for its own sessions, including a
+ * task with no repository. A row with no task - a History Resume, or a session whose task was
+ * detached - recorded its root only in memory at launch, so it is read back from the checkout
+ * the row still names. Returning null here instead would make a restart quietly drop the
+ * session out of every repository allowlist, which is how a workflow's next delivery came to
+ * be refused as `live_not_authorized`.
+ */
+function restoredRepoRoot(row: SdkSessionRow, task: Task | null | undefined): string | null {
+  if (task) return taskHasRepository(task) ? task.repoRoot : null;
+  return mainRepoRoot(row.cwd);
 }
 
 /**
@@ -1393,7 +1407,7 @@ export class SdkSupervisor {
           permissionMode: row.permissionMode,
           gitBranch: task?.branch ?? null,
           gitRoot: task && !taskHasRepository(task) ? null : row.cwd,
-          repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
+          repoRoot: restoredRepoRoot(row, task),
         },
         handle,
         stateHome,
@@ -1496,7 +1510,7 @@ export class SdkSupervisor {
         permissionMode: row.permissionMode,
         gitBranch: task?.branch ?? null,
         gitRoot: task && !taskHasRepository(task) ? null : row.cwd,
-        repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
+        repoRoot: restoredRepoRoot(row, task),
       });
       this.registry.applyDriverEvent(row.id, {
         kind: "exited",
@@ -1516,7 +1530,7 @@ export class SdkSupervisor {
       agent: row.agent,
       name: restoredName(row, task?.title ?? null),
       cwd: row.cwd,
-      repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
+      repoRoot: restoredRepoRoot(row, task),
       taskId: row.taskId,
       taskTitle: task?.title ?? null,
       createdAt: row.createdAt,
