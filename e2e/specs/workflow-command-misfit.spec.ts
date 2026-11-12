@@ -76,7 +76,9 @@ test("a machine-wide default the repository does not provide shows a configurati
     liveEnabled: true,
     checksEnabled: true,
     repoAllowlist: [daemon.repo],
-    defaultWorkflowId: null,
+    // fork (per-task-kind-default-workflows): the machine-wide default is a per-kind row, and
+    // the legacy `defaultWorkflowId` field is refused; an explicit None for ship is the same.
+    kindWorkflowDefaults: { ship: null },
     checkCommands: [],
   }, "PUT");
   // The machine-wide default, written through the route Library › Commands saves with.
@@ -186,7 +188,7 @@ test("the session's configure_workflow_command shows the operator its card, and 
 
   const sessionId = await dispatch(dashboard, daemon);
   await api(daemon, "/api/workflows/config", {
-    liveEnabled: true, checksEnabled: true, repoAllowlist: [daemon.repo], defaultWorkflowId: null, checkCommands: [],
+    liveEnabled: true, checksEnabled: true, repoAllowlist: [daemon.repo], kindWorkflowDefaults: { ship: null }, checkCommands: [], // fork: per-kind rows
   }, "PUT");
   const slot = await api<{ revision: number; maxRuns: number; timeoutMs: number | null;
     onUnavailable: string; onBudgetExhausted: string }>(daemon, "/api/workflow-commands/test");

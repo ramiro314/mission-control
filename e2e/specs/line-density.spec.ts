@@ -469,7 +469,7 @@ test("the See work tour borrows a condensed Line over Disabled, and leaves Disab
 
   // ---- the tour starts, and its first stop has a strip to point at ----
   const palette = dashboard.getByRole("dialog", { name: "Search everything" });
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k"); // fork (linux-support): Ctrl off macOS
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox", { name: "Search everything" }).fill("See the work");
   await palette.getByRole("option", { name: /Start See the work tour, command/ }).click();

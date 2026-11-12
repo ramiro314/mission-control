@@ -36,7 +36,8 @@ test("a check while main's signed build is running offers the newest complete al
   });
   const controller = new UpdateController({
     launchPreflight: async () => {},
-    packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => installed,
+    // fork (linux-support): the signed-update flow is the macOS one, wherever the suite runs.
+    packaged: true, platform: "darwin", arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => installed,
     readSnoozes: () => ({}), writeSnoozes: () => {},
     readAlpha: () => readUpdatePreferences(preferences).alpha,
     writeAlpha: (alpha) => { writeUpdatePreferences(preferences, { alpha }); },

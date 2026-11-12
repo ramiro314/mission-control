@@ -6,6 +6,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { platformKeycap, platformKeycapPattern } from "../fixtures/keycaps.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
 
 /**
@@ -366,13 +367,13 @@ test("the ⌘K palette finds a live resident by name or label and opens its full
   const palette = page.getByRole("dialog").filter({ has: page.getByRole("combobox") }).first();
   const row = page.getByRole("option", { name: `${NAME}, resident` });
 
-  await page.keyboard.press("Meta+K");
+  await page.keyboard.press("ControlOrMeta+K"); // fork (linux-support): Ctrl off macOS
   await page.keyboard.type("DW");
   await expect(row).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(palette).toBeHidden();
 
-  await page.keyboard.press("Meta+K");
+  await page.keyboard.press("ControlOrMeta+K"); // fork (linux-support): Ctrl off macOS
   await page.keyboard.type(NAME);
   await row.click();
   await expect(palette).toBeHidden();
@@ -702,16 +703,17 @@ test("the Keyboard panel refuses ⌥1 as macOS delivers it, and drops a binding 
       key: "¡", code: "Digit1", altKey: true, bubbles: true, cancelable: true,
     }));
   });
-  await expect(panel.locator(".settings-error")).toHaveText("⌥1 is reserved for the resident jump shortcuts.");
+  // fork (linux-support): the keycap is printed in the platform's spelling, Alt+1 off macOS.
+  await expect(panel.locator(".settings-error")).toHaveText(`${platformKeycap("⌥1")} is reserved for the resident jump shortcuts.`);
   await expect(diffRow.getByRole("button", { name: /^Recording/ })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(diffRow.getByRole("button", { name: /^Change shortcut for Open diff \(currently ⇧D\)/ })).toBeVisible();
+  await expect(diffRow.getByRole("button", { name: new RegExp(`^Change shortcut for Open diff \\(currently ${platformKeycapPattern("⇧D")}\\)`) })).toBeVisible();
 
   // A binding an earlier build recorded as the symbol is dropped on read: the action keeps its own key.
   await request(daemon, "/api/ui/config", { keybindings: { diff: "alt+¡" } }, "PUT");
   await page.reload();
   await expect(
-    panel.locator('[data-anchor="keyboard/diff"]').getByRole("button", { name: /^Change shortcut for Open diff \(currently ⇧D\)/ }),
+    panel.locator('[data-anchor="keyboard/diff"]').getByRole("button", { name: new RegExp(`^Change shortcut for Open diff \\(currently ${platformKeycapPattern("⇧D")}\\)`) }),
   ).toBeVisible();
 });
 
@@ -732,7 +734,7 @@ test("opening or pinning from another page lands on Fleet with the keyboard on a
   // The drawer mounts on Fleet with the palette's focus request already set.
   await page.goto(`${daemon.baseURL}/#/settings/display`);
   await expect(drawer).toHaveCount(0);
-  await page.keyboard.press("Meta+K");
+  await page.keyboard.press("ControlOrMeta+K"); // fork (linux-support): Ctrl off macOS
   await page.keyboard.type("Residents drawer or dock");
   await page.getByRole("option", { name: "Open the Residents drawer or dock, command" }).click();
   await expect(page).toHaveURL(/#\/fleet/);
