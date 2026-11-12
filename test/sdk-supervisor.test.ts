@@ -2986,3 +2986,64 @@ test("a restored session with no task keeps the repository its checkout belongs 
   await supervisor.restore();
   assert.equal(registry.getSession("sdk:restore-no-task")?.repoRoot, realpathSync(main));
 });
+
+test("a restored session with no task outside any git checkout has no repository root", async (t) => {
+  const plain = mkdtempSync(join(tmpdir(), "mission-sdk-plain-"));
+  const rows = [
+    { id: "sdk:restore-no-repo", cwd: plain },
+    { id: "sdk:restore-missing-cwd", cwd: join(plain, "removed-slot") },
+  ];
+  for (const row of rows) {
+    upsertSdkSession({
+      id: row.id, agent: "claude", agentSessionId: `${row.id}-conversation`,
+      cwd: row.cwd, taskId: null, model: null, effort: null, permissionMode: null,
+      status: "suspended", turnInProgress: false,
+    });
+  }
+  const fake = withFakeDriver(async () => fakeHandle());
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  t.after(() => supervisor.stopAll());
+  supervisor.prepareRestore();
+  const restoring = registry.snapshot().restoringSessions;
+  for (const row of rows) {
+    assert.equal(restoring.find((s) => s.id === row.id)?.repoRoot, null, `${row.cwd} is announced without a root`);
+  }
+  await supervisor.restore();
+  for (const row of rows) {
+    assert.equal(registry.getSession(row.id)?.repoRoot, null, `${row.cwd} restores without a root`);
+  }
+});
+
+test("a taskless session that cannot be resumed still names its repository on the way out", async (t) => {
+  const { execFileSync } = await import("node:child_process");
+  const { realpathSync } = await import("node:fs");
+  const main = mkdtempSync(join(tmpdir(), "mission-sdk-repo-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", main, ...args], { stdio: "ignore" });
+  git("init", "-q");
+  git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  const linked = join(mkdtempSync(join(tmpdir(), "mission-sdk-pool-")), "slot");
+  git("worktree", "add", "-q", "--detach", linked);
+  const fake = withFakeDriver(async () => { throw new Error("conversation is gone"); });
+  t.after(fake.restore);
+  upsertSdkSession({
+    id: "sdk:restore-no-task-failed", agent: "claude", agentSessionId: "lost-history",
+    cwd: linked, taskId: null, model: null, effort: null, permissionMode: null,
+    status: "suspended", turnInProgress: false,
+  });
+  const registry = new Registry();
+  const announced: (string | null)[] = [];
+  registry.subscribe((event) => {
+    if (event.type === "session_upsert" && event.session.id === "sdk:restore-no-task-failed") {
+      announced.push(event.session.repoRoot);
+    }
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const supervisor = new SdkSupervisor(registry);
+  await supervisor.restore();
+  assert.ok(announced.length > 0, "the unresumable session is registered before it is evicted");
+  assert.ok(announced.every((root) => root === realpathSync(main)), `announced roots: ${announced.join(", ")}`);
+  t.mock.timers.tick(30_000);
+  await drain();
+});
