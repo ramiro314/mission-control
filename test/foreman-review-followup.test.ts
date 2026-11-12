@@ -36,6 +36,7 @@ import type {
   TaskSummary,
 } from "../src/shared/types.ts";
 import type { TerminalHandle } from "../src/shared/terminal.ts";
+import type { StackStanding } from "../src/shared/stacking.ts";
 import { inspectorSummaryOf } from "../src/shared/inspector.ts";
 import { mkInspection } from "./helpers/inspection-fixture.ts";
 import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "../src/shared/workflow.ts";
@@ -1403,6 +1404,41 @@ test("trackMergeConflicts off neither nudges nor escalates a conflict", () => {
   assert.equal(pass(conflictingOn("A"), null, NOW, { cfg }).d.kind, "skip");
   const escalated: FollowupMark = { ...observe(conflictingOn("A")), conflictEscalated: true };
   assert.equal(pass(conflictingOn("A"), escalated, NOW, { cfg }).d.kind, "skip");
+});
+
+test("a pending stack prompt holds the conflict: no conflict nudge and no escalation until it clears", () => {
+  // The restack the stack prompt asks for is what resolves a stacked child's conflict.
+  const stack = (status: "pending" | "sent"): StackStanding => ({
+    state: "restack-needed", parentUrl: "https://github.com/owner/repo/pull/6", parentNumber: 6, brokenReason: null,
+    retargetError: null, prompt: { kind: "restack", tip: "M", status }, actions: [], awaitingReplacement: false,
+    sessionId: "s1", sentActions: [], sessionHasPane: true, parentTaskId: null, label: null, inProgress: false,
+    facts: { prNumber: 7, prUrl: "https://github.com/owner/repo/pull/7", headRefName: "feat/x", parentNumber: 6,
+      parentUrl: "https://github.com/owner/repo/pull/6", parentHeadRefName: "feat/parent", defaultBranch: "main" },
+  });
+  const stacked = (head: string, status: "pending" | "sent", over: Partial<Session> = {}) =>
+    conflictingOn(head, { inspector: inspector({ stack: stack(status) }), ...over });
+  const cfg = { trackReviewComments: true, trackCiFailures: true, trackMergeConflicts: true, stackPrompts: true, settleMs: SETTLE };
+  const capped: FollowupMark = { ...observe(stacked("C", "pending")), conflictHead: "C", conflictNudges: 3, conflictNudgedAt: NOW - MIN };
+  const escalated: FollowupMark = { ...capped, conflictEscalated: true, conflictEscalatedAt: NOW - 2 * MIN };
+
+  // Idle: the stack prompt alone goes out, and the conflict half of the mark is untouched.
+  const idle = pass(stacked("D", "pending"), capped, NOW, { cfg });
+  assert.equal(idle.d.kind, "nudge");
+  if (idle.d.kind !== "nudge") return;
+  assert.ok(idle.d.stack, "the stack prompt, not a conflict nudge");
+  assert.doesNotMatch(idle.d.payload, /merge conflicts with/);
+  assert.equal(idle.mark.conflictNudges, 3);
+  assert.equal(idle.mark.conflictEscalated, false);
+
+  // Busy: escalation types nothing, yet neither the cap nor a due re-send escalates.
+  const busy = { state: "working" } as const;
+  assert.equal(pass(stacked("D", "pending", busy), capped, NOW, { cfg }).d.kind, "skip");
+  assert.equal(pass(stacked("C", "pending", busy), escalated, NOW, { cfg }).d.kind, "skip");
+
+  // Once the prompt is no longer pending, or stack prompts are off, the conflict path is back.
+  assert.equal(pass(stacked("D", "sent", busy), capped, NOW, { cfg }).d.kind, "escalate");
+  const off = { ...cfg, stackPrompts: false };
+  assert.equal(pass(stacked("D", "pending", busy), capped, NOW, { cfg: off }).d.kind, "escalate");
 });
 
 test("an active workflow owns its session's conflict: no nudge and no escalation", () => {

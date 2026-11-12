@@ -561,13 +561,16 @@ function feedbackState(
   const unresolved = read ? read.length > 0 : (pr.inspector?.open ?? 0) > 0;
   const findings = cfg.trackReviewComments && unresolved;
   const cr = pr.inspector?.codeRabbit;
+  const stack = !!cfg.stackPrompts && pr.inspector?.stack?.prompt?.status === "pending";
   return {
     findings,
     ...ciFeedback(pr, cfg),
-    conflicting: !!cfg.trackMergeConflicts && mergeabilityOf(pr) === "conflicting",
+    // Fork (pr-merge-conflict-reactions): a pending stack prompt asks for the merge that
+    // resolves the conflict, so the conflict is neither nudged nor escalated meanwhile.
+    conflicting: !!cfg.trackMergeConflicts && !stack && mergeabilityOf(pr) === "conflicting",
     codeRabbit: !!cfg.codeRabbitAutoResolve && cr?.status === "complete" && cr.pending > 0
       && !!cr.observationId && (cr.freshUntil ?? 0) >= now,
-    stack: !!cfg.stackPrompts && pr.inspector?.stack?.prompt?.status === "pending",
+    stack,
   };
 }
 

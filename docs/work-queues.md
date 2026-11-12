@@ -416,6 +416,10 @@ Foreman **escalates** the conflict to the operator, once per episode, when:
 - the session sits settled-idle for 2 minutes on the head it was nudged about, still
   conflicting, which means the agent parked without pushing a fix.
 
+While a stacked child's catch-up or restack prompt is pending, its conflict is neither nudged
+nor escalated: the merge that prompt asks for is what resolves it
+([Stacked pull requests](inspector-and-shipping.md)).
+
 An escalation types nothing. It is logged, recorded as a Foreman episode, and sent to the
 daemon (`POST /api/pr-conflicts/escalate`), which marks the PR's open conflict episode. The PR
 then shows in [Blocked pull requests](attention-and-alerts.md) as "Foreman's 3 nudges didn't
