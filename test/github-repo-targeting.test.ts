@@ -91,6 +91,11 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
     { fn: "replyToComment", argv: '["api", "--method", "POST", `repos/${owner}/${repo}/pulls/${number}/comments/${commentId}/replies`, "--input", "-"]', how: "explicit", why: "owner and name parsed from the PR URL" },
     { fn: "resolveThread", argv: '["api", "graphql", "-f", `query=${RESOLVE_MUTATION}`, "-F", `threadId=${threadId}`]', how: "node-id", why: "the review thread's global node id, read from that PR's own snapshot" },
     { fn: "mergePr", argv: '["api", "--method", "PUT", `repos/${owner}/${repo}/pulls/${number}/merge`, "--input", "-"]', how: "explicit", why: "owner and name parsed from the PR URL" },
+    { fn: "fetchPrRefs", argv: '["api", "graphql", "-f", `query=${PR_REFS_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`]', how: "explicit", why: "stacking: owner and name parsed from the PR URL" },
+    { fn: "isAncestor", argv: '["api", `repos/${owner}/${repo}/compare/${ancestor}...${head}`, "--jq", ".status"]', how: "explicit", why: "stacking: the stack's repository, from its PR URL or the checkout's primary repository" },
+    { fn: "compareCommits", argv: `["api", \`repos/\${owner}/\${repo}/compare/\${base}...\${head}\`, "--jq", '.status + " " + (.behind_by | tostring)']`, how: "explicit", why: "stacking: as `isAncestor`" },
+    { fn: "mergeBase", argv: '["api", `repos/${owner}/${repo}/compare/${base}...${head}`, "--jq", ".merge_base_commit.sha"]', how: "explicit", why: "stacking: as `isAncestor`" },
+    { fn: "retargetPr", argv: '["api", "--method", "PATCH", `repos/${owner}/${repo}/pulls/${number}`, "--input", "-"]', how: "explicit", why: "stacking: owner and name parsed from the child PR URL" },
   ],
   "src/server/pr.ts": [
     { fn: "queryPr", argv: "prListArgs(branch, repo.repo, search)", how: "resolver", why: "the episode search; `--repo` from `checkoutGitHubRepository`, no gh call when it fails" },
@@ -110,13 +115,12 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
     { fn: "ghAuthStatus", argv: '["auth", "status", "--hostname", "github.com"]', how: "none", why: "authentication probe" },
   ],
   "src/server/task-sources/github-issues.ts": [
-    { fn: "sweep", argv: "ghIssueListArgs(cfg, target.repo)", how: "resolver", why: "`sourceRepository`: Repository, else `checkoutGitHubRepository`" },
+    { fn: "runGhJson", argv: "argsFor(JSON_FIELDS)", how: ["resolver", "url"], why: "the sweep and preflight pass `ghIssueListArgs(..., target.repo, fields)` (`sourceRepository`: Repository, else `checkoutGitHubRepository`); `read` passes `ghLinkedIssueArgs`, `issue view <url>` for the item's own issue URL" },
+    { fn: "runGhJson", argv: "argsFor(BASE_JSON_FIELDS)", how: ["resolver", "url"], why: "the same callers, retried with the base fields on a `gh` older than 2.101" },
     { fn: "preflight", argv: '["auth", "status"]', how: "none", why: "authentication probe" },
-    { fn: "preflight", argv: "ghIssueListArgs({ ...cfg, limit: 1 }, target.repo)", how: "resolver", why: "`sourceRepository`, as the sweep" },
     { fn: "push", argv: "ghIssueCreateArgs(cfg, draft, target.repo)", how: "resolver", why: "`sourceRepository`, and the created URL is checked against it" },
     { fn: "annotate", argv: "ghIssueCommentArgs(ready.cfg, notice)", how: ["explicit", "url", "resolver"], why: "`issueTargetFor`: the item's `owner/repo#n` id, else its URL, else the resolved Repository (`writebackConfig`)" },
     { fn: "resolve", argv: "ghIssueCloseArgs(ready.cfg, notice)", how: ["explicit", "url", "resolver"], why: "`issueTargetFor`, as the comment" },
-    { fn: "read", argv: "args", how: "url", why: "`ghLinkedIssueArgs` builds `issue view <url>` and throws for anything but the item's own issue URL" },
   ],
   "scripts/distribution-input.mjs": [
     { fn: "read", argv: "['api', '--hostname', 'github.com', `repos/${BINARY_REPO}/${endpoint}`]", how: "explicit", why: "`BINARY_REPO`, the canonical repository distribution publishes from" },
@@ -167,6 +171,7 @@ const GH_MENTIONS: Readonly<Record<string, readonly GhMention[]>> = {
     { fn: "runGh", line: 'env: {...executable.env, GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_DEBUG: "", DEBUG: ""},', why: "the located gh's child environment, handed to the same `execFile` that runs it" },
     { fn: "latestRelease", line: "latestRelease: () => latestStableBinary(runGh, options.currentVersion()),", why: "hands `runGh` to `update-binary-release.ts`, whose every call is `api` on `repos/${BINARY_REPO}/...`" },
     { fn: "binaryForCommit", line: "binaryForCommit: (commit) => binaryForCommit(runGh, commit),", why: "hands `runGh` to `update-binary-release.ts`, whose every call is `api` on `repos/${BINARY_REPO}/...`" },
+    { fn: "latestReadyAlpha", line: "latestReadyAlpha: (installedCommit, headCommit) => latestReadyAlpha(runGh, installedCommit, headCommit),", why: "hands `runGh` to `update-binary-release.ts`, whose every call is `api` on `repos/${BINARY_REPO}/...`" },
     { fn: "stage", line: "stateDirectory: options.stateDirectory, gh: gh.path, env: gh.env, log});", why: "hands the located gh to `update-binary-download.ts`, which runs `api` on `repos/${BINARY_REPO}/releases/assets/<id>`" },
   ],
   "scripts/install-bootstrap.sh": [

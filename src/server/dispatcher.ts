@@ -89,7 +89,7 @@ import {
 } from "./agent-subprocess-env.ts";
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
-import { freshRemoteBranchSha, freshRemoteDefaultSha, originConfigured } from "./git/remote-default.ts";
+import { freshRemoteBranchSha, freshRemoteDefaultSha, originConfigured, remoteBranchSha } from "./git/remote-default.ts";
 import { stackPrInstruction } from "./stacking/lineage.ts";
 import { FULL_SHA } from "./workflows/commit-id.ts";
 import {
@@ -2575,6 +2575,11 @@ export async function resolveDispatchBranchBase(repoRoot: string, branch: string
   }
   if (!origin.value) {
     throw new Error(`base branch ${branch} needs an origin remote, and ${repoRoot} has none`);
+  }
+  // Asked before the fetch, whose refusal for a missing branch is git's own wording.
+  const listed = await remoteBranchSha(repoRoot, branch);
+  if (listed.ok && listed.value === null) {
+    throw new Error(`base branch ${branch} does not exist on origin - nothing was provisioned`);
   }
   const fresh = await freshRemoteBranchSha(repoRoot, branch);
   if (!fresh.ok) {
