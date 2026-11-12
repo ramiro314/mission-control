@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
+import { cloneTreeBuildTarget } from "../scripts/build-clone-tree-native.mjs";
 import { nativeBuildTarget } from "../scripts/build-keep-awake-native.mjs";
 import { stateLockBuildTarget } from "../scripts/build-state-lock-native.mjs";
 import {
@@ -15,18 +16,24 @@ import {
 const REPO_ROOT = join(import.meta.dirname, "..");
 const ADDONS = Object.keys(NATIVE_ADDON_SOURCES) as NativeAddon[];
 
-test("darwin builds IOKit Keep Awake and the POSIX state lock", () => {
+test("darwin builds IOKit Keep Awake, the clonefile tree clone and the POSIX state lock", () => {
   assert.deepEqual(nativeAddonSources("keep-awake", "darwin"), ["keep_awake.mm"]);
+  assert.deepEqual(nativeAddonSources("clone-tree", "darwin"), ["clone_tree.cc"]);
   assert.deepEqual(nativeAddonSources("state-lock", "darwin"), ["state_lock.cc"]);
+  assert.deepEqual(cloneTreeBuildTarget("darwin", "arm64"), { kind: "build", arch: "arm64" });
+  assert.deepEqual(cloneTreeBuildTarget("darwin", "x64"), { kind: "build", arch: "x64" });
+  assert.throws(() => cloneTreeBuildTarget("darwin", "riscv64"), /Darwin riscv64/);
 });
 
-test("linux builds the POSIX state lock and still skips Keep Awake", () => {
+test("linux builds the POSIX state lock and still skips Keep Awake and the tree clone", () => {
   assert.deepEqual(nativeAddonSources("state-lock", "linux"), ["state_lock.cc"]);
   assert.throws(
     () => nativeAddonSources("keep-awake", "linux"),
     /keep-awake native addon declares no sources for linux/,
   );
   assert.deepEqual(nativeBuildTarget("linux", "x64"), { kind: "skip", platform: "linux" });
+  // Linux keeps `cp -R --reflink=always`, so the tree clone has nothing to build there.
+  assert.deepEqual(cloneTreeBuildTarget("linux", "x64"), { kind: "skip", platform: "linux" });
 });
 
 test("a platform without its own sources never borrows another platform's", () => {
@@ -37,12 +44,14 @@ test("a platform without its own sources never borrows another platform's", () =
         new RegExp(`${addon} native addon declares no sources for ${platform}`),
       );
     }
-    // The state lock is required, so it refuses; Keep Awake is optional, so it skips.
+    // The state lock is required, so it refuses; Keep Awake and the tree clone are optional,
+    // so they skip.
     assert.throws(
       () => stateLockBuildTarget(platform, "x64"),
       new RegExp(`does not support ${platform} x64`),
     );
     assert.deepEqual(nativeBuildTarget(platform, "x64"), { kind: "skip", platform });
+    assert.deepEqual(cloneTreeBuildTarget(platform, "x64"), { kind: "skip", platform });
   }
 });
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { cp, lstat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { WorktreeClaimSchema, WorktreesConfigPatchSchema, type WorktreeClaim } from "../src/shared/protocol.ts";
@@ -27,6 +27,8 @@ import {
   seedStagingRoot,
   stageSeed,
   wipeSeedPaths,
+  type CloneRequest,
+  type CloneResult,
   type CloneTree,
 } from "../src/server/worktrees/seed.ts";
 import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
@@ -472,6 +474,139 @@ test("copy-on-write is the only copy: the argv clones or refuses, and a refusal 
   assert.equal(unsupported.outcome, "failed");
 });
 
+/** A `cp`-shaped fake that records its argv to `log` and creates its destination. */
+function recordingCp(prefix: string): { cp: string; log: string } {
+  const bin = mkdtempSync(join(tmpdir(), prefix));
+  const cp = join(bin, "cp");
+  const log = join(bin, "argv");
+  writeFileSync(cp, `#!/bin/sh\nprintf '%s\\n' "$@" >> "${log}"\nfor last; do :; done\nmkdir -p "$last"\n`);
+  chmodSync(cp, 0o755);
+  return { cp, log };
+}
+
+/** A clonefile refusal shaped like the addon's: an Error carrying the positive errno. */
+function refusal(code: "ENOTSUP" | "EXDEV"): Error {
+  return Object.assign(new Error(`clonefile failed: ${code}`), { errno: osConstants.errno[code] });
+}
+
+function cloneRequest(source: string, destination: string, overrides: Partial<CloneRequest> = {}): CloneRequest {
+  return { source, destination, signal: new AbortController().signal, timeoutMs: 10_000, ...overrides };
+}
+
+test("on macOS a seed path is one native clone, and a refusal is never retried as cp or a byte copy", async () => {
+  const fake = recordingCp("mission-seed-native-cp-");
+  const source = mkdtempSync(join(tmpdir(), "mission-seed-native-source-"));
+  const destination = join(mkdtempSync(join(tmpdir(), "mission-seed-native-dest-")), "copy");
+  const calls: Array<[string, string]> = [];
+  let answer: () => Promise<void> = async () => {};
+  const clone = copyOnWriteClone({
+    platform: "darwin",
+    cp: fake.cp,
+    loadNativeClone: () => ({
+      clone: (from, to) => {
+        calls.push([from, to]);
+        return answer();
+      },
+    }),
+  });
+
+  assert.deepEqual(await clone(cloneRequest(source, destination)), { outcome: "cloned" });
+  assert.deepEqual(calls, [[source, destination]], "one call for the whole path");
+
+  for (const code of ["ENOTSUP", "EXDEV"] as const) {
+    answer = () => Promise.reject(refusal(code));
+    const refused = await clone(cloneRequest(source, destination));
+    assert.equal(refused.outcome, "failed");
+    assert.match(refused.outcome === "failed" ? refused.reason : "", new RegExp(`clonefile ${code} refused`));
+  }
+  answer = () => {
+    throw new TypeError("clone paths must be non-empty strings without NUL");
+  };
+  const thrown = await clone(cloneRequest(source, destination));
+  assert.equal(thrown.outcome, "failed");
+  assert.equal(existsSync(fake.log), false, "cp never ran: a refusal is no seed, not a cp fallback");
+  assert.equal(existsSync(destination), false, "nothing was copied byte by byte instead");
+});
+
+test("a Stop or the deadline during a native clone is answered only once the uninterruptible call returns", async () => {
+  const source = mkdtempSync(join(tmpdir(), "mission-seed-native-stop-"));
+  const destination = join(mkdtempSync(join(tmpdir(), "mission-seed-native-stop-dest-")), "copy");
+  let open!: () => void;
+  let calls = 0;
+  const clone = copyOnWriteClone({
+    platform: "darwin",
+    loadNativeClone: () => ({
+      clone: () => {
+        calls += 1;
+        return new Promise<void>((resolve) => {
+          open = resolve;
+        });
+      },
+    }),
+  });
+  const settled = (work: Promise<CloneResult>) => {
+    let done = false;
+    void work.then(() => {
+      done = true;
+    });
+    return () => done;
+  };
+
+  const control = new AbortController();
+  const stopping = clone(cloneRequest(source, destination, { signal: control.signal }));
+  control.abort("stopped");
+  const stopped = settled(stopping);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(stopped(), false, "the Stop waits while the call may still be writing into staging");
+  } finally {
+    open();
+  }
+  assert.deepEqual(await stopping, { outcome: "stopped" });
+
+  const late = clone(cloneRequest(source, destination, { timeoutMs: 10 }));
+  const timedOut = settled(late);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(timedOut(), false, "the deadline waits the same way");
+  } finally {
+    open();
+  }
+  assert.deepEqual(await late, { outcome: "timedOut" });
+
+  const aborted = new AbortController();
+  aborted.abort("stopped");
+  assert.deepEqual(await clone(cloneRequest(source, destination, { signal: aborted.signal })), { outcome: "stopped" });
+  assert.deepEqual(await clone(cloneRequest(source, destination, { timeoutMs: 0 })), { outcome: "timedOut" });
+  assert.equal(calls, 2, "a clone that is already stopped or out of time never starts");
+});
+
+test("on macOS without the native clone, a seed falls back to cp -c -R, and the addon is tried once", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const fake = recordingCp("mission-seed-fallback-cp-");
+  const source = mkdtempSync(join(tmpdir(), "mission-seed-fallback-source-"));
+  const holder = mkdtempSync(join(tmpdir(), "mission-seed-fallback-dest-"));
+  let loads = 0;
+  const clone = copyOnWriteClone({
+    platform: "darwin",
+    cp: fake.cp,
+    loadNativeClone: () => {
+      loads += 1;
+      throw new Error("Cannot find module dist/native/clone-tree.node");
+    },
+  });
+  assert.equal(loads, 0, "nothing is loaded before the first clone");
+  assert.deepEqual(await clone(cloneRequest(source, join(holder, "a"))), { outcome: "cloned" });
+  assert.deepEqual(await clone(cloneRequest(source, join(holder, "b"))), { outcome: "cloned" });
+  assert.equal(loads, 1);
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(String(warn.mock.calls[0]!.arguments[0]), /native tree clone unavailable, seeding with cp -c -R: Cannot find module/);
+  assert.deepEqual(readFileSync(fake.log, "utf8").trim().split("\n"), [
+    "-c", "-R", source, join(holder, "a"),
+    "-c", "-R", source, join(holder, "b"),
+  ]);
+});
+
 test("the interrupted wipe removes only paths Git confirms are ignored, and refuses anything else whole", async () => {
   const { clone } = repository("mission-seed-wipe-");
   mkdirSync(join(clone, "deps"), { recursive: true });
@@ -611,6 +746,74 @@ test("with no idle sibling, or where the disk cannot clone, there is no seed and
   assert.equal(slotAt(m, 2).state, "available", "the source went back to the pool");
   assert.deepEqual(readdirSync(seedStagingRoot(m.store.pools()[0]!.poolPath)), []);
   await m.release(result.lease);
+});
+
+test("on macOS a native clone refusal is no seed: the steps run, cp never runs, and staging is removed", async () => {
+  const fixture = repository("mission-seed-native-refused-");
+  const fake = recordingCp("mission-seed-native-refused-cp-");
+  const tried: string[] = [];
+  const cloneTree = copyOnWriteClone({
+    platform: "darwin",
+    cp: fake.cp,
+    loadNativeClone: () => ({
+      clone: async (source) => {
+        tried.push(source);
+        throw refusal("EXDEV");
+      },
+    }),
+  });
+  const m = manager(claimWith(SEED), { cloneTree }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, "native-refused");
+  makeCold(slotAt(m, 1).id);
+  rmrf(join(slotAt(m, 1).path, "deps"));
+  const before = runCount(slotAt(m, 1).path);
+  const result = leased(await acquire(m, fixture.clone, fixture.sha, "native-refused:target"));
+  assert.equal(tried.length, 1, "the first refusal abandons the seed");
+  assert.equal(result.claimWarning, undefined, "an abandoned seed is not a failed claim");
+  assert.equal(runCount(slotAt(m, 1).path), before + 1, "the steps ran instead");
+  assert.equal(readFileSync(join(slotAt(m, 1).path, "deps", "marker"), "utf8"), slotAt(m, 1).path);
+  assert.equal(existsSync(fake.log), false, "no cp, and so no byte copy, after the refusal");
+  assert.deepEqual(readdirSync(seedStagingRoot(m.store.pools()[0]!.poolPath)), []);
+  await m.release(result.lease);
+});
+
+test("a Stop during a native clone keeps staging until the call returns, then records interrupted", async () => {
+  const fixture = repository("mission-seed-native-stop-");
+  let open!: () => void;
+  let cloning = false;
+  const cloneTree = copyOnWriteClone({
+    platform: "darwin",
+    loadNativeClone: () => ({
+      // Like clonefile, it writes the whole tree and returns, whatever happened meanwhile.
+      clone: async (source, destination) => {
+        cloning = true;
+        await new Promise<void>((resolve) => {
+          open = resolve;
+        });
+        await cp(source, destination, { recursive: true, verbatimSymlinks: true });
+      },
+    }),
+  });
+  const m = manager(claimWith(SEED), { cloneTree }, 2);
+  await warmPool(m, fixture.clone, fixture.sha, 2, "native-stop");
+  makeCold(slotAt(m, 1).id);
+  const pending = acquire(m, fixture.clone, fixture.sha, "native-stop:target");
+  await waitFor(() => cloning, "the native clone to start");
+  const running = m.claims.get(slotAt(m, 1).id);
+  assert.ok(running);
+  const staging = seedStagingRoot(m.store.pools()[0]!.poolPath);
+  try {
+    assert.ok(m.stopClaim(slotAt(m, 1).id, running.id));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(readdirSync(staging).length, 1, "staging stays while the clone may still write into it");
+  } finally {
+    open();
+  }
+  const stopped = leased(await pending);
+  assert.match(stopped.claimWarning?.reason ?? "", /dependency seed was stopped/);
+  assert.equal(slotAt(m, 1).depsState, "interrupted");
+  assert.deepEqual(readdirSync(staging), [], "staging is removed once the call returned");
+  await m.release(stopped.lease);
 });
 
 /** Real Git, except that inspecting a listed slot times out on both attempts. */

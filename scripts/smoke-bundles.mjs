@@ -242,6 +242,34 @@ async function smokeNativeKeepAwake() {
 }
 
 /**
+ * The Darwin tree clone loads without cloning anything. A seed would fall back to `cp -c -R`
+ * without it, so a build that should have produced it fails here rather than seeding slowly.
+ */
+async function smokeNativeCloneTree() {
+  if (process.platform !== "darwin") {
+    console.log(`[smoke] native tree clone addon deliberately skipped on ${process.platform}`);
+    return;
+  }
+  const addonPath = resolve("dist/native/clone-tree.node");
+  if (!existsSync(addonPath)) {
+    fail(`the Darwin build is missing ${addonPath}`);
+    return;
+  }
+  let binding;
+  try {
+    binding = createRequire(import.meta.url)(addonPath);
+  } catch (err) {
+    fail(`the native tree clone addon could not load (${err instanceof Error ? err.message : err})`);
+    return;
+  }
+  if (typeof binding?.clone !== "function") {
+    fail("the native tree clone addon does not export a clone function");
+    return;
+  }
+  console.log("[smoke] native tree clone addon loads without cloning anything");
+}
+
+/**
  * Pin the packaged main process to the Foreman artifact. Booting the worker proves the bundle;
  * this check proves Electron actually names it, which is the seam that left the installed app
  * healthy while its scheduler never existed.
@@ -806,6 +834,7 @@ async function smokeDetachedUpdateHelper() {
 
 await smokeDetachedUpdateHelper();
 await smokeNativeKeepAwake();
+await smokeNativeCloneTree();
 await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();

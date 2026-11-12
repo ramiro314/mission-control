@@ -2,8 +2,10 @@ import { spawn } from "node:child_process";
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, matchesGlob } from "node:path";
+import { getSystemErrorName } from "node:util";
 import type { WorktreeClaimSeed } from "@shared/protocol.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
+import { loadNativeCloneTreeBinding, type NativeCloneTreeBinding } from "../clone-tree-native.ts";
 import { processLifetime } from "../platform/process-lifetime.ts";
 import { describeCommandFailure, run } from "../util/exec.ts";
 import { trackOwnWorktreeProcess } from "./own-processes.ts";
@@ -304,8 +306,10 @@ export interface CloneRequest {
 export type CloneTree = (request: CloneRequest) => Promise<CloneResult>;
 
 /**
- * The `cp` argv that clones and only clones: `-c` is clonefile(2) on macOS, and
- * `--reflink=always` refuses rather than falls back on Linux. Null where neither exists.
+ * The `cp` argv for a copy-on-write clone. `--reflink=always` refuses rather than falls back on
+ * Linux. On macOS `-c` asks for clonefile(2) one file at a time, but `cp` falls back to
+ * copyfile(2), a byte copy, for a file it cannot clone: it is only the fallback for a daemon
+ * without the native tree clone. Null where neither exists.
  */
 export function copyOnWriteArgv(platform: NodeJS.Platform, source: string, destination: string): string[] | null {
   if (platform === "darwin") return ["-c", "-R", source, destination];
@@ -314,14 +318,82 @@ export function copyOnWriteArgv(platform: NodeJS.Platform, source: string, desti
 }
 
 /**
- * The production clone: the platform's own `/bin/cp` with its copy-on-write flag, in its own
- * process group. `cp` overrides the pinned path for a test's fake.
+ * The production clone. On macOS it is one clonefile(2) call for the whole path through the
+ * native tree clone, which clones or refuses and never copies bytes; without the addon it falls
+ * back to `cp -c -R`. On Linux it is `cp -R --reflink=always`. `cp` overrides the pinned path for
+ * a test's fake, and `loadNativeClone` the addon, which is loaded on the first clone.
  */
 export function copyOnWriteClone(
-  options: { platform?: NodeJS.Platform; cp?: string } = {},
+  options: { platform?: NodeJS.Platform; cp?: string; loadNativeClone?: () => NativeCloneTreeBinding } = {},
 ): CloneTree {
   const platform = options.platform ?? process.platform;
-  const executable = options.cp ?? FIXED_OS_EXECUTABLES.cp;
+  const cpClone = cpCopyOnWriteClone(platform, options.cp ?? FIXED_OS_EXECUTABLES.cp);
+  if (platform !== "darwin") return cpClone;
+  let native: NativeCloneTreeBinding | null | undefined;
+  return (request) => {
+    if (native === undefined) {
+      try {
+        native = (options.loadNativeClone ?? loadNativeCloneTreeBinding)();
+      } catch (error) {
+        native = null;
+        console.warn(`[worktrees] native tree clone unavailable, seeding with cp -c -R: ${boundedReason(error instanceof Error ? error.message : String(error))}`);
+      }
+    }
+    return native ? nativeClone(native, request) : cpClone(request);
+  };
+}
+
+/**
+ * One clonefile(2) call, run off the event loop by the addon. The syscall cannot be interrupted,
+ * so a Stop or the deadline is answered once it returns: the result is then `stopped` or
+ * `timedOut` whatever the call did, and nothing is still writing into the destination when the
+ * caller removes its staging.
+ */
+function nativeClone(binding: NativeCloneTreeBinding, request: CloneRequest): Promise<CloneResult> {
+  if (request.signal.aborted) return Promise.resolve({ outcome: "stopped" });
+  if (request.timeoutMs <= 0) return Promise.resolve({ outcome: "timedOut" });
+  return new Promise<CloneResult>((resolve) => {
+    let ending: "stopped" | "timedOut" | null = null;
+    const onAbort = (): void => {
+      ending ??= "stopped";
+    };
+    const timer = setTimeout(() => {
+      ending ??= "timedOut";
+    }, request.timeoutMs);
+    request.signal.addEventListener("abort", onAbort, { once: true });
+    const finish = (result: CloneResult): void => {
+      clearTimeout(timer);
+      request.signal.removeEventListener("abort", onAbort);
+      resolve(ending ? { outcome: ending } : result);
+    };
+    let cloning: Promise<void>;
+    try {
+      cloning = binding.clone(request.source, request.destination);
+    } catch (error) {
+      finish({ outcome: "failed", reason: boundedReason(`clonefile: ${error instanceof Error ? error.message : String(error)}`) });
+      return;
+    }
+    Promise.resolve(cloning).then(
+      () => finish({ outcome: "cloned" }),
+      (error: unknown) => finish({ outcome: "failed", reason: cloneRefusal(error) }),
+    );
+  });
+}
+
+/** A clonefile refusal as a reason: its errno name, such as `ENOTSUP` or `EXDEV`, and message. */
+function cloneRefusal(error: unknown): string {
+  const errno = (error as { errno?: unknown } | null)?.errno;
+  let name = "";
+  if (typeof errno === "number" && Number.isInteger(errno) && errno > 0) {
+    try {
+      name = `${getSystemErrorName(-errno)} `;
+    } catch {}
+  }
+  return boundedReason(`clonefile ${name}refused: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+/** `/bin/cp` with the platform's copy-on-write flag, in its own process group. */
+function cpCopyOnWriteClone(platform: NodeJS.Platform, executable: string): CloneTree {
   return (request) => {
     const argv = copyOnWriteArgv(platform, request.source, request.destination);
     if (!argv) return Promise.resolve({ outcome: "failed", reason: `copy-on-write cloning is not supported on ${platform}` });
