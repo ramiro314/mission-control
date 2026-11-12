@@ -51,6 +51,8 @@ const FEATURE_LABEL = "fork:";
 const STATUS_LABEL = "fork-status:";
 const SECTION_HEADING = /^##\s+Fork feature changes\s*$/i;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+/** The line an agent ends a PR body with, which is never part of the section. */
+const ATTRIBUTION = /^\s*(?:🤖\s*)?Generated with \[Claude Code\]\([^)]*\)\s*$/;
 
 /** A "Fork feature changes" section that does not follow the format. */
 export class ForkDeltaFormatError extends Error {
@@ -111,7 +113,14 @@ function findSection(body) {
   }
   const rest = lines.slice(starts[0] + 1);
   const end = rest.findIndex((l) => !l.code && /^#{1,2}\s/.test(l.line));
-  return end === -1 ? rest : rest.slice(0, end);
+  const section = end === -1 ? rest : rest.slice(0, end);
+  // The section is usually the body's last, so the agent attribution line that closes a PR body
+  // lands inside it. Left in, it made "none" unreadable and was appended to the last block's
+  // text, and so to the tracking issue the refresh wrote that block into.
+  let last = section.length;
+  while (last > 0 && !section[last - 1].code && !section[last - 1].line.trim()) last--;
+  if (last > 0 && !section[last - 1].code && ATTRIBUTION.test(section[last - 1].line)) return section.slice(0, last - 1);
+  return section;
 }
 
 /**

@@ -131,6 +131,31 @@ test("parses none, per-feature groups and section blocks, and a body with no sec
   });
 });
 
+test("the attribution line that ends a PR body is not part of its last section", () => {
+  const attribution = "🤖 Generated with [Claude Code](https://claude.com/claude-code)";
+  assert.deepEqual(parseForkChanges(`## Fork feature changes\n\nnone\n\n${attribution}\n`), { none: true, features: [] });
+  assert.deepEqual(parseForkChanges(`## Fork feature changes\r\n\r\nnone\r\n\r\n${attribution}\r\n\r\n`), {
+    none: true,
+    features: [],
+  });
+
+  const block = (ending: string) =>
+    parseForkChanges(`## Fork feature changes\n\n### fork:session-history\n#### Plan docs\nbase: new\nNone.\n\n${ending}`);
+  assert.deepEqual(block(attribution), block(""));
+  assert.equal(block(attribution)?.features[0]?.blocks[0]?.text, "None.");
+
+  // Only the section's closing line is dropped. An attribution line with block text after it, or
+  // inside a fence, is part of the block.
+  const planDocs = (text: string) =>
+    parseForkChanges(`## Fork feature changes\n\n### fork:session-history\n#### Plan docs\nbase: new\n${text}`)?.features[0]
+      ?.blocks[0]?.text;
+  assert.equal(planDocs(`None.\n${attribution}\nmore\n`), `None.\n${attribution}\nmore`);
+  assert.equal(planDocs(`\`\`\`\n${attribution}\n\`\`\`\n`), `\`\`\`\n${attribution}\n\`\`\``);
+  // A fence left open runs to the end of the body, so the body's last line is code even though
+  // nothing follows it: it stays.
+  assert.equal(planDocs(`\`\`\`\n${attribution}`), `\`\`\`\n${attribution}`);
+});
+
 test("a malformed section gets a format error naming what is wrong", () => {
   const cases: [string, RegExp][] = [
     ["", /empty; write "none"/],
