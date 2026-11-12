@@ -192,7 +192,22 @@ test('stable distribution is gated by exactly the CI jobs that also gate main', 
   assert.equal(ci.name, 'CI');
   assert.deepEqual(distribution.on.workflow_run.workflows, [ci.name]);
   assert.deepEqual(ci.on.push, {branches: ['main'], tags: ['v*']});
-  const conditional = Object.entries(ci.jobs).filter(([, job]: [string, any]) => job.if !== undefined);
+  // Fork: these conditions never skip on a tag push. Only pull requests skip for docs or Node 26,
+  // and `changes` never reuses a tree for a tag (test/ci-tree-reuse.test.ts).
+  const gated = "needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.tree_reused != 'true'";
+  const forkConditions: Record<string, string> = {
+    'dependencies-node-26': "github.event_name != 'pull_request'",
+    'build-smoke-node-26': "github.event_name != 'pull_request'",
+    'unit-node-26': "github.event_name != 'pull_request'",
+    gates: gated,
+    'build-smoke-node-24': gated,
+    'unit-node-24': gated,
+    e2e: gated,
+    'flake-report': '${{ !cancelled() }}',
+    'ci-result': 'always()',
+  };
+  const conditional = Object.entries(ci.jobs).filter(([id, job]: [string, any]) =>
+    job.if !== undefined && String(job.if).replace(/\s+/g, ' ').trim() !== forkConditions[id]);
   assert.deepEqual(conditional.map(([id]) => id), ['package'], 'only the developer dmg may opt out of push runs');
   assert.equal(ci.jobs.package.if, "github.event_name == 'workflow_dispatch'",
     'the developer dmg never runs on a push, so its runner cannot cancel or fail the readiness signal');

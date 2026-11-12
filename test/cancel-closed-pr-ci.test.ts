@@ -17,11 +17,11 @@ test("closing a pull request joins its CI run's concurrency group", () => {
   assert.match(ci, /^name: CI$/m);
   assert.match(
     ci,
-    /^concurrency:\n {2}group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.ref != 'refs\/heads\/main' \}\}$/m,
+    /^concurrency:\n {2}group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.event_name \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.ref != 'refs\/heads\/main' \}\}$/m,
   );
   assert.match(cancel, /^ {4}types: \[closed\]$/m);
   assert.match(
     cancel,
-    /^concurrency:\n {2}group: ci-CI-refs\/pull\/\$\{\{ github\.event\.pull_request\.number \}\}\/merge\n {2}cancel-in-progress: true$/m,
+    /^concurrency:\n {2}group: ci-CI-pull_request-refs\/pull\/\$\{\{ github\.event\.pull_request\.number \}\}\/merge\n {2}cancel-in-progress: true$/m,
   );
 });
