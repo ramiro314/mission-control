@@ -14,7 +14,7 @@ import { samePlanPublicationContext, type PlanPublicationContext } from "@shared
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
-import { agentActive, reportBucket, settledIdle } from "@shared/session.ts";
+import { agentActive, hasBlocker, reportBucket, settledIdle } from "@shared/session.ts";
 import { taskRepoStatuses, type TaskRepoRef } from "@shared/task-repos.ts";
 import type {
   CreateWorkflow,
@@ -238,6 +238,8 @@ import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
 import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
+import { stackPrInstruction } from "../stacking/lineage.ts";
+import { resolveStackDiffBase } from "../stacking/diff-base.ts";
 import {
   captureSubmissionImages,
   captureSubmissionTextArtifacts,
@@ -719,6 +721,11 @@ export class WorkflowManager {
         },
         onSubmissionSucceeded: (submissionId) =>
           this.enterInspectorGate(submissionId) || Boolean(configuredSucceeded?.(submissionId)),
+        // The CodeRabbit merge base follows the same stacked base as the Persona diff.
+        stackDiffBase: options.engine?.stackDiffBase ?? (async (binding) => {
+          const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+          return session ? resolveStackDiffBase(this.registry, session, binding.repoRoot || null) : null;
+        }),
       },
     );
     this.registry.initializeWorkflowRuns(this.runs());
@@ -3324,6 +3331,7 @@ export class WorkflowManager {
       repoRoot: binding.repoRoot || null,
       baseBranch: bindingBaseBranch(this.registry, binding, session),
       workflowEvidence: versionSupportsWorkflowEvidence(version),
+      stackInstruction: this.stackInstructionFor(session, binding.repoRoot || null),
     });
     const prepared = this.store.prepareDelivery({
       id: randomUUID(),
@@ -4897,6 +4905,18 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
+  /**
+   * Stacked pull requests: what to tell this session about its pull request's base, for the
+   * task it is running, when the packet targets that task's PRIMARY repository. Stacking never
+   * covers a secondary repository, so a per-repository run in one gets no line at all.
+   */
+  private stackInstructionFor(session: Session, repoRoot: string | null): string | null {
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    if (!task?.stackParentTaskId) return null;
+    if (repoRoot && repoRoot !== task.repoRoot) return null;
+    return stackPrInstruction(task, this.registry.workEpisodeForSession(session.id)?.episodeId ?? null);
+  }
+
   private originalGoal(runId: string): string {
     for (const submission of this.store.listSubmissions(runId)) {
       if (submission.mode !== "full_workflow") continue;
@@ -5119,7 +5139,8 @@ export class WorkflowManager {
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : null;
     const eligible = this.automaticEvidencePreparation(binding, latest) && !this.captureLocks.has(binding.noteKey)
       && session && settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)
-      && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you";
+      && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you"
+      && !hasBlocker(session);
     if (!eligible) {
       if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({ runId, now, settledSince: null })) {
         this.publishRun(runId);
@@ -5595,6 +5616,10 @@ export class WorkflowManager {
         && !waitForCiFollows(version.graph, attempt.nodeId),
       pullRequestPolicy: snapshot.completion.kind === "pull_request"
         || snapshot.requiredSkillId === PULL_REQUEST_SKILL,
+      stackInstruction: snapshot.completion.kind === "pull_request"
+        || snapshot.requiredSkillId === PULL_REQUEST_SKILL
+        ? this.stackInstructionFor(session, binding.repoRoot || null)
+        : null,
     });
     // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
     // is derived from the packet budget, so an action authored through this build cannot
@@ -7925,6 +7950,7 @@ export class WorkflowManager {
     // on you". A session parked on a permission prompt reads as idle and is the last thing
     // that should be handed another round of work.
     if (reportBucket(session, sessions) === "needs-you") return held("session_needs_you");
+    if (hasBlocker(session)) return held("session_blocked");
     if (!latest) return { run, latest: null, withheld: null };
     // An undelivered or uncertain packet means the agent has not been told what to repair.
     // Resuming there would submit the same evidence back into the same review, which is a
@@ -8228,6 +8254,13 @@ export class WorkflowManager {
     // A settled PR handoff is the explicit exception below because unchanged repository
     // evidence proves it needs a fresh Inspector observation, not another submission.
     const probe = await this.probeRepository(binding);
+    // The session may have reported a blocker while git ran. Both branches below can move the
+    // run (the unchanged one can hand a PR to the Inspector), so ask again before either does.
+    const current = this.registry.getSession(eligible.session.id);
+    if (current && hasBlocker(current)) {
+      this.recordResumptionWithheld(run, latest, "session_blocked", now);
+      return;
+    }
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);
     if (unchanged === null) return;
     if (unchanged) {

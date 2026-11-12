@@ -14,12 +14,13 @@ import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
+import type { Server } from "node:http";
+import { closeHttpServer, HTTP_CLOSE_GRACE_MS } from "./http-shutdown.ts";
 import type { Context } from "hono";
 import { existsSync, readFileSync } from "node:fs";
-import type { Server } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import { HOST, PORT, residentLaunchWaitMs } from "./config.ts";
+import { HOST, PORT, historyWatch, residentLaunchWaitMs } from "./config.ts";
 import { closeDb, databaseMigratedOnOpen, listTaskWorktreeReturnRefusals, openDb } from "./db.ts";
 import {
   acquireStateOwnership,
@@ -332,7 +333,7 @@ registry.onSessionExit((session) => archives.reserveOnExit(session));
 // History pages as one content-free `history_changed` through the Registry.
 const history = new HistoryService({
   onChanged: () => registry.emitHistoryChanged(),
-  watch: true,
+  watch: historyWatch(),
 });
 // Resume's launch records follow the Registry from here, before any Resume can be made: a
 // resumed agent binds when discovery registers it, and the startup twin waits for the first
@@ -508,6 +509,8 @@ const workflows = new WorkflowManager(registry, personas.store, {
 tasks.registerWorkflowEvidenceEligibility((task) =>
   Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
+// A task's dispatch Persona: creation, editing and launch all read the Library through this.
+tasks.registerPersonaLookup((id) => personas.store.getPersona(id));
 // Resident profiles and the one resident launch path. It creates its tasks through
 // `TaskManager.create` with the resident capability, and the dispatcher asks it for each
 // resident's standing instructions, so both directions are installed here, after both exist.
@@ -727,6 +730,7 @@ const stopBaseBranchMover = startMergedBaseBranchMover({
 });
 const stopInspector = startInspector(registry, {
   workflowGate: (prKey) => workflows.mergeGate(prKey),
+  taskBaseBranch: (prUrl) => registry.prTaskBaseBranch(prUrl),
 });
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 // Whether each live session has been corrected by its human, which is half of whether the
@@ -1134,6 +1138,7 @@ holdIdleConnections(server as Server);
 async function shutdown(): Promise<void> {
   if (shutdownStarted) return;
   shutdownStarted = true;
+  const shutdownStartedAt = Date.now();
   // Before anything tears a session down, so the departures that follow are attributed to the
   // daemon stopping rather than reported as endings with no known reason.
   //
@@ -1144,6 +1149,7 @@ async function shutdown(): Promise<void> {
   noteDaemonShuttingDown();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
+  await databaseBackups.stop();
   stopSettingsBackups();
   stopPoller();
   stopAgentsShadow();
@@ -1222,14 +1228,20 @@ async function shutdown(): Promise<void> {
   // remote flush gets only what is left of it, so an offline exit never waits for a server.
   if (telemetry) await telemetry.stop();
   await stopModelCatalogs;
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
-  });
+  // Ends the open-ended requests (event and transcript streams, review long-polls), then bounds
+  // the rest. An unbounded close held every desktop quit until the shell gave up on this process.
+  // See `http-shutdown.ts`.
+  const { forced } = await closeHttpServer(server as Server);
   // No subsystem or request can reach SQLite now. Close it before dropping ownership so a
   // replacement daemon cannot acquire the state home while this process still has an open
   // connection. A crash skips these lines but still closes both descriptors in the kernel.
   closeDb();
   stateOwnership.release();
+  // After the last cleanup step, so the figure is the whole shutdown the shell waited for.
+  console.log(
+    `[mission-control] shutdown finished in ${Date.now() - shutdownStartedAt}ms` +
+      (forced ? ` (requests still open after ${HTTP_CLOSE_GRACE_MS}ms were closed)` : ""),
+  );
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown());

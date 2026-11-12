@@ -1,4 +1,5 @@
 import { runCodeRabbit, type probeCodeRabbit } from "./coderabbit.ts";
+import { commandMisfitSignal } from "./command-fit.ts";
 import { WORKFLOW_COMMAND_INTERPRETERS, type CodeRabbitComparison, type CodeRabbitConfigSnapshot, type CodeRabbitReviewSummary } from "@shared/workflow.ts";
 import { resolveRepoPath } from "../repos.ts";
 import {
@@ -469,12 +470,13 @@ export async function runCheck(
     );
   }
   const command = resolved.command;
+  const commandSource = resolved.source;
 
   const blocked = checkBlockedReason(policy, input.cwd, input.repoRoot);
   if (blocked) {
     return input.command?.onUnavailable === "block"
       ? { kind: "action_required", reason: blocked }
-      : outcome(slot, "unavailable", blocked, { command });
+      : outcome(slot, "unavailable", blocked, { command, commandSource });
   }
 
   // A configured command with no repository to run it in cannot be located, and guessing one
@@ -488,7 +490,7 @@ export async function runCheck(
       slot,
       "unavailable",
       reason,
-      { command },
+      { command, commandSource },
     );
   }
 
@@ -496,7 +498,7 @@ export async function runCheck(
   if (!execute) {
     return input.command?.onUnavailable === "block"
       ? { kind: "action_required", reason: CHECK_RUNTIME_UNAVAILABLE_NOTE }
-      : outcome(slot, "unavailable", CHECK_RUNTIME_UNAVAILABLE_NOTE, { command });
+      : outcome(slot, "unavailable", CHECK_RUNTIME_UNAVAILABLE_NOTE, { command, commandSource });
   }
 
   // THE LAST RUNG BEFORE THE SPAWN, and that position is the invariant rather than a
@@ -533,7 +535,7 @@ export async function runCheck(
       "budget_spent",
       `${reason} This gate was skipped rather than running it again. CI still runs it `
       + "against the merge commit.",
-      { command },
+      { command, commandSource },
     );
   }
 
@@ -558,7 +560,7 @@ export async function runCheck(
     reservation?.release?.();
     return input.command?.onUnavailable === "block"
       ? { kind: "action_required", reason: result.note }
-      : outcome(slot, "unavailable", result.note, { command });
+      : outcome(slot, "unavailable", result.note, { command, commandSource });
   }
 
   if (result.kind === "decided") {
@@ -589,6 +591,7 @@ export async function runCheck(
   return result.exitCode === 0
     ? outcome(slot, "passed", checkOutcomeNote(command, ` passed.${waited}`), {
         command,
+        commandSource,
         exitCode: 0,
         output: bounded.text,
         truncatedBytes,
@@ -597,6 +600,9 @@ export async function runCheck(
       })
     : outcome(slot, "failed", checkOutcomeNote(command, ` exited ${result.exitCode}.${waited}`), {
         command,
+        commandSource,
+        // Truncated output came from a command that ran: a launcher's refusal is a few lines.
+        misfitSignal: truncatedBytes > 0 ? null : commandMisfitSignal(command, bounded.text),
         exitCode: result.exitCode,
         output: bounded.text,
         truncatedBytes,

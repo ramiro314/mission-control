@@ -34,6 +34,9 @@ import { scrubSecrets } from "./scrub.ts";
 /** Generous next to `pr.ts`'s 8s: these carry a whole PR's thread history or a review body. */
 const GH_TIMEOUT_MS = 20_000;
 
+/** Full GraphQL connection pages and their validation ceilings share one budget. */
+export const GITHUB_PAGE_SIZE = 100;
+
 export interface GhResult<T> {
   ok: boolean;
   value?: T;
@@ -100,13 +103,22 @@ function fail<T>(what: string, res: RunResult, target?: string): GhResult<T> {
  * Why GitHub refused a review, as far as attributing the refusal goes.
  *
  * - `whole-review`: the refusal says nothing about any one comment in the review - a rate
- *   limit (429, or a 403 naming a secondary rate limit), an auth or SSO refusal (401, or what
- *   `classifyGitHubSsoRefusal` recognizes), a server error (5xx), a head that moved under the
- *   review, and any other status that is not 422. No finding is ever charged for one.
+ *   limit (429, or a 403 naming a secondary rate limit), an auth refusal (401), an organization's
+ *   SAML SSO refusal (what `classifyGitHubSsoRefusal` recognizes, whatever status it carries), a
+ *   server error (5xx), a head that moved under the review, and any other status that is not
+ *   422. No finding is ever charged for one.
  * - `validation`: a 422 on a head that has not moved. GitHub validated the review against
  *   the commit it names and rejected something in it, most often a line it cannot anchor.
  */
 export type ReviewRefusalClass = "whole-review" | "validation";
+
+/**
+ * GitHub's wording when one review comment cannot be anchored: its line, path or position
+ * could not be resolved, or is not in the diff. Other 422s, such as the one-pending-review
+ * limit, are about the review as a whole and say nothing about any draft.
+ */
+const ANCHOR_REFUSAL_RE =
+  /\b(?:line|path|position|start[ _]line)\b[^()\n]*?\b(?:could not be resolved|must be part of the diff|is not part of the diff|is outside the diff|is invalid)/i;
 
 /** gh ends an API error with `(HTTP nnn)`. The last one wins, in case a body quoted another. */
 function httpStatus(stderr: string): number | null {
@@ -119,9 +131,11 @@ function httpStatus(stderr: string): number | null {
  * Classify a review POST GitHub refused. The one place that decides it: the worker's
  * drafts-only path and its retry of a mixed review both ask here, and nothing else does.
  *
- * Reads the status from gh's stderr, the same text the SSO classifier reads. A status it
- * cannot find is `whole-review`, so a change in gh's wording can make the refusal cap
- * engage less often but can never pin a refusal on the wrong finding.
+ * Reads the status from gh's stderr, where gh prints it last, the same text the SSO
+ * classifier reads. A status it cannot find is `whole-review`, so a change in gh's wording can make the refusal cap
+ * engage less often but can never pin a refusal on the wrong finding. The same holds for
+ * the message: a 422 is `validation` only when it names a comment that could not be
+ * anchored (`ANCHOR_REFUSAL_RE`).
  *
  * `headUnmoved` is called only for a 422, and it is the only extra request a refusal costs:
  * GitHub also answers 422 for a review whose `commit_id` is no longer the pull request's
@@ -139,6 +153,7 @@ export async function classifyReviewRefusal(
   const stderr = res.stderr ?? "";
   if (classifyGitHubSsoRefusal(stderr)) return "whole-review";
   if (httpStatus(stderr) !== 422) return "whole-review";
+  if (!ANCHOR_REFUSAL_RE.test(stderr)) return "whole-review";
   return (await headUnmoved()) ? "validation" : "whole-review";
 }
 
@@ -230,6 +245,22 @@ export interface PrSnapshot {
    * lets downstream stages run.
    */
   headRefName: string;
+  /**
+   * The branch the pull request targets, the repository's default branch, and the merge
+   * commit once it merged. Read for stacked pull requests: the merge gate's base checks, the
+   * base-aware review record, and the stack release check. Empty strings / null mean GitHub
+   * did not report one, which every reader treats as unknown. Optional only so hand-built
+   * fixtures stay valid; `fetchPr` always fills them.
+   */
+  baseRefName?: string;
+  /**
+   * The base branch's tip as GitHub reports it for this pull request. Stacked reviews record
+   * it, because a parent rebased under an unchanged child head changes the pull request's
+   * diff without changing either branch name.
+   */
+  baseSha?: string;
+  defaultBranch?: string;
+  mergeCommitSha?: string | null;
   title: string;
   body: string;
   isDraft: boolean;
@@ -261,9 +292,10 @@ export interface PrSnapshot {
   /**
    * CI on the head commit, check by check, keyed to the commit it was read from (which is
    * the head `headSha` names; both come from this one query). Null when GitHub returned no
-   * head commit. Read by the Wait for CI node and the Inspector's flake reading.
+   * head commit. Read by the Wait for CI node and the Inspector's flake reading. Optional so
+   * a hand-built snapshot without it reads as "no head commit".
    */
-  ci: {
+  ci?: {
     headSha: string;
     checkRuns: CiCheckRun[];
     flakeReport: FlakeReport | null;
@@ -339,21 +371,22 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
+      baseRefName baseRefOid mergeCommit{ oid } repository{ defaultBranchRef{ name } }
       commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state contexts(first:100){ totalCount nodes{
         ... on CheckRun{ name status conclusion detailsUrl title summary isRequired(pullRequestNumber:$number) }
         ... on StatusContext{ context state targetUrl description isRequired(pullRequestNumber:$number) }
       } } } } } }
-      reviewThreads(first:100){
+      reviewThreads(first:${GITHUB_PAGE_SIZE}){
         nodes{
           id isResolved path
-          comments(first:100){
+          comments(first:${GITHUB_PAGE_SIZE}){
             nodes{ id url databaseId body createdAt updatedAt author{ __typename login } }
           }
         }
         pageInfo{ hasNextPage endCursor }
       }
-      ${includeCodeRabbitComments ? `comments(first:100){ ${ISSUE_COMMENT_FIELDS} }` : ""}
-      reviews(last:100){
+      ${includeCodeRabbitComments ? `comments(first:${GITHUB_PAGE_SIZE}){ ${ISSUE_COMMENT_FIELDS} }` : ""}
+      reviews(last:${GITHUB_PAGE_SIZE}){
         nodes{ url body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
       }
@@ -364,7 +397,7 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
 const REVIEW_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$before:String!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      reviews(last:100,before:$before){
+      reviews(last:${GITHUB_PAGE_SIZE},before:$before){
         nodes{ url body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
       }
@@ -375,7 +408,7 @@ const REVIEW_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$befo
 const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      reviewThreads(first:100,after:$after){
+      reviewThreads(first:${GITHUB_PAGE_SIZE},after:$after){
         nodes{ id isResolved path comments(first:1){ nodes{ id url databaseId body createdAt updatedAt author{ __typename login } } } }
         pageInfo{ hasNextPage endCursor }
       }
@@ -385,7 +418,7 @@ const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$afte
 
 const ISSUE_COMMENT_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String!){
   repository(owner:$owner,name:$name){ pullRequest(number:$number){
-    comments(first:100,after:$after){ ${ISSUE_COMMENT_FIELDS} }
+    comments(first:${GITHUB_PAGE_SIZE},after:$after){ ${ISSUE_COMMENT_FIELDS} }
   } }
 }`;
 
@@ -488,6 +521,7 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
     state: (pr.state as PrSnapshot["state"]) ?? "CLOSED",
     headSha: typeof pr.headRefOid === "string" ? pr.headRefOid : "",
     headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "",
+    ...refFields(pr),
     title: typeof pr.title === "string" ? pr.title : "",
     body: typeof pr.body === "string" ? pr.body : "",
     isDraft: pr.isDraft === true,
@@ -525,6 +559,196 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
   };
 }
 
+/** The base, default branch and merge commit of one GraphQL pull request node. */
+function refFields(
+  pr: Record<string, unknown>,
+): { baseRefName: string; baseSha: string; defaultBranch: string; mergeCommitSha: string | null } {
+  const mergeCommit = (pr.mergeCommit as { oid?: unknown } | null | undefined)?.oid;
+  const defaultBranch = (
+    (pr.repository as { defaultBranchRef?: { name?: unknown } | null } | null | undefined)?.defaultBranchRef
+  )?.name;
+  return {
+    baseRefName: typeof pr.baseRefName === "string" ? pr.baseRefName : "",
+    baseSha: typeof pr.baseRefOid === "string" ? pr.baseRefOid : "",
+    defaultBranch: typeof defaultBranch === "string" ? defaultBranch : "",
+    mergeCommitSha: typeof mergeCommit === "string" && mergeCommit ? mergeCommit : null,
+  };
+}
+
+/**
+ * The few facts about a pull request that stacking needs, without its threads or reviews.
+ *
+ * Read for a pull request the Inspector does not otherwise poll this instant: a stacked
+ * dispatch revalidating its parent, the release check reading the current parent, and base
+ * correction on adoption. One small GraphQL call each.
+ */
+export interface PrRefs {
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  headSha: string;
+  headRefName: string;
+  baseRefName: string;
+  /** The base branch's tip. Optional only so hand-built fixtures stay valid. */
+  baseSha?: string;
+  defaultBranch: string;
+  mergeCommitSha: string | null;
+}
+
+const PR_REFS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      state isDraft headRefOid headRefName baseRefName baseRefOid mergeCommit{ oid }
+      repository{ defaultBranchRef{ name } }
+    }
+  }
+}`;
+
+export async function fetchPrRefs(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<GhResult<PrRefs>> {
+  const res = await run(
+    ghBin(),
+    ["api", "graphql", "-f", `query=${PR_REFS_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api graphql (pull request refs)", res, `${owner}/${repo}`);
+  try {
+    const json = JSON.parse(res.stdout) as {
+      data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
+      errors?: { message?: string }[];
+    };
+    if (json.errors?.length) return { ok: false, error: `graphql: ${json.errors.map((e) => e.message).join("; ")}` };
+    const pr = json.data?.repository?.pullRequest;
+    if (!pr) return { ok: false, error: "no such pull request" };
+    const state = pr.state;
+    if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED") {
+      return { ok: false, error: "the pull request state was not reported" };
+    }
+    if (typeof pr.headRefOid !== "string" || !pr.headRefOid || typeof pr.isDraft !== "boolean") {
+      return { ok: false, error: "the pull request head was not reported" };
+    }
+    return {
+      ok: true,
+      value: {
+        state,
+        isDraft: pr.isDraft,
+        headSha: pr.headRefOid,
+        headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "",
+        ...refFields(pr),
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: `could not parse gh output: ${String(err)}` };
+  }
+}
+
+/**
+ * Is `ancestor` in `head`'s history? GitHub's compare API answers from the remote, so no
+ * git runs in any worktree: `ahead` or `identical` means yes, `behind` or `diverged` means
+ * no, and anything else (a failed call, a commit GitHub does not know) is unknown.
+ */
+export async function isAncestor(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  ancestor: string,
+  head: string,
+): Promise<GhResult<boolean>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/compare/${ancestor}...${head}`, "--jq", ".status"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (compare)", res, `${owner}/${repo}`);
+  const status = res.stdout.trim();
+  if (status === "ahead" || status === "identical") return { ok: true, value: true };
+  if (status === "behind" || status === "diverged") return { ok: true, value: false };
+  return { ok: false, error: `compare reported an unrecognized status "${status.slice(0, 40)}"` };
+}
+
+/**
+ * How far `head` is from `base`, per GitHub's compare API: whether `base` is in `head`'s
+ * history (`ahead` or `identical`), and how many of `base`'s commits `head` lacks.
+ *
+ * Generic on purpose - a stacked child behind its parent's branch and a pull request behind
+ * its default branch are the same question - so nothing here names a stack. `behindBy` is null
+ * when GitHub did not report a count. A read; no git runs in any worktree.
+ */
+export interface BaseComparison {
+  /** Is `base` in `head`'s history? */
+  contains: boolean;
+  behindBy: number | null;
+}
+
+export async function compareCommits(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+): Promise<GhResult<BaseComparison>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/compare/${base}...${head}`, "--jq", '.status + " " + (.behind_by | tostring)'],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (compare)", res, `${owner}/${repo}`);
+  const [status = "", count = ""] = res.stdout.trim().split(/\s+/);
+  const behindBy = /^\d+$/.test(count) ? Number(count) : null;
+  if (status === "ahead" || status === "identical") return { ok: true, value: { contains: true, behindBy: behindBy ?? 0 } };
+  if (status === "behind" || status === "diverged") return { ok: true, value: { contains: false, behindBy } };
+  return { ok: false, error: `compare reported an unrecognized status "${status.slice(0, 40)}"` };
+}
+
+/**
+ * The merge base of two commits, per GitHub's compare API: the commit a pull request from
+ * `head` onto `base` is diffed from. A read; no git runs in any worktree. An unknown commit
+ * or an answer that is not a commit id is a failure, never a guess.
+ */
+export async function mergeBase(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+): Promise<GhResult<string>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/compare/${base}...${head}`, "--jq", ".merge_base_commit.sha"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (compare merge base)", res, `${owner}/${repo}`);
+  const sha = res.stdout.trim();
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
+    return { ok: false, error: `compare reported no merge base ("${sha.slice(0, 40)}")` };
+  }
+  return { ok: true, value: sha };
+}
+
+/**
+ * Change the branch a pull request targets. Metadata only: it writes no commit and moves no
+ * branch, so it is the one GitHub write stacking makes on its own. REST, in the same `gh api`
+ * style as `mergePr`.
+ */
+export async function retargetPr(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+  base: string,
+): Promise<GhResult<void>> {
+  const res = await run(
+    ghBin(),
+    ["api", "--method", "PATCH", `repos/${owner}/${repo}/pulls/${number}`, "--input", "-"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, input: JSON.stringify({ base }) },
+  );
+  if (res.code !== 0) return fail("gh api (retarget pull request)", res, `${owner}/${repo}`);
+  return { ok: true };
+}
+
 /** A link GitHub reported, or null for anything that is not a non-empty string. */
 function linkOf(raw: unknown): string | null {
   return typeof raw === "string" && raw ? raw : null;
@@ -540,7 +764,7 @@ function threadPageInfo(raw: unknown): ThreadPageInfo {
 
 function issueCommentPage(raw: unknown): IssueCommentPage {
   const parsed = z.object({
-    nodes: z.array(IssueCommentSchema),
+    nodes: z.array(IssueCommentSchema).max(GITHUB_PAGE_SIZE),
     pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
   }).safeParse(raw);
   return parsed.success
@@ -548,19 +772,29 @@ function issueCommentPage(raw: unknown): IssueCommentPage {
     : { comments: [], pageInfo: { hasNextPage: false, endCursor: null }, error: "Incomplete issue-comment connection or identity" };
 }
 
+const ThreadRootCommentSchema = z.object({
+  id: z.string().min(1), url: z.string().url(), body: z.string(), updatedAt: z.string().datetime(),
+  author: z.object({ __typename: z.string().min(1), login: z.string().min(1) }),
+});
 const ThreadConnectionSchema = z.object({
   nodes: z.array(z.object({
     id: z.string().min(1), isResolved: z.boolean(), path: z.string().nullable(),
-    comments: z.object({ nodes: z.tuple([z.object({
-      id: z.string().min(1), url: z.string().url(), body: z.string(), updatedAt: z.string().datetime(),
-      author: z.object({ __typename: z.string().min(1), login: z.string().min(1) }),
-    })]).rest(z.unknown()) }),
-  })),
+    // The first snapshot requests a full page; later pages request only the root.
+    // Later comments may have deleted authors, so only root identity is required.
+    comments: z.object({ nodes: z.array(z.unknown()).min(1).max(GITHUB_PAGE_SIZE)
+      .refine(nodes => ThreadRootCommentSchema.safeParse(nodes[0]).success, "Invalid review-thread root identity") }),
+  })).max(GITHUB_PAGE_SIZE),
   pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
 });
 
 function threadPage(raw: unknown): ThreadPage {
   const connection = (raw ?? {}) as { nodes?: unknown[] };
+  const parsed = ThreadConnectionSchema.safeParse(raw);
+  // Refuse oversized pages before the tolerant history projection copies their entries.
+  // Other malformed pages still retain partial history, with an explicit read error.
+  if (!parsed.success && parsed.error.issues.some(issue => issue.code === "too_big")) {
+    return { threads: [], pageInfo: threadPageInfo(connection), error: "Incomplete review-thread connection or root identity" };
+  }
   const threads = (connection.nodes ?? []).filter(Boolean).map((rawThread) => {
     const thread = rawThread as Record<string, unknown>;
     const comments = ((thread.comments as { nodes?: unknown[] } | undefined)?.nodes ?? []) as unknown[];
@@ -584,7 +818,7 @@ function threadPage(raw: unknown): ThreadPage {
       }),
     } satisfies ThreadSnapshot;
   });
-  return { threads, pageInfo: threadPageInfo(connection), error: ThreadConnectionSchema.safeParse(raw).success ? null : "Incomplete review-thread connection or root identity" };
+  return { threads, pageInfo: threadPageInfo(connection), error: parsed.success ? null : "Incomplete review-thread connection or root identity" };
 }
 
 function toReviewPage(raw: unknown): ReviewPage {
@@ -592,6 +826,9 @@ function toReviewPage(raw: unknown): ReviewPage {
     nodes?: unknown[];
     pageInfo?: { hasPreviousPage?: unknown; startCursor?: unknown };
   };
+  if (Array.isArray(connection.nodes) && connection.nodes.length > GITHUB_PAGE_SIZE) {
+    throw new Error(`Pull request review page exceeds ${GITHUB_PAGE_SIZE} entries`);
+  }
   return {
     reviews: (connection.nodes ?? []).filter(Boolean).map((item) => {
       const review = item as Record<string, unknown>;

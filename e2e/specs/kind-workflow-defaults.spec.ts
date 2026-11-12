@@ -86,7 +86,10 @@ test("each kind's dispatch default is chosen in Settings and preselected at disp
   await kind.selectOption("scout");
   await expect(afterWork).toHaveValue(GENERAL_REVIEW);
   await kind.selectOption("plan");
-  await expect(afterWork).toHaveValue("__none");
+  // Plan follows the Dispatch default rather than pinning its row, because a plan's default
+  // resolves with its storage at save time (upstream #1362). That default is the row: None.
+  await expect(afterWork).toHaveValue("__default");
+  expect(await selectedLabel(afterWork)).toContain("none");
   await expect(dialog.getByText("No handoff")).toBeVisible();
   // Back to the kind the form opened on hands back what it opened with.
   await kind.selectOption("ship");

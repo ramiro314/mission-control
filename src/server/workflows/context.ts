@@ -1,4 +1,4 @@
-import { captureCodeRabbitConfig } from "./coderabbit-config.ts";
+import { captureCodeRabbitConfig, CODERABBIT_YAML } from "./coderabbit-config.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -40,7 +40,8 @@ import {
 // `freezeWorkflowRunIntent` now, and re-exporting the raw derivation beside it would be an
 // invitation to assemble a snapshot by hand again.
 export { workflowIntentFingerprint };
-import { computeSessionDiff } from "../diff.ts";
+import { computeSessionDiff, computeStackedDiff } from "../diff.ts";
+import { resolveStackDiffBase, type StackDiffBase } from "../stacking/diff-base.ts";
 import { injectionFingerprint } from "../injections.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { loadResolvedWorkflowReviews } from "../db.ts";
@@ -865,14 +866,50 @@ function standardsDocuments(
   }));
 }
 
-async function readRepositoryWorkEvidence(cwd: string | null, baseBranch: string | null): Promise<{
+/**
+ * The base a review diff of this checkout uses: the verified stacked base for a stacked task's
+ * primary repository, or undefined for every other run (the default-branch rule). A refresh
+ * that fails throws, so the capture fails with "stacked base could not be refreshed" instead
+ * of reviewing against a stale parent.
+ */
+async function reviewDiffBase(
+  registry: Registry,
+  binding: WorkflowBinding,
+  session: Session,
+): Promise<StackDiffBase | undefined> {
+  return (await resolveStackDiffBase(
+    registry,
+    session,
+    binding.repoRoot || null,
+    undefined,
+    workflowCheckoutPath(binding, session),
+  )) ?? undefined;
+}
+
+async function readRepositoryWorkEvidence(
+  cwd: string | null,
+  baseBranch: string | null,
+  stackBase?: StackDiffBase,
+): Promise<{
   diff: Awaited<ReturnType<typeof computeSessionDiff>>;
   allStatus: string[];
   status: string[];
   statusTruncated: boolean;
   statusFingerprint: string;
 }> {
-  const diff = await computeSessionDiff(cwd, undefined, baseBranch);
+  // A stacked child's diff is read from the repository root with its checkout named
+  // explicitly, so no git runs inside the child's worktree (`computeStackedDiff`). Every other
+  // run keeps the default-branch rule, or the task's own base branch when it names one.
+  const diff = stackBase && cwd
+    ? await computeStackedDiff({
+      repoRoot: stackBase.repoRoot,
+      worktree: cwd,
+      head: stackBase.head,
+      branch: stackBase.headBranch,
+      mergeBase: stackBase.mergeBase,
+      label: stackBase.branch,
+    })
+    : await computeSessionDiff(cwd, undefined, baseBranch);
   if (!diff.ok) {
     throw new Error(`Could not capture repository diff: ${diff.error ?? "unknown error"}`);
   }
@@ -904,6 +941,7 @@ async function readRepositoryEvidence(
   baseBranch: string | null,
   captureCodeRabbit = false,
   reviewSnapshot = false,
+  stackBase?: StackDiffBase,
 ): Promise<{
   diff: Awaited<ReturnType<typeof computeSessionDiff>>;
   allStatus: string[];
@@ -916,7 +954,7 @@ async function readRepositoryEvidence(
   repositoryFingerprint: string;
   coderabbit: ReturnType<typeof captureCodeRabbitConfig> | undefined;
 }> {
-  const work = await readRepositoryWorkEvidence(cwd, baseBranch);
+  const work = await readRepositoryWorkEvidence(cwd, baseBranch, stackBase);
   const { diff, statusFingerprint } = work;
   if (!cwd) throw new Error("Could not capture repository content tree without a checkout");
   const snapshot = reviewSnapshot ? await captureReviewSnapshot(cwd) : null;
@@ -928,10 +966,10 @@ async function readRepositoryEvidence(
     const root = await run("git", ["-C", cwd, "rev-parse", "--show-toplevel"]);
     coderabbit = captureCodeRabbitConfig(root.code === 0 ? root.stdout.trim() : null);
     if (coderabbit.enabled) {
-      // The YAML CodeRabbit will read is the one in the commit it reviews.
-      const committedYaml = await run("git", ["-C", cwd, "show", `${reviewCommit ?? "HEAD"}:.coderabbit.yaml`], { maxBuffer: 64 * 1024 });
-      coderabbit.committed = committedYaml.code === 0 && !committedYaml.overflowed
-        && !committedYaml.outcomeUnknown && sha(committedYaml.stdout) === coderabbit.digest;
+      // The config CodeRabbit will read is the one in the commit it reviews.
+      const committedConfig = await run("git", ["-C", cwd, "show", `${reviewCommit ?? "HEAD"}:${coderabbit.source ?? CODERABBIT_YAML}`], { maxBuffer: 64 * 1024 });
+      coderabbit.committed = committedConfig.code === 0 && !committedConfig.overflowed
+        && !committedConfig.outcomeUnknown && sha(committedConfig.stdout) === coderabbit.digest;
     }
   }
   // `committed` is derived from the head, the content tree and the YAML digest, all fingerprinted
@@ -1301,6 +1339,7 @@ export async function readWorkflowContextRaw(
     bindingBaseBranch(registry, binding, session),
     captureCodeRabbit,
     graph?.nodes.some(node => node.kind === "check") ?? false,
+    await reviewDiffBase(registry, binding, session),
   );
   // The frozen ask wins outright where the run has one. The transcript, diff, standards and
   // evidence beside it stay live per-submission reads - only intent is frozen, because only
@@ -1430,7 +1469,11 @@ export async function readWorkflowEvidenceProbe(
   }
   const checkout = workflowCheckoutPath(binding, session);
   if (!checkout) throw new Error("The bound session has no working directory");
-  const work = await readRepositoryWorkEvidence(checkout, bindingBaseBranch(registry, binding, session));
+  const work = await readRepositoryWorkEvidence(
+    checkout,
+    bindingBaseBranch(registry, binding, session),
+    await reviewDiffBase(registry, binding, session),
+  );
   return {
     headSha: work.diff.headSha,
     workingTreeStatus: work.status,
@@ -1594,6 +1637,8 @@ export async function captureBoundaryChanged(
     workflowCheckoutPath(binding, session),
     bindingBaseBranch(registry, binding, session),
     boundary.captureCodeRabbit,
+    false,
+    await reviewDiffBase(registry, binding, session),
   );
   return repository.diff.headSha !== boundary.headSha
     || repository.repositoryFingerprint !== boundary.repositoryFingerprint;

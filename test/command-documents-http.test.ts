@@ -367,7 +367,7 @@ test("CodeRabbit tuning is never part of a document: export leaves it out, a doc
   });
   assert.equal(named.status, 400);
   const refusal = await named.json() as { problems: string[] };
-  assert.ok(refusal.problems.some((line) => /Unrecognized key\(s\) in object: 'coderabbit'/.test(line)), refusal.problems.join("\n"));
+  assert.ok(refusal.problems.some((line) => /Unrecognized key: "coderabbit"/.test(line)), refusal.problems.join("\n"));
 
   // A document over every argv slot applies, and the CodeRabbit row is exactly as it was.
   const document = {
@@ -393,7 +393,7 @@ test("an invalid document is refused with every problem in words, before and aft
   const body = await refused.json() as { code: string; problems: string[] };
   assert.equal(body.code, "command_document_invalid");
   assert.equal(body.problems.length, 2);
-  assert.ok(body.problems.some((line) => /Unrecognized key\(s\) in object: 'maxRuns'/.test(line)));
+  assert.ok(body.problems.some((line) => /Unrecognized key: "maxRuns"/.test(line)));
   assert.ok(body.problems.some((line) => line.startsWith("commands.affected-tests[0].argv: An affected-tests command must contain")));
 
   // A folder that does not exist, one reached through a symlink, and one inside a nested

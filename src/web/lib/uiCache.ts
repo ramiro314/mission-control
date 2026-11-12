@@ -2,6 +2,7 @@ import {
   CONVERSATION_VIEWS,
   LAYOUT_MODES,
   LINE_DENSITIES,
+  RESIDENT_PLACEMENTS,
   seedHiddenDisplayItems,
   TASK_KIND_CARD_STYLES,
   TASK_KIND_HEADER_STYLES,
@@ -12,6 +13,7 @@ import type {
   ConversationView,
   LayoutMode,
   LineDensity,
+  ResidentPlacement,
   TaskKindCardStyle,
   TaskKindHeaderStyle,
   UiConfig,
@@ -136,11 +138,24 @@ function parseTaskKindCard(raw: string | undefined): TaskKindCardStyle {
     : UI_CONFIG_DEFAULTS.taskKindCard;
 }
 
+/** An unknown or missing placement is the drawer, exactly as `UiConfigSchema` reads it. */
+function parseResidentPlacement(raw: string | undefined): ResidentPlacement {
+  return (RESIDENT_PLACEMENTS as readonly string[]).includes(raw ?? "")
+    ? (raw as ResidentPlacement)
+    : UI_CONFIG_DEFAULTS.residentPlacement;
+}
+
 function coerce(raw: Partial<UiConfig> | null): UiConfig {
   return {
     layout: parseLayout(raw?.layout),
+    residentPlacement: parseResidentPlacement(raw?.residentPlacement),
+    // Only a stored `true` pins: anything else is the floating default.
+    residentDrawerPinned: raw?.residentDrawerPinned === true,
     conversationView: parseConversationView(raw?.conversationView),
     lineDensity: parseLineDensity(raw?.lineDensity),
+    // A cache written by the build that stored Disabled as `lineDensity: "hidden"` (#1399)
+    // still means switched off, exactly as the daemon migrates it.
+    lineHidden: raw?.lineHidden === true || (raw?.lineDensity as string | undefined) === "hidden",
     skin: parseSkin(raw?.skin),
     taskKindHeader: parseTaskKindHeader(raw?.taskKindHeader),
     taskKindCard: parseTaskKindCard(raw?.taskKindCard),
@@ -179,8 +194,8 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     // the default - re-grouping the board on every cold paint for the one person who turned it
     // off. The same trap the booleans above avoid the same way.
     groupBoardByRepo: raw?.groupBoardByRepo ?? UI_CONFIG_DEFAULTS.groupBoardByRepo,
-    // `??` for the same reason: a stored `false` is the operator hiding the stash.
-    showEmptyColumnStash: raw?.showEmptyColumnStash ?? UI_CONFIG_DEFAULTS.showEmptyColumnStash,
+    // `??` for the same reason: a stored value is the operator's choice of which state groups
+    // the Board drill-in sidebar lists, and `||` would read a stored `false` as absent.
     boardSidebarAllSessions: raw?.boardSidebarAllSessions ?? UI_CONFIG_DEFAULTS.boardSidebarAllSessions,
     // A fresh array, like `trustStaged`: the column-width store builds its next patch from
     // what it reads here.

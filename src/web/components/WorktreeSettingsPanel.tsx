@@ -1761,7 +1761,7 @@ function ActionDialog({
         </div>
         <footer className="modal-foot"><Tooltip label="Cancel without changing the worktree"><button className="btn btn-ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button></Tooltip><Tooltip label={preview.request.action === "warm"
                 ? "Queue this Warm; each slot is checked again when its turn comes, and one that is no longer idle is skipped"
-                : "Queue this exact preview; it is rechecked against current state and runs in the background"}><button className={preview.request.action === "warm" ? "btn btn-primary" : "btn btn-danger"} type="button" disabled={busy || changed || !preview.allowed || !acknowledged} onClick={() => onExecute(currentAcks)}>{busy ? "Queueing…" : "Execute"}</button></Tooltip></footer>
+                : "Queue this exact preview; it is rechecked against current state and runs in the background"}><button data-dialog-default className={preview.request.action === "warm" ? "btn btn-primary" : "btn btn-danger"} type="button" disabled={busy || changed || !preview.allowed || !acknowledged} onClick={() => onExecute(currentAcks)}>{busy ? "Queueing…" : "Execute"}</button></Tooltip></footer>
       </div>
     </Overlay>
   );

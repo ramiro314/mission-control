@@ -68,13 +68,13 @@ export const TestingConfigSchema = z.object({
     patterns: TestsFields.patterns.default(TESTING_CONFIG_DEFAULTS.tests.patterns),
     includeImporters: TestsFields.includeImporters.default(TESTING_CONFIG_DEFAULTS.tests.includeImporters),
     smokeSet: TestsFields.smokeSet.default(TESTING_CONFIG_DEFAULTS.tests.smokeSet),
-  }).strict().default({}),
+  }).strict().prefault({}),
   flakes: z.object({
     label: FlakesFields.label.default(TESTING_CONFIG_DEFAULTS.flakes.label),
     actionableLabel: FlakesFields.actionableLabel.default(TESTING_CONFIG_DEFAULTS.flakes.actionableLabel),
     actionableAfter: FlakesFields.actionableAfter.default(TESTING_CONFIG_DEFAULTS.flakes.actionableAfter),
     windowDays: FlakesFields.windowDays.default(TESTING_CONFIG_DEFAULTS.flakes.windowDays),
-  }).strict().default({}),
+  }).strict().prefault({}),
 }).strict();
 export type TestingConfig = z.output<typeof TestingConfigSchema>;
 
@@ -88,7 +88,7 @@ export type TestingLocalConfig = z.output<typeof TestingLocalConfigSchema>;
 export type TestingConfigParse<T> = { ok: true; config: T } | { ok: false; error: string };
 
 /** Parse JSON text through a schema, with one readable sentence on failure. */
-function parseWith<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, text: string, file: string): TestingConfigParse<T> {
+function parseWith<T>(schema: z.ZodType<T, unknown>, text: string, file: string): TestingConfigParse<T> {
   let raw: unknown;
   try {
     raw = JSON.parse(text);

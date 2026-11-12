@@ -3,6 +3,7 @@ import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
 import { ModelIdSchema } from "./model-id.ts";
+import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import {
@@ -25,6 +26,7 @@ import {
   taskKindAllowsSchedule,
   taskKindBacklogRefusal,
   taskKindCreator,
+  taskKindPersonaRefusal,
 } from "./task.ts";
 import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
 import type { GrillFirstTaskKind, HarnessLaunchedTaskKind } from "./task.ts";
@@ -100,8 +102,11 @@ import {
   PROMPTED_DIRECT_HANDOFF_KINDS,
   PROMPTED_RECOVERY_DELIVERY_STATES,
   PROMPTED_RECOVERY_REASONS,
+  SESSION_BLOCKER_KINDS,
+  SESSION_BLOCKER_LIMITS,
   SESSION_RUNTIMES,
   TASK_KINDS,
+  TASK_STATUSES,
   THINKING_LEVELS,
   ADVISOR_CHOICES,
 } from "./types.ts";
@@ -111,8 +116,12 @@ import type {
   InspectorComment,
   InspectorInspection,
   SessionRuntime,
+  StackLineage,
   Task,
+  TaskKind,
+  TaskRepoPrSummary,
 } from "./types.ts";
+import type { StackStanding } from "./stacking.ts";
 import { supportsAdvisor, supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
 import { INSPECTOR_LIMITS, INSPECTOR_POSTURES } from "./inspector.ts";
@@ -137,6 +146,7 @@ import {
   WORKFLOW_CHECK_STATUSES,
   WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY,
   WORKFLOW_COMMAND_ARTIFACT_KINDS,
+  WORKFLOW_COMMAND_SOURCES,
   WORKFLOW_COMMAND_FAILURE_POLICIES,
   WORKFLOW_COMMAND_OUTPUT_LIMITS,
   WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
@@ -169,7 +179,6 @@ import {
   WORKFLOW_TRIGGER_MODES,
   WORKFLOW_TRIGGER_SOURCES,
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
-  personaEffortLevels,
   workflowCommandEvidenceContent,
 } from "./workflow.ts";
 import type {
@@ -231,6 +240,8 @@ import {
 } from "./schedules.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
+/** A Library Persona id, as a task names it. The same bound a resident profile's pin has. */
+const TaskPersonaIdSchema = z.string().trim().min(1).max(200);
 /** An advisor pin. Inherit is not a value: it is an omitted field, or `null` on an update. */
 const AdvisorChoiceSchema = z.enum(ADVISOR_CHOICES);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
@@ -238,15 +249,13 @@ const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
     message: "reasoning effort is not supported by this harness",
   });
 
+
 /**
- * `normalizeLabels`, but absent stays absent.
- *
- * On the create schema an omitted list defaulting to `[]` is right - a new task has no
- * labels. On a PATCH it is not: `[]` means "clear them" and undefined means "leave
- * them", and collapsing the two would make every priority-only patch wipe the labels.
+ * Pull requests one hook event may name. A multi-repository task opens one per repository it
+ * changed, so this sits far above `MAX_TASK_EXTRA_REPOS + 1`; it exists so an oversized list is
+ * refused before its URLs are parsed.
  */
-const normalizeLabelsOrUndefined = (v: string[] | undefined): string[] | undefined =>
-  v === undefined ? undefined : normalizeLabels(v);
+export const HOOK_PR_URLS_MAX = 100;
 
 /** Terminal env the hook / MCP client captures, used to bind an event to a session. */
 const EnvSchema = z
@@ -256,7 +265,7 @@ const EnvSchema = z
     itermSession: z.string().optional(),
     termProgram: z.string().optional(),
   })
-  .default({});
+  .prefault({});
 
 /**
  * Payload a Claude Code hook posts to the daemon. The hook script forwards the
@@ -306,7 +315,7 @@ export const HookIngestSchema = z.object({
   //
   // Optional so a hook installed before this field existed keeps ingesting: the daemon
   // falls back to `[prUrl]`, which is exactly what it used to do.
-  prUrls: z.array(z.string().url()).optional(),
+  prUrls: z.array(z.string().url()).max(HOOK_PR_URLS_MAX).optional(),
   // True when the hook saw the agent RUN `gh pr create` - not merely print a PR URL.
   //
   // The distinction is the whole of the Inspector's consent model. `prUrl` above is a
@@ -538,6 +547,17 @@ export const RenameSchema = z.object({
 export type Rename = z.infer<typeof RenameSchema>;
 
 /** One selectable choice within a `PlanDecision`. */
+/**
+ * How many questions one `plan-decisions` review carries, and how many options one question
+ * offers. Shared with the MCP tool that asks them, so an agent and the daemon refuse the same
+ * request. Each is far above anything a person could work through on one card; the bound is
+ * what lets Zod refuse an oversized list before it parses a single element.
+ */
+export const PLAN_DECISION_LIMITS = {
+  decisions: 100,
+  options: 50,
+} as const;
+
 export const PlanDecisionOptionSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
@@ -549,7 +569,7 @@ export const PlanDecisionOptionSchema = z.object({
 export const PlanDecisionSchema = z.object({
   id: z.string().min(1),
   question: z.string().min(1),
-  options: z.array(PlanDecisionOptionSchema).min(1),
+  options: z.array(PlanDecisionOptionSchema).min(1).max(PLAN_DECISION_LIMITS.options),
   multiSelect: z.boolean().optional(),
   allowOther: z.boolean().optional(),
 });
@@ -609,7 +629,7 @@ export const CreateReviewSchema = z
     title: z.string().min(1),
     body: z.string(),
     /** The questions the human answers: many for `plan-decisions`, exactly one for `input`. */
-    decisions: z.array(PlanDecisionSchema).optional(),
+    decisions: z.array(PlanDecisionSchema).max(PLAN_DECISION_LIMITS.decisions).optional(),
   })
   .refine((r) => r.kind !== "plan-decisions" || r.managedPlan !== undefined || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",
@@ -691,7 +711,7 @@ export type ProductIssueDraftInput = z.infer<typeof ProductIssueDraftSchema>;
 /** One preview/submission opening, shared by the dashboard and authenticated MCP routes. */
 export const ProductIssueRequestSchema = ProductIssueDraftSchema
   .extend({
-    requestId: z.string().uuid(),
+    requestId: z.string().guid(),
     client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
   })
   .strict();
@@ -759,7 +779,7 @@ export const ProductIssueAttachmentStateSchema = z.object({
 
 export const ProductIssuePreviewSchema = z.object({
   outcome: z.literal("preview"),
-  requestId: z.string().uuid(),
+  requestId: z.string().guid(),
   draftIdentity: z.string().regex(/^[0-9a-f]{64}$/),
   draft: ProductIssueDraftSchema,
   target: z.string().min(1),
@@ -793,7 +813,7 @@ export const ProductIssuePreviewResponseSchema = z.discriminatedUnion("outcome",
 
 export const ProductIssueConfirmationSchema = z.object({
   outcome: z.literal("confirmation"),
-  requestId: z.string().uuid(),
+  requestId: z.string().guid(),
   draftIdentity: z.string().regex(/^[0-9a-f]{64}$/),
   target: z.string().min(1),
   token: z.string().regex(/^[0-9a-f]{64}$/),
@@ -1033,7 +1053,7 @@ export type CompleteShapeTickets = z.infer<typeof CompleteShapeTicketsSchema>;
  */
 export const PlanDecisionAnswerSchema = z.object({
   decisionId: z.string().min(1),
-  selected: z.array(z.string().min(1)),
+  selected: z.array(z.string().min(1)).max(PLAN_DECISION_LIMITS.options),
   other: z.string().nullable().optional().default(null),
   /** The "Other" text is Foreman's draft, submitted unchanged - see `PlanDecisionAnswer`. */
   foremanDraftAccepted: z.literal(true).optional(),
@@ -1059,7 +1079,7 @@ export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
 export const ResolveReviewSchema = z.object({
   action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
-  selections: z.array(PlanDecisionAnswerSchema).nullable().optional().default(null),
+  selections: z.array(PlanDecisionAnswerSchema).max(PLAN_DECISION_LIMITS.decisions).nullable().optional().default(null),
   by: AnswerActorSchema,
   /**
    * "Approve all future bundles for this task", ticked on a managed plan's final-bundle form.
@@ -1085,6 +1105,67 @@ export const StatusSchema = z.object({
 });
 export type StatusReport = z.infer<typeof StatusSchema>;
 
+// ---- session blockers ----
+
+/** One line of operator-readable text: trimmed, non-empty, no line breaks. */
+const blockerLine = (max: number) =>
+  z.string().trim().min(1).max(max).refine((v) => !/[\r\n]/.test(v), { message: "must be one line" });
+
+/** An http(s) link, or null. Anything else would be a link the dashboard refuses to open. */
+const BlockerUrlSchema = z
+  .string()
+  .trim()
+  .max(SESSION_BLOCKER_LIMITS.url)
+  .url()
+  .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" });
+
+/** What a session reports about itself through `report_blocker`. */
+export const ReportBlockerBodySchema = z.object({
+  kind: z.enum(SESSION_BLOCKER_KINDS),
+  reason: blockerLine(SESSION_BLOCKER_LIMITS.reason),
+  waitingOn: blockerLine(SESSION_BLOCKER_LIMITS.waitingOn),
+  resumeWhen: blockerLine(SESSION_BLOCKER_LIMITS.resumeWhen),
+  referenceUrl: BlockerUrlSchema.nullable().optional().default(null),
+  details: z.string().trim().max(SESSION_BLOCKER_LIMITS.details).nullable().optional()
+    .transform((v) => (v ? v : null)),
+});
+export type ReportBlockerBody = z.infer<typeof ReportBlockerBodySchema>;
+
+/** `POST /mcp/blocker`: bound to the caller the way `/mcp/status` is. */
+export const McpReportBlockerSchema = ReportBlockerBodySchema.extend({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+});
+
+/**
+ * The `id` of the blocker the caller was looking at. A re-report keeps it, so it names one
+ * blocker across updates; a different blocker reported since has a different one, and the
+ * daemon refuses rather than act on a blocker the caller never saw.
+ */
+const ExpectedBlockerSchema = z.string().min(1).max(64);
+
+/** `POST /api/sessions/:id/blocker/clear`, and the session-control action that maps to it. */
+export const ClearBlockerSchema = z.object({
+  resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution).optional(),
+  blockerId: ExpectedBlockerSchema.optional(),
+}).strict();
+export type ClearBlocker = z.infer<typeof ClearBlockerSchema>;
+
+/** `POST /mcp/blocker/clear`: the session clearing its own blocker. */
+export const McpClearBlockerSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution).optional(),
+});
+
+/** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
+export const FlagBlockerReplySchema = z.object({
+  note: z.string().trim().max(SESSION_BLOCKER_LIMITS.note).optional(),
+  referenceUrl: BlockerUrlSchema.optional(),
+  blockerId: ExpectedBlockerSchema.optional(),
+}).strict();
+export type FlagBlockerReply = z.infer<typeof FlagBlockerReplySchema>;
+
 /**
  * The two optional triage fields every task-writing schema shares, spread into both
  * `DispatchSchema` and `UpdateTaskSchema` so a task created by the dispatch form, a
@@ -1102,10 +1183,19 @@ const TASK_TRIAGE_FIELDS = {
   labels: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
 };
 
+/**
+ * How a same-repository dependency releases its dependent: after its pull request merges, or
+ * as soon as it has an open one (stacked). Absent means "inherit the Shipping default at
+ * evaluation time" (`effectiveEdgeMode` in `@shared/stacking.ts`), so an edge stored before
+ * this field existed follows whatever the operator sets later.
+ */
+export const DependencyModeSchema = z.enum(["merge", "stack"]);
+
 /** A dependency target selected from the backlog or the live-session list. */
 export const TaskDependencyInputSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("task"), taskId: z.string().min(1) }),
-  z.object({ type: z.literal("session"), sessionId: z.string().min(1) }),
+  z.object({ type: z.literal("task"), taskId: z.string().min(1), mode: DependencyModeSchema.optional() }),
+  z.object({ type: z.literal("session"), sessionId: z.string().min(1), mode: DependencyModeSchema.optional() }),
+  PlanIdentitySchema.extend({ type: z.literal("plan") }).strict(),
   // An item in a task source's tracker. A task source's sweep is what creates these; an
   // edit names an existing one to keep it.
   z.object({
@@ -1117,7 +1207,6 @@ export const TaskDependencyInputSchema = z.discriminatedUnion("type", [
   }),
   // An edge a newer build wrote. It can only be kept, never created.
   z.object({ type: z.literal("unknown"), key: z.string().min(1).max(20_000) }),
-  PlanIdentitySchema.extend({ type: z.literal("plan") }).strict(),
 ]);
 export type TaskDependencyInput = z.infer<typeof TaskDependencyInputSchema>;
 
@@ -1215,6 +1304,9 @@ export const HarnessModelCatalogQuerySchema = z
   .strict();
 
 
+export const TaskPlanStorageSchema = z.enum(["repository", "local"]).nullable().optional()
+  .describe("Plan tasks only: local or repository; null resolves and pins the current global default. Omit on update to keep the pin.");
+
 /**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of
  * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
@@ -1263,12 +1355,19 @@ export const DispatchSchema = z
     // (`HarnessesConfig.advisor`), not something a task pins. An `advisorModel` sent by an
     // older client is stripped like any other unknown key.
     /**
+     * The Library Persona whose guidance this task's agent launches with. Omitted launches
+     * with none. Whether the id names a live Persona is a question only the daemon can answer,
+     * so `TaskManager.create` asks it; this schema only refuses a kind that cannot carry one.
+     */
+    personaId: TaskPersonaIdSchema.optional(),
+    /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
      * plan and shape tasks, Bug Fix Review for bugfix tasks, Documentation Review for document
      * tasks, and the machine default for other kinds.
      * An explicit workflow overrides that default; explicit null opts this task out.
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
+    planStorage: TaskPlanStorageSchema,
     /**
      * Grill me first. Omitted follows the kind's default (`SkillsConfig.grillFirstKinds`);
      * either way the answer is pinned on the task at creation. Ignored for a kind that does
@@ -1302,6 +1401,10 @@ export const DispatchSchema = z
         message: RESIDENT_TASK_REFUSAL,
       });
       return;
+    }
+    const personaRefusal = o.personaId === undefined ? null : taskKindPersonaRefusal(o.kind);
+    if (personaRefusal) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["personaId"], message: personaRefusal });
     }
     if (taskKindAllowsBacklog(o.kind)) return;
     if (o.backlog) {
@@ -1465,6 +1568,85 @@ export const DismissLaunchFailuresSchema = z
   .strict();
 
 /**
+ * The bounds on one dismissal request, shared by its schema, the route's byte ceiling and the
+ * dashboard, which splits a row into requests of this size.
+ *
+ * `keysPerRequest` bounds a REQUEST, never a row. A row of questions is one key per pending
+ * question with no upper bound, so a row past this is dismissed in several all-or-nothing
+ * requests (`dismissalBatches`) rather than refused - the earlier cap of 100 was low enough for
+ * a busy session to reach, and left its row undismissable. The bound itself has to stay
+ * (GHSA-mrhx-c7xc-m3w5): it is this `.max()` on `DismissAttentionItemsSchema` that Zod checks
+ * before it parses a single element, and the route also refuses an oversized body by bytes
+ * before the schema sees it.
+ */
+export const ATTENTION_DISMISSAL_LIMITS = {
+  keysPerRequest: 5_000,
+  itemIdLength: 512,
+  occurrenceLength: 64,
+} as const;
+
+/**
+ * One attention-inbox row the operator dismissed without resolving it.
+ *
+ * `itemId` names the row (`blocked:<session>`, `pipeline-commission:<id>`, `review:<id>`).
+ * `occurrence` names WHAT the row said when it was dismissed, as the fold in
+ * `src/web/lib/attention.ts` fingerprints it. The row stays hidden while it still says the
+ * same thing, and comes back when it says something new - a different halt reason, a
+ * different lifecycle problem - because that is a new obligation, not the dismissed one.
+ * A dismissal never expires and is never pruned, so nothing else brings the row back.
+ */
+export const AttentionDismissalKeySchema = z
+  .object({
+    itemId: z.string().min(1).max(ATTENTION_DISMISSAL_LIMITS.itemIdLength),
+    occurrence: z.string().max(ATTENTION_DISMISSAL_LIMITS.occurrenceLength),
+  })
+  .strict();
+export type AttentionDismissalKey = z.infer<typeof AttentionDismissalKeySchema>;
+
+/**
+ * A stored dismissal, as `GET /api/attention/dismissals` returns it. `revision` is the daemon's
+ * own number for this write of the row, larger than every revision it has assigned before.
+ */
+export interface AttentionDismissal extends AttentionDismissalKey {
+  dismissedAt: number;
+  revision: number;
+}
+
+/**
+ * One row to dismiss, with the newest `revision` of that row the dismissing window has seen -
+ * 0 when it has seen none.
+ *
+ * `basis` is what orders dismissals made in DIFFERENT windows. A window that dismissed a row
+ * and whose request was delayed can arrive after another window dismissed what the row says
+ * NOW; without a basis the daemon kept whichever arrived last, so the older dismissal replaced
+ * the newer and the unresolved newer problem came back in every window. The daemon refuses a
+ * write whose basis is older than the stored revision: it was made without seeing that
+ * dismissal, so it cannot be the operator's latest word on the row. No browser clock is
+ * involved; every revision is the daemon's.
+ */
+export const AttentionDismissalWriteSchema = AttentionDismissalKeySchema.extend({
+  basis: z.number().int().nonnegative(),
+}).strict();
+export type AttentionDismissalWrite = z.infer<typeof AttentionDismissalWriteSchema>;
+
+/**
+ * Dismiss attention-inbox rows (`POST /api/attention/dismissals`). A list because one row can
+ * stand for several keys - a session's row of questions is one key per question. All or
+ * nothing: if any key is stale (see `basis`) none is stored, and the 409 names the stale keys.
+ * Bounded by `ATTENTION_DISMISSAL_LIMITS`, which says why the bound is what it is.
+ *
+ * The bound is load-bearing, not decoration (GHSA-mrhx-c7xc-m3w5). From Zod 4.6.6 a `z.array`
+ * checks its `.max()` before it parses a single element, so an oversized request is refused
+ * as ONE `too_big` issue however many elements it carries. Without the `.max()` every element
+ * would be parsed, and an issue recorded for each bad one, before anything stopped it.
+ */
+export const DismissAttentionItemsSchema = z
+  .object({
+    items: z.array(AttentionDismissalWriteSchema).min(1).max(ATTENTION_DISMISSAL_LIMITS.keysPerRequest),
+  })
+  .strict();
+
+/**
  * Start a report session for one launch failure (`POST /api/launch-failures/report`).
  *
  * The daemon builds the session's brief from `taskId` alone, so the browser never carries the
@@ -1519,11 +1701,11 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * again from the intent as it now reads, the same bargain the create form offers.
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
- * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `workflowId`, `grillFirst`,
+ * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `personaId`, `workflowId`, `grillFirst`,
  * `dependencies` and `enabled` are PROVISIONING fields -
  * repo, intent and title are cut into a branch name and terminal home at dispatch and
  * cannot be rewritten afterwards, while model and effort are baked into the launched
- * command line, while dependencies and enabled decide whether a launch is allowed - so a
+ * command line and the Persona into its standing instructions, while dependencies and enabled decide whether a launch is allowed - so a
  * patch touching any of them is refused once the task has left the backlog.
  * `priority` and `labels` are pure annotation that nothing is provisioned from, so they
  * can be changed at any point in a task's life, including while its agent is running.
@@ -1532,7 +1714,7 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * absent key has to keep meaning "leave it alone", and a default would turn every patch
  * that didn't mention priority into one that silently cleared it.
  *
- * `model` and `effort` are nullable for the same reason: an absent field leaves the stored override
+ * `model`, `effort` and `personaId` are nullable for the same reason: an absent field leaves the stored override
  * alone, while an explicit `null` takes it back off - which is the only way to say
  * "follow the harness default again" about a row that already names an override.
  *
@@ -1564,16 +1746,26 @@ const UpdateTaskFieldsSchema = z
     title: z.string().optional(),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
+      .refine(taskKindAllowsBacklog, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
       .optional(),
     agent: z.enum(AGENT_TYPES).optional(),
     enabled: z.boolean().optional(),
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
-    labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
+    /**
+     * Absent stays absent: `.optional()` sits OUTSIDE the transform, so an omitted list is
+     * never normalized into `[]`. On the create schema an omitted list defaulting to `[]` is
+     * right - a new task has no labels. On a PATCH it is not: `[]` means "clear them" and
+     * undefined means "leave them", and collapsing the two would make every priority-only
+     * patch wipe the labels.
+     */
+    labels: z.array(z.string()).max(MAX_LABELS).transform(normalizeLabels).optional(),
     model: ModelIdSchema.nullable().optional(),
     effort: EffortLevelSchema.nullable().optional(),
     advisorModel: z.null().optional(),
+    /** A Persona to launch with, or `null` to take the task's Persona back off. */
+    personaId: TaskPersonaIdSchema.nullable().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
+    planStorage: TaskPlanStorageSchema,
     /** Grill me first. Provisioning intent, like `workflowId`. */
     grillFirst: z.boolean().optional(),
     dependencies: TaskDependenciesSchema.optional(),
@@ -1599,6 +1791,8 @@ export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   intent: true,
   planInputs: true,
   advisorModel: true,
+  // Dispatch-form only for now: an agent has no tool that lists the Personas it could name.
+  personaId: true,
   // Grill me first is the human's choice at dispatch; a task an agent files takes the
   // Settings default, so MCP neither advertises nor sets it.
   grillFirst: true,
@@ -1637,9 +1831,32 @@ export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
   planInputs: true,
+  personaId: true,
 }).extend({
   repository: z.string().trim().min(1).optional(),
   additionalRepositories: z.array(z.string().trim().min(1)).max(MAX_TASK_EXTRA_REPOS).optional(),
+}).strict();
+
+/** Durable task facts plus pull request references, without session-private state. */
+export type McpTaskSnapshot = Task & { prUrl: string | null; repoPrs: TaskRepoPrSummary[] };
+
+/** Read-only task queries share validation between the MCP child and daemon. */
+export const McpListTasksSchema = z.object({
+  status: z.enum(TASK_STATUSES).optional().describe("Saved task status; done is successful completion"),
+  kind: z.enum(TASK_KINDS).optional(),
+  repository: z.string().trim().min(1).optional().describe("Absolute checkout path or unique repository directory name; matches primary or attached repositories. Omit for all tasks"),
+  labels: z.array(z.string().trim().min(1)).max(MAX_LABELS).optional().describe("Require every supplied label (exact, case-sensitive matches)"),
+  priority: z.enum(TASK_PRIORITIES).nullable().optional().describe("Null matches tasks without a priority"),
+  enabled: z.boolean().optional(),
+  dependsOnTaskId: z.string().trim().min(1).optional().describe("Match a direct task dependency, including one already satisfied"),
+  limit: z.number().int().min(1).max(100).default(50),
+  cursor: z.string().min(1).max(4096).optional().describe("nextCursor from the previous page; keep filters unchanged"),
+  includeIntent: z.boolean().default(false).describe("Include full intent text; omitted by default to keep lists compact"),
+}).strict();
+export type McpListTasks = z.infer<typeof McpListTasksSchema>;
+
+export const McpGetTaskSchema = z.object({
+  taskId: z.string().trim().min(1).describe("Id of a task in any status"),
 }).strict();
 
 /** MCP deletes one task through the existing lifecycle and cleanup owner. */
@@ -1681,7 +1898,7 @@ export const BulkUpdateTasksSchema = z
       .object({
         kind: z
           .enum(TASK_KINDS)
-          .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
+          .refine(taskKindAllowsBacklog, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
           .optional(),
         agent: z.enum(AGENT_TYPES).optional(),
         enabled: z.boolean().optional(),
@@ -1694,8 +1911,7 @@ export const BulkUpdateTasksSchema = z
         (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
         { path: ["effort"], message: "reasoning effort is not supported by this harness" },
       )
-      .optional()
-      .default({}),
+      .prefault({}),
     labels: z
       .object({
         add: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
@@ -1831,7 +2047,8 @@ export const BacklogPlanSchema = z.object({
     .array(
       z.object({
         taskId: z.string().min(1),
-        dependsOn: z.array(z.string().min(1)).default([]),
+        // A task can only depend on the other entries of the same plan.
+        dependsOn: z.array(z.string().min(1)).max(500).default([]),
         reason: z.string().nullable().optional().default(null),
       }),
     )
@@ -1881,7 +2098,8 @@ export const RecordEpisodeSchema = z.object({
   pane: z.string().nullable().optional(),
   menu: z
     .object({
-      options: z.array(z.object({ number: z.number(), label: z.string() })),
+      // A terminal menu the Foreman read off a pane; no real one comes near this.
+      options: z.array(z.object({ number: z.number(), label: z.string() })).max(100),
       highlighted: z.number(),
     })
     .nullable()
@@ -1981,6 +2199,13 @@ export const SetGoalSchema = z
 export type SetGoal = z.infer<typeof SetGoalSchema>;
 
 /**
+ * The most repositories an allowlist may name, matching `WorkflowPolicySchema.repoAllowlist`.
+ * A bound on every request-carried list lets Zod refuse an oversized one before it parses a
+ * single element (GHSA-mrhx-c7xc-m3w5).
+ */
+export const REPO_ALLOWLIST_MAX = 500;
+
+/**
  * Foreman's operating config. `dry-run` drafts answers without sending; `live`
  * sends on the human's behalf (only for repos on the allowlist); `semi-auto`
  * drafts a one-click-confirmable action. Ships disabled + dry-run.
@@ -2045,7 +2270,7 @@ export const ForemanConfigSchema = z.object({
    * One empty string in this array silently grants consent EVERYWHERE, for Foreman and
    * - through the same shared predicate - for the Inspector.
    */
-  repoAllowlist: z.array(z.string().min(1)).default([]),
+  repoAllowlist: z.array(z.string().min(1)).max(REPO_ALLOWLIST_MAX).default([]),
   /** Whether Foreman may auto-approve non-destructive access asks (still gated by risk). */
   autoApproveAccess: z.boolean().default(true),
   /**
@@ -2165,7 +2390,7 @@ export const ForemanConfigSchema = z.object({
    * has no other way to say so, and quietly restoring a default here would type into
    * their sessions against an explicit choice.
    */
-  wrapupTriggers: z.array(z.enum(WRAPUP_TRIGGERS)).default(["drain", "prompted"]),
+  wrapupTriggers: z.array(z.enum(WRAPUP_TRIGGERS)).max(WRAPUP_TRIGGERS.length).default(["drain", "prompted"]),
   /**
    * What happens when a wrap-up fires, whichever trigger fired it.
    *
@@ -2280,7 +2505,7 @@ export const ForemanConfigSchema = z.object({
       codex: ModelIdSchema.nullable().default(null),
       pi: ModelIdSchema.nullable().default(null),
     })
-    .default({ claude: null, codex: null, pi: null }),
+    .prefault({ claude: null, codex: null, pi: null }),
   /**
    * The ceiling on how many agents may be running at once before the backlog autopilot
    * stops launching new ones.
@@ -2319,7 +2544,7 @@ const ForemanRunnerOverrideSchema = z.union([z.enum(LLM_RUNNER_IDS), z.literal("
  * from the panel into a silent inherit - the select reverts on the next poll and nothing
  * says why - where a 400 is a refusal the operator can read.
  */
-export const ForemanConfigPatchSchema = ForemanConfigSchema.partial()
+export const ForemanConfigPatchSchema = partialPatch(ForemanConfigSchema)
   .extend({
     runner: ForemanRunnerOverrideSchema.optional(),
     reviewRunner: ForemanRunnerOverrideSchema.optional(),
@@ -2459,7 +2684,7 @@ export const StandingInstructionsConfigSchema = z
     default: StandingInstructionsTextSchema.default(""),
     repositories: z
       .record(StandingInstructionsRepositoryKeySchema, StandingInstructionsTextSchema)
-      .default({}),
+      .prefault({}),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -2497,27 +2722,19 @@ export const StandingInstructionsUpdateSchema = z
   .object({
     expectedEtag: z.string().min(1),
     default: StandingInstructionsTextSchema.optional(),
-    repositories: z
-      .record(StandingInstructionsRepositoryKeySchema, StandingInstructionsTextSchema.nullable())
-      .optional(),
+    // Counted before any entry is parsed, so an oversized patch is one issue, not one per key.
+    repositories: boundedRecord(
+      StandingInstructionsRepositoryKeySchema,
+      StandingInstructionsTextSchema.nullable(),
+      STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
+      `at most ${STANDING_INSTRUCTIONS_MAX_REPOSITORIES} repository patches are allowed`,
+    ).optional(),
   })
   .strict()
   .refine(
     (value) => value.default !== undefined || value.repositories !== undefined,
     "standing instructions update must change at least one field",
-  )
-  .superRefine((value, ctx) => {
-    if (
-      value.repositories &&
-      Object.keys(value.repositories).length > STANDING_INSTRUCTIONS_MAX_REPOSITORIES
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["repositories"],
-        message: `at most ${STANDING_INSTRUCTIONS_MAX_REPOSITORIES} repository patches are allowed`,
-      });
-    }
-  });
+  );
 export type StandingInstructionsUpdate = z.infer<typeof StandingInstructionsUpdateSchema>;
 
 /** The stable conflict vocabulary, matching Foreman's standing-guidance editor. */
@@ -2542,7 +2759,7 @@ export type StandingInstructionsConflict = z.infer<typeof StandingInstructionsCo
  * written against the interface in browser-safe code, and a field added to one without the
  * other stops compiling here.
  */
-export const StandingInstructionsDeliverySchema: z.ZodType<StandingInstructionsDelivery> = z
+export const StandingInstructionsDeliverySchema: z.ZodType<StandingInstructionsDelivery, StandingInstructionsDelivery> = z
   .object({
     text: z.string(),
     mechanism: z.enum(STANDING_INSTRUCTIONS_MECHANISMS),
@@ -2553,13 +2770,16 @@ export const StandingInstructionsDeliverySchema: z.ZodType<StandingInstructionsD
   .strict();
 
 /** Partial update of the away config from the dashboard. */
-export const AwayConfigPatchSchema = AwayConfigSchema.partial().refine(
+export const AwayConfigPatchSchema = partialPatch(AwayConfigSchema).refine(
   (o) => Object.keys(o).length > 0,
   { message: "empty away update" },
 );
 export type AwayConfigPatch = z.infer<typeof AwayConfigPatchSchema>;
 
 // ---- Custom skills (dashboard-wide skill toggles) ----
+
+/** Skill rows one config may name: the catalog is a few hundred at most. */
+export const SKILLS_CONFIG_MAX_ENTRIES = 5_000;
 
 /**
  * Which catalog skills are symlinked into `~/.claude/skills`, and how far the sessions
@@ -2582,13 +2802,14 @@ export const SkillsConfigSchema = z.object({
    * the task it always was.
    */
   grillFirstKinds: z.array(z.enum(GRILL_FIRST_TASK_KINDS as unknown as [GrillFirstTaskKind, ...GrillFirstTaskKind[]]))
+    .max(GRILL_FIRST_TASK_KINDS.length)
     .default([]),
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
   /** Missing row overrides use this policy. Legacy stored rows default to off. */
   defaultSkillEnabled: z.boolean().default(false),
   /** Catalog id -> enabled. Ids absent from the catalog are ignored, not an error. */
-  skills: z.record(z.boolean()).default({}),
+  skills: boundedRecord(z.string(), z.boolean(), SKILLS_CONFIG_MAX_ENTRIES).default({}),
   /**
    * The reload watermark - the whole coalescing story, and a WATERMARK, NOT A QUEUE.
    *
@@ -2618,8 +2839,9 @@ export const SkillsConfigSchema = z.object({
 export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /** Partial update of the skills config from the dashboard. */
-export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, grillFirstKinds: true, alwaysDraftPr: true })
-  .partial()
+export const SkillsConfigPatchSchema = partialPatch(
+  SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, grillFirstKinds: true, alwaysDraftPr: true }),
+)
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
 
@@ -2656,7 +2878,7 @@ export const InspectorConfigSchema = z.object({
    * including the `min(1)`: a blank entry would match every absolute path and turn the
    * one gate that decides whether anything writes to a public PR into a no-op.
    */
-  repoAllowlist: z.array(z.string().min(1)).default([]),
+  repoAllowlist: z.array(z.string().min(1)).max(REPO_ALLOWLIST_MAX).default([]),
   /**
    * Overrides the review model, for both the review pass and the follow-up replies.
    * Empty or unset falls back to `MISSION_INSPECTOR_MODEL`, then to
@@ -2683,7 +2905,7 @@ export const InspectorConfigSchema = z.object({
 export type InspectorConfig = z.infer<typeof InspectorConfigSchema>;
 
 /** Partial update of the Inspector config from the dashboard. Strict provider, as Foreman's. */
-export const InspectorConfigPatchSchema = InspectorConfigSchema.partial()
+export const InspectorConfigPatchSchema = partialPatch(InspectorConfigSchema)
   .extend({ runner: ForemanRunnerOverrideSchema.optional() })
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type InspectorConfigPatch = z.infer<typeof InspectorConfigPatchSchema>;
@@ -2745,6 +2967,7 @@ export const InspectorInspectionSchema = z.object({
   repoRoot: z.string().nullable(),
   cwd: z.string().nullable(),
   sessionId: z.string().nullable(),
+  noteKey: z.string().nullable().optional(),
   source: z.enum(INSPECTOR_SOURCES),
   state: z.enum(INSPECTOR_PR_STATES),
   headSha: z.string().nullable(),
@@ -2765,10 +2988,18 @@ export const InspectorInspectionSchema = z.object({
   observedAt: z.number().nullable(),
   headRefName: z.string().nullable(),
   title: z.string().nullable(),
+  baseRefName: z.string().nullable().optional(),
+  reviewedBaseRef: z.string().nullable().optional(),
+  reviewedBaseSha: z.string().nullable().optional(),
+  mergeCommitSha: z.string().nullable().optional(),
+  // Stacked pull requests' lineage and standing are carried as objects but not restated
+  // field by field: no reader of this schema decides anything from them.
+  stack: z.custom<StackLineage | null>((value) => value === null || typeof value === "object").optional(),
+  stackStanding: z.custom<StackStanding | null>((value) => value === null || typeof value === "object").optional(),
   adoptedAt: z.number(),
   updatedAt: z.number(),
-  // Upstream's CodeRabbit projection (`CodeRabbitSummary` in `code-rabbit.ts`), restated here
-  // for the same reason as the rest of this schema.
+  // `CodeRabbitSummary` in `code-rabbit.ts`, restated for the same reason as the rest of this
+  // schema.
   codeRabbit: z.object({
     status: z.enum(["unknown", "complete", "error"]),
     observationId: z.string().nullable(),
@@ -2868,7 +3099,7 @@ export const ShippingConfigSchema = z.object({
    * "you may comment here" and "you may push to main here" are different grants, and
    * folding them would mean switching the Inspector on in a repo silently armed this.
    */
-  repoAllowlist: z.array(z.string().min(1)).default([]),
+  repoAllowlist: z.array(z.string().min(1)).max(REPO_ALLOWLIST_MAX).default([]),
   /**
    * Close a task's session after its pull request merges and the task is marked done,
    * freeing a fleet slot.
@@ -2892,11 +3123,29 @@ export const ShippingConfigSchema = z.object({
    * this is a switch and not a hard-coded answer.
    */
   closeSessionAfterMerge: z.boolean().default(false),
+  /**
+   * Stacked pull requests: whether a same-repository dependency without its own `mode` lets
+   * its dependent start on the prerequisite's open pull request (`stack`) or waits for it to
+   * merge (`merge`).
+   *
+   * Optional with NO default, and that is the contract rather than an omission. Absent means
+   * "the shipped default" (`effectiveStacking` / `STACKING_SHIPPED_DEFAULT` in
+   * `@shared/stacking.ts`), so an install that never chose follows that constant when a later
+   * release changes it. A Zod default here would write the current value into every saved
+   * blob and pin every install to it. Only an explicit operator choice writes this key.
+   */
+  stacking: DependencyModeSchema.optional(),
+  /**
+   * The deepest a stack may grow: how many unmerged stacked pull requests may sit above one
+   * that targets the default branch. A dependent whose parent is already this deep waits for
+   * the bottom of its stack to merge.
+   */
+  maxStackDepth: z.number().int().min(1).max(5).default(3),
 });
 export type ShippingConfig = z.infer<typeof ShippingConfigSchema>;
 
 /** Partial update of the Shipping config from the dashboard. */
-export const ShippingConfigPatchSchema = ShippingConfigSchema.partial().refine(
+export const ShippingConfigPatchSchema = partialPatch(ShippingConfigSchema).refine(
   (o) => Object.keys(o).length > 0,
   { message: "empty config update" },
 );
@@ -3016,8 +3265,8 @@ const TaskKindDefaultPatchSchema = z
  * through `taskKindDefaultFor` (`@shared/kind-defaults.ts`) to ask whether there is a row.
  */
 const taskKindDefaultsShape = Object.fromEntries(
-  HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, TaskKindDefaultSchema.default({})]),
-) as Record<HarnessLaunchedTaskKind, z.ZodDefault<typeof TaskKindDefaultSchema>>;
+  HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, TaskKindDefaultSchema.prefault({})]),
+) as Record<HarnessLaunchedTaskKind, z.ZodPrefault<typeof TaskKindDefaultSchema>>;
 const taskKindDefaultsPatchShape = Object.fromEntries(
   HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, TaskKindDefaultPatchSchema.optional()]),
 ) as Record<HarnessLaunchedTaskKind, z.ZodOptional<typeof TaskKindDefaultPatchSchema>>;
@@ -3028,7 +3277,10 @@ const HarnessAdvisorDefaultsSchema = z
     default: z.string().nullable().default(null),
     overrides: z.record(z.string(), z.string()).default({}),
   })
-  .default({});
+  .prefault({});
+
+/** Advisor overrides one patch may name, keyed by model id: far past any model catalog. */
+export const ADVISOR_OVERRIDES_MAX = 500;
 
 /**
  * One harness's advisor defaults as a PATCH. `default` replaces the stored one; `overrides`
@@ -3037,7 +3289,7 @@ const HarnessAdvisorDefaultsSchema = z
 const HarnessAdvisorPatchSchema = z
   .object({
     default: AdvisorChoiceSchema.nullable().optional(),
-    overrides: z.record(ModelIdSchema, AdvisorChoiceSchema.nullable()).optional(),
+    overrides: boundedRecord(ModelIdSchema, AdvisorChoiceSchema.nullable(), ADVISOR_OVERRIDES_MAX).optional(),
   })
   .strict();
 
@@ -3088,7 +3340,7 @@ export const HarnessesConfigSchema = z.object({
       codex: ModelIdSchema.nullable().default(null),
       pi: ModelIdSchema.nullable().default(null),
     })
-    .default({ claude: null, codex: null, pi: null }),
+    .prefault({ claude: null, codex: null, pi: null }),
   /** Launch-time reasoning effort per harness; null leaves the harness in control. */
   defaultEffort: z
     .object({
@@ -3096,7 +3348,7 @@ export const HarnessesConfigSchema = z.object({
       codex: harnessEffortSchema("codex").nullable().default(null),
       pi: harnessEffortSchema("pi").nullable().default(null),
     })
-    .default({ claude: null, codex: null, pi: null }),
+    .prefault({ claude: null, codex: null, pi: null }),
   /**
    * How a dispatched session of each harness is DRIVEN: through a terminal pane, or
    * embedded through the harness's own programmatic interface.
@@ -3117,7 +3369,7 @@ export const HarnessesConfigSchema = z.object({
       codex: StoredSessionRuntimeSchema.default(DEFAULT_HARNESSES_SESSION_RUNTIMES.codex),
       pi: StoredSessionRuntimeSchema.default(DEFAULT_HARNESSES_SESSION_RUNTIMES.pi),
     })
-    .default(DEFAULT_HARNESSES_SESSION_RUNTIMES),
+    .prefault(DEFAULT_HARNESSES_SESSION_RUNTIMES),
   /**
    * Which terminal backend each harness uses when its resolved runtime is Terminal.
    * Null preserves the existing automatic policy: multiplexers in registry order when any
@@ -3130,7 +3382,7 @@ export const HarnessesConfigSchema = z.object({
       codex: StoredTerminalBackendSchema.default(null),
       pi: StoredTerminalBackendSchema.default(null),
     })
-    .default(DEFAULT_HARNESSES_TERMINAL_BACKENDS),
+    .prefault(DEFAULT_HARNESSES_TERMINAL_BACKENDS),
   /**
    * What a dispatched task of each KIND runs as, when the task itself did not say.
    *
@@ -3139,7 +3391,7 @@ export const HarnessesConfigSchema = z.object({
    * to `defaultModel` / `defaultEffort`. `TASK_KINDS` is append-only, so a key here can be
    * added but can never come to mean a different kind later.
    */
-  kindDefaults: z.object(taskKindDefaultsShape).default({}),
+  kindDefaults: z.object(taskKindDefaultsShape).prefault({}),
   /**
    * The advisor each harness's dispatched sessions launch with, chosen by the model the
    * launch resolved. `overrides` is keyed by bare model id (`claude-opus-5-5`); a launch
@@ -3159,7 +3411,7 @@ export const HarnessesConfigSchema = z.object({
       codex: HarnessAdvisorDefaultsSchema,
       pi: HarnessAdvisorDefaultsSchema,
     })
-    .default({}),
+    .prefault({}),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
 /** One harness's stored advisor defaults, as read. */
@@ -3427,24 +3679,16 @@ export const WorktreesConfigPatchSchema = z
       .max(WORKTREES_CONFIG_LIMITS.maxSlots)
       .optional(),
     staleLeaseDays: StaleLeaseDaysSchema.optional(),
-    repositories: z
-      .record(WorktreeRepositoryKeySchema, WorktreeRepositoryConfigPatchSchema.nullable())
-      .optional(),
+    // Counted before any entry is parsed, so an oversized patch is one issue, not one per key.
+    repositories: boundedRecord(
+      WorktreeRepositoryKeySchema,
+      WorktreeRepositoryConfigPatchSchema.nullable(),
+      WORKTREES_CONFIG_LIMITS.maxRepositories,
+      `at most ${WORKTREES_CONFIG_LIMITS.maxRepositories} repository patches are allowed`,
+    ).optional(),
   })
   .strict()
-  .refine((value) => Object.keys(value).length > 0, "worktrees patch must change at least one field")
-  .superRefine((value, ctx) => {
-    if (
-      value.repositories &&
-      Object.keys(value.repositories).length > WORKTREES_CONFIG_LIMITS.maxRepositories
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["repositories"],
-        message: `at most ${WORKTREES_CONFIG_LIMITS.maxRepositories} repository patches are allowed`,
-      });
-    }
-  });
+  .refine((value) => Object.keys(value).length > 0, "worktrees patch must change at least one field");
 export type WorktreesConfigPatch = z.infer<typeof WorktreesConfigPatchSchema>;
 
 /** Loopback-only request used by `make session`; the daemon derives every destination. */
@@ -3519,7 +3763,7 @@ export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
 
 export const WorktreeActionExecuteSchema = z
   .object({
-    token: z.string().uuid(),
+    token: z.string().guid(),
     acknowledgements: z
       .array(
         z.enum([
@@ -3575,7 +3819,7 @@ export const WorktreeSlotHistoryEntrySchema = z.object({
   outcome: z.string().nullable(),
   actor: z.string().nullable(),
   durationMs: z.number().nullable(),
-  meta: z.record(z.unknown()).nullable(),
+  meta: z.record(z.string(), z.unknown()).nullable(),
 });
 export type WorktreeSlotHistoryEntry = z.infer<typeof WorktreeSlotHistoryEntrySchema>;
 
@@ -3736,7 +3980,7 @@ export const TerminalsConfigSchema = z.object({
     // set, silently, just by visiting the panel. The patch schema stays `.strict()`, so this
     // build still cannot create one.
     .catchall(StoredEmulatorBackendSchema)
-    .default(DEFAULT_MULTIPLEXER_TERMINALS),
+    .prefault(DEFAULT_MULTIPLEXER_TERMINALS),
 });
 export type TerminalsConfig = z.infer<typeof TerminalsConfigSchema>;
 
@@ -3891,6 +4135,16 @@ export const LayoutModeSchema = z.enum(LAYOUT_MODES);
 export type LayoutMode = (typeof LAYOUT_MODES)[number];
 
 /**
+ * Where live residents are drawn. `drawer` keeps them off the Board columns and the Console
+ * rail, in the Residents drawer on the right edge; `fleet` is the earlier placement, where a
+ * resident is a fleet session with its marker. One list, read by the daemon's validation and by
+ * the placement predicate in `src/web/lib/resident-placement.ts`.
+ */
+export const RESIDENT_PLACEMENTS = ["drawer", "fleet"] as const;
+export const ResidentPlacementSchema = z.enum(RESIDENT_PLACEMENTS);
+export type ResidentPlacement = (typeof RESIDENT_PLACEMENTS)[number];
+
+/**
  * How one session's Conversation is DRAWN - the same rows, read two ways.
  *
  * `chat` is the shipped log: role bylines, bubbles, tool chips. `terminal` is the Native
@@ -3925,6 +4179,12 @@ export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
  * rejected. A `lineCollapsed: boolean` would have to be RENAMED the day it arrives, and
  * this key is persisted on operators' machines. Adding a member to this list is free;
  * renaming a stored key is not.
+ *
+ * "Free" for the build that adds it, but not for the builds before it: `getUiConfig` parses
+ * the whole stored record, and an older daemon's `.default()` covers a MISSING value only,
+ * so a member it has never heard of fails every UI preference at once. That is why switching
+ * the Line off is NOT a third member here but its own key, `lineHidden` - an older daemon
+ * strips a key it does not know and draws the strip, which is the right way to fail.
  */
 export const LINE_DENSITIES = ["expanded", "condensed"] as const;
 export const LineDensitySchema = z.enum(LINE_DENSITIES);
@@ -4125,6 +4385,13 @@ export const UI_CONFIG_DEFAULTS = {
    * layout it already had, including a Console it was handed by the old default.
    */
   layout: "board",
+  /**
+   * The drawer, for a fresh install and for every install that never stored a choice -
+   * including one upgrading from a build that only had the fleet placement.
+   */
+  residentPlacement: "drawer",
+  /** The drawer floats over the page until someone pins it as a column. */
+  residentDrawerPinned: false,
   conversationView: "terminal",
   /**
    * Condensed, which CHANGES what an existing operator sees on upgrade - and is the
@@ -4137,6 +4404,8 @@ export const UI_CONFIG_DEFAULTS = {
    * which is a hover or a click away. That trade was put to the operator and taken.
    */
   lineDensity: "condensed",
+  /** The Line is drawn. `true` is Display > Top bar > The Line > Disabled. */
+  lineHidden: false,
   /** Today's look. A skin is opt-in; nothing an install already shows changes on upgrade. */
   skin: DEFAULT_SKIN,
   taskKindHeader: "badge",
@@ -4210,13 +4479,6 @@ export const UI_CONFIG_DEFAULTS = {
    * one flat list per column unchecks it.
    */
   groupBoardByRepo: true,
-  /**
-   * TRUE, so an upgrade changes nothing on screen: the Board has always stowed its empty
-   * columns as chips in an "empty" stash beside the last column. Unchecking it removes that
-   * stash entirely, for an operator who never brings an empty column back and would rather
-   * the board spent those pixels on the columns that hold sessions.
-   */
-  showEmptyColumnStash: true,
   /** Show every state group in the Board drill-in sidebar. */
   boardSidebarAllSessions: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
@@ -4230,8 +4492,19 @@ export const UI_CONFIG_DEFAULTS = {
   compactTopbarItems: [] as readonly string[],
 } as const;
 
+/**
+ * The bound on every list and map a UI config carries - keybindings, staged trust, hidden and
+ * collapsed items. Each names things the dashboard draws, so none comes near this; it is what
+ * lets a patch be refused before its elements are parsed.
+ */
+export const UI_CONFIG_LIST_MAX = 1_000;
+
 export const UiConfigSchema = z.object({
   layout: LayoutModeSchema.default(UI_CONFIG_DEFAULTS.layout),
+  /** Where residents live: the drawer, or the Board and Console beside every other session. */
+  residentPlacement: ResidentPlacementSchema.default(UI_CONFIG_DEFAULTS.residentPlacement),
+  /** Whether the Residents drawer is pinned as a column beside the fleet. Per machine. */
+  residentDrawerPinned: z.boolean().default(UI_CONFIG_DEFAULTS.residentDrawerPinned),
   /**
    * Which rendering the Conversation opens in. A per-session override lives in the browser
    * only and never reaches here - see `src/web/lib/conversation-view.ts` for why that one is
@@ -4245,13 +4518,21 @@ export const UiConfigSchema = z.object({
    */
   lineDensity: LineDensitySchema.default(UI_CONFIG_DEFAULTS.lineDensity),
   /**
+   * Whether the operator switched the Line off. A separate key rather than a third density,
+   * so that a daemon from before it - a downgrade, or a worktree build sharing this state
+   * dir - strips it and draws the strip instead of failing to parse this whole record (see
+   * `LINE_DENSITIES`). `lineDensity` keeps the density to come back to when it is switched
+   * on again.
+   */
+  lineHidden: z.boolean().default(UI_CONFIG_DEFAULTS.lineHidden),
+  /**
    * The skin. `.catch` rather than `.default`, so an id written by a build that shipped a skin
    * this one does not (a downgrade) reads as Default instead of failing the whole `ui` record.
    * A missing key lands in the same place, so no migration is owed. Tolerant on READ only:
    * `UiConfigPatchSchema` validates this field strictly, so a bad write is a 400 and the
    * dashboard's optimistic store rolls the skin back rather than storing "default" by accident.
    */
-  skin: SkinIdSchema.catch(UI_CONFIG_DEFAULTS.skin),
+  skin: SkinIdSchema.default(UI_CONFIG_DEFAULTS.skin).catch(UI_CONFIG_DEFAULTS.skin),
   taskKindHeader: TaskKindHeaderStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindHeader),
   taskKindCard: TaskKindCardStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindCard),
   /**
@@ -4262,13 +4543,13 @@ export const UiConfigSchema = z.object({
    * an action could no longer READ its own config - it would 500 on a stored key instead
    * of ignoring it, which is the one failure mode this record must not have.
    */
-  keybindings: z.record(z.string()).default(UI_CONFIG_DEFAULTS.keybindings),
+  keybindings: boundedRecord(z.string(), z.string(), UI_CONFIG_LIST_MAX).default(UI_CONFIG_DEFAULTS.keybindings),
   alerts: z
     .object({
       notifications: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notifications),
       sound: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.sound),
     })
-    .default(UI_CONFIG_DEFAULTS.alerts),
+    .prefault(UI_CONFIG_DEFAULTS.alerts),
   /** Render agent/human turns as markdown. On by default: agents write markdown. */
   richText: z.boolean().default(UI_CONFIG_DEFAULTS.richText),
   /* `usageBarCollapsed` lived here and is gone: the topbar's second row it folded was
@@ -4309,7 +4590,7 @@ export const UiConfigSchema = z.object({
    * as one more source of repos; a staged entry that has since gained a grant is redundant,
    * and the allowlists win.
    */
-  trustStaged: z.array(z.string().min(1)).default([]),
+  trustStaged: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([]),
   /**
    * Which optional items the Display category has been told NOT to draw - board card
    * items now, and whatever else Display learns to make optional later.
@@ -4334,6 +4615,7 @@ export const UiConfigSchema = z.object({
    */
   hiddenDisplayItems: z
     .array(z.string().min(1))
+    .max(UI_CONFIG_LIST_MAX)
     .default([...UI_CONFIG_DEFAULTS.hiddenDisplayItems]),
   /**
    * How many entries of `DISPLAY_ITEM_SEEDS` this record has already been given.
@@ -4368,14 +4650,6 @@ export const UiConfigSchema = z.object({
    * only the layout moved.
    */
   groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
-  /**
-   * Whether the Board draws its "empty" stash: the chips an empty column folds into, each of
-   * which puts that column back. Off hides the stash and every chip in it, so an empty column
-   * simply leaves the board. It does not govern the empty "needs you" rail, which is not in
-   * the stash: that column stays as a slim all-clear strip so it can widen in place the moment
-   * something needs you.
-   */
-  showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
   boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.
@@ -4388,7 +4662,7 @@ export const UiConfigSchema = z.object({
    * web-side concept, and an id a later build retires must stay readable here rather than
    * failing the whole config. An unknown id simply matches no column.
    */
-  collapsedBoardColumns: z.array(z.string().min(1)).default([]),
+  collapsedBoardColumns: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([]),
   /**
    * The topbar's optional items the operator has hidden - the session counts, search, the cost
    * estimate, product feedback, and alerts and away mode.
@@ -4401,14 +4675,14 @@ export const UiConfigSchema = z.object({
    * Its own key rather than more entries in `hiddenDisplayItems`, because that array carries
    * a seed ladder whose marker counts its builds, and none of these ids ever ships hidden.
    */
-  hiddenTopbarItems: z.array(z.string().min(1)).default([...UI_CONFIG_DEFAULTS.hiddenTopbarItems]),
+  hiddenTopbarItems: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.hiddenTopbarItems]),
   /**
    * The topbar controls the operator wants ALWAYS drawn minimized - glyph only, as the ladder
    * draws them when the bar runs out of room. These controls cannot be hidden; the page
    * segments, Recurring missions and Foreman are how anyone gets anywhere. Absent means
    * expanded, with the ladder still free to minimize it on a narrow window.
    */
-  compactTopbarItems: z.array(z.string().min(1)).default([...UI_CONFIG_DEFAULTS.compactTopbarItems]),
+  compactTopbarItems: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.compactTopbarItems]),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
@@ -4419,13 +4693,39 @@ export type UiConfig = z.infer<typeof UiConfigSchema>;
  * field wholesale is what the caller means. Nothing merges per-key, so nothing can be
  * blanked by a patch that didn't mention it.
  */
-export const UiConfigPatchSchema = UiConfigSchema.partial().extend({
-  // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
-  // `{ skin: "nope" }` into a successful write of Default.
-  skin: SkinIdSchema.optional(),
-}).refine(
-  (o) => Object.keys(o).length > 0,
-  { message: "empty config update" },
+/**
+ * A dashboard from #1399 - the one build that stored Disabled as a third density - sends
+ * `{ lineDensity: "hidden" }` for it, and switches the Line back on by sending a density
+ * alone. A tab left open across the upgrade is still running that code, so both are read as
+ * what they meant: "hidden" is `lineHidden: true` (rather than a 400 that would roll the
+ * tab's choice back), and a density with no `lineHidden` beside it is `lineHidden: false` -
+ * otherwise that tab would draw the strip while every refreshed one still reads it as off.
+ *
+ * The second rule binds this build too: a density-only patch means "draw the Line". Nothing
+ * here sends one while the Line is off - the caret is not drawn then, and `toggleLineDensity`
+ * does nothing - and the panel always states `lineHidden` explicitly. Every other unknown
+ * density is still refused below.
+ */
+function bridgeLineDensityPatch(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const { lineDensity, ...rest } = raw as Record<string, unknown>;
+  if (lineDensity === "hidden") return { ...rest, lineHidden: true };
+  if ((LINE_DENSITIES as readonly unknown[]).includes(lineDensity) && !("lineHidden" in rest)) {
+    return { ...rest, lineDensity, lineHidden: false };
+  }
+  return raw;
+}
+
+export const UiConfigPatchSchema = z.preprocess(
+  bridgeLineDensityPatch,
+  partialPatch(UiConfigSchema).extend({
+    // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
+    // `{ skin: "nope" }` into a successful write of Default.
+    skin: SkinIdSchema.optional(),
+  }).refine(
+    (o) => Object.keys(o).length > 0,
+    { message: "empty config update" },
+  ),
 );
 export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
 
@@ -4486,7 +4786,7 @@ export const CostConfigSchema = z.object({
 export type CostConfig = z.infer<typeof CostConfigSchema>;
 
 /** Partial update of the cost config from the dashboard. */
-export const CostConfigPatchSchema = CostConfigSchema.partial().refine(
+export const CostConfigPatchSchema = partialPatch(CostConfigSchema).refine(
   (o) => Object.keys(o).length > 0,
   { message: "empty config update" },
 );
@@ -4590,14 +4890,12 @@ export const LlmConfigPatchSchema = z
     runner: z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]),
     claudeTransport: z.union([z.enum(CLAUDE_TRANSPORTS), z.literal("")]),
     codexTransport: z.union([z.enum(CODEX_TRANSPORTS), z.literal("")]),
-    models: z
-      .record(z.string(), ModelOverrideSchema)
+    models: boundedRecord(z.string(), ModelOverrideSchema, LLM_JOB_IDS.length)
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
         message: "unknown job id",
       }),
     /** Per-job providers. Strict on both halves, for `models`' reason: a typo is a 400. */
-    runners: z
-      .record(z.string(), z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]))
+    runners: boundedRecord(z.string(), z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]), LLM_JOB_IDS.length)
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
         message: "unknown job id",
       }),
@@ -4706,6 +5004,19 @@ export interface CostTelemetryStatus {
 }
 
 /**
+ * How large one OTLP metrics export may be. Claude Code's exporter sends one resource and one
+ * scope carrying a handful of metrics, each with a data point per attribute combination, so
+ * each bound is orders of magnitude past a real export.
+ */
+export const OTLP_METRICS_LIMITS = {
+  resourceMetrics: 100,
+  scopeMetrics: 100,
+  metrics: 1_000,
+  dataPoints: 10_000,
+  attributes: 256,
+} as const;
+
+/**
  * OTLP/HTTP JSON metrics, as Claude Code's exporter sends them to `POST /v1/metrics`.
  *
  * Deliberately LOOSE. This is Claude Code's wire shape, not ours: we validate only the
@@ -4716,6 +5027,9 @@ export interface CostTelemetryStatus {
  * `asInt` accepts a string as well as a number because OTLP/JSON encodes 64-bit ints as
  * strings, and `timeUnixNano` (~1.78e18) is past `Number.MAX_SAFE_INTEGER` - it is read
  * as text and never parsed as a JS number. See `usage_ledger.window_end_ns`.
+ *
+ * Loose on fields, never on size: every list carries `OTLP_METRICS_LIMITS`, so an oversized
+ * export is refused before Zod parses its elements (GHSA-mrhx-c7xc-m3w5).
  */
 export const OtlpMetricsSchema = z.object({
   resourceMetrics: z
@@ -4748,28 +5062,36 @@ export const OtlpMetricsSchema = z.object({
                                       .passthrough(),
                                   }),
                                 )
+                                .max(OTLP_METRICS_LIMITS.attributes)
                                 .optional()
                                 .default([]),
                             }),
                           )
+                          .max(OTLP_METRICS_LIMITS.dataPoints)
                           .optional()
                           .default([]),
                       })
                       .optional(),
                   }),
                 )
+                .max(OTLP_METRICS_LIMITS.metrics)
                 .optional()
                 .default([]),
             }),
           )
+          .max(OTLP_METRICS_LIMITS.scopeMetrics)
           .optional()
           .default([]),
       }),
     )
+    .max(OTLP_METRICS_LIMITS.resourceMetrics)
     .optional()
     .default([]),
 });
 export type OtlpMetrics = z.infer<typeof OtlpMetricsSchema>;
+
+/** Top-level keys one conductor event record may carry: an engine record has a few dozen. */
+export const CONDUCTOR_EVENT_MAX_KEYS = 1_000;
 
 /**
  * One pushed pipeline event, as the visualizer plugin posts it to `POST /ingest/conductor`.
@@ -4841,7 +5163,7 @@ export const ConductorIngestEnvelopeSchema = z.object({
   /** The producer's own monotonic coordinate for this event within the run. */
   seq: z.number().int().nonnegative(),
   /** The engine's event record, verbatim and unread. */
-  event: z.record(z.unknown()),
+  event: boundedRecord(z.string(), z.unknown(), CONDUCTOR_EVENT_MAX_KEYS),
   /** Additive Engineer scope. Absent on every legacy implementation-run envelope. */
   engineerRunId: z.string().min(1).optional(),
   correlationId: z.string().min(1).nullable().optional(),
@@ -5142,9 +5464,12 @@ export const ApproveWorkItemSchema = z.object({
   revision: EditWorkItemSchema.shape.revision,
 }).strict();
 
+/** The most items one reorder may name: far past any queue a person curates by hand. */
+export const QUEUE_REORDER_MAX = 5_000;
+
 /** Reorder a queue: the full id list in the new authored order, renumbered in a txn. */
 export const ReorderQueueSchema = z.object({
-  ids: z.array(z.string().min(1)).min(1),
+  ids: z.array(z.string().min(1)).min(1).max(QUEUE_REORDER_MAX),
 });
 export type ReorderQueue = z.infer<typeof ReorderQueueSchema>;
 
@@ -5225,6 +5550,8 @@ export const SetWorkItemStateSchema = z
           firstSeenRound: z.number().int().min(0),
         }),
       )
+      // The verifier carries a handful into each round; this only refuses an absurd list.
+      .max(500)
       .optional(),
     sendAttempts: z.number().int().min(0).optional(),
     verifyFailures: z.number().int().min(0).optional(),
@@ -5506,7 +5833,18 @@ export const CONVERSATION_TEXT_MAX_LENGTH = 100_000;
  * multi-line intent or a bulleted gap list at all.
  */
 export const InjectPromptSchema = z.object({
-  codeRabbit: z.object({ prKey: z.string().min(1).max(512), observationId: z.string().uuid() }).optional(),
+  codeRabbit: z.object({ prKey: z.string().min(1).max(512), observationId: z.string().guid() }).optional(),
+  /**
+   * A Stacked pull requests prompt or broken-stack action, by identity only (see
+   * `StackPromptRequest`). The daemon replaces `text` with the prompt it builds from the pull
+   * request row, claims a catch-up or restack before typing it, and refuses anything the
+   * child no longer needs.
+   */
+  stack: z.object({
+    prKey: z.string().min(1).max(512),
+    kind: z.enum(["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
+    tip: z.string().min(1).max(128).nullable(),
+  }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
   /** Human conversation composers opt into the editable outbox by default. */
   buffer: z.boolean().optional().default(true),
@@ -5525,6 +5863,12 @@ export const InjectPromptSchema = z.object({
   origin: PromptOriginSchema,
 });
 export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
+
+/** *Wait for a replacement* on a broken stack: let a replacement parent take the child over. */
+export const StackAwaitReplacementSchema = z.object({
+  prKey: z.string().min(1).max(512),
+  wait: z.boolean(),
+});
 
 /** Transient browser presence used only to keep Foreman clear of a human draft. */
 export const ComposerActivitySchema = z.object({
@@ -5649,10 +5993,9 @@ export const CreatePersonaSchema = z.object({
   guidanceMarkdown: PersonaGuidanceSchema,
   runner: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model: ModelIdSchema.nullable().optional().default(null),
+  // Checked against the provider and model by `PersonaManager.create`, so a refusal carries the
+  // same `persona_unsupported_effort` code an update's does.
   effort: EffortLevelSchema.nullable().optional().default(null),
-}).refine((value) => !value.effort || personaEffortLevels(value.runner, value.model).includes(value.effort), {
-  message: "reasoning effort is not supported by this provider and model",
-  path: ["effort"],
 });
 export type CreatePersona = z.infer<typeof CreatePersonaSchema>;
 
@@ -5863,7 +6206,7 @@ export const CreateSessionActionSchema = z.object({
   // `session_turn` is the default because it is the only completion a freshly authored
   // action can honestly promise. `pull_request` proves something about a repository, and an
   // operator opts into that proof rather than inheriting it.
-  completion: SessionActionCompletionSchema.optional().default({ kind: "session_turn" }),
+  completion: SessionActionCompletionSchema.prefault({ kind: "session_turn" }),
 });
 export type CreateSessionAction = z.infer<typeof CreateSessionActionSchema>;
 
@@ -6164,7 +6507,7 @@ export const WorkflowBindingDefaultsSchema = z.object({
 });
 
 /** Recursive, JSON-only durable payload validation for later-phase audit columns. */
-export const WorkflowJsonSchema: z.ZodType<WorkflowJson> = z.lazy(() =>
+export const WorkflowJsonSchema: z.ZodType<WorkflowJson, WorkflowJson> = z.lazy(() =>
   z.union([
     z.null(),
     z.boolean(),
@@ -6199,18 +6542,25 @@ export const WorkflowEvidenceRefSchema = z.object({
   }
 });
 
-export const WorkflowEvidenceRepositoryScopeSchema: z.ZodType<WorkflowEvidenceRepositoryScope> =
-  z.custom<WorkflowEvidenceRepositoryScope>(
-    (value) => value === "all" || (typeof value === "string" && /^repo-\d{2}$/.test(value)),
-    "Repository scope must be an issued repo slot",
-  );
+/**
+ * A string pattern rather than `z.custom`: this schema is part of MCP tool input, and the MCP
+ * SDK renders every tool's input with `z.toJSONSchema`, which refuses a custom predicate - one
+ * unrepresentable field takes the whole `tools/list` down. The cast only narrows `string` to
+ * the template type the pattern already guarantees.
+ */
+export const WorkflowEvidenceRepositoryScopeSchema = z
+  .string()
+  .regex(/^(?:all|repo-\d{2})$/, "Repository scope must be an issued repo slot") as z.ZodType<
+    WorkflowEvidenceRepositoryScope,
+    WorkflowEvidenceRepositoryScope
+  >;
 
 export const WorkflowEvidenceCoverageLinkSchema = z.object({
   clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars),
   role: z.enum(WORKFLOW_EVIDENCE_PROOF_ROLES),
 });
 
-export const WorkflowEvidenceCoverageClaimSchema: z.ZodType<WorkflowEvidenceCoverageClaim> = z.object({
+export const WorkflowEvidenceCoverageClaimSchema: z.ZodType<WorkflowEvidenceCoverageClaim, WorkflowEvidenceCoverageClaim> = z.object({
   clientCriterionId: z.string().min(1).max(
     WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars,
   ),
@@ -6272,7 +6622,7 @@ const WorkflowCanonicalCriterionInputSchema = WorkflowCanonicalCriterionSchema.e
   matchedClientCriterionIds: WorkflowMatchedClientCriterionIdsSchema.optional(),
 });
 
-export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceReadinessResult> = z.object({
+export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceReadinessResult, WorkflowEvidenceReadinessResult> = z.object({
   evaluatorVersion: z.literal("criterion_mapped_v1"),
   status: z.enum(WORKFLOW_EVIDENCE_READINESS_STATUSES),
   criteria: z.array(z.object({
@@ -6571,7 +6921,7 @@ export const SubmitWorkflowEvidenceSchema = z.object({
 });
 export type SubmitWorkflowEvidence = z.infer<typeof SubmitWorkflowEvidenceSchema>;
 
-export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewInput> = z.object({
+export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewInput, WorkflowPersonaReviewInput> = z.object({
   version: z.literal(1),
   operationId: z.string().min(1).max(200),
   submissionId: z.string().min(1).max(200),
@@ -6696,7 +7046,7 @@ const WorkflowSteeringContextSchema = z.union([
 ]);
 
 export const CodeRabbitConfigSnapshotSchema = z.object({
-  source: z.literal(".coderabbit.yaml"), committed: z.boolean().optional(), digest: z.string().length(64).nullable(), enabled: z.boolean(),
+  source: z.enum([".coderabbit.yaml", ".coderabbit.config.ts"]), committed: z.boolean().optional(), digest: z.string().length(64).nullable(), enabled: z.boolean(),
   state: z.enum(["enabled", "disabled", "missing", "invalid", "unreadable"]), diagnostic: z.string().max(1000),
 });
 const WorkflowContextSnapshotInputSchema = z.object({
@@ -6796,7 +7146,7 @@ const WorkflowContextSnapshotInputSchema = z.object({
         textArtifactCount: z.number().int().nonnegative().default(0),
         textArtifactBytes: z.number().int().nonnegative().default(0),
       }),
-    ]).default({ state: "full" }),
+    ]).prefault({ state: "full" }),
   }).superRefine((evidence, ctx) => {
     const artifactBytes = evidence.artifacts.reduce((sum, artifact) => sum + artifact.bytes, 0);
     if (artifactBytes > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes) {
@@ -6960,21 +7310,20 @@ export const WorkflowInspectorOnlyContextSchema = z.object({
 export const CreateWorkflowSchema = z.object({
   name: WorkflowNameSchema,
   description: WorkflowDescriptionSchema.optional().default(""),
-  draft: WorkflowDraftGraphSchema.optional().default({
+  draft: WorkflowDraftGraphSchema.prefault({
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
       { id: "end", kind: "end", outcome: "Complete", position: { x: 360, y: 0 } },
     ],
     edges: [],
   }),
-  completionPolicy: WorkflowCompletionPolicySchema.optional().default({ kind: "none" }),
+  completionPolicy: WorkflowCompletionPolicySchema.prefault({ kind: "none" }),
   // A NEW draft, so `auto` rather than the `manual` a NULL column reads as - see
   // `WORKFLOW_RESUMPTION_POLICIES`. The two defaults answer different questions.
-  resumptionPolicy: WorkflowResumptionPolicySchema.optional().default(DEFAULT_WORKFLOW_RESUMPTION_POLICY),
+  resumptionPolicy: WorkflowResumptionPolicySchema.prefault(DEFAULT_WORKFLOW_RESUMPTION_POLICY),
   evidenceReadinessPolicy: WorkflowEvidenceReadinessPolicySchema
-    .optional()
-    .default(DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY),
-  bindingDefaults: WorkflowBindingDefaultsSchema.optional().default(DEFAULT_WORKFLOW_BINDING_DEFAULTS),
+    .prefault(DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY),
+  bindingDefaults: WorkflowBindingDefaultsSchema.prefault(DEFAULT_WORKFLOW_BINDING_DEFAULTS),
 });
 export type CreateWorkflow = z.infer<typeof CreateWorkflowSchema>;
 
@@ -7402,7 +7751,7 @@ export const WorkflowPolicySchema = z.object({
       .default(DEFAULT_WORKFLOW_POLICY.retention.completedRunDays),
     maxCompletedRuns: z.number().int().min(100).max(10_000)
       .default(DEFAULT_WORKFLOW_POLICY.retention.maxCompletedRuns),
-  }).default(DEFAULT_WORKFLOW_POLICY.retention),
+  }).prefault(DEFAULT_WORKFLOW_POLICY.retention),
   checksEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.checksEnabled),
   checkTestLease: z.boolean().default(DEFAULT_WORKFLOW_POLICY.checkTestLease),
   checkTestConcurrency: z.number().int()
@@ -7428,7 +7777,7 @@ export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
   // and nothing says why.
   defaultWorkflowId: z
     .undefined({
-      errorMap: () => ({ message: "defaultWorkflowId was replaced by kindWorkflowDefaults.ship" }),
+      error: "defaultWorkflowId was replaced by kindWorkflowDefaults.ship",
     })
     .optional(),
   checkCommands: z
@@ -7581,6 +7930,8 @@ export const WorkflowCheckOutcomeSchema = z.object({
   status: z.enum(WORKFLOW_CHECK_STATUSES),
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   command: z.array(z.string()).nullable(),
+  commandSource: z.enum(WORKFLOW_COMMAND_SOURCES).nullable().optional(),
+  misfitSignal: z.string().max(400).nullable().optional(),
   exitCode: z.number().int().nullable(),
   output: z.string().max(WORKFLOW_EXECUTION_LIMITS.checkOutput),
   truncatedBytes: z.number().int().min(0),
@@ -7711,19 +8062,30 @@ export const WorkflowNodeAttemptStateSchema = z.enum(WORKFLOW_NODE_ATTEMPT_STATE
 // submission tool and eventual dashboard all consume these shapes rather than inventing a
 // second wire vocabulary.
 
-/** Recursive, JSON-only durable payload validation. */
-export const EnsembleJsonSchema: z.ZodType<EnsembleJson> = z.lazy(() =>
-  z.union([
-    z.null(),
-    z.boolean(),
-    z.number().finite(),
-    z.string(),
-    z.array(EnsembleJsonSchema),
-    z.record(z.string(), EnsembleJsonSchema),
-  ]),
-);
+/**
+ * Recursive, JSON-only payload validation, with an optional bound on every array and object in
+ * the value. The durable rows below carry none: they are this daemon's own writes, already
+ * capped in bytes. A value that arrives in a REQUEST does carry one, so an oversized container
+ * is refused before Zod parses its entries (GHSA-mrhx-c7xc-m3w5).
+ */
+function ensembleJson(maxEntries: number | null): z.ZodType<EnsembleJson, EnsembleJson> {
+  const value: z.ZodType<EnsembleJson, EnsembleJson> = z.lazy(() =>
+    z.union([
+      z.null(),
+      z.boolean(),
+      z.number().finite(),
+      z.string(),
+      maxEntries === null ? z.array(value) : z.array(value).max(maxEntries),
+      maxEntries === null ? z.record(z.string(), value) : boundedRecord(z.string(), value, maxEntries),
+    ]),
+  );
+  return value;
+}
 
-export const EnsemblePayloadEnvelopeSchema: z.ZodType<EnsemblePayloadEnvelope> = z.object({
+/** Recursive, JSON-only durable payload validation. */
+export const EnsembleJsonSchema = ensembleJson(null);
+
+export const EnsemblePayloadEnvelopeSchema: z.ZodType<EnsemblePayloadEnvelope, EnsemblePayloadEnvelope> = z.object({
   payloadVersion: z.literal(ENSEMBLE_PAYLOAD_VERSION),
   body: EnsembleJsonSchema,
 });
@@ -8230,7 +8592,7 @@ export const EnsembleOutcomeSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-export const EnsembleUnreadableSchema: z.ZodType<EnsembleUnreadable> = z.object({
+export const EnsembleUnreadableSchema: z.ZodType<EnsembleUnreadable, EnsembleUnreadable> = z.object({
   reason: z.string(),
   fields: z.array(z.string()),
 });
@@ -8243,7 +8605,7 @@ export const EnsembleUnreadableSchema: z.ZodType<EnsembleUnreadable> = z.object(
  * drift a pin exists to remove. The mode fields are bounded free strings because they are a
  * display snapshot of the pinned defaults, not a live enum this build must be able to name.
  */
-export const EnsembleWorkflowHandoffSchema: z.ZodType<EnsembleWorkflowHandoff> = z.object({
+export const EnsembleWorkflowHandoffSchema: z.ZodType<EnsembleWorkflowHandoff, EnsembleWorkflowHandoff> = z.object({
   workflowId: z.string().min(1).max(200),
   workflowVersionId: z.string().min(1).max(200),
   workflowVersion: z.number().int(),
@@ -8261,7 +8623,7 @@ export const EnsembleWorkflowHandoffSchema: z.ZodType<EnsembleWorkflowHandoff> =
   error: z.string().max(ENSEMBLE_LIMITS.errorText).nullable(),
 });
 
-export const EnsembleRunSchema: z.ZodType<EnsembleRun> = z.object({
+export const EnsembleRunSchema: z.ZodType<EnsembleRun, EnsembleRun> = z.object({
   id: ensembleId,
   sourceKind: EnsembleSourceKindSchema.nullable(),
   sourceKey: z.string(),
@@ -8289,7 +8651,7 @@ export const EnsembleRunSchema: z.ZodType<EnsembleRun> = z.object({
   completedAt: z.number().int().nullable(),
 });
 
-export const EnsembleMemberSchema: z.ZodType<EnsembleMember> = z.object({
+export const EnsembleMemberSchema: z.ZodType<EnsembleMember, EnsembleMember> = z.object({
   id: ensembleId,
   runId: ensembleId,
   roleKey: z.string(),
@@ -8305,7 +8667,7 @@ export const EnsembleMemberSchema: z.ZodType<EnsembleMember> = z.object({
   updatedAt: z.number().int(),
 });
 
-export const EnsembleAttemptSchema: z.ZodType<EnsembleAttempt> = z.object({
+export const EnsembleAttemptSchema: z.ZodType<EnsembleAttempt, EnsembleAttempt> = z.object({
   id: ensembleId,
   runId: ensembleId,
   memberId: ensembleId,
@@ -8327,7 +8689,7 @@ export const EnsembleAttemptSchema: z.ZodType<EnsembleAttempt> = z.object({
   finishedAt: z.number().int().nullable(),
 });
 
-export const EnsembleArtifactSchema: z.ZodType<EnsembleArtifact> = z.object({
+export const EnsembleArtifactSchema: z.ZodType<EnsembleArtifact, EnsembleArtifact> = z.object({
   id: ensembleId,
   runId: ensembleId,
   attemptId: z.string().nullable(),
@@ -8343,7 +8705,7 @@ export const EnsembleArtifactSchema: z.ZodType<EnsembleArtifact> = z.object({
   readyAt: z.number().int().nullable(),
 });
 
-export const EnsembleStageAttemptSchema: z.ZodType<EnsembleStageAttempt> = z.object({
+export const EnsembleStageAttemptSchema: z.ZodType<EnsembleStageAttempt, EnsembleStageAttempt> = z.object({
   id: ensembleId,
   runId: ensembleId,
   stageId: z.string(),
@@ -8361,7 +8723,7 @@ export const EnsembleStageAttemptSchema: z.ZodType<EnsembleStageAttempt> = z.obj
   finishedAt: z.number().int().nullable(),
 });
 
-export const EnsembleEvaluationSchema: z.ZodType<EnsembleEvaluation> = z.object({
+export const EnsembleEvaluationSchema: z.ZodType<EnsembleEvaluation, EnsembleEvaluation> = z.object({
   id: ensembleId,
   runId: ensembleId,
   stageAttemptId: ensembleId,
@@ -8379,7 +8741,7 @@ export const EnsembleEvaluationSchema: z.ZodType<EnsembleEvaluation> = z.object(
   finishedAt: z.number().int().nullable(),
 });
 
-export const EnsembleLlmCallSchema: z.ZodType<EnsembleLlmCall> = z.object({
+export const EnsembleLlmCallSchema: z.ZodType<EnsembleLlmCall, EnsembleLlmCall> = z.object({
   id: ensembleId,
   runId: ensembleId,
   stageAttemptId: z.string().nullable(),
@@ -8398,7 +8760,7 @@ export const EnsembleLlmCallSchema: z.ZodType<EnsembleLlmCall> = z.object({
   errorCode: z.string().nullable(),
 });
 
-export const EnsembleDecisionSchema: z.ZodType<EnsembleDecision> = z.object({
+export const EnsembleDecisionSchema: z.ZodType<EnsembleDecision, EnsembleDecision> = z.object({
   id: ensembleId,
   runId: ensembleId,
   version: z.number().int(),
@@ -8412,7 +8774,7 @@ export const EnsembleDecisionSchema: z.ZodType<EnsembleDecision> = z.object({
   updatedAt: z.number().int(),
 });
 
-export const EnsembleEventSchema: z.ZodType<EnsembleEvent> = z.object({
+export const EnsembleEventSchema: z.ZodType<EnsembleEvent, EnsembleEvent> = z.object({
   id: z.number().int(),
   runId: ensembleId,
   ts: z.number().int(),
@@ -8420,7 +8782,7 @@ export const EnsembleEventSchema: z.ZodType<EnsembleEvent> = z.object({
   payload: EnsembleJsonSchema,
 });
 
-export const EnsembleSummarySchema: z.ZodType<EnsembleSummary> = z.object({
+export const EnsembleSummarySchema: z.ZodType<EnsembleSummary, EnsembleSummary> = z.object({
   id: ensembleId,
   title: z.string(),
   repoRoot: z.string(),
@@ -8448,7 +8810,7 @@ export const EnsembleSummarySchema: z.ZodType<EnsembleSummary> = z.object({
   completedAt: z.number().int().nullable(),
 });
 
-export const EnsembleRunDetailSchema: z.ZodType<EnsembleRunDetail> = z.object({
+export const EnsembleRunDetailSchema: z.ZodType<EnsembleRunDetail, EnsembleRunDetail> = z.object({
   run: EnsembleRunSchema,
   members: z.array(EnsembleMemberSchema),
   attempts: z.array(EnsembleAttemptSchema),
@@ -8534,7 +8896,7 @@ export const EnsembleActionSchema = z.discriminatedUnion("kind", [
     /** The state the caller believes it is deciding in. A mismatch is a `409`, never an act. */
     expectedStatus: EnsembleStatusSchema,
     /** The outcome, re-validated by the compiled decision driver against eligible artifacts. */
-    selection: EnsembleJsonSchema,
+    selection: ensembleJson(ENSEMBLE_LIMITS.decisionSelectionEntries),
     rationale: z.string().max(ENSEMBLE_LIMITS.rationale).default(""),
     /** The literal `true`: destructive finalization is unreachable without explicit confirmation. */
     confirmDestructive: z.literal(true),
@@ -8590,7 +8952,7 @@ const ScheduleTemplateSchema = z
     repoRoot: z.string().min(1),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
+      .refine(taskKindAllowsBacklog, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
       .refine(taskKindAllowsSchedule, TASK_KIND_SCHEDULE_REFUSAL)
       .default("ship"),
     /**
@@ -8868,7 +9230,9 @@ const ScoutSupportingLocatorSchema = z.object({
  * The zod in `src/mcp/server.ts` is a hand-written mirror of this. They are duplicated
  * deliberately and change together; `test/mission-mcp.test.ts` catches a rename.
  */
+// Patched Zod 4 rejects oversized arrays before parsing their elements (GHSA-mrhx-c7xc-m3w5).
 export const SubmitScoutArtifactsSchema = z.object({
+  files: z.array(ScoutSupportingLocatorSchema).min(1).max(SCOUT_SUBMISSION_LIMITS.selectedFiles).optional(),
   title: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional(),
   reportPath: z
     .string()
@@ -9135,8 +9499,9 @@ export type RespondToFileCommentsBody = z.infer<typeof RespondToFileCommentsSche
 
 /** Acknowledge the required setup rows shown by the browser's latest uncached read. */
 export const SetupBannerDismissRequestSchema = z.object({
-  snapshotToken: z.string().uuid(),
-  acknowledged: z.array(SetupRowIdSchema),
+  snapshotToken: z.string().guid(),
+  // One per required setup row the banner showed; the catalog is a few dozen rows.
+  acknowledged: z.array(SetupRowIdSchema).max(500),
 });
 export type SetupBannerDismissRequest = z.infer<typeof SetupBannerDismissRequestSchema>;
 
@@ -9154,11 +9519,13 @@ export const SessionTransferQuerySchema = z.object({
 
 
 /** A dashboard-only grant. No dispatch, task, schedule or global default accepts it. */
-export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().uuid().optional() }).strict();
+export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().guid().optional() }).strict();
 const ControlIdSchema = z.string().min(1).max(256);
 export const SessionControlReadSchema = z.object({
   sessionId: ControlIdSchema.optional(),
   transcript: z.boolean().optional().default(false),
+  /** List form only: true lists only sessions that stand on a blocker. */
+  blocked: z.boolean().optional(),
 }).strict();
 
 /** Fixed operations, never arbitrary URLs or caller-supplied actor attribution. */
@@ -9184,6 +9551,8 @@ export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("set_model"), model: SetSessionModelSchema.shape.model }).strict(),
   z.object({ action: z.literal("set_effort"), effort: SetSessionEffortSchema.shape.effort }).strict(),
   z.object({ action: z.literal("set_permission_mode"), mode: SetPermissionModeSchema.shape.mode }).strict(),
+  z.object({ action: z.literal("flag_blocker_reply"), ...FlagBlockerReplySchema.shape }).strict(),
+  z.object({ action: z.literal("clear_blocker"), ...ClearBlockerSchema.shape }).strict(),
 ]);
 export const SessionControlRequestSchema = z.object({
   sessionId: ControlIdSchema,
@@ -9209,6 +9578,8 @@ export const UpdateResidentProfileSchema = z
 export type UpdateResidentProfile = z.infer<typeof UpdateResidentProfileSchema>;
 
 /** `DELETE /api/residents/profiles/:id`: archive, compare-and-set on the revision the editor read. */
+export const ResetResidentStateSchema = z.object({ confirm: z.literal(true) }).strict();
+
 export const ArchiveResidentProfileSchema = z
   .object({ expectedRevision: z.number().int().positive() })
   .strict();

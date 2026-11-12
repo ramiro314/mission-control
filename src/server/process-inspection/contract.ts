@@ -65,6 +65,11 @@ export interface ProcessTable {
   rows: ProcessRow[];
   /** The first read that did not answer completely, or null when every read did. */
   failure: RunResult | null;
+  /**
+   * Whether any read overflowed its buffer, even one after `failure`. Absent means only
+   * `failure` says.
+   */
+  overflowed?: boolean;
   /** Helper processes this listing spawned, which may appear in their own snapshot. */
   collectorPids: number[];
 }

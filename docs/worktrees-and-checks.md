@@ -166,6 +166,18 @@ were, and a slot may be dirty and occupied, as any live lease may. A slot whose 
 read stays quarantined and records that on its card. One whose owner is positively gone loses its
 identity as above and stays quarantined; it is not restored.
 
+An observation read gets one retry before it counts as unknown. The process and cwd listings
+behind occupancy and an owner lookup that throws each try once more in the same pass, 2 seconds
+later and with double the timeout. A listing too large to buffer is not retried, because asking
+again cannot make it smaller. So do `git worktree list` and each Git read of a slot
+inspection when they timed out or were killed; a Git that exited with its own error is answered
+at once, because it would say the same again. A PID that an otherwise healthy cwd listing
+omitted is first re-read on its own, one at a time and stopping at the first re-read that does
+not answer, and only one that is still unresolved, and still alive with the same start time,
+leaves occupancy unknown. A read that fails twice records both attempts, for example "git status
+timed out after 15 s, and after 30 s on retry". A command killed at its timeout is named as a
+timeout, and one killed by another signal names that signal, so neither reads as "exit 1".
+
 `make session` is a loopback client for that daemon-owned inventory:
 
 ```sh
@@ -1648,7 +1660,9 @@ What a Command gets:
   locale and proxy variables and everything else a build needs are passed through. This stops a
   credential being *handed* to a check; it does not hide the daemon's default state directory,
   which sits in your home folder and which anything running as you can find whatever the
-  environment says.
+  environment says. make's recursion state (`MAKELEVEL`, `MAKEFLAGS`, `MFLAGS`, `MAKEOVERRIDES`)
+  is removed too, so a daemon started under `make start` still runs each Command as a top-level
+  make rather than as a sub-make carrying the parent's flags and jobserver descriptors.
 - **A closed stdin**, so a command that stops to ask a question fails immediately instead of
   hanging until its timeout.
 - **Bounded output.** The combined last 4,000 bytes remain inline because a failing build's

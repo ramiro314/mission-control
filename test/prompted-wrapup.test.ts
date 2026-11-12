@@ -65,6 +65,7 @@ const CFG: PromptedConfig = {
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "s1",
     agent: "claude",
     name: "work",
@@ -398,6 +399,30 @@ test("an unresolved or unclear instruction pauses automatic completion", () => {
     "skip",
   );
   assert.equal(decide({ intent: mkIntent({ relationship: "unclear" }) }).kind, "skip");
+});
+
+test("an objective a person accepted as is is a resolved intent that Foreman checks", () => {
+  // The shape `Registry.acceptGoalObjective` leaves behind: every pending revision resolved as
+  // steering, the objective and its version untouched. Same objective, same version, so the
+  // episode key moves only with the revision that was accepted.
+  const paused = mkIntent({
+    promptRevision: 3,
+    resolvedPromptRevision: 1,
+    relationship: "unclear",
+    pendingPrompts: [{ revision: 2, prompt: "B" }, { revision: 3, prompt: "B, but rename it" }],
+  });
+  assert.equal(decide({ intent: paused }).kind, "skip");
+  const accepted = mkIntent({
+    ...paused,
+    relationship: "steer",
+    rationale: "Accepted by you: the current objective is the completion contract. 2 instructions were recorded as steering.",
+    resolvedPromptRevision: 3,
+    pendingPrompts: [],
+  });
+  const r = decide({ intent: accepted });
+  assert.equal(r.kind, "check");
+  assert.equal(r.kind === "check" && r.objective, GOAL);
+  assert.equal(r.kind === "check" && r.episodeKey, "intent:1:3");
 });
 
 // ---- the two guards that make this trigger terminate ----
@@ -935,4 +960,15 @@ test("PromptedFailureTracker: strikes are per logical session", () => {
   for (let n = 0; n < VERIFY_FAILURE_CAP; n++) t.onFailure("agent-1", 1);
   assert.equal(t.gaveUp("agent-1", 1), true);
   assert.equal(t.gaveUp("agent-2", 1), false, "one session's broken cycle strands no other");
+});
+
+test("a blocked session is skipped, and the same session is a candidate once the blocker clears", () => {
+  const blocker = {
+    id: "blk-fixture", kind: "question" as const, reason: "Needs the retention window", waitingOn: "Dana", resumeWhen: "Dana answers",
+    details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null,
+  };
+  const held = decide({ session: mkSession({ blocker }) });
+  assert.deepEqual(held, { kind: "skip", why: "the session is blocked" });
+  // A skip consumes nothing, so clearing it leaves the generation to complete normally.
+  assert.equal(decide({ session: mkSession({ blocker: null }) }).kind, "check");
 });

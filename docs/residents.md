@@ -24,7 +24,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
 | Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
-| MCP servers | Whether the harness's global servers ride along, and which global or [custom](#custom-mcp-servers) servers are added; see [MCP servers](#mcp-servers) | inherit on, none selected |
+| MCP servers | A pinned set or, on Claude Code, all native sources; whether the harness's global servers ride along, and which global or [custom](#custom-mcp-servers) servers are added; see [MCP servers](#mcp-servers) | pinned, inherit on, none selected |
 
 A profile needs a Persona, profile instructions, or both: one with neither has no role and is
 refused on save and at launch. Leave the Persona at **No Persona** to run a resident on its
@@ -119,9 +119,29 @@ unanswered, Dispatch keeps that one launch available to retry exactly.
 
 ## Finding a resident
 
-A running resident is marked wherever its session appears, and every mark comes from the
-revision the run launched with: editing the profile's color, label or pin changes the next launch,
-never a resident that is already running.
+**Settings → Display → Residents → Where residents live** decides where running residents are
+drawn. The choice is stored per machine beside **Layout** and applies live.
+
+| Where residents live | What you see |
+|---|---|
+| **Drawer** (default) | Residents leave the Board columns and the Console rail and live in [the Residents drawer](#the-residents-drawer) on the right edge. While a conversation is open, a resident that needs you is also a row in the **Needs you** rail. A fresh install, and any install that never chose, gets the drawer. |
+| **Board and Console** | Residents sit in the Board columns and the Console rail beside every other session, with their marker, and the top bar's **Residents** button opens [the Residents dock](#the-residents-dock). |
+
+Either way a resident opens on the same full detail - Conversation, Work queue, Workflows,
+Diff and Files, with the resident band - as the Board drill-in on the Board and in the detail
+pane in Console:
+
+- **⌥1…⌥9** open live resident 1 to 9, in the order the drawer and the dock list them (oldest
+  launch first), from any page. They match the physical digit key, so they work on macOS, where
+  Option+digit types a symbol, and they do nothing while a text field has focus. They cannot be
+  rebound, and **⌘1…⌘9** keep numbering only fleet sessions.
+- **⌘K** finds a live resident by name or label and opens its detail.
+- The **Need you** count, desktop alerts and the chime include a resident that needs you in
+  both placements.
+
+In **Board and Console** placement, every mark below comes from the revision the run launched
+with: editing the profile's color, label or pin changes the next launch, never a resident that
+is already running.
 
 - **Border glow.** Its Board card has a glowing outline in the profile's color, and a label
   chip beside its name - the label you set, up to four characters, or initials from the profile's
@@ -134,21 +154,131 @@ never a resident that is already running.
   <kbd>⌘</kbd>-number shortcuts follow that order. Turn the pin off under **Board presence** and
   a resident takes its place in the column's ordinary order like any other session: by name,
   within its repository's group when **Group by repository** is on.
-- **Console band.** Opening a resident shows a band under the Console header: the label chip,
-  the profile name, the Persona if it has one, the revision it launched from and whether it is pinned. When the
-  profile has been edited since the launch, the band says **Profile changed since launch** and
-  the new revision. When the resident's revision turns **Control other sessions** on, the band
-  says **control granted** or **control not granted**, the latter beside the session control
-  menu. **Profile** opens the profile on the Residents page.
 - **Hiding the marker.** **Settings → Display → Session display → Resident marker** takes the
   glow and chip off cards and rail rows. The pin still applies, and the Console band and the
   dock still name the resident.
 
+In **Drawer** placement there is no card or rail row for the marker or the pin to act on, so
+**Resident marker** and the profile's **Pin to top of column** say they apply only in Board and
+Console. The marker's color and label still draw the drawer's cards and the visitor card.
+
+The **Console band** shows in both placements. Opening a resident shows a band under the
+Console header: the label chip, the profile name, the Persona if it has one, the revision it
+launched from and whether it is pinned. When the profile has been edited since the launch, the
+band says **Profile changed since launch** and the new revision. When the resident's revision
+turns **Control other sessions** on, the band says **control granted** or **control not
+granted**, the latter beside the session control menu. **Profile** opens the profile on the
+Residents page.
+
+### The Residents drawer
+
+In **Drawer** placement the top bar's **Residents** button, **Shift+H**, the ⌘K command **Open
+the Residents drawer or dock**, and the edge tab on the window's right edge all open a 330px
+drawer as a column on the right of Fleet, so the Board or Console narrows beside it. Nothing is
+dimmed or covered, and the fleet's keys keep working. Opened from another page, it goes to Fleet
+to show it. The keyboard lands on the selected resident's card, or, if that resident has ended,
+on the first that needs you or the first listed. Opened before any resident has arrived, the
+keyboard moves to the first card when it appears, unless you have pressed a key or clicked
+somewhere else in the meantime. **✕**, **Shift+H** or the top-bar button closes it; Escape and a
+click elsewhere do not. The edge tab shows ⌂ and the live
+count, with no number when nothing is running. It lights in the Board's column colors: the
+**Working** color while any resident is working, and the **Needs you** color while any resident
+needs you. When both are true, Needs you takes the tab's edge and the ⌂, and Working stays lit as
+a second edge around it. The colors come from the current skin. The top-bar button keeps its name
+and count.
+
+- **Manage residents.** A row of its own under the drawer's title, above the cards, holds
+  **Manage residents**, which opens the Residents page to author, edit and archive profiles.
+- **Cards.** One card per live resident, in its marker color, in the order the dock uses. The
+  top line holds the chip, the name, a state dot, the resident's **⌥**-number and a fold caret.
+  Under it are tags for the loop's state, iteration and next wake, and any pause or wake
+  reason. Every card ends with **Open**, **Run now** and **Pause** or **Resume**, and a
+  **Control** badge when the resident's revision asks for session control.
+- **Working and Needs you.** While a resident is working, its card is edged and lightly tinted
+  in the color of the Board's **Working** column; while it needs you, in the color of **Needs
+  you**. Both colors come from the current skin, so they match that skin's columns. Otherwise
+  the card wears its marker color.
+- **Needs you group.** Residents that need you move to the top of the drawer, into a group
+  framed in the **Needs you** color under a **Needs you** heading with how many are asking.
+  With keycaps on, the heading prints <kbd>e</kbd>. <kbd>e</kbd> opens the review queue of the
+  first fleet session asking, as it always has, and otherwise addresses the first resident in
+  this group: its review queue, with its card selected, when it asked through a review, or its
+  conversation with the cursor in the reply box when it needs you some other way, such as a menu
+  it is parked on. That holds while a conversation is open and the resident is also a row in the
+  **Needs you** rail, and a fleet session's review still comes first even when that resident is
+  the one selected. <kbd>e</kbd> passes over the resident whose conversation is already open
+  while another is asking, unless it has a review to open; when that one is the only resident
+  asking, it puts the cursor back in its reply box. The rest of the residents follow below the
+  group.
+  A card keeps its **⌥**-number when it moves into or out of the group, so the numbers never
+  shift while an ask is open, and <kbd>↑</kbd>/<kbd>↓</kbd> walk the cards in the order drawn.
+- **Compressing a card.** Every card starts open. Clicking a resident's title, or
+  <kbd>Space</kbd> on it, compresses the card the way a Board repository group folds: it keeps
+  the title, one line of what the resident is doing, which follows its activity as it changes,
+  and its controls, and drops the loop tags and any question. Clicking the title again opens
+  it. Each card folds on its own, so you can stack more residents in the drawer. A fold lasts
+  while the dashboard is open, through closing, reopening and pinning the drawer, and every
+  card is open again after a reload.
+- **Selection.** <kbd>↑</kbd>/<kbd>↓</kbd> move the selection without opening or compressing
+  any card, and <kbd>Enter</kbd> opens the selected resident; a double-click on a title opens
+  a resident too.
+- **Opening the conversation.** Clicking anywhere in a card between its title and its actions -
+  the loop tags, the status lines, or what the resident is asking or last said - opens the
+  resident's conversation, as **Open** does. Selecting some of the text does not, and the
+  actions keep their own clicks. A compressed card's one status line opens it too. Its latest
+  message is clamped to three lines (the line the Console rail prints under its name).
+- **What a resident is asking.** Above its actions, an open card shows what the resident is
+  asking in place of its latest message: one row per pending review, in the **Needs you**
+  color, with its kind as the review modal names it (input, decisions, plan or diff), its
+  title and a line on what answering takes, such as a question's options. The card never
+  draws the form itself.
+  Clicking a row selects the card and opens the review modal on that resident's queue, the same
+  modal <kbd>e</kbd> opens, where the question is answered, dismissed or moved to chat. A menu
+  the session is parked on is one such row too, and clicking it opens the same review modal,
+  which shows the menu's rows as the Conversation tab does, so pressing one answers it. Once
+  nothing is left pending, the modal closes and the amber state and the visitor card clear.
+- **No reply box.** A card has no free-form reply box.
+  To write to a resident, open its conversation and use the Conversation tab's reply box.
+- **Footer.** **Profiles** lists every live profile with **Launch** or **Launch…**, with the
+  same launch behavior the dock has (see below). The dock and the drawer share one launch
+  state, so closing either while a launch is starting never starts a second resident.
+- **Pin.** Open, the drawer lasts until it is closed or the page reloads: a refresh or a
+  restart closes it. **Pin** keeps it open through those too, and changes nothing on screen.
+  The pin is stored per machine. **Unpin** leaves the drawer open until the next reload, and
+  closing a pinned drawer unpins it.
+
+**Escape returns to the card.** A resident opened from the drawer opens beside it, as the Board
+drill-in or the Console detail pane, and the drawer stays on screen with that resident selected.
+The Escape that leaves the detail moves focus to that resident's card. A resident opened by
+**⌥N** or the palette with the drawer closed leaves the usual way.
+
+**In the Needs you rail while a conversation is open.** While any session's detail is open -
+the Board drill-in, or a selected row in Console - every resident that needs you is an ordinary
+row in the **Needs you** rail, with its chip, its state and what it is asking, the open resident
+included. Opening a resident that needs you drills the Board into a full **Needs you** rail
+listing everything asking, so a click or an arrow key moves the conversation from one to the
+next. The rows carry no <kbd>⌘</kbd>-number, so the fleet's numbers don't shift as a detail
+opens and closes, and they stay in the rail whether or not the drawer is on screen. Escape out of
+a resident's detail still moves focus to its drawer card while the drawer is open. A resident
+that does not need you never joins the rail. Close the detail and the residents leave the rail
+again: for the drawer's **Needs you** group while the drawer is on screen, or for a visitor card
+while it is closed.
+
+**Visitor card.** While the drawer is closed and no detail is open, a resident that needs you
+shows a visitor card in the Board's **Needs you** column, or among the Console rail's sessions
+that need you: a dashed outline in its marker color with the chip, the name and *Resident ·
+opens its conversation*. Clicking it, or <kbd>Enter</kbd> on it, opens that resident's
+conversation, as **⌥N** does, and leaves the drawer closed. The arrow keys reach it; the
+<kbd>⌘</kbd>-numbers skip it, so they don't shift while its ask is open. It disappears while the
+drawer is open or pinned, while any detail is open (the resident is a row in the rail then), and
+once the resident no longer needs you. In Console, where selecting a row opens it, an arrow key
+landing on the visitor card opens the resident's detail.
+
 ### The Residents dock
 
-**Residents** sits beside **Foreman** in the top bar. While any resident is running it shows how
-many; with none running it shows no number. Click it, press **Shift+H**, or choose **Open the
-Residents dock** in the ⌘K palette.
+In **Board and Console** placement, **Residents** sits beside **Foreman** in the top bar. While
+any resident is running it shows how many; with none running it shows no number. Click it, press
+**Shift+H**, or choose **Open the Residents drawer or dock** in the ⌘K palette.
 
 - **Live** shows each running resident as a card in its marker color. The card's top line has
   the chip, the name, the session's state and **Open**, which opens that session. Under it are
@@ -203,6 +333,29 @@ control for one conversation, as it can for any session, and that grant ends at 
   can for any session; that grant ends at the next restart.
 
 The exact rule, and what cannot create a grant, is in [security](security.md#resident-launch-grants).
+
+### Blocked sessions
+
+A resident with session control can work the [blockers](sessions.md#blocked-sessions) other
+sessions record when they wait on someone other than you. `read_sessions` adds a `blocker`
+summary (`id`, `kind`, `reason`, `waitingOn`, `referenceUrl`, `startedAt`, `reply`) to every row of
+its list and accepts `blocked: true` to list only blocked sessions; reading one session returns
+its whole blocker, Markdown details included. `control_session` adds two actions:
+
+- `{"action":"flag_blocker_reply","note":"...","referenceUrl":"..."}` marks a likely answer.
+  It does not clear the blocker and sends nothing to the session; the card shows a
+  **Reply flagged** pill and nothing else.
+- `{"action":"clear_blocker","resolution":"..."}` clears it.
+
+Both actions take an optional `blockerId`. Pass the `id` that `read_sessions` returned: when it
+is supplied and the session has since cleared that blocker and reported a different one (even
+within the same millisecond), the action is refused with 409 instead of touching the
+replacement. A re-report keeps the id. Without `blockerId` the action applies to whatever
+blocker stands at that moment, so a resident that omits it can flag or clear a blocker it never
+read. The dashboard's Flag reply and Clear blocker always send it.
+
+"Check again" is the ordinary `message` action. The built-in Agent Shepherd flags, then
+messages, and never clears a blocker without evidence that its `resumeWhen` condition is met.
 
 ## Lifecycle
 
@@ -339,6 +492,10 @@ cumulative iteration or reuses a sequence. Pacing receipts remain for the run's 
 **MCP servers** in the profile editor decides which MCP servers a resident starts with, besides
 Mission Control's own, which every resident always has.
 
+- **Server set** chooses between **Pinned at launch** (the default) and, on Claude Code, **All
+  native sources (not pinned)**; see [All native sources](#all-native-sources). Codex offers only
+  the pinned set, so the choice is not shown for it, and a profile on Codex that makes it is
+  refused on save and at launch.
 - **Inherit harness defaults** (on by default) adds every global server the harness configures
   when the resident launches: the user-scope `mcpServers` in Claude Code's `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), or the `mcp_servers` in Codex's own `config.toml`.
@@ -346,13 +503,45 @@ Mission Control's own, which every resident always has.
   that applies to the profile's harness. With inheritance off, the resident starts with only the
   selection. A selected server that is also inherited starts once.
 
-Dispatch's launch summary says what the launch carries, such as `MCP: defaults + linear`.
+Dispatch's launch summary says what the launch carries, such as `MCP: defaults + linear`, or
+`MCP: all native sources (not pinned) + linear` for a profile on all native sources.
+
+### All native sources
+
+**All native sources (not pinned)** starts a Claude Code resident with everything Claude Code
+loads on its own, as a terminal `claude` session on this machine and account would: user, local
+and project MCP servers, plugin servers and claude.ai connectors (such as
+`mcp__claude_ai_Slack__*`), beside Mission Control's own server and any custom server the profile
+selects. Choosing it asks for confirmation first, because it gives up what the pinned set
+guarantees:
+
+- **Not frozen.** Claude Code reads its configuration and fetches the account's connectors at
+  every start, so a server or connector added, changed or removed natively, or in claude.ai's
+  settings, reaches a running resident at its next start or resume. Only the custom servers are
+  snapshotted at launch.
+- **Not checked.** Only Mission Control's own server and the profile's custom servers must connect
+  before the resident starts, as in [What a run starts](#what-a-run-starts). A native server or
+  connector that fails, is switched off or needs a login does not refuse the start; Claude Code
+  reports it the way a terminal session does.
+- **Broader reach.** An autonomous, looping resident can use every connector's account-level
+  access, such as sending Slack messages as you.
+- **Not isolated.** Native servers and connectors start from Claude Code's own configuration with
+  its own stored logins, not through Mission Control's [scoped launcher](#custom-mcp-servers).
+
+With it chosen, **Inherit harness defaults** and the global servers in **Add an MCP server** are
+hidden: Claude Code loads its global servers itself. A global server already selected stays in the
+profile, marked *loads natively*, and comes back into the set if you switch to **Pinned at
+launch**. A global server residents cannot carry no longer refuses the launch, because Mission
+Control does not resolve it. A custom server named like one of Claude Code's global servers is
+still refused, because both would load under one name.
 
 ### What a run starts
 
 A launch resolves the run's set once, from the revision it pins and each harness's configuration
 as it is at that moment, and keeps a private copy of every definition and value. Every start and
-every resume after that reads only the copy:
+every resume after that reads only the copy. This section describes the pinned set; a profile on
+[all native sources](#all-native-sources) keeps a copy of its custom servers only, and the rules
+below apply to them and to Mission Control's server:
 
 - A global server added later, a field added to a native entry, an edited or deleted custom
   server, a changed secret or an edited profile never reaches a running resident. The next launch
@@ -462,6 +651,31 @@ See [security](security.md#resident-mcp-secrets).
 
 When a run ends, its copy of the servers and their values, its launch tickets and its Codex
 configuration overlay are removed once its session has stopped.
+
+## Durable profile state
+
+Each profile owns `$MISSION_HOME/residents/profiles/<profile-id>/state/`, independent of its
+repository or run workspace. New runs and SDK restores reuse it. Renaming or editing a profile
+keeps the same state; duplicating one creates a new identity with empty state. Concurrent runs
+of one profile share it, so residents should coordinate writes to ledgers and watermarks.
+
+The run receives `RESIDENT_STATE_DIR` and standing instructions explaining the directory.
+Claude Code receives `autoMemoryDirectory` and `autoMemoryEnabled` in launch-scoped settings,
+using this directory for its `MEMORY.md` and topic files. Existing per-run memories and handmade
+state folders are not automatically imported. Copy desired notes into the profile directory.
+The [Claude memory reference](https://code.claude.com/docs/en/memory#storage-location) describes
+this setting. Codex receives the directory and instructions for explicit notes and ledgers.
+
+Open a saved profile in **Residents**, then **View state** to see its path and files, including
+text previews up to 256 KiB. **Refresh state** reloads the list. **Reset state** asks before
+permanently clearing the files, including auto-memory. Complete and close every run first;
+pausing a loop leaves its session alive, so reset refuses it. Reset keeps profile settings and
+run history. Run completion, pauses, daemon restarts and profile archival retain the state.
+Profiles are archived rather than hard-deleted, so archival retains their state too.
+
+State files are machine-local and are not included in settings snapshots or database recovery
+points. Back them up separately when moving an installation. The existing run history remains
+the source of lifecycle records; no additional run-log file is maintained in this directory.
 
 ## Backups
 

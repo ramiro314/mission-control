@@ -1,4 +1,5 @@
 import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
+import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
@@ -38,6 +39,7 @@ import {
   TASK_PRIORITIES,
   hasReviewableDiff,
   isGrillFirstTaskKind,
+  isPlanningTaskKind,
   taskDefaultWorkflowId,
   taskKindAllowsBacklog,
   type GrillFirstTaskKind,
@@ -68,6 +70,7 @@ import { WORKFLOW_LAUNCH_FIX_DOORS } from "../lib/workflow-fix.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
   draftFromTask,
+  draftPersonaId,
   draftsEqual,
   parseLabelInput,
   taskUpdatePatch,
@@ -97,6 +100,7 @@ import { Tooltip } from "./Tooltip.tsx";
 import { InfoTip } from "./InfoTip.tsx";
 import { GRILL_FIRST_TIP } from "../lib/grill-first.ts";
 import { DispatchModeToggle } from "./DispatchModeToggle.tsx";
+import { DispatchPersonaField, dispatchPersonaSummary } from "./DispatchPersonaField.tsx";
 import type { ResidentProfile } from "@shared/residents.ts";
 import { ResidentDispatch } from "../residents/ResidentDispatch.tsx";
 import {
@@ -297,7 +301,9 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.model === EMPTY_DISPATCH_DRAFT.model &&
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
     d.advisorModel === EMPTY_DISPATCH_DRAFT.advisorModel &&
+    d.personaId === EMPTY_DISPATCH_DRAFT.personaId &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
+    d.planStorage === EMPTY_DISPATCH_DRAFT.planStorage &&
     d.grillFirst === EMPTY_DISPATCH_DRAFT.grillFirst &&
     d.enabled === EMPTY_DISPATCH_DRAFT.enabled &&
     d.dependencies.length === 0
@@ -588,6 +594,7 @@ export function DispatchLayer({
   foremanEnabled = false,
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
+  stackingDefault = STACKING_SHIPPED_DEFAULT,
   onClose,
   onOpenSchedule,
   onOpenLaunchFix,
@@ -612,7 +619,7 @@ export function DispatchLayer({
   opening: DispatchOpening | null;
   tasks?: Task[];
   sessions?: Session[];
-  /** Live Personas, for the Ensemble evaluator-guidance selector. */
+  /** Live Personas, for the Ensemble evaluator-guidance selector and the Advanced Persona choice. */
   personas?: PersonaView[];
   /** Live Workflow summaries, for the optional post-selection handoff placement. */
   workflowSummaries?: WorkflowSummary[];
@@ -626,6 +633,11 @@ export function DispatchLayer({
   harnessesRevision?: number;
   /** Refetch exact active pipeline roots when observation consent changes under an open modal. */
   pipelinesRevision?: string;
+  /**
+   * The effective Stacked pull requests default (`SettingsStatus.shipping.stacking`), which a
+   * same-repository dependency chip shows as the mode it inherits until the operator picks one.
+   */
+  stackingDefault?: StackingMode;
   onClose: () => void;
   /** Open Recurring Missions from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -1059,6 +1071,8 @@ export function DispatchLayer({
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
         pipelinesRevision={pipelinesRevision}
+        stackingDefault={stackingDefault}
+        personas={personas}
       />
     );
   }
@@ -1090,6 +1104,8 @@ export function DispatchLayer({
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
         pipelinesRevision={pipelinesRevision}
+        stackingDefault={stackingDefault}
+        personas={personas}
       />
     );
   }
@@ -1109,6 +1125,8 @@ export function DispatchLayer({
       foremanEnabled={foremanEnabled}
       harnessesRevision={harnessesRevision}
       pipelinesRevision={pipelinesRevision}
+      stackingDefault={stackingDefault}
+      personas={personas}
     />
   );
 }
@@ -1143,6 +1161,8 @@ function DispatchModal({
   foremanEnabled = false,
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
+  stackingDefault = STACKING_SHIPPED_DEFAULT,
+  personas = [],
 }: {
   /**
    * Which of the form's four jobs this is, carrying that job's inputs and no others.
@@ -1174,6 +1194,9 @@ function DispatchModal({
    */
   harnessesRevision?: number;
   pipelinesRevision?: string;
+  stackingDefault?: StackingMode;
+  /** Live Personas, for the Advanced fold's Persona choice. */
+  personas?: PersonaView[];
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   /**
@@ -1318,12 +1341,7 @@ function DispatchModal({
   // a text field: the pass has to put the caret in it when the question opens, and has to be
   // able to tell a key pressed IN it from one pressed anywhere else in the dialog.
   const repoInputRef = useRef<HTMLInputElement>(null);
-  // The overlay owns the dispatch chord, but its listener is intentionally stable (see
-  // `Overlay`). Point it at the current submit closure so a field edit does not leave the
-  // shortcut submitting the previous render's draft.
-  const submitRef = useRef<(dispatchNow: boolean) => Promise<void>>(async () => {});
-  // The guided pass's keys, reached the same way and for the same reason: `Overlay`'s
-  // listener is subscribed once, so pointing it at a ref rather than at a closure is what
+  // The guided pass's keys use a stable listener, so pointing it at a ref is what
   // keeps typing in the task box from re-subscribing a window listener on every keystroke.
   const guidedKeyRef = useRef<(event: KeyboardEvent) => boolean>(() => false);
   // Parsed once per render: the preview below and the submit body must never disagree
@@ -1336,6 +1354,7 @@ function DispatchModal({
       draft.baseBranch.trim() ||
       draft.dependencies.length > 0,
   );
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // The backlog details fold (priority, labels, title, dependencies). Open from the start
   // when there is something inside to see - an edit, or a draft that already carries one of
   // them - and closed on a fresh dispatch, where the summary line names what is unset.
@@ -1446,6 +1465,25 @@ function DispatchModal({
     return required.map(requirement => `Required by pinned plan ${requirement.title} revision ${requirement.input.revision}.`).join(" ")
       + " Retain this prerequisite to preserve the exact originating work episode or local publication artifact. Changing it requires updating the plan input and dependency together.";
   }
+  /**
+   * Can this dependency start the task on its open pull request at all? Stacking covers a
+   * same-repository TASK prerequisite that has not merged: a pull request has one base, and
+   * only a task records what it was cut on. The chip's Stack / After merge control and the
+   * wait note both ask this, so neither promises a stack the other would not offer.
+   */
+  function isStackable(dependency: TaskDependencyInput): dependency is Extract<TaskDependencyInput, { type: "task" }> {
+    if (dependency.type !== "task") return false;
+    const target = tasks.find((task) => task.id === dependency.taskId);
+    if (target === undefined || target.repoRoot !== draft.repoRoot.trim()) return false;
+    // Already merged, so the edge is satisfied the moment it is saved and there is no open
+    // parent to start on: a stored edge says so itself, and a prerequisite added now is
+    // judged the way the server will record it - a finished task, or a live session whose
+    // pull request merged (see `TaskManager`'s dependency resolution).
+    const stored = editing?.dependencies.find((edge) => dependencyKey(dependencyInputOf(edge)) === dependencyKey(dependency));
+    if (stored?.satisfiedAt != null) return false;
+    if (target.status === "done") return false;
+    return !sessions.some((session) => session.state !== "exited" && session.task?.id === target.id && session.prState === "merged");
+  }
   const dependencyByKey = useMemo(() => {
     const out = new Map<string, { input: TaskDependencyInput; label: string; group: "backlog" | "session" }>();
     for (const task of tasks) {
@@ -1512,14 +1550,19 @@ function DispatchModal({
       ),
     [workflowSummaries],
   );
+  // The plan storage this task would hold if saved now, as the daemon resolves it: the form's
+  // pick, else (untouched, `undefined`) the storage a planning task being edited already pinned,
+  // else the global default. `null` is "Use global default", so it never falls back to the pin.
+  const effectivePlanStorage: "repository" | "local" = draft.planStorage
+    ?? (draft.planStorage === undefined && isPlanningTaskKind(editing?.kind)
+      ? editing?.planPolicy?.storage ?? "repository"
+      : null)
+    ?? planStorage
+    ?? "repository";
   // Null while the config is out, as it always was: the rows are not known yet, and arming a
   // built-in the operator may have replaced would gate the launch on Foreman for nothing.
   const defaultWorkflowId = workflowConfig
-    ? taskDefaultWorkflowId(
-      draft.kind,
-      workflowConfig.kindWorkflowDefaults,
-      editing?.planPolicy?.storage ?? planStorage ?? "repository",
-    )
+    ? taskDefaultWorkflowId(draft.kind, workflowConfig.kindWorkflowDefaults, effectivePlanStorage)
     : null;
   const selectedWorkflowId = draft.workflowId === undefined ? defaultWorkflowId : draft.workflowId;
   const defaultWorkflow = workflowSummaries.find((workflow) => workflow.id === defaultWorkflowId) ?? null;
@@ -1602,7 +1645,10 @@ function DispatchModal({
    * returning hands it back, unless the operator chose an after-work Workflow by hand in
    * between (which clears the stash, so their choice stands). Every other kind arms its row.
    * Moving between two kinds with no diff whose rows agree leaves the choice alone, so a
-   * Workflow picked by hand on chat survives a hop to scout.
+   * Workflow picked by hand on chat survives a hop to scout. Plan arms its row by following
+   * the Dispatch default rather than pinning it: its default depends on plan storage, which
+   * the daemon resolves at save time (upstream #1362), so the row and the local variant are
+   * both read then rather than frozen at the click.
    */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
@@ -1613,7 +1659,7 @@ function DispatchModal({
       return stashed === NO_STASH ? {} : { workflowId: stashed };
     }
     const rows = workflowConfig?.kindWorkflowDefaults ?? {};
-    const storage = planStorage ?? "repository";
+    const storage = effectivePlanStorage;
     const target = taskDefaultWorkflowId(kind, rows, storage);
     if (
       !hasReviewableDiff(kind)
@@ -1623,6 +1669,7 @@ function DispatchModal({
       return {};
     }
     if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
+    if (kind === "plan") return { workflowId: undefined };
     if (!workflowConfig) provisionalWorkflow.current = { kind, workflowId: target };
     return { workflowId: target };
   }
@@ -1634,7 +1681,7 @@ function DispatchModal({
     if (!workflowConfig || !guess) return;
     provisionalWorkflow.current = null;
     if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
-    const resolved = taskDefaultWorkflowId(guess.kind, workflowConfig.kindWorkflowDefaults, planStorage ?? "repository");
+    const resolved = taskDefaultWorkflowId(guess.kind, workflowConfig.kindWorkflowDefaults, effectivePlanStorage);
     if (resolved !== guess.workflowId) update({ workflowId: resolved });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when the rows arrive
   }, [workflowConfig]);
@@ -2445,10 +2492,9 @@ function DispatchModal({
   }
 
   async function submit(dispatchNow: boolean): Promise<void> {
-    // Ensemble has no route through here. Its primary slot is Review-then-Launch, its shelve
-    // button is not rendered, and ⌘↵ is refused - so this is not a reachable path but a
-    // statement of which payload the mode owns: an Ensemble goes out through
-    // `useEnsembleLaunch`, whole, and never as a single task built from this draft.
+    // Ensemble has no route through here. Its primary action and Cmd/Ctrl+Enter follow
+    // Review-then-Launch through `useEnsembleLaunch`; its shelve button is not rendered.
+    // An Ensemble goes out whole, never as a single task built from this draft.
     if (mode.kind === "ensemble") return;
     // A new task with unmet dependencies is filed into the backlog even from the primary
     // action. It is not launching yet, so an unavailable Foreman must not erase the user's
@@ -2527,7 +2573,9 @@ function DispatchModal({
           title: submitted.title.trim() || undefined,
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
+          personaId: draftPersonaId(submitted) ?? undefined,
           workflowId: submitted.workflowId,
+          ...(submitted.kind === "plan" ? { planStorage: submitted.planStorage } : {}),
           // Omitted unless chosen here, so the daemon pins the Settings default itself.
           grillFirst: isGrillFirstTaskKind(submitted.kind) ? submitted.grillFirst : undefined,
           dependencies: submitted.dependencies,
@@ -2567,7 +2615,6 @@ function DispatchModal({
     else onSubmitted(submitted);
   }
 
-  submitRef.current = submit;
   const onOverlayEscape = useCallback((event: KeyboardEvent): boolean => {
     if (!guidedRunning) return false;
     event.preventDefault();
@@ -2576,22 +2623,9 @@ function DispatchModal({
   }, [guidedLeave, guidedRunning]);
 
   const onOverlayKeyDown = useCallback((event: KeyboardEvent): void => {
-    // The guided pass gets first refusal, and refuses every modifier chord - so ⌘↵ below
-    // still dispatches from inside a pass, which is the one shortcut that has to keep
-    // working while the questions are up.
-    if (guidedKeyRef.current(event)) return;
-    // This is the dialog's primary action, not a textarea editing command. Keeping it on
-    // the topmost overlay makes it work after the operator moves through Crew, Backlog
-    // details, or the footer, while Overlay's stack still prevents a covered dialog from
-    // acting. Ensemble keeps its deliberate Review-then-Launch flow.
-    if (
-      event.key !== "Enter" ||
-      (!event.metaKey && !event.ctrlKey) ||
-      ensembleMode
-    ) return;
-    event.preventDefault();
-    void submitRef.current(true);
-  }, [ensembleMode]);
+    // The guided pass refuses modifier chords; Overlay owns the default action.
+    guidedKeyRef.current(event);
+  }, []);
 
   // The brief - repo, title, task - is shared by both modes but arranged differently:
   // Single leads repo-then-task with the title folded into Backlog details, Ensemble puts
@@ -3175,6 +3209,69 @@ function DispatchModal({
           )}
         </div>
 
+        {/* Advanced: settings most tasks leave alone, offered for every kind. The Persona is
+            the one every kind shares; a plan adds where it saves. The tour's fixed dispatcher
+            sends the repository and nothing else, so it offers none of them. */}
+        {!tourDemo && (
+          <div className="dispatch-more-wrap">
+            <Tooltip label={advancedOpen
+              ? "Collapse advanced task settings"
+              : draft.kind === "plan"
+                ? "Choose this task's Persona and where it saves its plan"
+                : "Choose a Persona for this task's agent"}>
+              <button
+                type="button"
+                className={`dispatch-more${advancedOpen ? " open" : ""}${guidedDim}`}
+                aria-expanded={advancedOpen}
+                onClick={() => setAdvancedOpen((open) => !open)}
+              >
+                <span className="dispatch-more-title">Advanced</span>
+                {!advancedOpen && (
+                  <span className="dispatch-more-summary">
+                    {dispatchPersonaSummary(personas, draft.kind, draft.personaId)}
+                    {draft.kind === "plan" && ` · Plan storage: ${(draft.planStorage ?? planStorage) === "local" ? "Local plan store" : "Repository"}`}
+                  </span>
+                )}
+                <span className="dispatch-more-chev" aria-hidden>{advancedOpen ? "▴" : "▾"}</span>
+              </button>
+            </Tooltip>
+            {advancedOpen && (
+              <div className={`dispatch-more-body${guidedDim}`}>
+                <DispatchPersonaField
+                  personas={personas}
+                  kind={draft.kind}
+                  personaId={draft.personaId}
+                  onChange={(personaId) => update({ personaId })}
+                />
+                {draft.kind === "plan" && (
+                <label className="field">
+                  <span className="field-label">Plan storage</span>
+                  <Tooltip label="Choose where this task saves its plan. The global default is resolved when saved; existing plan artifacts keep their storage.">
+                    <select aria-label="Plan storage" className="field-input" value={draft.planStorage ?? "__default"} disabled={planStorage === null}
+                      onChange={(event) => {
+                        const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
+                        const previousDefault = taskDefaultWorkflowId("plan", workflowConfig?.kindWorkflowDefaults ?? {}, effectivePlanStorage);
+                        const savedDefault = editing?.kind === "plan"
+                          && editing.workflowId === taskDefaultWorkflowId("plan", workflowConfig?.kindWorkflowDefaults ?? {}, editing.planPolicy?.storage ?? "repository");
+                        update({ planStorage: storage,
+                          ...(draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
+                            ? undefined
+                            : taskDefaultWorkflowId("plan", workflowConfig?.kindWorkflowDefaults ?? {}, storage ?? planStorage ?? "repository") } : {}) });
+                      }}>
+                      <option value="__default">Use global default - {planStorage === null ? "loading…" : planStorage === "local" ? "Local plan store" : "Repository"}</option>
+                      <option value="local">Local plan store</option>
+                      <option value="repository">Repository</option>
+                    </select>
+                  </Tooltip>
+                  <span className="field-hint">{editing ? `Pinned storage: ${editing.planPolicy?.storage === "local" ? "Local plan store" : "Repository"}. ` : ""}
+                    {(draft.planStorage ?? planStorage) === "local" ? "Retained outside Git; validates without a plan PR." : "Published through the repository PR workflow."}
+                  </span>
+                </label>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         {/* The completion handoff is a first-class dispatch choice, not backlog metadata:
             it changes what happens after the agent finishes rather than how the task is
             ranked. The rail shape makes that sequence legible without turning one select
@@ -3213,7 +3310,7 @@ function DispatchModal({
                   update({
                     workflowId:
                       value === "__default"
-                        ? editing
+                        ? editing && draft.kind !== "plan"
                           ? defaultWorkflowId
                           : undefined
                         : value === "__none"
@@ -3222,7 +3319,7 @@ function DispatchModal({
                   });
                 }}
               >
-                {!editing && (
+                {(!editing || draft.workflowId === undefined) && (
                   <option value="__default">
                     {workflowConfig === null
                       ? "Dispatch default — loading…"
@@ -3401,7 +3498,7 @@ function DispatchModal({
                 {backlogCompatible && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
-                    <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR"}</span>
+                    <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR unless set to Stack"}</span>
                   </span>
                   {/* Chips plus one grouped add control, instead of an always-tall native
                       multi-select: each chip names its target and removes with one click,
@@ -3421,10 +3518,40 @@ function DispatchModal({
                       const key = dependencyKey(dependency);
                       const label = dependencyByKey.get(key)?.label ?? "unavailable";
                       const reason = removalReason(key);
+                      const stackable = isStackable(dependency);
+                      const mode = dependency.type === "task" || dependency.type === "session" ? dependency.mode : undefined;
+                      const shown = mode ?? stackingDefault;
                       return (
                         <span key={key} className="dep-entry">
                           <span className="dep-chip">
                             {label}
+                            {stackable && dependency.type === "task" && (
+                              <span className="dep-mode" role="group" aria-label={`When to start after ${label}`}>
+                                {(["stack", "merge"] as const).map((option) => (
+                                  <Tooltip
+                                    key={option}
+                                    label={option === "stack"
+                                      ? "Start as soon as this has an open pull request, and open this task's pull request against its branch"
+                                      : "Start once this task's pull request has merged"}
+                                  >
+                                    <button
+                                      type="button"
+                                      className={`dep-mode-opt${shown === option ? " is-on" : ""}${shown === option && mode === undefined ? " is-inherited" : ""}`}
+                                      aria-pressed={shown === option}
+                                      onClick={() =>
+                                        updateDependencies(draft.dependencies.map((candidate) =>
+                                          dependencyKey(candidate) === key && candidate.type === "task"
+                                            ? { ...candidate, mode: option }
+                                            : candidate))
+                                      }
+                                    >
+                                      {option === "stack" ? "Stack" : "After merge"}
+                                    </button>
+                                  </Tooltip>
+                                ))}
+                                {mode === undefined && <span className="dep-mode-default">default</span>}
+                              </span>
+                            )}
                             <Tooltip label={reason ?? "Remove this dependency"}>
                               <button
                                 type="button"
@@ -3484,7 +3611,7 @@ function DispatchModal({
                     <span className="dispatch-wait-note">
                       <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
                       {unmetDependencyCount === 1 ? "dependency" : "dependencies"} - it{" "}
-                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : "and dispatches when their PRs merge."}
+                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : draft.dependencies.some((dependency) => isStackable(dependency) && (dependency.mode ?? stackingDefault) === "stack") ? "and dispatches when their PRs merge, or sooner on a Stack dependency once its PR is open and every other dependency has merged." : "and dispatches when their PRs merge."}
                     </span>
                   )}
                 </div>}
@@ -3529,6 +3656,9 @@ function DispatchModal({
           repoRoots={[draft.repoRoot.trim(), ...attachedRepoRoots(draft)].filter(Boolean)}
           agent={draft.agent}
           storedRuntime={defaults?.sessionRuntime?.[draft.agent]}
+          personaId={draftPersonaId(draft)}
+          kind={draft.kind}
+          pipelineRuntime={draft.kind === "pipeline" ? pipelineLaunchRuntime : null}
         />
 
         {/* The refusal, and - when the daemon named one - the screen that clears it. The door
@@ -3640,6 +3770,7 @@ function DispatchModal({
           >
             <button
               ref={tourSubmitRef}
+              data-dialog-default
               className={`btn btn-primary${selectedDependenciesUnmet && !editing ? " btn-wait" : ""}`}
               onClick={() => void submit(true)}
               disabled={

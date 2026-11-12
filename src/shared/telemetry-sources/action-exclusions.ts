@@ -1,7 +1,9 @@
 /** Audited operations owned by earlier phases or explicitly excluded from action counts. */
 export const ACTION_EXCLUSIONS = [
   ["POST", "/api/command-documents/preview", "Read-only Command document preview; nothing is written, and the apply that follows is the workflow.command action."],
-  ["POST", "/mcp/plan-publication","Read-only plan-publication ownership query; no plan is published by this operation."],
+  ["POST", "/mcp/tasks/list", "Read-only saved-task query with filters and pagination; no task is launched, modified or reordered."],
+  ["POST", "/mcp/tasks/get", "Read-only saved-task configuration query; no task is launched, modified or reordered."],
+  ["POST", "/mcp/plan-publication", "Read-only plan-publication ownership query; no plan is published by this operation."],
   ["POST", "/mcp/backlog", "Read-only backlog listing for a ticket breakdown; no task is created or edited by this operation."],
   ["POST", "/mcp/v2/backlog", "Read-only backlog listing of a named repository for a ticket breakdown; no task is created or edited by this operation."],
   ["POST", "/mcp/plans/context", "Read-only managed-plan policy and repository query; not a publication or action outcome."],
@@ -45,6 +47,7 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/api/telemetry/organization/recheck", "Managed telemetry detection refresh; excluded from recursive primary-action and error capture like the other telemetry controls."],
   ["POST", "/api/tasks/:id/dispatch", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/tasks/:id/shape", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
+  ["POST", "/mcp/tasks/:id/dispatch", "Phase 3 session/dispatch/task owner already records this outcome through the shared dashboard dispatch path; add request surface only."],
   ["POST", "/api/tasks/:id/assign", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/tasks/:id/cancel", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/tasks/:id/complete", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],

@@ -28,8 +28,9 @@ const { getDatabaseBackupsConfig, setDatabaseBackupsConfig } = await import(
 
 const backupRoot = join(stateHome, "backups", "database");
 const databaseBackups = new DatabaseBackupService(openDb(), { root: backupRoot });
+let configAnnouncements = 0;
 const app = buildApp({
-  registry: {} as Registry,
+  registry: { emitStorageConfigChanged: () => { configAnnouncements += 1; } } as unknown as Registry,
   reviews: {} as ReviewManager,
   tasks: {} as TaskManager,
   queues: {} as QueueManager,
@@ -93,8 +94,10 @@ test("the shared schema refuses out-of-range counts and intervals, and never acc
 
 test("saving lowered counts prunes at once, and a refused save changes nothing", async () => {
   seedScheduled(5);
+  const announcedBefore = configAnnouncements;
   const saved = await putConfig({ scheduledCount: 2 });
   assert.equal(saved.status, 200);
+  assert.equal(configAnnouncements, announcedBefore + 1, "a save tells every open window to re-read");
   assert.deepEqual(await saved.json(), {
     scheduledCount: 2,
     preMigrationCount: 2,
@@ -106,6 +109,7 @@ test("saving lowered counts prunes at once, and a refused save changes nothing",
     const refused = await putConfig(body);
     assert.equal(refused.status, 400, JSON.stringify(body));
   }
+  assert.equal(configAnnouncements, announcedBefore + 1, "a refused save announces nothing");
   assert.equal(getDatabaseBackupsConfig().scheduledCount, 2);
   assert.equal(scheduledCopies().length, 2);
 
@@ -135,6 +139,62 @@ test("a prune that throws after saving still reports the save, and only warns", 
   } finally {
     console.warn = originalWarn;
   }
+});
+
+test("a save the database refuses answers 500 with its reason, and stores nothing", async () => {
+  const before = getDatabaseBackupsConfig();
+  const announcedBefore = configAnnouncements;
+  const db = openDb();
+  db.exec(`CREATE TEMP TRIGGER refuse_backups_save BEFORE INSERT ON app_config
+    WHEN NEW.key = 'backups' BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`);
+  try {
+    const refused = await putConfig({ scheduledCount: before.scheduledCount + 1 });
+    assert.equal(refused.status, 500);
+    assert.deepEqual(await refused.json(), { error: "save_failed", message: "database or disk is full" });
+  } finally {
+    db.exec("DROP TRIGGER refuse_backups_save");
+  }
+  assert.deepEqual(getDatabaseBackupsConfig(), before);
+  assert.equal(configAnnouncements, announcedBefore, "a save SQLite refused announces nothing");
+});
+
+test("a settings snapshot taken before the database-backups domain still validates and restores", async () => {
+  const { WorkflowStore } = await import("../src/server/workflows/store.ts");
+  const { Registry } = await import("../src/server/registry.ts");
+  const { SettingsBackupService } = await import("../src/server/settings-backups/service.ts");
+  const { SettingsBackupStore } = await import("../src/server/settings-backups/store.ts");
+  const { createSettingsBackupEnvelope, validateSettingsBackupDomains } =
+    await import("../src/server/settings-backups/format.ts");
+  const { migrateSettingsBackupSnapshot } = await import("../src/server/settings-backups/restore.ts");
+  const { stageSettingsConfigRestore, restoreSettingsConfigInTransaction } =
+    await import("../src/server/settings-backups/config-registry.ts");
+  const db = openDb();
+  const kept = { scheduledCount: 9, preMigrationCount: 4, intervalHours: 12 } as const;
+  setDatabaseBackupsConfig(kept, { prune: () => {} });
+  const captured = await new SettingsBackupService(
+    new WorkflowStore(db),
+    new SettingsBackupStore(join(stateHome, "settings-backups")),
+    () => new Date("2026-11-09T18:00:00.000Z"),
+    "database-backups-test",
+    {
+      registry: new Registry(),
+      preflightSkills: () => [],
+      preflightCost: () => {},
+      reconcileSkills: () => {},
+      reconcileCost: () => {},
+    },
+  ).ensureDailySnapshot("2026-11-09");
+  assert.equal(captured.status, "ready");
+  if (captured.status !== "ready") return;
+  const { digest: _digest, ...body } = captured.snapshot;
+  const old = createSettingsBackupEnvelope({
+    ...body,
+    domains: body.domains.filter((entry) => entry.domain !== "database-backups"),
+  });
+
+  validateSettingsBackupDomains(old);
+  restoreSettingsConfigInTransaction(db, stageSettingsConfigRestore(migrateSettingsBackupSnapshot(old).settings));
+  assert.deepEqual(getDatabaseBackupsConfig(), kept, "absence leaves the current backup settings alone");
 });
 
 test("Back up now takes a manual copy, and its failure is recorded on the manual kind", async () => {

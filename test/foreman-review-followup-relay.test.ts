@@ -83,7 +83,7 @@ function draft(over: Partial<InspectorComment> = {}): InspectorComment {
   };
 }
 
-/** Parked on an open PR whose Inspector holds one dry-run draft: the case this ticket opens. */
+/** Parked on an open PR whose Inspector holds one dry-run draft: the case the relay exists for. */
 function parked(id: string, over: Partial<Session> = {}): Session {
   return mkSession({
     id,

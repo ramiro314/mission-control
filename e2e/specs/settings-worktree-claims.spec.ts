@@ -149,7 +149,7 @@ test("the claim editor saves through the settings route and every slot shows its
     await expect(variables).toHaveAttribute("aria-invalid", "true");
     await expect(variables).toHaveAccessibleDescription("bad-name: a variable name is letters, digits and underscores");
     await expect(editor.getByLabel("Claim timeout in minutes, for every step together")).toHaveAccessibleDescription(
-      /greater than or equal to 1/,
+      /expected number to be >=1/,
     );
     await expect(editor.getByLabel("Fingerprint paths, one repository-relative glob per line")).toHaveAccessibleDescription(
       /^\.\.\/README\.md: a fingerprint path is a repository-relative glob/,

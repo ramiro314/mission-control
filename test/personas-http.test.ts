@@ -303,10 +303,45 @@ test("an effort the merged provider and model cannot run is a 400 that leaves th
     { revision: 1, runner: "claude", model: null, effort: "max" },
   );
 
-  // The create path refuses the same combination at the schema, also as a 400.
   const createRefused = await request("/api/personas", {
     method: "POST",
     body: JSON.stringify({ name: "Bad effort", guidanceMarkdown: "# B", runner: "codex", model: "gpt-5.6-luna", effort: "max" }),
   });
   assert.equal(createRefused.status, 400);
+  assert.deepEqual(await createRefused.json(), {
+    error: "reasoning effort is not supported by this provider and model",
+    code: "persona_unsupported_effort",
+    current: null,
+  });
+  const listed = (await (await request("/api/personas")).json()) as Array<{ name: string }>;
+  assert.equal(listed.some((persona) => persona.name === "Bad effort"), false);
+});
+
+test("an effort-only patch on an unknown stored provider is checked as inherited and keeps the id", async () => {
+  const { request } = fixture();
+  const created = await request("/api/personas", {
+    method: "POST",
+    body: JSON.stringify({ name: "From a newer build", guidanceMarkdown: "# N" }),
+  });
+  assert.equal(created.status, 201);
+  const persona = (await created.json()) as { id: string };
+  db.prepare("UPDATE personas SET runner_id = ? WHERE id = ?").run("newer-runner", persona.id);
+
+  const refused = await request(`/api/personas/${persona.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ expectedRevision: 1, effort: "max" }),
+  });
+  assert.equal(refused.status, 400);
+  assert.equal(((await refused.json()) as { code: string }).code, "persona_unsupported_effort");
+
+  const accepted = await request(`/api/personas/${persona.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ expectedRevision: 1, effort: "high" }),
+  });
+  assert.equal(accepted.status, 200);
+  const stored = (await accepted.json()) as { runner: string | null; effort: string | null; revision: number };
+  assert.deepEqual(
+    { runner: stored.runner, effort: stored.effort, revision: stored.revision },
+    { runner: "newer-runner", effort: "high", revision: 2 },
+  );
 });

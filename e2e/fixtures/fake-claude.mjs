@@ -80,6 +80,14 @@ const AUTH_RECOVERY_MARKER = process.env.MC_E2E_RECORD_DIR
 const AUTHENTICATED_AT_START = AUTH_RECOVERY_MARKER !== null && existsSync(AUTH_RECOVERY_MARKER);
 const EXPIRE_AUTH_TURN = "E2E_EXPIRE_CLAUDE_AUTH";
 /**
+ * Expires the login the way it went wrong for a long-running resident: the synthetic
+ * "Not logged in" frame arrives and NO `result` follows. The process then stays alive and
+ * ignores its input closing, exactly as the wedged CLI did, so only a signal from the SDK's
+ * own close can end it.
+ */
+const WEDGE_AUTH_TURN = "E2E_EXPIRE_CLAUDE_AUTH_WEDGED";
+let authenticationWedged = false;
+/**
  * Ends its turn the way Claude Code does once its own 529 retries are spent: an assistant
  * API-error frame tagged `server_error`, then an error `result`. Only the prompt itself fails;
  * Mission Control's continuation that follows is answered normally.
@@ -365,6 +373,7 @@ if (recordDir) {
         termProgram: process.env.TERM_PROGRAM ?? null,
         entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT ?? null,
         missionHome: process.env.MISSION_HOME ?? null,
+        residentStateDir: process.env.RESIDENT_STATE_DIR ?? null,
         fleetHome: process.env.FLEET_HOME ?? null,
         harnessHome: process.env.HARNESS_HOME ?? null,
         resolvedMissionState,
@@ -563,7 +572,49 @@ function foremanUsageFailure(prompt) {
   return prompt.includes('You are the BACKLOG PLANNER') && prompt.includes('E2E_FOREMAN_USAGE_LIMIT');
 }
 
+/**
+ * A marked backlog planner reply that names tasks by ID in its prose, as a model ignoring
+ * the prompt's title rule would. The first listed task is the foundation; every other one
+ * waits for it. The real `sanitizePlan` then decides what the board shows.
+ */
+function backlogPlannerCitingIds(prompt) {
+  if (!prompt.includes("You are the BACKLOG PLANNER") || !prompt.includes("E2E_PLANNER_CITES_TASK_IDS")) {
+    return null;
+  }
+  const ids = [...prompt.matchAll(/^### id: (.+)$/gm)].map((match) => match[1].trim());
+  const [foundation, ...rest] = ids;
+  // Any other task id the prompt carries - one a task's intent mentions without declaring it
+  // a dependency - is cited too, the way a model repeating what it read would.
+  const mentioned = [...new Set(prompt.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g) ?? [])]
+    .filter((id) => !ids.includes(id));
+  return JSON.stringify({
+    tasks: [
+      { id: foundation, dependsOn: [], reason: `Unblocks ${rest.join(", ")}.` },
+      ...rest.map((id) => ({ id, dependsOn: [foundation], reason: `Waits for ${foundation} to land.` })),
+    ],
+    note: `${foundation} goes first; ${rest.join(", ")} build on it.`
+      + (mentioned.length > 0 ? ` See ${mentioned.join(", ")}.` : ""),
+  });
+}
+
 function headlessAnswer(prompt) {
+  const planner = backlogPlannerCitingIds(prompt);
+  if (planner !== null) return planner;
+  // Foreman's completion verifier, for a session whose objective carries the marker. Without
+  // a verdict the worker can never reach a Workflow claim, so a spec that needs Foreman itself
+  // to start a bound Workflow puts this marker in the dispatched request.
+  if (
+    prompt.startsWith("You are Foreman, verifying one unit of work")
+    && prompt.includes("E2E_VERIFY_COMPLETE")
+  ) {
+    return JSON.stringify({
+      complete: true,
+      summary: "The requested change is present in the diff",
+      gaps: [],
+      resolved: [],
+      confidence: 0.95,
+    });
+  }
   if (
     prompt.includes(SLOW_WORKFLOW_CONTEXT)
     && prompt.includes("Compact workflow intent without rewriting it.")
@@ -710,6 +761,13 @@ function headlessAnswer(prompt) {
       return JSON.stringify({ relationship: "steer", objective: "Ship the steering context feature",
         goal: "Ship the steering context feature", focus: objective,
         reason: "The human deferred a step while its harness is broken" });
+    }
+    // A pick between offered options, misread as an amendment whose objective does not keep
+    // the current one as its prefix: the shape that used to latch a session's goal for good.
+    if (objective.includes("E2E_AMEND_SHRINK")) {
+      return JSON.stringify({ relationship: "amend", objective: "Implement option B only",
+        goal: "Implement option B only", focus: "Implement option B",
+        reason: "The human picked option B" });
     }
     return JSON.stringify({
       relationship: "initial",
@@ -1281,6 +1339,7 @@ function answerAuthenticationFailure() {
     error: "authentication_failed",
     message: { role: "assistant", content: [{ type: "text", text }] },
   });
+  if (authenticationWedged) return;
   emit({
     type: "result",
     subtype: "error_during_execution",
@@ -1358,6 +1417,28 @@ async function withMissionMcp(work) {
   }
 }
 
+/** A conversation delegates work through the real MCP server without a model call. */
+async function runChatTaskScheduling() {
+  return withMissionMcp(async (request) => {
+    const call = async (name, args) => {
+      const called = await request("tools/call", { name, arguments: args });
+      const text = called.result?.content?.map((part) => part.text).join("\n");
+      if (called.error || called.result?.isError) throw new Error(text ?? JSON.stringify(called.error));
+      return JSON.parse(text);
+    };
+    await call("create_task", {
+      title: "Work scheduled from chat", intent: "Keep this separate work parked for later.",
+      workflowId: null, enabled: false,
+    });
+    const launch = await call("create_task", {
+      title: "Work dispatched from chat", intent: "Perform this separate work now.",
+      workflowId: null,
+    });
+    const dispatched = await call("dispatch_task", { taskId: launch.id });
+    return `Scheduled one backlog task and dispatched another from chat (${dispatched.status}).`;
+  });
+}
+
 /** The bug-report scenario waits for the public issue preview's human response. */
 async function runReportBug(prompt) {
   const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
@@ -1378,6 +1459,38 @@ async function runReportBug(prompt) {
     });
     const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
     return `report_product_issue answered: ${text}`;
+  });
+}
+
+/**
+ * The repair packet the DAEMON writes when a workflow Command is one the repository does not
+ * provide (`src/server/workflows/command-fit.ts`). Recognised from the daemon's own words, so
+ * the packet's delivery is part of what a spec proves.
+ */
+const CONFIGURE_COMMAND_MARKER = "Configure the test Command for this repository; do not add files to satisfy it";
+
+/**
+ * What a session does with that packet, without a model: inspect its own checkout for how the
+ * repository runs its tests, call the real `configure_workflow_command` (which waits on the
+ * operator's confirmation card), then resubmit the unchanged work.
+ */
+async function runConfigureCommand(prompt) {
+  const runId = /^Run: (\S+)$/m.exec(prompt)?.[1];
+  let script = null;
+  try {
+    script = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")).scripts?.test ?? null;
+  } catch { /* no manifest: nothing to propose */ }
+  if (!runId || !script || existsSync(join(process.cwd(), "Makefile"))) {
+    return "Inspected the checkout and found no package.json test script to propose.";
+  }
+  return withMissionMcp(async (request) => {
+    const text = (called) => called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    const configured = await request("tools/call", { name: "configure_workflow_command",
+      arguments: { runId, slot: "test", command: ["npm", "test"] } });
+    if (configured.result?.isError || configured.error) return `configure_workflow_command failed: ${text(configured)}`;
+    const resubmitted = await request("tools/call", { name: "trigger_workflow_action", arguments: { request: {
+      action: "resubmit", runId, parameters: { requestId: `e2e-configured-${runId}`, resubmitUnchanged: true } } } });
+    return `configure_workflow_command answered: ${text(configured)}; resubmit answered: ${text(resubmitted)}`;
   });
 }
 
@@ -1484,6 +1597,12 @@ rl.on("line", (line) => {
     // CLI reports `needs-auth`. A remote entry whose URL does not parse is reported `failed`, as
     // the real CLI cannot connect to it, so a malformed direct entry refuses the launch rather
     // than passing as connected. A server with no URL (stdio, a launcher entry) is connected.
+    //
+    // Without `--strict-mcp-config`, and without `disableClaudeAiConnectors` in its `--settings`,
+    // the real CLI also loads the account's claude.ai connectors and reports them beside what
+    // `--mcp-config` named. Two stand for them: one connected, and one that needs a login, which a
+    // resident on all native sources must start despite - it is Claude Code's to report, not a
+    // server Mission Control put in the set.
     if (frame.request?.subtype === "mcp_status") {
       const configured = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
       const status = (server) => {
@@ -1491,7 +1610,15 @@ rl.on("line", (line) => {
         if (!URL.canParse(server.url)) return { status: "failed", error: "the MCP server URL is not a valid URL" };
         return { status: new URL(server.url).hostname.startsWith("needs-login.") ? "needs-auth" : "connected" };
       };
-      ok(frame.request_id, { mcpServers: Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })) });
+      // `--settings` may also name a file; only inline JSON can carry the switch here.
+      const settings = argvValue("--settings") ?? "{}";
+      const flags = settings.trimStart().startsWith("{") ? JSON.parse(settings) : {};
+      const connectors = process.argv.includes("--strict-mcp-config") || flags.disableClaudeAiConnectors === true
+        ? []
+        : [{ name: "claude.ai Slack", status: "connected" }, { name: "claude.ai Gmail", status: "needs-auth" }];
+      ok(frame.request_id, {
+        mcpServers: [...Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })), ...connectors],
+      });
       return;
     }
     ok(frame.request_id, frame.request?.subtype === "get_usage" ? { rate_limits_available: false } : {});
@@ -1542,6 +1669,7 @@ rl.on("line", (line) => {
     if (prompt.includes(SLOW_STOP)) slowStop = true;
 
     if (prompt === EXPIRE_AUTH_TURN) authenticationExpired = true;
+    if (prompt === WEDGE_AUTH_TURN) authenticationExpired = authenticationWedged = true;
     if (authenticationExpired && !AUTHENTICATED_AT_START) {
       answerAuthenticationFailure();
       return;
@@ -1596,8 +1724,20 @@ rl.on("line", (line) => {
       return;
     }
 
+    if (prompt.includes("E2E_CHAT_SCHEDULE_TASKS")) {
+      beginHeldTurn(runChatTaskScheduling());
+      return;
+    }
+
     if (prompt.includes(REPORT_BUG_MARKER)) {
       beginHeldTurn(runReportBug(prompt));
+      return;
+    }
+
+    // A workflow repair asking for the repository's own test Command, recognised by the
+    // daemon's packet. Held open while the real tool waits on the operator's card.
+    if (prompt.includes(CONFIGURE_COMMAND_MARKER)) {
+      beginHeldTurn(runConfigureCommand(prompt));
       return;
     }
 
@@ -1690,6 +1830,12 @@ rl.on("line", (line) => {
 // close into `{kind:"exited"}` and evicts the session. Stay alive until the SDK closes
 // stdin, then leave cleanly.
 rl.on("close", () => {
+  // A wedged CLI never notices its input closed. Only the SDK's SIGTERM ends it.
+  // The interval stands in for the hung request that kept the real process alive.
+  if (authenticationWedged) {
+    setInterval(() => {}, 60_000);
+    return;
+  }
   const leave = () => {
     if (slowStop) setTimeout(() => process.exit(0), SLOW_STOP_MS);
     else process.exit(0);

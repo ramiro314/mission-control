@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { InspectorComment, InspectorInspection } from "@shared/types.ts";
 import type { InspectorFindingsResponse } from "@shared/protocol.ts";
 import { findingPublication } from "@shared/inspector-findings.ts";
 import { fetchInspectorFindings } from "../lib/api.ts";
+import { containTourTab } from "../tour/focus-containment.ts";
 import { inspectorPrClosedAs } from "../lib/pr-standing.ts";
 import { InspectorFindingsTable } from "./InspectorFindingsTable.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -84,18 +85,50 @@ export function InspectorFindingsModal({
 }): React.JSX.Element {
   const [data, setData] = useState<InspectorFindingsResponse | null>(null);
   const [failed, setFailed] = useState(false);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const setPanel = useCallback((element: HTMLElement | null) => {
+    panelRef.current = element;
+  }, []);
+  const containTab = useCallback((event: KeyboardEvent) => {
+    if (panelRef.current) containTourTab(event, panelRef.current);
+  }, []);
 
+  // The Findings control that opened this stays behind the backdrop, so focus moves in and
+  // returns to it on close, unless it is gone by then. The panel takes it rather than a
+  // control, because a focused control opens its tooltip.
   useEffect(() => {
-    let alive = true;
+    const previous = document.activeElement;
+    const panel = panelRef.current;
+    panel?.setAttribute("tabindex", "-1");
+    panel?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, []);
+
+  const shownKey = useRef(prKey);
+  const inFlightKey = useRef<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // A poll that lands while a read for this pull request is still out reuses that read rather
+  // than discarding it, so a read slower than the poll interval still reaches the screen.
+  useEffect(() => {
+    shownKey.current = prKey;
+    if (inFlightKey.current === prKey) return;
+    inFlightKey.current = prKey;
     void fetchInspectorFindings(prKey).then((response) => {
-      if (!alive) return;
+      if (inFlightKey.current === prKey) inFlightKey.current = null;
+      if (!mounted.current || shownKey.current !== prKey) return;
       // A failed read keeps the last answer on screen and says so, rather than blanking it.
       if (response) setData(response);
       setFailed(response === null);
     });
-    return () => {
-      alive = false;
-    };
   }, [prKey, refreshSignal]);
 
   const pr = data?.pr ?? null;
@@ -110,6 +143,9 @@ export function InspectorFindingsModal({
       className="modal inspector-findings-modal"
       role="dialog"
       ariaLabel={`GitHub Inspector findings on ${prKey}`}
+      ariaModal
+      onKeyDown={containTab}
+      surfaceRef={setPanel}
     >
       <header className="modal-head">
         <h2>GitHub Inspector findings</h2>

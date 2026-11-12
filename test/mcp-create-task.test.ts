@@ -799,3 +799,51 @@ test("a follow-up session without dependsOnCurrentSession files a ticket with no
   assert.equal(ticket.status, 200);
   assert.deepEqual(ticket.body.dependencies, []);
 });
+
+// ---------------------------------------------------------------------------
+// Ticket edges under PR stacking: the edge to the plan waits for its merge
+// ---------------------------------------------------------------------------
+
+test("a ticket's edge to its shape task waits for merge while edges between tickets keep the Shipping default", async () => {
+  const { mkTask } = await import("./helpers/session-fixture.ts");
+  const harness = ticketHarness("ticket-edge-modes");
+  const shapeId = "ticket-edge-modes-shape";
+  harness.registry.upsertTask(mkTask({
+    id: shapeId, title: "Shape archive exports", kind: "shape", status: "running",
+    repoRoot: harness.repo, sessionId: harness.sessionId,
+  }));
+  const modeOf = (task: { dependencies: ReadonlyArray<{ type: string; taskId?: string; mode?: string }> }, taskId: string) =>
+    task.dependencies.find((edge) => edge.type === "task" && edge.taskId === taskId)?.mode;
+
+  const first = await harness.file({ title: "Refactor the export seam", intent: "The seam." });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.deepEqual(edgesOf(first.body), [`task:${shapeId}`]);
+  assert.equal(modeOf(first.body, shapeId), "merge", "released when the planning PR merges, never stacked on it");
+
+  const second = await harness.file({ title: "Export UI", intent: "UI.", dependsOnTaskIds: [first.body.id] });
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  assert.equal(modeOf(second.body, shapeId), "merge");
+  assert.equal(
+    second.body.dependencies.find((edge: { taskId?: string }) => edge.taskId === first.body.id).mode,
+    undefined,
+    "a ticket-to-ticket edge inherits the Shipping default",
+  );
+
+  const existing = harness.tasks.create({
+    repoRoot: harness.repo, intent: "Existing work.", title: "Existing", kind: "ship", agent: "claude", backlog: true,
+  });
+  const adopted = await harness.adopt(existing.id);
+  assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
+  assert.equal(modeOf(adopted.body, shapeId), "merge", "adoption writes the same edge");
+});
+
+test("a tickets follow-up's edge to the merged shape task waits for merge and its hold keeps no mode", async () => {
+  const { sourceId, followupId, file } = await followupHarness("followup-edge-modes");
+  const ticket = await file({ title: "Refactor the export seam", intent: "The seam." });
+  assert.equal(ticket.status, 200, JSON.stringify(ticket.body));
+  const [edge, hold] = ticket.body.dependencies;
+  assert.equal(edge.taskId, sourceId);
+  assert.equal(edge.mode, "merge");
+  assert.equal(hold.taskId, followupId);
+  assert.equal(hold.mode, undefined);
+});

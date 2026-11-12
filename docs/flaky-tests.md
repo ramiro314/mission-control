@@ -105,8 +105,10 @@ stored one (`testing-setup:stored`), checks the
 `{files}` / `{junit}` rule, and writes only that task repository's `affected-tests` override,
 keeping every other override, the default and the run budget.
 
-That bounds what an agent may do **through MCP**: `set_affected_tests_command` is the only
-Command write the Mission MCP tools offer. It is not a boundary on the agent itself. The
+That bounds what an agent may do **through MCP**: the only other live Command write the Mission
+MCP tools offer is `configure_workflow_command`, which reaches the `affected-tests` slot only for
+the caller's own workflow run, only after the operator confirms the argv, and under the same
+`{files}` / `{junit}` rule. It is not a boundary on the agent itself. The
 `/api/*` routes, the Command editor's `PUT /api/workflow-commands/:slot` among them, accept any
 loopback caller without a token, so a process in the agent's shell can write any Command
 override directly. See [Security](security.md#what-the-loopback-boundary-does-not-cover).

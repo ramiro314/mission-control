@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { ensembleStageWord } from "@shared/ensemble.ts";
 import {
   PIPELINE_HALT_ACTIONS,
@@ -8,7 +9,8 @@ import {
 import { PipelineActions } from "../pipelines/PipelineActions.tsx";
 import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
 import { BLOCKED_PR_REASON_TEXT } from "@shared/types.ts";
-import { conflictingFor, type AttentionFold, type AttentionItem } from "../lib/attention.ts";
+import type { AttentionDismissalKey } from "@shared/protocol.ts";
+import { attentionDismissalKeys, conflictingFor, type AttentionFold, type AttentionItem } from "../lib/attention.ts";
 import { commandDocumentEntryCount } from "@shared/command-document.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
@@ -41,6 +43,14 @@ import { requestComposerFocus } from "../lib/composer-focus.ts";
  * answered by keystrokes aimed at that pane, and the two wire protocols are not unified behind
  * one button without deciding what a stale menu does to it. It gets a row saying who is stuck
  * and a click through to the card that can answer it.
+ *
+ * EVERY row can be dismissed, whether or not what it reports has been resolved. Some rows have
+ * nothing to answer here at all - a Pipeline lifecycle problem, a halt the engine's own CLI
+ * clears - and a queue that could only be drained by fixing everything in it kept showing them
+ * on every open. Dismiss removes the row from this list and from the `to answer` count, and the
+ * daemon remembers it, so it stays gone across reloads and windows until the row says something
+ * new (`attentionDismissalKeys` decides what "new" means for each kind). Nothing is sent to an
+ * agent and nothing is resolved: a question's own Dismiss, on its card, is the one that answers.
  */
 
 /** The heading each kind of obligation sits under. The fold groups them; this names them. */
@@ -59,6 +69,7 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
 export function AttentionInbox({
   fold,
   onClose,
+  onDismiss,
   onOpenEnsemble,
   onOpenSession,
   onOpenPipelineCommission = () => undefined,
@@ -66,6 +77,11 @@ export function AttentionInbox({
 }: {
   fold: AttentionFold;
   onClose: () => void;
+  /**
+   * Dismiss one row's keys without resolving it. Resolves to an error when the daemon did not
+   * store it - the row is back by then - or to null.
+   */
+  onDismiss: (keys: readonly AttentionDismissalKey[]) => Promise<string | null>;
   /** Open a run's detail (the dossier, when it is parked on a decision). */
   onOpenEnsemble: (runId: string) => void;
   /** Focus a session on the fleet. */
@@ -79,6 +95,30 @@ export function AttentionInbox({
   const leave = (go: () => void) => () => {
     onClose();
     go();
+  };
+  // A refused dismissal, by row: the row comes back as soon as the write fails, and this says
+  // why beneath it rather than leaving the operator to wonder whether the click registered.
+  //
+  // Kept with WHAT the row said when it was refused, and drawn only while it says nothing more.
+  // Keyed by row alone, the reason outlived the problem it was about: a row that went on to
+  // report something new showed "Could not dismiss" under a problem nobody had tried to dismiss.
+  // Not "says exactly the same", though: a row of questions too long for one request is
+  // dismissed in batches, and when one batch is refused the row comes back holding only that
+  // batch's questions - still things the operator tried to dismiss, and still owed the reason.
+  const [refused, setRefused] = useState<
+    ReadonlyMap<string, { error: string; said: ReadonlySet<string> }>
+  >(new Map());
+  const dismiss = (item: AttentionItem) => () => {
+    setRefused((current) => {
+      if (!current.has(item.id)) return current;
+      const next = new Map(current);
+      next.delete(item.id);
+      return next;
+    });
+    const said = new Set(rowSays(item));
+    void onDismiss(attentionDismissalKeys(item)).then((error) => {
+      if (error) setRefused((current) => new Map(current).set(item.id, { error, said }));
+    });
   };
   let section: AttentionItem["kind"] | null = null;
 
@@ -129,12 +169,18 @@ export function AttentionInbox({
               {heading && <h4 className="inbox-section">{heading}</h4>}
               <InboxItem
                 item={item}
+                dismissButton={<DismissButton item={item} onDismiss={dismiss(item)} />}
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
                 onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
                 onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
                 onOpenCommandProposal={(repoRoot) => leave(() => onOpenCommandProposal(repoRoot))()}
                 onLeave={onClose}
               />
+              {saysNothingNew(item, refused.get(item.id)?.said) && (
+                <p className="inbox-line inbox-error" role="alert">
+                  {refused.get(item.id)!.error}
+                </p>
+              )}
             </div>
           );
         })}
@@ -143,8 +189,76 @@ export function AttentionInbox({
   );
 }
 
+/**
+ * What a row says, as dismissing it would record it: every key it would dismiss, each with the
+ * occurrence it is at now - for a row of questions, one entry per question.
+ */
+function rowSays(item: AttentionItem): string[] {
+  return attentionDismissalKeys(item).map((key) => `${key.itemId}=${key.occurrence}`);
+}
+
+/**
+ * Whether a row reports nothing it did not report when `said` was taken: no new question, and
+ * no single-key row at a new occurrence. Fewer is fine - that is a partly stored dismissal, or
+ * questions answered since.
+ */
+function saysNothingNew(item: AttentionItem, said: ReadonlySet<string> | undefined): boolean {
+  return said !== undefined && rowSays(item).every((entry) => said.has(entry));
+}
+
+/**
+ * What a row is about: the name its header prints, and the name its Dismiss says it removes.
+ * One function for both, so the button's accessible name always matches the row it sits in.
+ */
+function inboxSubject(item: AttentionItem): string {
+  switch (item.kind) {
+    case "pipeline_commission":
+      return item.commission.handoff?.planSlug ?? `Commission ${item.commission.id.slice(0, 8)}`;
+    case "ensemble_decision":
+    case "parked_finalization":
+      return item.summary.title;
+    case "pipeline_halt":
+      return item.run.slug;
+    case "blocked_pr":
+      return item.pr.repo !== null && item.pr.number !== null ? `${item.pr.repo} #${item.pr.number}` : item.pr.url;
+    case "command_document_proposal":
+      return `the proposal for ${item.proposal.repoRoot}`;
+    case "session_reviews":
+    case "session_dialog":
+    case "session_blocked":
+      return item.session.name || "(unnamed)";
+  }
+}
+
+/**
+ * The row's Dismiss, last in its header on every kind.
+ *
+ * Named after the row it removes, because a row of questions also draws each question's own
+ * Dismiss below it - which answers the agent - and two buttons both called just "Dismiss" in one
+ * row would leave a screen reader, and a test, unable to tell the one that hides from the one
+ * that answers. The visible word stays "Dismiss", so the accessible name still starts with it.
+ */
+function DismissButton({ item, onDismiss }: { item: AttentionItem; onDismiss: () => void }): React.JSX.Element {
+  const tip =
+    item.kind === "session_reviews"
+      ? "Remove these questions from the inbox without answering them. The agent keeps waiting; a new question from it still shows here"
+      : "Remove this from the inbox without resolving it. It stays dismissed until it reports something new";
+  return (
+    <Tooltip label={tip}>
+      <button
+        className="btn btn-ghost"
+        aria-label={`Dismiss ${inboxSubject(item)} from the inbox`}
+        onClick={onDismiss}
+      >
+        Dismiss
+      </button>
+    </Tooltip>
+  );
+}
+
 function InboxItem({
   item,
+  dismissButton,
   onOpenEnsemble,
   onOpenSession,
   onOpenPipelineCommission,
@@ -152,6 +266,8 @@ function InboxItem({
   onLeave,
 }: {
   item: AttentionItem;
+  /** Drawn last in the row's header, whatever the kind. */
+  dismissButton: React.ReactNode;
   onOpenEnsemble: (runId: string) => void;
   onOpenSession: (sessionId: string) => void;
   onOpenPipelineCommission: (commissionId: string) => void;
@@ -165,7 +281,7 @@ function InboxItem({
         <section className="inbox-item inbox-halt">
           <div className="inbox-head">
             <span className="inbox-glyph" aria-hidden>⇶</span>
-            <strong>{item.commission.handoff?.planSlug ?? `Commission ${item.commission.id.slice(0, 8)}`}</strong>
+            <strong>{inboxSubject(item)}</strong>
             <span className="inbox-meta">{item.attention.title}</span>
             <span className="inbox-spacer" />
             <Tooltip label="Open this Pipeline commission">
@@ -173,6 +289,7 @@ function InboxItem({
                 Open Pipeline
               </button>
             </Tooltip>
+            {dismissButton}
           </div>
           <p className="inbox-line">{item.attention.detail}</p>
         </section>
@@ -184,7 +301,7 @@ function InboxItem({
             <span className="inbox-glyph" aria-hidden>
               ⧉
             </span>
-            <strong>{item.summary.title}</strong>
+            <strong>{inboxSubject(item)}</strong>
             <span className="inbox-meta">
               {item.summary.strategyLabel} · {ensembleStageWord(item.summary)}
             </span>
@@ -195,6 +312,7 @@ function InboxItem({
                 Open dossier
               </button>
             </Tooltip>
+            {dismissButton}
           </div>
           <p className="inbox-line">
             Every candidate has settled. Nothing else in this run moves until you confirm a
@@ -207,7 +325,7 @@ function InboxItem({
         <section className="inbox-item inbox-reviews">
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
-            <strong>{item.session.name || "(unnamed)"}</strong>
+            <strong>{inboxSubject(item)}</strong>
             <span className="dim"> · {item.reviews.length} pending</span>
             {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
@@ -216,6 +334,7 @@ function InboxItem({
                 Open session
               </button>
             </Tooltip>
+            {dismissButton}
           </div>
           {item.reviews.map((review) => (
             <ReviewCard
@@ -235,7 +354,7 @@ function InboxItem({
         <section className="inbox-item inbox-dialog">
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
-            <strong>{item.session.name || "(unnamed)"}</strong>
+            <strong>{inboxSubject(item)}</strong>
             {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
             <Tooltip label="Focus this session - a terminal menu is answered on its card">
@@ -243,6 +362,7 @@ function InboxItem({
                 Open session
               </button>
             </Tooltip>
+            {dismissButton}
           </div>
           <p className="inbox-line">
             {item.prompt ? `Parked on: ${item.prompt}` : "Parked on a menu in its terminal."}
@@ -260,7 +380,7 @@ function InboxItem({
             <span className="inbox-glyph" aria-hidden>
               ⇶
             </span>
-            <strong>{item.run.slug}</strong>
+            <strong>{inboxSubject(item)}</strong>
             <span className="inbox-meta">
               {PIPELINE_PROVIDER_INFO[item.run.provider].label} ·{" "}
               {PIPELINE_HALT_CLASS_INFO[item.haltClass].label}
@@ -282,6 +402,7 @@ function InboxItem({
                 Open run
               </a>
             </Tooltip>
+            {dismissButton}
           </div>
           <p className="inbox-line">
             {item.reason}
@@ -339,6 +460,7 @@ function InboxItem({
                 </button>
               </Tooltip>
             )}
+            {dismissButton}
           </div>
           <p className="inbox-line">
             Merge conflicts nobody is resolving: {BLOCKED_PR_REASON_TEXT[pr.reason]}
@@ -364,6 +486,7 @@ function InboxItem({
                 Review proposal
               </button>
             </Tooltip>
+            {dismissButton}
           </div>
           <p className="inbox-line">
             An agent proposed Commands and testing settings for this repository ({changes} {changes === 1 ? "entry" : "entries"}).
@@ -377,7 +500,7 @@ function InboxItem({
         <section className="inbox-item inbox-blocked">
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
-            <strong>{item.session.name || "(unnamed)"}</strong>
+            <strong>{inboxSubject(item)}</strong>
             {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
             <Tooltip label="Focus this session - it reported that it is waiting on you, so the answer goes to the agent directly">
@@ -385,6 +508,7 @@ function InboxItem({
                 Open session
               </button>
             </Tooltip>
+            {dismissButton}
           </div>
           <p className="inbox-line">
             {item.activity
@@ -401,7 +525,7 @@ function InboxItem({
             <span className="inbox-glyph" aria-hidden>
               ⧉
             </span>
-            <strong>{item.summary.title}</strong>
+            <strong>{inboxSubject(item)}</strong>
             <span className="inbox-meta">{item.summary.strategyLabel} · promoting</span>
             <span className="inbox-spacer" />
             <Tooltip label="Open this run - a finalization resumes from the step that failed, never from the start">
@@ -409,6 +533,7 @@ function InboxItem({
                 Open run
               </button>
             </Tooltip>
+            {dismissButton}
           </div>
           <p className="inbox-line inbox-error">{item.error}</p>
         </section>

@@ -10,6 +10,7 @@ import type {
   TaskSourceInstance,
 } from "../src/shared/task-source.ts";
 import { GithubIssuesConfigSchema, TASK_SOURCE_KIND_INFO, TASK_SOURCE_KINDS } from "../src/shared/task-source.ts";
+import { BulkUpdateTasksSchema } from "../src/shared/protocol.ts";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
@@ -144,6 +145,8 @@ test("a closed issue reads as completed or not_planned from its stateReason", ()
   assert.equal(issueState({ state: "CLOSED", stateReason: "NOT_PLANNED" }), "not_planned");
   assert.equal(issueState({ state: "CLOSED", stateReason: "DUPLICATE" }), "not_planned");
   assert.equal(issueState({}), undefined);
+  assert.equal(issueState({ state: "", stateReason: "" }), undefined);
+  assert.equal(issueState({ state: "MERGED", stateReason: "COMPLETED" }), undefined);
 });
 
 test("a blocker linked to one of our tasks is a task edge; any other is a source edge; the parent is neither", async () => {
@@ -279,9 +282,19 @@ test("in-batch blockers are filed first, and an upstream cycle keeps the source'
   assert.deepEqual(ids(orderByBlockers([c(1, [2]), c(2, [1])])), ["acme/demo#2", "acme/demo#1"]);
 });
 
+test("an upstream cycle swept in one batch is refused, not filed as two tasks waiting on each other", async () => {
+  const { tasks } = manager();
+  const c = (n: number, blockers: number[]) =>
+    candidate(ghIssue(n, { blockedBy: { nodes: blockers.map((b) => blocker(b)), totalCount: blockers.length } }));
+  // #2 is filed first with a source edge to #1, so #1's task edge to #2 closes the cycle.
+  const report = await ingest(source(), [c(1, [2]), c(2, [1])], tasks);
+  assert.equal(report.filed, 1);
+  assert.match(report.refused[0] ?? "", /acme\/demo#1: task dependencies cannot form a cycle/);
+  assert.deepEqual(bySource(tasks, "acme/demo#2").dependencies.map((d) => d.type === "source" ? d.externalId : d.type), ["acme/demo#1"]);
+});
+
 test("cycle refusal still holds on the resolver that swept task edges go through", async () => {
-  // A freshly swept task cannot close a cycle - nothing depends on it yet - so the
-  // refusal is exercised on the resolver `create` shares with every edit.
+  // Exercised on the resolver `create` shares with every edit.
   const { registry, tasks } = manager();
   const one = tasks.create({ repoRoot: "/repo", intent: "one", title: "one", kind: "ship", agent: "claude", backlog: true });
   const two = tasks.create({ repoRoot: "/repo", intent: "two", title: "two", kind: "ship", agent: "claude", backlog: true,
@@ -336,12 +349,16 @@ test("the sweep's re-check satisfies a completed item and marks a not-planned on
   const [dead] = deadSourceBlockersFor(stopped, backlogIndex(all, null));
   assert.equal(dead?.ownerTaskId, stopped.id);
   assert.equal(dead?.externalId, "acme/ext#51");
-  assert.deepEqual(dead?.remainingDependencies, []);
+  assert.deepEqual(dead?.dependency, { type: "source", sourceId: inst.id, externalId: "acme/ext#51", url: edge(stopped).url, title: "Upstream acme/ext#51" });
 
-  // Removing it (the Resolve action) keeps working through an ordinary update.
-  const removed = await tasks.update(stopped.id, { dependencies: dead!.remainingDependencies });
+  // An edge added after the card rendered survives the Resolve action, which names only the
+  // edge it removes rather than resending the list the card was drawn from.
+  const later = tasks.create({ repoRoot: "/repo", intent: "later", title: "later", kind: "ship", agent: "claude", backlog: true });
+  assert.ok((await tasks.update(stopped.id, { dependencies: [dead!.dependency, { type: "task", taskId: later.id }] })).ok);
+  const removed = await tasks.bulkUpdate(BulkUpdateTasksSchema.parse({ taskIds: [stopped.id], dependencies: { remove: [dead!.dependency] } }));
   assert.equal(removed.ok, true);
-  assert.deepEqual(readyBacklog(tasks.list(), null).map((t) => t.id).sort(), [released.id, stopped.id].sort());
+  assert.deepEqual(bySource(tasks, "acme/demo#50").dependencies.map((d) => d.type === "task" ? d.taskId : d.type), [later.id]);
+  assert.ok(readyBacklog(tasks.list(), null).some((t) => t.id === released.id));
   // Only the still-waiting edges are queued for the next re-check - none now.
   assert.deepEqual(sourceEdgesToRecheck(tasks.list(), inst.id), []);
 });
@@ -362,6 +379,31 @@ test("a failed read changes nothing, and an unanswered item only moves to the ba
   // A budget of one takes the least recently checked item.
   const [first] = sourceEdgesToRecheck(tasks.list(), inst.id, 1);
   assert.ok(first);
+});
+
+test("an issue whose blockers exceed the dependency limit is refused, not filed as an uneditable task", async () => {
+  const { tasks } = manager();
+  const nodes = Array.from({ length: 51 }, (_, i) => blocker(200 + i, "acme/x"));
+  const report = await ingest(source(), [candidate(ghIssue(80, { blockedBy: { nodes, totalCount: nodes.length } }))], tasks);
+  assert.equal(report.filed, 0);
+  assert.match(report.refused[0] ?? "", /acme\/demo#80: would carry more than 50 dependencies/);
+});
+
+test("a re-check the sweep deadline cut off moves its whole batch to the back of the queue", async () => {
+  const { tasks } = manager();
+  const inst = source();
+  await ingest(inst, [candidate(ghIssue(70, { blockedBy: { nodes: [blocker(71, "acme/x"), blocker(72, "acme/x")], totalCount: 2 } }))], tasks);
+  const deadline = new AbortController();
+  const answered = { ...candidate(ghIssue(71)), ref: { sourceId: inst.id, externalId: "acme/x#71", url: "https://github.com/acme/x/issues/71" }, state: "completed" as const };
+  await recheckSourceDependencies(inst, tasks, { ...ctx, signal: deadline.signal }, {
+    read: async () => { deadline.abort(); return { items: [answered], error: "the linked refresh was abandoned" }; },
+  });
+  const edges = new Map(bySource(tasks, "acme/demo#70").dependencies.flatMap((d) =>
+    d.type === "source" ? [[d.externalId, d] as const] : []));
+  assert.notEqual(edges.get("acme/x#71")!.satisfiedAt, null, "an answer read before the cut-off still counts");
+  assert.equal(edges.get("acme/x#72")!.satisfiedAt, null);
+  assert.equal(edges.get("acme/x#72")!.state, "open");
+  assert.notEqual(edges.get("acme/x#72")!.checkedAt, null, "the unanswered item leaves the front of the queue");
 });
 
 test("an unknown edge type is read as unsatisfied, kept on edit, and written back verbatim", async () => {

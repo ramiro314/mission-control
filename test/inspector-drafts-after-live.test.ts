@@ -513,6 +513,45 @@ test("a drafts-only review refused with 422, three drafts: each is posted alone 
   assertRoundFinished(key);
 });
 
+test("a drafts-only review refused with a 422 that names no comment charges nothing", async () => {
+  const key = adopt(731);
+  seedDrafts(key, [{ title: "Draft behind a pending review" }]);
+  writeGithubState({ forcedStatuses: [422] });
+  goLive();
+  await runOneSweep();
+
+  const state = readGithubState();
+  assert.equal(state.attempts.length, 1, "nothing to isolate: the refusal was about the review");
+  assert.equal(state.headReads, 0, "a 422 that names no comment costs no head read");
+  const draft = byTitle(key).get("Draft behind a pending review")!;
+  assert.equal(draft.status, "drafted");
+  assert.equal(draft.postRefusals, 0);
+  assert.equal(draft.lastPostError, null);
+  assertRoundFailed(key);
+});
+
+test("when every isolated post is refused, no draft counts it and the round still finishes", async () => {
+  const key = adopt(732);
+  const fps = seedDrafts(key, [{ title: "Draft one" }, { title: "Draft two" }, { title: "Draft three" }]);
+  writeGithubState({ rejectFingerprints: [...fps.values()] });
+  goLive();
+  await runOneSweep();
+
+  const state = readGithubState();
+  assert.equal(state.attempts.length, 4, "the refused review, then one review per draft");
+  assert.equal(state.posts.length, 0);
+  for (const row of loadInspectorComments(key)) {
+    assert.equal(row.status, "drafted", `${row.title} is a draft again`);
+    assert.equal(row.postRefusals, 0, `${row.title} counts no refusal`);
+    assert.equal(row.lastPostError, null);
+  }
+  // Reviewing the same head again would only repeat the refusals, so it is recorded as reviewed.
+  assertRoundFinished(key);
+  await runOneSweep();
+  assert.equal(reviewCount(), 1, "the same head is not reviewed again");
+  assert.equal(readGithubState().attempts.length, 4);
+});
+
 test("a whole-review refusal partway through isolation stops it, with nothing counted", async () => {
   const key = adopt(715);
   const fps = seedDrafts(key, [{ title: "First draft" }, { title: "Bad anchor draft" }, { title: "Third draft" }]);
@@ -572,6 +611,22 @@ test("a draft the prompt cut for length is not posted, because the model never s
   const draft = byTitle(key).get("Draft below the prompt cut")!;
   assert.equal(draft.status, "drafted");
   assert.equal(draft.postRefusals, 0);
+  assertRoundFinished(key);
+});
+
+test("a draft GitHub refused twice and then accepted carries no refusals into its next version", async () => {
+  const key = adopt(730);
+  seedDrafts(key, [{ title: "Refused twice, then anchored", postRefusals: 2 }]);
+  writeGithubState();
+  goLive();
+  await runOneSweep();
+
+  assert.equal(readGithubState().posts.length, 1);
+  const row = byTitle(key).get("Refused twice, then anchored")!;
+  assert.equal(row.status, "open");
+  assert.ok(row.postedAt != null);
+  assert.equal(row.postRefusals, 0, "GitHub accepted it, so the earlier refusals no longer count");
+  assert.equal(row.lastPostError, null);
   assertRoundFinished(key);
 });
 

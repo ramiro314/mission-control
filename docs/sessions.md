@@ -478,6 +478,10 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 - if a Claude SDK session reports that it is no longer logged in, authenticate Claude from
   any terminal. Its next Mission Control message replaces the stale SDK subprocess, resumes
   the same Claude conversation, and delivers that message with the credentials now on disk.
+  A resident's next scheduled wake does the same. If Claude reports the failure but never
+  closes its turn, Mission Control closes it after 30 seconds so the session returns to idle
+  and that next message or wake can reach it. If the stale subprocess then ignores its input
+  closing, it is stopped after 10 seconds instead of holding up the recovery.
   `/login` is not an interactive command in the embedded composer. If authentication fails
   before Claude reports a conversation id, there is nothing safe to resume; the session exits
   as unresumable so the operator can start a new conversation;
@@ -1612,7 +1616,8 @@ objective, not a copy of the newest prompt or the step the agent happens to be w
 **Console detail draws it in the same place** - under the session's name, with the other
 facts that change rarely - rather than in a band above the transcript. There it takes one
 line and ellipses, and hovering gives you the whole sentence along with whatever the Goal's
-state has to add ("being refined", "automatic wrap-up is paused"). A harness that can never
+state has to add ("being refined", "automatic wrap-up is paused"). Both paused states end by
+naming their exit, **Accept objective as is** in the Foreman drawer. A harness that can never
 carry a Goal still says so there, in the same slot.
 
 The first substantive instruction establishes an immediate provisional objective with no
@@ -1668,6 +1673,22 @@ prompt it could not confirm the agent received, not you asking twice.
 A launch that has no driver door, such as a terminal paste, is unaffected for the same
 reason: its hook delivery is the first arrival and so is the capture.
 
+**Every follow-up to an Agent SDK session is counted once, too.** A message you send
+afterwards, directly or from the pending-turn outbox, has the same two doors: the driver
+acknowledges it, and the agent's prompt hook reports the same text back. Each delivered turn
+is captured by exactly one of them. Mission Control notes the text just before the driver
+takes it, and whichever door arrives first opens the revision while the other is skipped. A
+door that fails to record the turn leaves it for the other, so a failed write is not a lost
+instruction. Without this rule every follow-up was classified twice, the second time against
+a conversation that had already moved on.
+
+A retype is its own send, so it is still heard: sending the same words again opens a revision
+of its own. The note lasts for the turn the message belongs to. A message accepted while the
+agent is mid-turn waits behind that turn, so its note outlives the running turn and ends with
+its own. Once its turn is next, the note also lapses after two minutes, for a conversation
+that never finishes a turn. A daemon restart between a delivery and its echo forgets the note
+and lets one duplicate through.
+
 **Mission Control's own turns never become the Goal.** Foreman's recovery packets, the fix
 rounds it writes for a work item, workflow repair and evidence-preflight packets, the retro
 packet, the skills broadcast and the prompt that continues a turn interrupted by a daemon
@@ -1701,22 +1722,56 @@ Each reconciliation records one of five relationships:
   objective;
 - **amend** extends the existing completion contract;
 - **replace** supersedes the old outcome; and
-- **unclear** keeps the existing objective while completion remains ambiguous.
+- **unclear** keeps the existing objective while completion remains ambiguous. An unclear
+  instruction is never dropped when a newer one arrives. If the newer one arrives after the
+  verdict, the unclear instruction goes back into the queue ahead of it and is reconsidered
+  with it. If it is judged unclear while a newer instruction is already waiting, it is kept as
+  steering ("Kept as steering: …"), and only the latest instruction can pause wrap-up.
 
 No command or special vocabulary is required. The model infers the relationship from the
 instruction and conversation. An amendment is accepted only when its proposed contract
-explicitly retains the existing objective as its prefix; a narrower amendment stays
-unresolved. An effective amendment or replacement updates the Goal and advances its objective
-version, while steering changes only the latest focus.
+explicitly retains the existing objective as its prefix. A line that is nothing but an
+absolute file path, such as a screenshot you attached (spaces included, as in
+`/Users/you/Desktop/Screen Shot.png`), is ignored by that comparison, and an accepted
+amendment keeps every such line of the objective it extends, so the attachment stays
+in the contract a run reviews against. An amendment too long to keep those lines within the
+stored objective's length limit is not shortened to fit. Like any amendment that fails the
+check, it is treated as steering: the objective and its version stay as they were, the drawer
+shows the relationship as **steering** with a rationale that starts "Treated as steering:",
+the instruction reaches the next Workflow run as steering context, and the daemon log records
+which rule failed without quoting the objective. The classifier is also told that a reply
+picking one of the options a session offered is steering. That is guidance to the model, not
+a guarantee: if it still calls the pick an amendment and the amendment passes the check, the
+amendment is accepted; if it fails the check, it is treated as steering as above. An effective
+amendment or replacement updates the Goal and advances its objective version, while steering
+changes only the latest focus.
 
 The reconciliation call is rate-limited to at most once a minute per session. Its provider
 and model are selected in **Settings → [Models](models.md)**;
 out of the box it uses the **local `claude` CLI, not the Anthropic API**, with no API key in
-Mission Control. If the provider is missing, logged out, slow, or returns an unsafe amendment,
-the last durable objective stays visible and the unresolved instruction remains ahead of later
+Mission Control. If the provider is missing, logged out, slow, or returns a reply that does
+not validate, the last durable objective stays visible and the unresolved instruction remains ahead of later
 ones. Prompted automatic wrap-up stays paused until every instruction has a resolved,
 unambiguous relationship. The same fail-closed rule covers migrated state whose missing prompt
 text cannot be recovered.
+
+**Accept objective as is** is the way out of that pause. While the Goal is reconciling or
+`unclear`, the Foreman drawer (opened from **Foreman intent** in the console header) offers it
+under the relationship, and the Goal line's hover names it. Pressing it records every pending
+instruction as steering, oldest first, with the rationale "Accepted by you: the current
+objective is the completion contract." An instruction whose text was lost before it could be
+stored is recorded as "(not captured)". An `unclear` verdict with nothing left pending records
+its own instruction the same way. The relationship becomes **steer**, the latest revision
+counts as resolved, and Foreman judges completion against the objective on its next tick,
+which can claim a bound Workflow. A run frozen afterwards carries those instructions as
+steering. It confirms the contract and never rewrites it: the objective, its version, the
+card sentence and the opening request are left exactly as they were. Growing or replacing
+the objective stays the reconciler's job, through the next **amend** or **replace**. A
+session with no objective yet has nothing to accept, so the drawer shows no button; its
+next instruction becomes the objective. Pressing it again once the Goal has settled changes
+nothing. If the request fails, the drawer shows why under the button and the pause stays as it
+was, so it can be pressed again. The route behind the control, and what it may and may not write, are specified in
+[Who may change a Goal's objective](agent-guides/change-contracts.md#who-may-change-a-goals-objective).
 
 What it deliberately isn't:
 
@@ -2041,14 +2096,16 @@ forged browser headers.
 
 The session uses two Mission Control tools:
 
-- `read_sessions` lists other live sessions. Supply `sessionId` to inspect a target's state,
+- `read_sessions` lists other live sessions, each with a compact `blocker` summary (`null`
+  when it has none). Pass `blocked: true` to list only blocked sessions. Supply `sessionId` to inspect a target's state,
   pending review prompts, native approval/question dialog, outbox and work queue. The top-level
   `queue` contains full items with their ids, revisions and proposed payloads, or is `null`
   when the target has no queue. Set `transcript: true` to include a bounded recent conversation window.
 - `control_session` takes that target's `sessionId` and a typed `command`. It supports
   messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
   outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
-  and model, effort and permission-mode changes. Use current request ids, option labels and
+  model, effort and permission-mode changes, and the two blocker actions
+  `flag_blocker_reply` and `clear_blocker` (see [Blocked sessions](#blocked-sessions)). Use current request ids, option labels and
   revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
   `queue_approve` requires the inspected item revision. A changed proposal invalidates that
   revision and any earlier approval, so read the new text before approving it.
@@ -2084,6 +2141,55 @@ records the controller, target, action and HTTP outcome without recording the me
 These tools cannot change the controller grant, global settings, delete sessions, or reset
 worktrees. The target's normal runtime and resource guards continue to apply. See
 [Security](security.md#delegated-session-control) for the caller identity and local trust boundary.
+
+### Blocked sessions
+
+A session that cannot go on because it is waiting on **someone or something other than you**
+records a **blocker** with `report_blocker`: what it is waiting for (`reason`), who owns the
+answer (`waitingOn`), the condition that unblocks it (`resumeWhen`), a `kind` (`question`,
+`dependency`, `service` or `other`), an optional http(s) `referenceUrl` to where the question
+lives, and optional Markdown `details`. There is no operator kind: a decision you can make goes
+through `request_input`, and `report_blocker` is refused while the session has a
+`request_input` of its own pending. It is also refused once the session's task has finished,
+since nothing would clear a blocker stored against a done, failed or cancelled task.
+
+The blocker is stored in SQLite under the session's note key, so it survives the turn ending,
+an exit, a daemon restart and a `/clear`. It ends when the session calls `clear_blocker`, when
+you or a controlling session clear it, when the task it was reported for reaches a terminal status
+(merge settlement, Mark done, cancel, fail), or when no session has held its key for the goal
+pruning window. A later `report_blocker` updates it and keeps its start time; after a reply was
+flagged, it means "I checked, still blocked", clears the flag and records the check.
+
+While it stands, every idle-triggered automation leaves the session alone without marking
+anything complete: prompted completion (the work-cycle generation is not consumed, so it can
+still complete after the blocker clears), queue drain and the wrap-up ask, pre-PR ship
+recovery, review follow-through, backlog autopilot assignment, stack readiness for dependents,
+workflow resumption and evidence-preparation recovery, and the stuck-session alerts. Your own
+queued turns, delegated messages, restart continuations and merge settlement still run. The
+daemon enforces the hold too: it refuses Foreman's free-text writes, the wrap-up ask, queue
+items moving forward and ship-recovery claims for a blocked session. Foreman can still answer
+a blocked session's review, menu or form, which can only respond to the question on screen.
+
+On the Board a blocked card has a red spine and border and an always-drawn **Blocked · 3h**
+flag. Its kind, reason, waiting-on, link and **Reply flagged** pill are optional
+[Board card items](ui.md). For now a blocked idle session stays in the Idle column.
+The Conversation tab opens with a red band: one row with the kind, the reason, how long it has
+stood and two buttons. **Flag reply** marks a likely answer (with an optional note and link)
+without clearing anything or messaging the session, and **Clear blocker** ends the hold. Click
+the reason to expand the row in place to every other field and the collapsible details. A
+flagged reply prints under the row either way. The band never shrinks to make room for a long
+conversation, so its buttons are always in view.
+
+Residents and other controlling sessions use `read_sessions` with `blocked: true` to find
+blocked sessions, `control_session` with `{"action":"flag_blocker_reply","note":"...",
+"referenceUrl":"..."}` to flag a likely reply, a `message` to tell the session to check, and
+`{"action":"clear_blocker","resolution":"..."}` to clear it. Every set, re-report, flag and
+clear writes one `session_events` row naming its actor: `session`, `operator`,
+`session:<controller-id>`, `task` for a terminal task, or `prune` for the pruning window.
+`session_blocker_set` also records the kind and reason. `session_blocker_updated` records the
+kind, reason, time since the blocker started (`sinceMs`) and whether it followed a flagged reply
+(`checked`). `session_blocker_reply_flagged` records `sinceMs`. `session_blocker_cleared` records
+how long the blocker stood (`durationMs`) and any one-line `resolution`.
 
 ### Review channel (MCP)
 
@@ -2142,6 +2248,20 @@ stale item. The composer keeps unfinished uploads and edits across a
 closed confirmation or a failed submission, then clears only after the daemon accepts the
 review request.
 
+Task ids are tool arguments, not names. The dashboard shows tasks only by title, so the server's
+MCP instructions and the description of every task tool (`create_task`, `list_tasks`, `get_task`,
+`update_task`, `delete_task`) tell the agent to name another task by its title, never its id,
+whenever it mentions one to the human. An agent can still ignore that, so the daemon enforces it
+on everything it sends the dashboard: every task id in an agent's conversation turns, its status
+line, its blocker and its review or question cards arrives as the task's quoted title, including a
+task that has left the live board. A task id is a random UUID, so it is titled wherever it sits and
+in any case - `task-<id>`, `/tasks/<id>`, capitals and all - unless a letter or digit touches it.
+The one exception is a checkout path (`…/worktrees/<id>/…`), the only name Mission Control builds
+from a full task id, which is left as written so the path still opens its file. When titling would give two options of one question
+the same label, the titled one is numbered (` (2)`). The Sitrep report reads the same titled view.
+A diff review's patch is left byte for byte, and the human's own turns are shown exactly as typed.
+What is stored, and what agents and Foreman read back, keeps the agent's own words.
+
 The MCP tools are:
 
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -2194,6 +2314,32 @@ The MCP tools are:
   use versioned creation routes, so an older daemon returns 404 and creates nothing instead of
   ignoring the new fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
+- `dispatch_task(taskId, overrideDisabled?, defaultModel?)` - launch a saved task, including one
+  just filed with `create_task`. Shares the dashboard's dispatch path and its dependency,
+  workflow, kind, and launch checks. Disabled backlog work needs `overrideDisabled: true`.
+  The calling agent can set this override itself, without human approval; disabled is an
+  autopilot hold, not a permission boundary against the agent.
+  `defaultModel` fills only a task without a pinned model. Returns the task's current status:
+  `dispatching` means accepted, so use `get_task` to confirm it reaches `running`. Uses the same
+  daemon-token authority as task creation without a Control other sessions grant. Chat launches
+  pre-approve task creation and dispatch so a conversation can delegate separate work.
+- `list_tasks(...)` - **read-only** discovery of saved tasks, including running and finished
+  work. Filter by `status` (`backlog`, `dispatching`, `running`, `done`, `cancelled`, `failed`),
+  `kind`, `repository` (primary or attached), `labels` (all supplied labels, exact matches),
+  `priority` (`null` means unset), `enabled`, or `dependsOnTaskId` (direct prerequisite).
+  Repository selectors accept an absolute checkout path or unique directory name; worktrees
+  resolve to their owning repository. Omitted filters read all tasks. Returns `{tasks, nextCursor}`
+  in descending creation-time order with descending task ID breaking ties. `limit` defaults to
+  50, with a maximum of 100. Pass `nextCursor` as `cursor` with unchanged filters to continue.
+  Pages are live rather than a frozen snapshot; newly inserted tasks before the cursor appear
+  on a fresh listing. Intent is omitted unless `includeIntent: true` is supplied.
+- `get_task(taskId)` - **read-only** access to full saved configuration, including intent and
+  plan inputs, regardless of status or whether the task remains on the live board. Both read
+  tools return saved dependencies, linked `sessionId`, `prUrl`, per-repository
+  `repoPrs`, saved `outcomeUrl`, outcome/error and timestamps. Pull request references come from
+  durable work-episode bindings, so running work can report a PR before completion. See
+  [MCP task-read access](security.md#mcp-task-reads) for the security contract.
+  Neither tool launches, modifies, or reorders work.
 - `list_backlog_tasks(repository?)` - read the calling repository's open backlog, or the one
   `repository` names: each task's id, title, kind, labels and the task ids it already depends on.
   `repository` is resolved like `create_task`'s selector, an absolute path or a unique repository
@@ -2258,6 +2404,11 @@ The MCP tools are:
   attachment failure without that matching URL is unknown and blocks retry; only a text-only
   refusal without a URL says retrying is safe
 - `report_status(activity)` - update the session's activity line
+- `report_blocker(kind, reason, waitingOn, resumeWhen, referenceUrl?, details?)` - record that
+  this session is waiting on someone or something other than the operator. See
+  [Blocked sessions](#blocked-sessions)
+- `clear_blocker(resolution?)` - clear this session's own blocker. A session with none is a
+  no-op success
 - `respond_to_file_comments(commentId, body, addressed?)` - answer one line comment a human
   left on a file, in the thread it was written in (non-blocking). `commentId` is the handle
   the delivered message printed - `MC-a41f.2`, the comment's per-session short id plus which

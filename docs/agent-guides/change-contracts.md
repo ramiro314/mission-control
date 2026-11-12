@@ -68,6 +68,14 @@ A new MCP **tool** carries two more obligations, and skipping either is silent. 
 
 Every mutating route requires a Zod schema in `protocol.ts` and `parseBody`. Do not hand-parse JSON.
 
+Every collection a request can make Zod parse carries an upper bound: `.max()` on a `z.array`, `z.set` or `z.map`, and `boundedRecord` (`src/shared/zod-shapes.ts`) instead of a bare `z.record`, which has no `.max()`. Zod checks the bound before it parses an element, so an oversized request is one issue rather than one per element (GHSA-mrhx-c7xc-m3w5); a count checked in a refinement runs only after every entry has been parsed. This covers MCP tool input too. `test/request-collection-bounds.test.ts` walks every schema the route files parse and every MCP tool's listed input, and fails on an unbounded collection.
+
+The same rule applies to external replies and imported files: model output, terminal and GitHub responses, CodeRabbit records, native model catalogs, MCP settings, and backup JSON. Trimming a parsed reply is an output policy, not an intake limit. Loose model replies retain normal trimming within `LLM_REPLY_COLLECTION_MAX`; larger collections fail parsing before element validation. Recursive backup JSON bounds both arrays and records at every depth by `SETTINGS_BACKUP_LIMITS.entriesPerCatalog`. `test/external-collection-limits.test.ts` checks model-reply limits and recursive backup JSON.
+
+MCP tool input must render as JSON Schema: the MCP SDK renders it with `z.toJSONSchema`, which refuses `z.custom`, and one such field fails the whole `tools/list`. Use a representable schema (a pattern, an enum) instead.
+
+A config PATCH schema is `partialPatch(StoredSchema)`, never `StoredSchema.partial()`. Zod 4's `.optional()` fills an inner `.default()`, so a plain `.partial()` hands back every default the caller did not send, and the merged patch resets those settings. `partialPatch` keeps an absent key absent.
+
 ## Executable and child-process changes
 
 A new configurable subprocess integration is incomplete until all of these move together:
@@ -1121,6 +1129,30 @@ wrong page with no error anywhere.
 `PipelineRunView`'s header takes an `actions` slot that renders nothing today. It is the
 place the engine's control verbs go; filling it must not restructure the header around it.
 
+## Who may change a Goal's objective
+
+A session Goal's `objective`, `text`, `source` and `objectiveVersion` have exactly two writers.
+`Registry.captureAcceptedPrompt` seeds a provisional objective (`source: "heuristic"`, version 1)
+from the first substantive instruction, and only while the Goal has no objective yet. After that,
+only the goal refiner changes them, and only when it resolves an `initial`, `amend` or `replace`
+relationship. `steer` and `unclear` never change them, and no other writer does.
+`openingPrompt` is write-once.
+
+`POST /api/sessions/:id/goal/accept` (`Registry.acceptGoalObjective`) is a person's exit from a
+paused Goal, and it CONFIRMS the objective rather than rewriting it. It resolves every pending
+revision as steering through `upsertSessionGoalWithSteeringNotes`, one row per revision with the
+rationale prefix `Accepted by you:`, and sets `relationship: "steer"` and
+`resolvedPromptRevision = promptRevision`. Its patch must never name `objective`, `text`,
+`source`, `objectiveVersion` or `openingPrompt`, so the frozen run contract and
+`resolvedSessionIntent` see the same objective and version as before it ran. Its answers are a
+contract a later caller relies on: 404 without a Goal, 409 without an objective, 200 with the
+full `SessionGoal`, idempotent on a Goal that is already settled. A "replace the objective"
+action, if one is ever wanted, is a separate route with its own review, not a body on this one.
+
+Steering rows always carry `relationship: "steer"` at or below the Goal's resolved revision. The
+refiner writes one through `upsertSessionGoalWithSteering` and the accept route writes several
+through the list writer; neither replaces the other.
+
 ## Prompted completion: one generation, one reason, one write
 
 A completed prompted work-cycle generation is consumed by exactly one compare-and-set, and that
@@ -1230,6 +1262,15 @@ A session appears in three components:
 - `layouts/RailRow.tsx`
 
 Add layout-visible props through `SessionViewProps`. Shared leaves belong in `session-bits.tsx`. A new session signal must cover detail chips, tile flags, and rail marks.
+
+Fleet membership for residents has one owner. `residentPlacement` (`src/web/lib/resident-placement.ts`)
+decides which residents are excluded from the fleet and which are visitor cards, from the
+`residentPlacement` UI preference, the drawer's open or pinned state and the open detail. App
+applies it in the `fleet` memo before `orderSessions`, so the Board columns, both rails, the arrow
+keys and the ⌘-numbers inherit it; no view branches on placement. An open resident is read
+through App's `detailSession` lookup (passed as `SessionViewProps.detailSession`) and is never
+added to a fleet list. The dock and the Residents drawer share one launch state,
+`src/web/residents/useResidentLaunches.ts`.
 
 Compose surfaces:
 
@@ -1367,6 +1408,13 @@ These rules hold across phases:
    entry carries a secret value; a global server, or a custom server with a secret, is always a
    launcher entry. A driver honours it only through the mechanism `HARNESS_CAPABILITIES[agent].mcpSelection`
    records, and a harness whose value is `null` cannot save or launch an MCP selection.
+   The one exception is a profile whose `mcp.nativeSources` is `all`, which is offered, saved and
+   launched only where `mcpSelection.allNativeSources` is set. Its snapshot holds only the
+   selected custom servers, `ResidentMcpLaunch.nativeSources` carries the choice from the run's
+   pinned revision, and the driver renders the snapshot beside everything the harness loads
+   natively; the post-start check then covers only Mission's server and that snapshot. Never let
+   `all` widen a pinned profile, and never give a harness `allNativeSources` without saying in
+   [security](../security.md#resident-mcp-secrets) what it gives up.
    Secret values are never returned by a route, published, logged, backed up or placed in an
    argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/service.ts`) names the tables
    a recovery point is scrubbed of, and a new secret table joins that list. See

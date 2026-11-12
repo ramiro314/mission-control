@@ -1,7 +1,7 @@
-import { unansweredOutcome, type RunResult } from "../util/exec.ts";
+import { unansweredOutcome, type run, type RunResult } from "../util/exec.ts";
 import type { ReadOptions } from "../process-inspection/contract.ts";
 import { processInspector } from "../process-inspection/index.ts";
-import { createPosixProcessInspector, defaultCommandRunner, type CommandRunner } from "../process-inspection/posix.ts";
+import { createPosixProcessInspector, defaultCommandRunner } from "../process-inspection/posix.ts";
 import { normTty } from "./tty.ts";
 import { allHarnesses, harnessFor } from "../harness/index.ts";
 import type { Harness } from "../harness/types.ts";
@@ -272,6 +272,9 @@ export function daemonOwnedPids(procs: Proc[], daemonPid: number = process.pid):
   return owned;
 }
 
+/** How a read runs. `timeoutScale` multiplies its usual timeout, for a caller's retry. */
+export type { ReadOptions };
+
 /**
  * Which way a `ps` read failed, in words an operator can act on.
  *
@@ -307,11 +310,14 @@ export interface ProcessSnapshot {
  * The process snapshot plus the health of the two underlying reads. Discovery may use the
  * partial rows, but destructive worktree decisions must treat `unknownReason` as a refusal.
  */
-export async function listProcessesSnapshot(source?: ReadOptions | CommandRunner["run"]): Promise<ProcessSnapshot> {
+export async function listProcessesSnapshot(
+  source?: typeof run | ReadOptions,
+  options?: ReadOptions,
+): Promise<ProcessSnapshot> {
   // A function is a test's command runner: the POSIX inspector's reads, issued through it.
   const table = typeof source === "function"
-    ? await createPosixProcessInspector({ ...defaultCommandRunner, run: source }).listProcesses()
-    : await processInspector().listProcesses(source);
+    ? await createPosixProcessInspector({ ...defaultCommandRunner, run: source }).listProcesses(options)
+    : await processInspector().listProcesses(source ?? options);
   const procs: Proc[] = [];
   const cwdScopePids: number[] = [];
   const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;
@@ -336,7 +342,7 @@ export async function listProcessesSnapshot(source?: ReadOptions | CommandRunner
       : effectiveUid === null
         ? "process listing failed: effective user identity is unavailable"
         : null,
-    overflowed: table.failure?.overflowed === true,
+    overflowed: table.overflowed ?? table.failure?.overflowed === true,
     cwdScopePids,
     completedCollectorPids: table.collectorPids,
   };

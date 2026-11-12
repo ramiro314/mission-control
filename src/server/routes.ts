@@ -1,3 +1,6 @@
+import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
+import { getResidentProfile as stateProfile } from "./residents/store.ts";
+import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
   CreateResidentMcpServerSchema,
   DeleteResidentMcpServerSchema,
@@ -13,7 +16,11 @@ import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@s
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
 import { paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
-import { claimCodeRabbit, finishCodeRabbit } from "./db.ts";
+import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, setStackAwaitReplacement } from "./db.ts";
+import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
+import type { PrRefs } from "./inspector/github.ts";
+import { activeStackGitHub } from "./stacking/github.ts";
+import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
@@ -54,6 +61,7 @@ import {
   isPlanningTaskKind,
   kindsDefaultingToWorkflow,
   shapeThisPatch,
+  TASK_KIND_BEHAVIOR,
   TASK_KIND_INFO,
   taskHasRepository,
   taskKindAllowsBacklog,
@@ -68,6 +76,7 @@ import {
   markLaunchFailureReport,
   recordLaunchFailureReport,
 } from "./launch-failures.ts";
+import { dismissAttentionItems, listAttentionDismissals } from "./attention-dismissals.ts";
 import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -103,6 +112,8 @@ import {
   DispatchBacklogTaskSchema,
   DispatchSchema,
   DismissLaunchFailuresSchema,
+  DismissAttentionItemsSchema,
+  ATTENTION_DISMISSAL_LIMITS,
   ReportLaunchFailureSchema,
   RetryLaunchFailureSchema,
   PipelineAdoptSuccessorSchema,
@@ -144,6 +155,8 @@ import {
   McpPushTaskSchema,
   McpUpdateTaskSchema,
   McpDeleteTaskSchema,
+  McpListTasksSchema,
+  McpGetTaskSchema,
   type UpdateTask,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
@@ -178,6 +191,7 @@ import {
   CreateResidentProfileSchema,
   UpdateResidentProfileSchema,
   ArchiveResidentProfileSchema,
+  ResetResidentStateSchema,
   LaunchResidentRequestSchema,
   RunScheduleNowSchema,
   ScheduleHistoryQuerySchema,
@@ -236,6 +250,10 @@ import {
   StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
+  McpReportBlockerSchema,
+  McpClearBlockerSchema,
+  FlagBlockerReplySchema,
+  ClearBlockerSchema,
   TRANSCRIPT_DEFAULT_TAIL_TURNS,
   TRANSCRIPT_HEAD_TURNS,
   UpdateTaskSchema,
@@ -306,6 +324,7 @@ import type {
   LlmStatus,
   ReviewActor,
   Session,
+  SessionBlocker,
   SkillsView,
   Task,
   WorkItem,
@@ -316,11 +335,13 @@ import {
   ScoutArchiveNotReadyError,
   TaskDependencyError,
   TaskEffortUnsupportedError,
+  TaskPersonaError,
   TaskStatusConflictError,
   type TaskManager,
 } from "./tasks.ts";
 import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
+import { openEndedRequests } from "./http-shutdown.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import type { HistoryLiveLookup, HistoryService } from "./history/service.ts";
@@ -344,6 +365,7 @@ import {
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { startShapeTicketsFollowup } from "./shape-tickets-followup.ts";
+import { ticketSessionEdge } from "./shape-tickets.ts";
 import { setAffectedTestsCommand, startTestingSetup } from "./testing-setup.ts";
 import { harnessFor, sdkFor, sessionMessages } from "./harness/index.ts";
 import { prepareTerminalResume, recheckManagedResumes, resumeConversation, revokeUnclaimedResumes,
@@ -352,14 +374,14 @@ import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
+import { activePaneDialog, hasBlocker, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
   interruptUnsupportedWhy,
   workQueueBlockedReason,
 } from "@shared/harness-capabilities.ts";
-import { AGENT_TYPES, SESSION_RUNTIMES, type AgentType } from "@shared/types.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, type AgentType } from "@shared/types.ts";
 import {
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
@@ -372,9 +394,11 @@ import {
   updateStandingInstructions,
 } from "./instructions/config.ts";
 import { composeStandingInstructions } from "./instructions/compose.ts";
+import { pipelineHostStanding, resolveTaskPersona, withTaskPersona } from "./instructions/persona.ts";
 import { canonicalRepoPath } from "./instructions/resolve.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
+import { taskTitlePresenter } from "./task-titles.ts";
 import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
 import {
   claimForemanLease,
@@ -696,6 +720,7 @@ import {
   legacyCheckCommands,
 } from "@shared/workflow.ts";
 import type {
+  Persona,
   TestEvidenceAuditAggregate,
   WorkflowCheckSlot,
   WorkflowConfig,
@@ -824,6 +849,21 @@ const SESSION_ACTION_BODY_MAX_BYTES = WORKFLOW_LIMITS.sessionActionPromptBytes *
  * schema is the real bound here. This is a cheap pre-parse guard against an absurd body, not a
  * second opinion about what a valid catalog looks like.
  */
+/**
+ * One attention-inbox Dismiss at its largest: every key a request may carry, each at its longest.
+ *
+ * Derived from `ATTENTION_DISMISSAL_LIMITS` so a body the schema accepts is never refused here,
+ * with `JSON_UTF8_MAX_BYTES_PER_CHAR` because the schema counts characters and `bodyLimit` counts
+ * bytes. The 256 per key covers the field names, the integer basis and the punctuation. Its job
+ * is the one the schema cannot do under Zod 3: stop an absurd body before every element of it is
+ * parsed (GHSA-mrhx-c7xc-m3w5).
+ */
+const ATTENTION_DISMISSAL_BODY_MAX_BYTES =
+  ATTENTION_DISMISSAL_LIMITS.keysPerRequest
+    * ((ATTENTION_DISMISSAL_LIMITS.itemIdLength + ATTENTION_DISMISSAL_LIMITS.occurrenceLength)
+        * JSON_UTF8_MAX_BYTES_PER_CHAR
+      + 256)
+  + 1024;
 const WORKFLOW_COMMAND_BODY_MAX_BYTES =
   (WORKFLOW_LIMITS.commandOverrides + 1)
     * ((WORKFLOW_LIMITS.checkRepoRoot + WORKFLOW_LIMITS.checkCommandLength)
@@ -962,6 +1002,7 @@ async function parseBoundedBody<S extends ZodTypeAny>(
 /** What a refused Foreman write says, on every route that refuses one. */
 const FOREMAN_UNINVITED = "Foreman is not invited into this session";
 const FOREMAN_COMPOSER_BUSY = "Foreman is waiting while the user composes a reply";
+const FOREMAN_SESSION_BLOCKED = "The session is blocked on someone else; Foreman holds until the blocker is cleared";
 
 interface ForemanWriteRefusal {
   error: string;
@@ -988,15 +1029,67 @@ interface ForemanWriteRefusal {
  * they are shared with the dashboard and are bookkeeping downstream of a typing act these
  * gates already refused, so widening their schemas would buy nothing.
  */
+/**
+ * One row's stack standing, or null when it cannot be computed. It reads the database, and one
+ * bad row must not turn a whole merge-queue listing into a 500 - the same fallback the
+ * Registry's own copy uses.
+ */
+function safeStackStanding(...args: Parameters<typeof stackStandingFor>): ReturnType<typeof stackStandingFor> {
+  try {
+    return stackStandingFor(...args);
+  } catch (error) {
+    console.error("[routes] could not compute a stack standing:", args[0].key, error);
+    return null;
+  }
+}
+
 function foremanWriteRefusal(
   activity: ComposerActivityTracker,
   session: Session,
   by: ReviewActor | "workflow" | "session",
+  /**
+   * The write answers the question on screen (a review decision, a menu row, a form). These
+   * are the triage responses a blocked session may still take: they can only answer what
+   * the session is asking, so they cannot carry a stale wrap-up or recovery payload.
+   */
+  structuredAnswer = false,
 ): ForemanWriteRefusal | null {
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
   if (activity.blocksForeman(session.id)) return { error: FOREMAN_COMPOSER_BUSY, status: 409 };
+  // The daemon's half of the blocker hold, for a worker that predates it and outlives a
+  // daemon restart. Free text from Foreman (wrap-up, recovery, follow-up, queue sends) never
+  // reaches a session waiting on someone else, whatever bucket it is in: the route cannot tell
+  // a prose triage answer from a stale automated payload, so a blocked session's prose
+  // question is left to the operator.
+  if (!structuredAnswer && hasBlocker(session)) {
+    return { error: FOREMAN_SESSION_BLOCKED, status: 409 };
+  }
   return null;
+}
+
+/**
+ * Why a Flag reply or Clear aimed at one blocker must not act on the current one, or null.
+ * A caller that names the blocker it saw (its `id`) is refused when a different blocker now
+ * stands, so a button left open on blocker A cannot clear blocker B, even one reported in the
+ * same millisecond. No current blocker is not a mismatch: the routes treat that as their own
+ * no-op or 409.
+ */
+function staleBlockerRefusal(current: SessionBlocker | null, expectedId: string | undefined): string | null {
+  if (expectedId === undefined || !current || current.id === expectedId) return null;
+  return "The blocker changed since you last looked; reread it before acting.";
+}
+
+/**
+ * The blocker half of `foremanWriteRefusal`, asked of the LIVE session at the moment of
+ * delivery. Every route reads its session before awaiting the request body, and delivery waits
+ * on a write lock after that; a blocker reported meanwhile replaces the registry's session
+ * object, so only a fresh read inside the delivery guard sees it.
+ */
+export function foremanBlockedNow(registry: Registry, sessionId: string, origin: string | undefined): string | null {
+  if (origin !== "foreman") return null;
+  const live = registry.getSession(sessionId);
+  return live && hasBlocker(live) ? FOREMAN_SESSION_BLOCKED : null;
 }
 
 /**
@@ -2241,7 +2334,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
-  registerWorkflowMcpRoutes(app, registry, workflowManager);
+  registerWorkflowMcpRoutes(app, registry, workflowManager, () => workflowCommands ?? null, () => reviews);
   const localPlans = workflows ? workflows.localPlanPublication(tasks) : null;
   app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
@@ -2365,8 +2458,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         current: result.current,
       }, 409);
     }
-    // A 400: the request itself names a combination that cannot run, exactly like a create
-    // body the schema refuses for the same reason.
+    // A 400 on create and update alike: the request itself names a combination that cannot run.
     if (result.reason === "unsupported_effort") {
       return c.json({
         error: "reasoning effort is not supported by this provider and model",
@@ -4661,8 +4753,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   // Roundup report (/bearings): a projection of the live snapshot, as JSON or a
   // copy-pasteable markdown digest. Localhost reads, like /api/sessions.
-  app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));
-  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(registry.snapshot()))));
+  // Read by a person, so built from the snapshot as the dashboard sees it: agent-written
+  // lines with task ids shown as titles (`task-titles.ts`).
+  const reportSnapshot = () => taskTitlePresenter(registry).snapshot(registry.snapshot());
+  app.get("/api/report", (c) => c.json(buildReport(reportSnapshot())));
+  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(reportSnapshot()))));
 
   const backupUnavailable = (c: Context) => c.json({
     error: "service_unavailable" as const,
@@ -4872,13 +4967,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // enough to reach the launch turn must not make it reappear in full.
       return c.json({
         ...page,
-        messages: attributeTranscript(
+        // The same task-title projection the live stream applies (`task-titles.ts`).
+        messages: taskTitlePresenter(registry).transcript(attributeTranscript(
           session.id,
           page.messages,
           resolveLaunchMarker(registry, session.id),
           (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
           { key: noteKeyFor(session), transcript: t },
-        ),
+        )),
       });
     }
     const since = Number(c.req.query("since"));
@@ -5066,6 +5162,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * Composed through the SAME `compose.ts` a launch uses, over the same ordered list, so the
    * preview cannot drift from the delivery. This answers "what WILL a session get"; what a
    * session DID get is the launch snapshot below, whose text and provenance are immutable.
+   *
+   * `personaId`, when the form has chosen one, appends that Persona's section exactly as the
+   * launch will, and is refused for the reason the launch would refuse it. `kind`, when given,
+   * answers for that kind's launch: a Pipeline's Engineer host receives no repository block.
    */
   app.get("/api/instructions/resolved", async (c) => {
     const repoPaths = c.req.queries("repoPath") ?? [];
@@ -5094,9 +5194,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!repoPath) return c.json({ error: `not a git repository: ${raw}` }, 400);
       candidates.push({ repoPath });
     }
-    return c.json(
-      composeStandingInstructions(standingInstructionsConfig(), candidates, agent, runtime),
-    );
+    const kindParam = c.req.query("kind");
+    const kind = kindParam === undefined ? null : TASK_KINDS.find((k) => k === kindParam);
+    if (kind === undefined) return c.json({ error: `unknown task kind: ${kindParam}` }, 400);
+    const personaId = c.req.query("personaId");
+    let persona: Persona | null = null;
+    if (personaId) {
+      const library = personaManager()?.store;
+      const resolved = resolveTaskPersona(library && ((id) => library.getPersona(id)), personaId);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 409);
+      persona = resolved.persona;
+    }
+    // A provider-launched kind is not this harness launch at all: its Engineer host is sent what
+    // `pipelineHostStanding` says for the runtime the daemon will launch it on - never the
+    // repository block - so the preview asks the same function the dispatcher does.
+    if (kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline") {
+      return c.json(pipelineHostStanding(persona, agent, getPipelinesConfig().launchRuntime));
+    }
+    const repository = composeStandingInstructions(standingInstructionsConfig(), candidates, agent, runtime);
+    return c.json(persona ? withTaskPersona(repository, persona, agent, runtime) : repository);
   });
 
   /**
@@ -5419,7 +5535,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (data.dependsOnCurrentSession) {
       const session = registry.findSessionByEnv(data.env, data.sessionId, data.cwd);
       if (!session) return c.json({ error: "no matching active session" }, 404);
-      dependencies.push({ type: "session", sessionId: session.id });
+      dependencies.push(ticketSessionEdge(session.id, session.task ? registry.getTask(session.task.id) : undefined));
     }
     return dependencies;
   }
@@ -5489,12 +5605,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (dependsOnCurrentSession) {
       const session = registry.findSessionByEnv(env, sessionId, cwd);
       if (!session || session.state === "exited") return c.json({ error: "no matching active session" }, 404);
-      dependencies.push({ type: "session", sessionId: session.id });
+      dependencies.push(ticketSessionEdge(session.id, session.task ? registry.getTask(session.task.id) : undefined));
     }
 
     let creationPolicy;
     try {
-      creationPolicy = tasks.prepareCreationPolicy({ kind, workflowId: data.workflowId });
+      creationPolicy = tasks.prepareCreationPolicy({ kind, workflowId: data.workflowId, planStorage: data.planStorage });
     } catch (error) {
       if (error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
       throw error;
@@ -5770,6 +5886,38 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     });
   });
 
+  // Same token authority as task creation/update. These read durable task facts only,
+  // never private session state, so session-control capability is intentionally not used.
+  app.post("/mcp/tasks/list", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpListTasksSchema);
+    if (!parsed.ok) return parsed.res;
+    const query = parsed.data;
+    if (query.repository !== undefined) {
+      const selected = await resolveTaskRepositorySelector(query.repository);
+      if (!selected.ok) return c.json({ error: selected.error }, selected.status);
+      const resolved = await resolveTaskRepoRoot(selected.path);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+      query.repository = resolved.repoRoot;
+    }
+    try {
+      return c.json(readTaskPage(query));
+    } catch (error) {
+      if (error instanceof InvalidTaskCursorError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+  });
+
+  app.post("/mcp/tasks/get", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpGetTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = tasks.getDurable(parsed.data.taskId);
+    return task ? c.json(taskReadSnapshot(task)) : c.json({ error: "no such task" }, 404);
+  });
+
   app.post("/mcp/tasks/:id/update", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpUpdateTaskSchema);
@@ -5806,6 +5954,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const r = await tasks.remove(parsed.data.taskId);
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
+  // Same task authority as creation/update. The dashboard and MCP share every launch gate.
+  app.post("/mcp/tasks/:id/dispatch", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    return dispatchSavedTask(c, c.req.param("id"));
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -5893,7 +6047,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   app.get("/mcp/reviews/:id/wait", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS);
+    // Answered as a timeout when the daemon stops, so the caller long-polls the next daemon.
+    const ended = new AbortController();
+    const release = openEndedRequests.add(() => ended.abort());
+    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS, ended.signal).finally(release);
     if (!review) return c.json({ error: "no such review" }, 404);
     return c.json(review);
   });
@@ -5959,6 +6116,32 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     registry.applyStatus(parsed.data.env, parsed.data.sessionId, parsed.data.activity);
     return c.body(null, 204);
+  });
+
+  // The blocked session's own report: bound to the caller like `/mcp/status` (pane key or
+  // Mission session id), never to a body-named target. Refused while the session has a pending
+  // `request_input` of its own - it is already waiting on the operator.
+  app.post("/mcp/blocker", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpReportBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, ...body } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const result = registry.reportBlocker(session.id, body);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ sessionId: session.id, created: result.created, blocker: result.blocker });
+  });
+
+  // The session clearing its own blocker. Clearing a session with none is a no-op success.
+  app.post("/mcp/blocker/clear", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpClearBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const cleared = registry.clearBlocker(session.id, "session", parsed.data.resolution);
+    return c.json({ sessionId: session.id, cleared });
   });
 
   app.post("/mcp/pipelines/adopt", async (c) => {
@@ -6221,6 +6404,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = await library.submit({
       authority,
       submission: {
+        files: parsed.data.files,
         title: parsed.data.title,
         reportPath: parsed.data.reportPath,
         summary: parsed.data.summary,
@@ -6425,7 +6609,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
     const refusal = ownerSession
-      ? foremanWriteRefusal(composerActivity, ownerSession, by)
+      ? foremanWriteRefusal(composerActivity, ownerSession, by, true)
       : null;
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
@@ -6490,7 +6674,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    const refusal = foremanWriteRefusal(composerActivity, session, origin);
+    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
@@ -6511,7 +6695,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         parsed.data.text,
-        undefined,
+        origin === "foreman" ? () => foremanBlockedNow(registry, session.id, origin) : undefined,
         origin,
       );
       // A driver refusal is positive evidence nothing landed, so it races nothing after all.
@@ -6540,7 +6724,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       parsed.data.text,
       parsed.data.submit,
       undefined,
-      () => registry.promptResourceBlockerForSession(session.id),
+      () => foremanBlockedNow(registry, session.id, origin) ?? registry.promptResourceBlockerForSession(session.id),
     );
     observeSessionOperation({
       session,
@@ -6570,7 +6754,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // An absent invite stays 403 because it will not change when the pane settles. Active
     // human composition is 409 because retrying after the quiet period is expected.
     // Nothing is typed and no ask is retired in either case.
-    const refusal = foremanWriteRefusal(composerActivity, session, by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -6612,7 +6796,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // See `/select-option`: refuse before the shape check and before anything is ticked.
-    const refusal = foremanWriteRefusal(composerActivity, session, by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -6673,6 +6857,35 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : 409);
   });
 
+  // A likely answer to this session's blocker, flagged by the operator or (through
+  // `control_session flag_blocker_reply`) by a controller. Never clears the blocker and never
+  // sends anything to the session; the flag is a card pill, not an alert.
+  app.post("/api/sessions/:id/blocker/reply", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, FlagBlockerReplySchema);
+    if (!parsed.ok) return parsed.res;
+    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerId);
+    if (stale) return c.json({ error: stale }, 409);
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const blocker = registry.flagBlockerReply(session.id, actor, parsed.data);
+    if (!blocker) return c.json({ error: "this session has no blocker" }, 409);
+    return c.json({ ok: true, blocker });
+  });
+
+  // Clear this session's blocker, from the dashboard or `control_session clear_blocker`.
+  app.post("/api/sessions/:id/blocker/clear", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ClearBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerId);
+    if (stale) return c.json({ error: stale }, 409);
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const cleared = registry.clearBlocker(session.id, actor, parsed.data.resolution);
+    return c.json({ ok: true, cleared });
+  });
+
   // Rename the session. On the terminal runtime that means the session's handle - discovery
   // reads the new name back onto the card - and on the embedded one it means the durable row,
   // which is the only place an SDK session's name can live. Either way the registry echoes it
@@ -6713,6 +6926,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // is what stops the worker charging an attempt for a human reading their scrollback.
   // Both ride along on the ActionResult itself, so neither can be forgotten here.
   const codeRabbitSending = new Set<string>();
+  const stackSending = new Set<string>();
   app.post("/api/sessions/:id/inject", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session", pasted: false }, 404);
@@ -6729,11 +6943,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    const refusal = foremanWriteRefusal(composerActivity, session, origin);
+    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
-    if (origin === "human" && parsed.data.buffer && pendingTurns) {
+    // A stack prompt is never buffered: its claim settles on THIS delivery's outcome.
+    if (origin === "human" && parsed.data.buffer && pendingTurns && !parsed.data.stack) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
       // Retained for the delivery seam, exactly as /send does: the row reaches the agent later,
       // through `onTurnDelivered`, and without this that `send` is recorded with no actor.
@@ -6770,6 +6985,60 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return null;
       } catch { return "CodeRabbit delivery prerequisites are unavailable"; }
     };
+    // Stacked pull requests: the catch-up and restack prompts and the broken-stack actions,
+    // on the same rails as the CodeRabbit follow-up above - the text is rebuilt from the row,
+    // every guard is re-run inside the transport, a prompt is claimed before it is typed and
+    // the claim settles only on a known outcome. Foreman sends a prompt automatically; the
+    // operator's button sends one manually (re-arming an uncertain claim) or sends an action.
+    const stackRequest = parsed.data.stack;
+    const stackOrigin = origin === "foreman" ? "foreman" : origin === "human" ? "human" : null;
+    let stackClaim: string | null = null;
+    // The parent as read just before delivery, for a recovery action. The guard below runs
+    // inside the transport's write lock and cannot read GitHub (it is synchronous, and every
+    // sender shares it), so it checks the ledger's latest observation against this read instead.
+    let stackParentRead: PrRefs | null = null;
+    const stackGuard = (): string | null => {
+      if (!stackRequest) return null;
+      try {
+        if (stackParentRead && stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+          const changed = stackParentDiffers(getInspectorPr(stackRequest.prKey)?.stack?.observation, stackParentRead, stackRequest.kind);
+          if (changed) return changed;
+        }
+        if (!stackOrigin) return "Stack prompts are sent by Foreman or the operator";
+        const candidate = stackPromptCandidate(registry, session.id, stackRequest, stackOrigin,
+          getInspectorPr(stackRequest.prKey), getForemanConfig(), stackClaim !== null);
+        if (candidate.error !== undefined) return candidate.error;
+        if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "Stack prompt delivery channel changed";
+        const refusal = foremanWriteRefusal(composerActivity, candidate.session, origin);
+        if (refusal) return refusal.error;
+        const queue = queues.get(session.id);
+        if (queue?.items.some((item) => !codeRabbitTerminalItem(item.state))) return "Queued work owns this session";
+        const runs = (workflowManager()?.runs() ?? []).filter((run) => run.noteKey === noteKeyFor(session) || run.sessionId === session.id);
+        if (activeWorkflowOwnsSession(runs)) return "An active workflow owns this session";
+        return null;
+      } catch { return "Stack prompt delivery prerequisites are unavailable"; }
+    };
+    if (stackRequest) {
+      if (request) return c.json({ error: "One follow-up per delivery", pasted: false }, 400);
+      // A recovery action was chosen from the parent's last observed state; read it again
+      // before typing, so a parent that merged or closed since never gets a stale instruction.
+      if (stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+        const recheck = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
+        if (recheck.error !== undefined) return c.json({ error: recheck.error, pasted: false }, 409);
+        stackParentRead = recheck.parent;
+      }
+      const blocked = stackGuard();
+      if (blocked) return c.json({ error: blocked, pasted: false }, 409);
+      const candidate = stackPromptCandidate(registry, session.id, stackRequest, stackOrigin!,
+        getInspectorPr(stackRequest.prKey), getForemanConfig());
+      if (candidate.error !== undefined) return c.json({ error: candidate.error, pasted: false }, 409);
+      if (stackSending.has(stackRequest.prKey)) return c.json({ error: "A stack prompt is already being delivered", pasted: false }, 409);
+      // Every prompt and recovery action is claimed before it is typed. The operator's send is
+      // the explicit re-arm of an uncertain claim; Foreman's never is.
+      stackClaim = claimStackPrompt(stackRequest.prKey, candidate.claim.kind, candidate.claim.tip, session.id, Date.now(), origin === "human");
+      if (!stackClaim) return c.json({ error: "That stack prompt was already claimed", pasted: false }, 409);
+      text = candidate.payload;
+    }
     if (request) {
       const blocked = codeRabbitGuard();
       if (blocked) return c.json({ error: blocked, pasted: false }, 409);
@@ -6810,15 +7079,30 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // All reservations above are synchronous. Acquire only when the transport's finally
     // can release it, so a reservation failure cannot strand this conversation's lock.
     if (claim) codeRabbitSending.add(claim.noteKey);
+    if (stackRequest) stackSending.add(stackRequest.prKey);
     const r = await injectPromptForRuntime(
       sdkSessions,
       session,
       text,
       undefined,
-      () => codeRabbitGuard() ?? registry.promptResourceBlockerForSession(session.id),
+      () => codeRabbitGuard() ?? stackGuard() ?? foremanBlockedNow(registry, session.id, origin)
+        ?? registry.promptResourceBlockerForSession(session.id),
       origin,
     ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
-      .finally(() => { if (claim) codeRabbitSending.delete(claim.noteKey); });
+      .finally(() => {
+        if (claim) codeRabbitSending.delete(claim.noteKey);
+        if (stackRequest) stackSending.delete(stackRequest.prKey);
+      });
+    if (stackRequest) {
+      try {
+        // Delivered confirms; a POSITIVE non-delivery releases; anything else stays uncertain
+        // and is never retried automatically - the merge queue says so and offers the send.
+        if (stackClaim && (r.ok || r.pasted === false)) finishStackPrompt(stackClaim, r.ok ? "delivered" : "refused", Date.now());
+        registry.refreshInspections();
+      } catch (error) {
+        console.warn(`[mission-control] stack prompt bookkeeping failed for ${stackRequest.prKey}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     if (request && claim) {
       try {
         if (r.ok || r.pasted === false) finishCodeRabbit(request.prKey, claim.id, r.ok ? "delivered" : "refused");
@@ -7555,6 +7839,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, WrapupAskedSchema);
     if (!parsed.ok) return parsed.res;
+    // Asking "ship it?" is an idle-triggered wrap-up; a blocked session is not finished.
+    // Clearing a stored answer is a reset, not an ask, and stays open.
+    // The live session, not the one read before the body: a blocker reported while the
+    // request was in flight must still refuse the ask.
+    if (hasBlocker(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
+      return c.json({ error: FOREMAN_SESSION_BLOCKED }, 409);
+    }
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
     queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
@@ -7653,6 +7944,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const diff = await computeSessionDiff(taskHasRepository(session.task ?? {}) ? session.cwd : null);
     if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
+    // The session can report a blocker while the diff runs; the decision below reads the
+    // object taken before the await, so ask the live one first.
+    if (hasBlocker(registry.getSession(session.id) ?? session)) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
     const cfg = getForemanConfig();
     const runs = manager.runs().filter(
       (run) => run.noteKey === parsed.data.logicalKey || run.sessionId === session.id,
@@ -7718,6 +8014,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(goal);
   });
 
+  // A person's exit from a paused goal: every pending instruction becomes steering and the
+  // current objective is confirmed as the completion contract, unchanged and at the same
+  // version. Foreman judges completion on its next tick. No body; idempotent on a goal that
+  // is already resolved. The answer is the full record, so the drawer can render it at once.
+  app.post("/api/sessions/:id/goal/accept", (c) => {
+    const result = registry.acceptGoalObjective(c.req.param("id"));
+    if (!result) return c.json({ error: "no goal for this session" }, 404);
+    if (!result.accepted) {
+      return c.json({ error: "this session has no objective to accept yet" }, 409);
+    }
+    return c.json(result.goal);
+  });
+
   // Re-attach an orphaned queue onto this live session. Always an explicit click:
   // a different agent at the same cwd may be doing something else entirely.
   app.post("/api/sessions/:id/queue/reattach", async (c) => {
@@ -7770,6 +8079,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, ForemanConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     const config = setForemanConfig(parsed.data);
+    // Stacked pull requests: every cached stack standing says whether Foreman will send its
+    // prompt, so a change to Foreman's switches has to reach them now rather than at the next
+    // Inspector sweep - or Foreman reads "pending" on a session it may no longer drive, and the
+    // merge queue hides the manual send it now needs.
+    registry.refreshInspections();
     if (config.enabled) workflowManager()?.reconcileDispatchedTaskWorkflows();
     return c.json(config);
   });
@@ -7845,7 +8159,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Written by the worker (which never touches the DB) and read by the board. `null`
   // rather than a 404 for "no plan yet": the absence of a plan is the ordinary starting
   // state, not an error, and both readers already branch on it.
-  app.get("/api/backlog/plan", (c) => c.json(getBacklogPlan()));
+  // The reasons and note are model prose the board prints, so they are served with every task
+  // id shown as its title (`task-titles.ts`). The stored plan keeps the model's own words; the
+  // worker reads only its ids and logs the note.
+  app.get("/api/backlog/plan", (c) => c.json(taskTitlePresenter(registry).plan(getBacklogPlan())));
   app.put("/api/backlog/plan", async (c) => {
     const parsed = await parseBody(c, BacklogPlanSchema);
     if (!parsed.ok) return parsed.res;
@@ -8059,8 +8376,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/inspector/prs", (c) => {
     const raw = c.req.query("adoptedSince");
     const state = c.req.query("state");
-    const withStanding = (rows: InspectorInspection[]) =>
-      rows.map((row) => ({ ...row, codeRabbit: codeRabbitStanding(registry, row.key) }));
+    const withStanding = (rows: InspectorInspection[]) => {
+      const sessions = registry.liveSessions();
+      const foreman = getForemanConfig();
+      return rows.map((row) => ({
+        ...row,
+        codeRabbit: codeRabbitStanding(registry, row.key),
+        stackStanding: row.stack ? safeStackStanding(row, sessions, foreman) : null,
+      }));
+    };
     if (state !== undefined) {
       const parsed = InspectorPrsStateSchema.safeParse(state);
       if (!parsed.success) return c.json({ error: "state must be open" }, 400);
@@ -8125,6 +8449,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * was nothing open". The status code is what makes the panel's error line say something
    * true when a pull request closes between its poll and the operator's click.
    */
+  // Stacked pull requests: the operator's *Wait for a replacement* on a child whose parent
+  // closed without merging. It only records the choice; the Inspector tick runs the
+  // replacement-parent transition once the parent task opens a replacement in the same work
+  // episode. Offered, and accepted, only while the child is open and that is its state.
+  app.post("/api/inspector/stack/await-replacement", async (c) => {
+    const parsed = await parseBody(c, StackAwaitReplacementSchema);
+    if (!parsed.ok) return parsed.res;
+    const pr = getInspectorPr(parsed.data.prKey);
+    if (!pr?.stack) return c.json({ error: "no stacked pull request with that key" }, 404);
+    if (parsed.data.wait) {
+      const standing = safeStackStanding(pr, registry.liveSessions(), getForemanConfig());
+      if (pr.state !== "open" || !standing?.actions.includes("await-replacement")) {
+        return c.json({ error: "waiting for a replacement is offered only for an open child whose parent closed" }, 409);
+      }
+    }
+    setStackAwaitReplacement(pr.key, parsed.data.wait ? Date.now() : null, Date.now());
+    registry.refreshInspections();
+    return c.json({ ok: true });
+  });
+
   app.post("/api/inspector/resolve-findings", async (c) => {
     const parsed = await parseBody(c, ResolveFindingsSchema);
     if (!parsed.ok) return parsed.res;
@@ -8204,6 +8548,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, ShippingConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     const next = setShippingConfig(parsed.data);
+    // The Stacked pull requests default decides which readiness stamps still stand, so a
+    // dependent that would now wait for merge stops reading as ready at once.
+    tasks.reconcileStackReadiness();
     // YOLO's armed state is an amber dot; a toggle here has to reach the rail and gear.
     publishSettingsStatus(registry);
     return c.json(next);
@@ -9080,7 +9427,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!databaseBackups) return databaseBackupsUnavailable(c);
     const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    return c.json(setDatabaseBackupsConfig(parsed.data, databaseBackups));
+    // The validated patch always parses, so what throws here is SQLite, as with a full disk.
+    let saved;
+    try {
+      saved = setDatabaseBackupsConfig(parsed.data, databaseBackups);
+    } catch (error) {
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+    // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
+    registry.emitStorageConfigChanged();
+    return c.json(saved);
   });
 
   // Back up now: a `manual` copy through the same single-flight capture as the hourly one.
@@ -9264,7 +9623,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
-      if (error instanceof TaskEffortUnsupportedError) {
+      if (error instanceof TaskEffortUnsupportedError || error instanceof TaskPersonaError) {
         return { ok: false, status: 400, body: { error: error.message } };
       }
       throw error;
@@ -9296,6 +9655,34 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     return c.json({ ok: true, dismissed: dismissLaunchFailures(registry, parsed.data.taskIds, Date.now()) });
   });
+
+  // ---- attention inbox: rows the operator dismissed without resolving them ----
+
+  // The stored decisions only. Which rows exist, and what each one currently says, is the
+  // dashboard's fold (`src/web/lib/attention.ts`); this remembers what was dismissed so a
+  // reload, a restart or a second window does not bring it back.
+  app.get("/api/attention/dismissals", (c) => c.json({ dismissals: listAttentionDismissals() }));
+  app.post(
+    "/api/attention/dismissals",
+    bodyLimit({
+      maxSize: ATTENTION_DISMISSAL_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Too many rows to dismiss in one request" }, 413),
+    }),
+    async (c) => {
+      const parsed = await parseBody(c, DismissAttentionItemsSchema);
+      if (!parsed.ok) return parsed.res;
+      const written = dismissAttentionItems(parsed.data.items, Date.now());
+      if (!written.stored) {
+        return c.json({
+          error: "another window dismissed this since this one last looked - check it and dismiss again",
+          superseded: written.superseded,
+        }, 409);
+      }
+      registry.emitAttentionDismissalsChanged();
+      // The revisions just stored, and nothing more: each window reads the whole set through GET.
+      return c.json({ ok: true, accepted: written.accepted });
+    },
+  );
 
   // Start the session that catalogs one failure and drafts its public bug report. The brief
   // is built here from the task, never sent by the browser; publication stays behind the
@@ -9417,6 +9804,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       agent: task.agent,
       model: task.model ?? undefined,
       effort: task.effort ?? undefined,
+      personaId: task.personaId ?? undefined,
       workflowId: task.workflowId,
       priority: task.priority,
       labels: task.labels,
@@ -9529,6 +9917,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/residents/profiles", (c) => {
     if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
     return c.json(registry.listResidentProfiles());
+  });
+
+  app.get("/api/residents/profiles/:id/state", async (c) => {
+    if (!stateProfile(c.req.param("id"))) return c.json({ error: "No such resident profile" }, 404);
+    try {
+      const directory = ensureResidentState(c.req.param("id"));
+      return c.json({ directory, files: await listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" }) });
+    } catch (error) { return c.json({ error: error instanceof Error ? error.message : "State unavailable" }, 409); }
+  });
+  app.get("/api/residents/profiles/:id/state/file", (c) => {
+    if (!stateProfile(c.req.param("id"))) return c.json({ error: "No such resident profile" }, 404);
+    try { return c.json({ text: readResidentStateFile(c.req.param("id"), c.req.query("path") ?? "") }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "State file unavailable" }, 409); }
+  });
+  app.post("/api/residents/profiles/:id/state/reset", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, ResetResidentStateSchema);
+    if (!parsed.ok) return parsed.res;
+    try { await residents.resetState(c.req.param("id")); return c.json({ ok: true }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "State reset failed" }, 409); }
   });
 
   app.post("/api/residents/profiles", async (c) => {
@@ -9839,10 +10247,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return pushOutcomeResponse(c, r);
   });
 
-  app.post("/api/tasks/:id/dispatch", async (c) => {
+  async function dispatchSavedTask(c: Context, id: string) {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const id = c.req.param("id");
     const refused = taskWorkflowDispatchRefusal(tasks.get(id));
     if (refused) return c.json(refused.body, refused.status);
     const r = await tasks.dispatch(id, parsed.data);
@@ -9850,7 +10257,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
     return c.json(r.task!);
-  });
+  }
+
+  app.post("/api/tasks/:id/dispatch", (c) => dispatchSavedTask(c, c.req.param("id")));
 
   /**
    * **Create tickets** on a merged shape task: create and dispatch its tickets follow-up.

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { composerEditorKeysHint, composerEditorStages } from "../lib/composer-editor.ts";
+import { composerEditorKeysHint } from "../lib/composer-editor.ts";
 import { composerEditorStageKeys } from "../lib/keybindings.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -95,11 +95,6 @@ export function ComposerEditorModal({
           onFocus={activity.onFocus}
           onBlur={activity.onBlur}
           onChange={activity.onInput}
-          onKeyDown={(e) => {
-            if (!composerEditorStages(e.nativeEvent)) return;
-            e.preventDefault();
-            stage();
-          }}
         />
         <p className="composer-editor-note">
           Staging puts this text back in the send box without sending it
@@ -116,7 +111,7 @@ export function ComposerEditorModal({
           </button>
         </Tooltip>
         <Tooltip label={`Put this text in the send box, unsent (${composerEditorStageKeys()})`}>
-          <button type="button" className="btn btn-send" onClick={stage}>
+          <button data-dialog-default type="button" className="btn btn-send" onClick={stage}>
             Stage in the send box
           </button>
         </Tooltip>

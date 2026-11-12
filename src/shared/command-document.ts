@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boundedRecord } from "./zod-shapes.ts";
 import { WorkflowCommandArgvSchema } from "./protocol.ts";
 import {
   StoredTestingSettingsSchema,
@@ -180,9 +181,9 @@ export type CommandDocument = z.infer<typeof CommandDocumentSchema>;
 export function commandDocumentIssueLines(error: z.ZodError): string[] {
   return error.issues.map((issue) => {
     const where = issue.path.reduce<string>((text, part) => (
-      typeof part === "number" ? `${text}[${part}]` : text ? `${text}.${part}` : String(part)
+      typeof part === "number" ? `${text}[${part}]` : text ? `${text}.${String(part)}` : String(part)
     ), "");
-    // A union-free schema still words an unknown key as "Unrecognized key(s) in object", which
+    // A union-free schema still words an unknown key as "Unrecognized key", which
     // is the right refusal for `maxRuns` or `defaults` and reads fine as is.
     return where ? `${where}: ${issue.message}` : issue.message;
   });
@@ -289,9 +290,22 @@ export const CommandDocumentPreviewRequestSchema = z.object({
 
 const RevisionSchema = z.number().int().min(0);
 
+/**
+ * What a preview read, echoed back on apply. Bounded like every request collection: one key per
+ * slot it read, and one per testing entry the document names. Zod 4 makes an enum-keyed record
+ * exhaustive, so the slot names are checked on a string key instead.
+ */
 export const CommandDocumentBasisSchema = z.object({
-  commands: z.record(z.enum(WORKFLOW_CHECK_SLOTS), RevisionSchema),
-  testing: z.record(z.string().max(WORKFLOW_LIMITS.checkRepoRoot), RevisionSchema),
+  commands: boundedRecord(
+    z.string().refine((slot) => (WORKFLOW_CHECK_SLOTS as readonly string[]).includes(slot), "not a Command slot"),
+    RevisionSchema,
+    WORKFLOW_CHECK_SLOTS.length,
+  ),
+  testing: boundedRecord(
+    z.string().max(WORKFLOW_LIMITS.checkRepoRoot),
+    RevisionSchema,
+    COMMAND_DOCUMENT_LIMITS.testingEntries,
+  ),
 }).strict();
 
 /** A proposal id: the daemon's own UUID, bounded so a hand-typed one cannot grow a request. */

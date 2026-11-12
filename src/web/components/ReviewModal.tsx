@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
+import type { PaneDialog, PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
@@ -8,6 +8,7 @@ import { CHAT_ABOUT_IT, decisionLead, formatResponse } from "@shared/review-item
 import { PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { reviewDecisions, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
+import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import {
   ForemanRecommendationButton,
@@ -37,20 +38,27 @@ import { clearReviewDraft, useReviewDraft } from "../lib/review-drafts.ts";
 export function ReviewModal({
   session,
   reviews,
+  dialog = null,
   onClose,
   onMovedToChat,
 }: {
   session: Session;
   reviews: ReviewItem[];
+  /**
+   * A menu the session is parked on (`activePaneDialog`), answered here by the Conversation's
+   * own `PaneDialogPrompt`, so a resident's every requested decision opens in this one modal.
+   */
+  dialog?: PaneDialog | null;
   onClose: () => void;
   /** A question was moved to the conversation; the caller takes the operator there. */
   onMovedToChat?: (sessionId: string) => void;
 }): React.JSX.Element {
   const tourTargetRef = useTourTaskTargetRef<HTMLElement>("see-work:review-modal", session.task?.id);
-  // Close automatically once the session has no more pending reviews.
+  const pending = reviews.length + (dialog ? 1 : 0);
+  // Close automatically once the session has nothing left pending: no review and no menu.
   useEffect(() => {
-    if (reviews.length === 0) onClose();
-  }, [reviews.length, onClose]);
+    if (pending === 0) onClose();
+  }, [pending, onClose]);
 
   return (
     <Overlay
@@ -65,7 +73,7 @@ export function ReviewModal({
         <div>
           <AgentDot agent={session.agent} />
           <strong>{session.name}</strong>
-          <span className="dim"> · {reviews.length} pending</span>
+          <span className="dim"> · {pending} pending</span>
         </div>
         <Tooltip label="Close the review queue - nothing is resolved">
           <button className="btn btn-ghost" onClick={onClose}>
@@ -74,6 +82,7 @@ export function ReviewModal({
         </Tooltip>
       </header>
       <div className="modal-body">
+        {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
         {reviews.map((r) => (
           <ReviewCard key={r.id} review={r} note={session.note} onMovedToChat={onMovedToChat} />
         ))}
@@ -196,7 +205,7 @@ export function ReviewCard({
   );
 
   return (
-    <section className={`review review-${review.kind}`}>
+    <section className={`review review-${review.kind}`} data-dialog-action-scope>
       <div className="review-head">
         <span className={`kind-tag kind-${review.kind}`}>
           {review.kind === "plan-decisions" ? "decisions" : review.kind}
@@ -307,6 +316,7 @@ export function ReviewCard({
           >
             <button
               className="btn btn-send"
+              data-dialog-default
               disabled={busy || !answer.trim()}
               onClick={() => void resolve("answer", answer.trim())}
             >
@@ -336,6 +346,7 @@ export function ReviewCard({
           <Tooltip label="Approve this and let the agent carry on">
             <button
               className="btn btn-approve"
+              data-dialog-default
               disabled={busy}
               onClick={() => void resolve("approve", note.trim() || null)}
             >

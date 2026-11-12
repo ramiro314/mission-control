@@ -2436,8 +2436,8 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "archived_session_action",
   "session_action_runtime_unavailable",
   "evidence_readiness_not_enforced",
-  "wait_for_ci_placement",
   "unsupported_effort",
+  "wait_for_ci_placement",
   "wait_for_ci_quiet_period",
   "wait_for_ci_expected_checks",
 ] as const;
@@ -2786,6 +2786,8 @@ export const WORKFLOW_RESUMPTION_WITHHELD_REASONS = [
   "session_needs_you",
   "packet_undelivered",
   "repository_unchanged",
+  // Appended: the bound session reported a durable blocker (waiting on someone else).
+  "session_blocked",
 ] as const;
 
 export type WorkflowResumptionWithheldReason =
@@ -2823,6 +2825,9 @@ export function workflowResumptionWithheldSentence(
     case "repository_unchanged":
       return `Waiting on the session: the repository has not changed since round ${round}.`
         + " Reviewing it again would return the same verdicts, so no round has been spent.";
+    case "session_blocked":
+      return "The session is blocked on someone other than you, so it has not been handed another"
+        + " round. The next round opens once its blocker is cleared.";
     default:
       return null;
   }
@@ -3078,7 +3083,7 @@ export interface CodeRabbitTuning {
   severity: CodeRabbitSeverity;
 }
 export interface CodeRabbitConfigSnapshot {
-  source: ".coderabbit.yaml";
+  source: ".coderabbit.yaml" | ".coderabbit.config.ts";
   committed?: boolean;
   digest: string | null;
   enabled: boolean;
@@ -3279,7 +3284,7 @@ export function workflowCommandRunsFact(maxRuns: number): string {
  * feature is built to stop making.
  */
 export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
-  coderabbit: "Committed CodeRabbit review, enabled only by root .coderabbit.yaml reviews.auto_review.enabled: true.",
+  coderabbit: "Committed CodeRabbit review. Either a root .coderabbit.yaml or .coderabbit.config.ts enables it, unless the YAML turns it off with reviews.auto_review.enabled: false.",
   documentation: "The documentation checks for this repository: links, formatting, generated references, or a docs build.",
   test: "The automated test suite this repository gates on.",
   lint: "The style and correctness pass that runs before review.",
@@ -3609,9 +3614,15 @@ export interface WorkflowCommandResolution {
    * submission's commit rather than standing in the operator's own directory.
    */
   workingSubpath: string;
-  /** Which rung of the ladder answered. Diagnostic only; execution treats both alike. */
-  source: "override" | "default";
+  /**
+   * Which rung of the ladder answered. Execution treats both alike; the repair packet does
+   * not, because a failing global default may simply not apply to this repository.
+   */
+  source: WorkflowCommandSource;
 }
+
+export const WORKFLOW_COMMAND_SOURCES = ["override", "default"] as const;
+export type WorkflowCommandSource = (typeof WORKFLOW_COMMAND_SOURCES)[number];
 
 /**
  * Resolve one slot for one location: longest matching override, else the global default.
@@ -3925,6 +3936,25 @@ export interface WorkflowCheckOutcome {
    * decide whether the cap is set where they want it.
    */
   command: string[] | null;
+  /**
+   * Which catalog rung supplied `command`: a repository override or the machine-wide default.
+   * Absent on outcomes recorded before it was captured and on every outcome with no command.
+   *
+   * Recorded because the two fail for different reasons. A repository override was written for
+   * this checkout; a global default was not, so its failure may mean the repository runs that
+   * slot some other way, and the repair is to configure the Command rather than to change code.
+   */
+  commandSource?: WorkflowCommandSource | null;
+  /**
+   * The configured launcher's own refusal when a failed command was one the repository does
+   * not provide (no such make target, package script or recipe) - see `command-fit.ts`. Null
+   * or absent for every other outcome, including a failure inside a command that did run.
+   *
+   * Recorded with the outcome because two readers need the same answer: the repair packet,
+   * which asks for configuration instead of a code fix, and the run budget, which returns
+   * only an execution that proved nothing about the change.
+   */
+  misfitSignal?: string | null;
   exitCode: number | null;
   /** Bounded and tail-biased: a failure's last lines are the useful ones. */
   output: string;

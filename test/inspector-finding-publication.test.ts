@@ -78,6 +78,16 @@ const cases: { name: string; row: FindingPublicationInput; want: Want }[] = [
     want: unknown,
   },
   {
+    name: "a resolved legacy row reads posted once a tick captures its own thread",
+    row: { status: "resolved", postedAt: null, githubUrl: URL_NOW, legacyPosted: "unknown" },
+    want: { state: "posted", url: URL_NOW, postedAt: null, earlierPost: false },
+  },
+  {
+    name: "a legacy unposted draft with a captured thread was posted earlier",
+    row: { status: "drafted", postedAt: null, githubUrl: URL_EARLIER, legacyPosted: "unposted" },
+    want: { state: "not-posted", url: URL_EARLIER, postedAt: null, earlierPost: true },
+  },
+  {
     name: "a resolved legacy row the backfill proved unposted reads not-posted",
     row: { status: "resolved", postedAt: null, githubUrl: null, legacyPosted: "unposted" },
     want: none,
@@ -97,7 +107,7 @@ const cases: { name: string; row: FindingPublicationInput; want: Want }[] = [
     row: { status: "open", postedAt: 200, githubUrl: "", legacyPosted: null },
     want: { state: "posted", url: null, postedAt: 200, earlierPost: false },
   },
-  // Phase 4: the refusal state. The reason shows from the first counted refusal, not only at
+  // The refusal state. The reason shows from the first counted refusal, not only at
   // the cap, so the operator and the session know why a draft is still not on GitHub.
   {
     name: "a draft refused once stays not-posted and carries its count and reason",

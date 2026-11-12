@@ -9,10 +9,13 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Task } from "../src/shared/types.ts";
-import { BUG_FIX_REVIEW_WORKFLOW_ID, LOCAL_PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
-import { McpTaskConfigurationSchema } from "../src/shared/protocol.ts";
+import { TASK_STATUSES, type Task } from "../src/shared/types.ts";
+import { BUG_FIX_REVIEW_WORKFLOW_ID, LOCAL_PLAN_VALIDATION_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
+import { McpTaskConfigurationSchema, type McpTaskSnapshot } from "../src/shared/protocol.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import type { TaskArchiveGate } from "../src/server/tasks.ts";
+
+ensureNativeStateLockAddon();
 
 const home = mkdtempSync(join(tmpdir(), "mission-mcp-backlog-"));
 const repos = join(home, "repos");
@@ -59,7 +62,7 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     fetch: (req) => {
       const path = new URL(req.url).pathname;
       paths.push(path);
-      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path === "/mcp/tasks/delete")) {
+      if (oldDaemon && (path === "/mcp/v3/tasks" || path.endsWith("/update") || path.endsWith("/dispatch") || path === "/mcp/tasks/delete")) {
         return new Response("Not Found", { status: 404 });
       }
       return app.fetch(req);
@@ -86,7 +89,7 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     } as Record<string, string>,
     stderr: "pipe",
   }));
-  async function call(name: string, args: Record<string, unknown>, error?: RegExp) {
+  async function call<T = Task & { repository: string; additionalRepositories: string[] }>(name: string, args: Record<string, unknown>, error?: RegExp) {
     const result = await client.callTool({ name, arguments: args });
     const content = result.content as Array<{ type: string; text: string }>;
     const text = content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
@@ -95,13 +98,130 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
       assert.match(text, error);
       return null;
     }
-    return JSON.parse(text) as Task & { repository: string; additionalRepositories: string[] };
+    return JSON.parse(text) as T;
   }
   async function create(over: Record<string, unknown> = {}) {
     return (await call("create_task", { title: "Backlog work", intent: "Deliver the requested change", repository: repoA, ...over }))!;
   }
-  return { client, call, create, registry, tasks, app, paths, reviews };
+  function disconnectHttp() {
+    // Keep the port reserved but terminate connections before any HTTP response can exist.
+    server.on("connection", (socket) => socket.destroy());
+  }
+  return { client, call, create, registry, tasks, app, paths, reviews, disconnectHttp };
 }
+
+test("MCP dispatch uses the dashboard's validation and TaskManager launch path", async (t) => {
+  const f = await fixture(t);
+  const launched: string[] = [];
+  const seam = f.tasks as unknown as { dispatcher: { dispatch: (id: string) => Promise<unknown> } };
+  seam.dispatcher.dispatch = async (id) => { launched.push(id); return { ok: true }; };
+  const task = await f.create({ workflowId: null, enabled: false });
+
+  const unauthenticated = await f.app.request(`/mcp/tasks/${task.id}/dispatch`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  assert.equal(unauthenticated.status, 401);
+  const malformed = await f.app.request(`/mcp/tasks/${task.id}/dispatch`, {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ overrideDisabled: "yes" }),
+  });
+  assert.equal(malformed.status, 400);
+  await f.call("dispatch_task", { taskId: "missing" }, /404.*no such task/);
+  await f.call("dispatch_task", { taskId: task.id }, /409.*disabled/i);
+  assert.equal(getTask(task.id)!.status, "backlog");
+  assert.deepEqual(launched, []);
+
+  const dispatched = await f.call("dispatch_task", { taskId: task.id, overrideDisabled: true });
+  assert.equal(dispatched!.id, task.id);
+  assert.deepEqual(launched, [task.id]);
+  // The dispatcher is the only stubbed boundary; a real launch is covered in Playwright.
+  // Model its in-flight state to check TaskManager's existing repeat-dispatch behavior.
+  f.registry.upsertTask({ ...getTask(task.id)!, status: "dispatching" });
+  const repeated = await f.call("dispatch_task", { taskId: task.id });
+  assert.equal(repeated!.status, "dispatching");
+  assert.deepEqual(launched, [task.id], "a repeated dispatch does not launch again");
+
+  const prerequisite = await f.create({ workflowId: null });
+  const dependent = await f.create({ workflowId: null, dependsOnTaskIds: [prerequisite.id] });
+  await f.call("dispatch_task", { taskId: dependent.id }, /409.*waiting on/);
+  assert.equal(getTask(dependent.id)!.status, "backlog");
+  const blocked = await f.create({ workflowId: null });
+  f.registry.upsertTask({ ...getTask(blocked.id)!, workflowId: "missing-workflow" });
+  await f.call("dispatch_task", { taskId: blocked.id }, /409.*[Ww]orkflow/);
+  assert.equal(getTask(blocked.id)!.status, "backlog");
+  assert.deepEqual(launched, [task.id]);
+});
+
+test("MCP dispatch on an older daemon reports failure without another launch route", async (t) => {
+  const f = await fixture(t, true);
+  await f.call("dispatch_task", { taskId: "old-task" }, /404/);
+  assert.deepEqual(f.paths, ["/mcp/tasks/old-task/dispatch"]);
+});
+
+test("MCP dispatch returns an error result when the HTTP request rejects", async (t) => {
+  const f = await fixture(t);
+  f.disconnectHttp();
+  const result = await f.client.callTool({ name: "dispatch_task", arguments: { taskId: "unreachable-task" } });
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.content, [{
+    type: "text", text: "Could not reach Mission Control: TypeError: fetch failed",
+  }]);
+  assert.deepEqual(f.paths, [], "the connection failed before an HTTP handler answered");
+});
+
+test("MCP dispatch defaultModel selects an unpinned launch model and preserves a pinned model", async (t) => {
+  const f = await fixture(t);
+  const { Dispatcher } = await import("../src/server/dispatcher.ts");
+  const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
+  type Supervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+  type Start = Parameters<Supervisor["start"]>[0];
+  const starts: Start[] = [];
+  const supervisor = {
+    async start(input: Start) {
+      starts.push(input);
+      return f.registry.registerSdkSession({
+        id: `sdk:model-selection-${starts.length}`, agent: input.agent, name: input.name, cwd: input.cwd,
+      });
+    },
+    taskLiveness: () => null,
+    stop: async () => {},
+  } as unknown as Supervisor;
+  const priorBin = process.env.MISSION_CLAUDE_BIN;
+  process.env.MISSION_CLAUDE_BIN = process.execPath;
+  t.after(() => {
+    if (priorBin === undefined) delete process.env.MISSION_CLAUDE_BIN;
+    else process.env.MISSION_CLAUDE_BIN = priorBin;
+  });
+  const repo = gitRepo("dispatch-model-selection");
+  execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--allow-empty", "-qm", "Fixture base"]);
+  setHarnessesConfig({ defaultModel: { claude: "claude-haiku-4-5" } });
+  const dispatcher = new Dispatcher(f.registry, async () => {}, {
+    supervisor, resolveRuntime: () => "sdk", missionMcpDescriptor: async () => null,
+    worktrees: new WorktreeManager(undefined, {
+      resolvePolicy: () => ({ enabled: false, maxSlots: 1, setupArgv: null }),
+    }),
+  });
+  // Keep model resolution and launch composition real; fake only the SDK process boundary.
+  // Track the asynchronous dispatch so assertions run after it has reached the supervisor.
+  const launches: Promise<void>[] = [];
+  const seam = f.tasks as unknown as { dispatcher: Pick<typeof dispatcher, "dispatch"> };
+  seam.dispatcher = { dispatch: (...args) => {
+    const launch = dispatcher.dispatch(...args);
+    launches.push(launch);
+    return launch;
+  } };
+  for (const [pin, expected] of [[null, "claude-sonnet-5"], ["claude-opus-5", "claude-opus-5"]] as const) {
+    const task = await f.create({ repository: repo, agent: "claude", model: pin, workflowId: null });
+    await f.call("dispatch_task", { taskId: task.id, defaultModel: "claude-sonnet-5" });
+    await Promise.all(launches);
+    const stored = getTask(task.id)!;
+    assert.equal(stored.status, "running", stored.error ?? "dispatch must reach running");
+    assert.equal(starts.find((start) => start.taskId === task.id)?.model, expected,
+      "the resolved model must reach the SDK launch boundary");
+    assert.equal(stored.model, pin, "a launch default must not change the durable model pin");
+  }
+});
 
 test("MCP configuration and exact local plan inputs coexist without changing either dependency boundary", async (t) => {
   applySkillsConfig({ planStorage: "local", commitPlanHtml: true });
@@ -149,6 +269,56 @@ test("MCP configuration and exact local plan inputs coexist without changing eit
   const edited = await f.call("update_task", { taskId: created.id, title: "Retain exact input", priority: "high" });
   assert.equal(edited!.priority, "high");
   assert.deepEqual(getTask(created.id)!.planInputs, planInputs);
+  const read = (await f.call("get_task", { taskId: created.id }))!;
+  assert.deepEqual(read.planInputs, planInputs);
+  assert.deepEqual(read.dependencies, stored.dependencies);
+
+  await t.test("list_tasks returns saved configuration, exact plan inputs and the running task's durable PR", async () => {
+    const labels = ["mcp", "read-payload"];
+    await f.call("update_task", { taskId: created.id, labels, enabled: false });
+    const sessionId = `sdk:listed-${created.id}`;
+    const prUrl = "https://github.com/example/repo/pull/1369";
+    // Persist execution facts without launching a session. The PR exists only in the
+    // work-episode binding: a running task has no completion outcome to fall back to.
+    openDb().prepare("UPDATE tasks SET status = 'running', session_id = ? WHERE id = ?")
+      .run(sessionId, created.id);
+    openDb().prepare(`INSERT INTO task_work_episode_bindings
+      (task_id, episode_id, session_id, agent_session_id, pr_url, bound_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, 1)`).run(created.id, randomUUID(), sessionId, "listed-native-id", prUrl);
+
+    const page = (await f.call<TaskPage>("list_tasks", { repository: repoA, status: "running", labels }))!;
+    assert.equal(page.tasks.length, 1);
+    assert.equal(page.nextCursor, null);
+    const listed = page.tasks[0]!;
+    const expected = {
+      id: created.id,
+      title: "Retain exact input",
+      status: "running",
+      kind: "bugfix",
+      repository: repoA,
+      additionalRepositories: [],
+      agent: "codex",
+      model: "gpt-6-sol",
+      effort: "high",
+      advisorModel: null,
+      workflowId: null,
+      planPolicy: stored.planPolicy,
+      priority: "high",
+      labels,
+      enabled: false,
+      dependencies: stored.dependencies,
+      planInputs,
+      sessionId,
+      prUrl,
+      outcomeUrl: null,
+    };
+    for (const [field, value] of Object.entries(expected)) {
+      assert.deepEqual(listed[field as keyof ReadTask], value, `list_tasks preserves ${field}`);
+    }
+    assert.equal(Object.hasOwn(listed, "intent"), false, "the default list remains compact");
+    const full = (await f.call<TaskPage>("list_tasks", { repository: repoA, status: "running", labels, includeIntent: true }))!;
+    assert.deepEqual(full.tasks, [{ ...listed, intent: stored.intent }], "full lists retain every summary field and add intent");
+  });
 });
 
 test("MCP advertises and persists every backlog configuration field without launching", async (t) => {
@@ -284,7 +454,7 @@ test("MCP refuses invalid configuration, dependencies, repositories, and non-bac
   const before = getTask(task.id);
   for (const [patch, error] of [
     [{ model: "--bad-model" }, /model id/],
-    [{ effort: "impossible" }, /Invalid enum/],
+    [{ effort: "impossible" }, /Invalid option/],
     [{ kind: "chat" }, /launched immediately/],
     [{ agent: "codex", effort: "max" }, /not supported/],
     [{ workflowId: "missing-workflow" }, /published version/],
@@ -356,7 +526,7 @@ test("a task can no longer be created with an advisor pin: MCP refuses the key, 
       workflowId: null, advisorModel: "opus" }),
   });
   assert.equal(mcp.status, 400);
-  assert.match(((await mcp.json()) as { error: string }).error, /Unrecognized key\(s\) in object: 'advisorModel'/);
+  assert.match(((await mcp.json()) as { error: string }).error, /Unrecognized key: \\"advisorModel\\"/);
   assert.equal(f.registry.snapshot().tasks.length, count);
   const dashboard = await f.app.request("/api/tasks", {
     method: "POST",
@@ -538,4 +708,282 @@ test("concurrent backlog-only edits refuse a stale update and preserve the newer
     assert.deepEqual(stored[field], saved.task[field], `stale edit preserves saved ${field}`);
   }
   assert.equal(registry.getTask(task.id), saved.task);
+});
+
+test("MCP creates and edits storage overrides without changing global settings", async (t) => {
+  const f = await fixture(t);
+  applySkillsConfig({ planStorage: "repository" });
+  const local = await f.create({ kind: "plan", planStorage: "local" });
+  assert.equal(local.planPolicy?.storage, "local");
+  assert.equal(local.workflowId, LOCAL_PLAN_VALIDATION_WORKFLOW_ID);
+  const repository = await f.create({ kind: "plan" });
+  assert.equal(repository.planPolicy?.storage, "repository");
+  const changed = await f.call("update_task", { taskId: local.id, planStorage: "repository" });
+  assert.equal(changed?.planPolicy?.storage, "repository");
+  applySkillsConfig({ planStorage: "local" });
+  const explicitRepo = await f.create({ kind: "plan", planStorage: "repository" });
+  assert.equal(explicitRepo.planPolicy?.storage, "repository");
+  const inherited = await f.call("update_task", { taskId: local.id, planStorage: null });
+  assert.equal(inherited?.planPolicy?.storage, "local");
+  await f.call("update_task", { taskId: local.id, planStorage: "invalid" }, /Invalid option/);
+  await f.call("create_task", { title: "Invalid storage kind", intent: "Ship", repository: repoA, kind: "ship", planStorage: "local" }, /only available for plan tasks/);
+});
+
+test("MCP rejects storage overrides on backlog ship updates without changing saved state", async (t) => {
+  const f = await fixture(t);
+  const task = await f.create({ kind: "ship", workflowId: null });
+  const before = getTask(task.id)!;
+  assert.equal(before.status, "backlog");
+  assert.equal(before.kind, "ship");
+  const registeredBefore = structuredClone(f.registry.getTask(task.id));
+  for (const planStorage of ["local", "repository", null]) {
+    await f.call("update_task", {
+      taskId: task.id,
+      planStorage,
+      title: "This change must not be saved",
+    }, /Plan storage is only available for plan tasks/);
+    assert.deepEqual(getTask(task.id), before, "a refused edit must not change persisted task state");
+    assert.deepEqual(f.registry.getTask(task.id), registeredBefore, "a refused edit must not change live task state");
+  }
+});
+
+test("MCP plan conversion chooses storage-compatible workflows unless explicitly supplied", async (t) => {
+  const f = await fixture(t);
+  for (const planStorage of ["local", "repository"] as const) {
+    const workflowId = planStorage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : PLAN_VALIDATION_WORKFLOW_ID;
+    const task = await f.create({ kind: "ship" });
+    const converted = await f.call("update_task", { taskId: task.id, kind: "plan", planStorage });
+    assert.equal(converted?.workflowId, workflowId);
+    assert.equal(getTask(task.id)?.planPolicy?.storage, planStorage);
+    const explicitNone = await f.create({ kind: "ship", workflowId: null });
+    const withoutWorkflow = await f.call("update_task", { taskId: explicitNone.id, kind: "plan", planStorage, workflowId: null });
+    assert.equal(withoutWorkflow?.workflowId, null);
+  }
+});
+
+type ReadTask = Omit<McpTaskSnapshot, "repoRoot"> & { repository: string; additionalRepositories: string[] };
+type TaskPage = { tasks: ReadTask[]; nextCursor: string | null };
+
+test("read-only MCP task tools filter and page durable tasks without writes or session control", async (t) => {
+  const f = await fixture(t);
+  const label = `read-${randomUUID().slice(0, 8)}`;
+  const prerequisite = await f.create({ workflowId: null });
+  const config = { workflowId: null, labels: [label, "api"], priority: "high", enabled: false,
+    kind: "bugfix", dependsOnTaskIds: [prerequisite.id] };
+  const wanted = [];
+  for (let i = 0; i < 3; i++) wanted.push(await f.create({ ...config, title: `Read ${i}` }));
+  // Each near-match differs in exactly one filter, so dropping any predicate fails.
+  for (const patch of [
+    { repository: repoB }, { labels: [label] }, { priority: null }, { enabled: true },
+    { kind: "ship" }, { dependsOnTaskIds: [] },
+  ]) await f.create({ ...config, ...patch });
+  const running = await f.create(config);
+  openDb().prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run(running.id);
+  // Identical timestamps exercise the id tie-breaker, not the clock's resolution.
+  for (const task of wanted) openDb().prepare("UPDATE tasks SET created_at = 1000 WHERE id = ?").run(task.id);
+  const query = { repository: "primary", status: "backlog", kind: "bugfix", labels: [label, "api"],
+    priority: "high", enabled: false, dependsOnTaskId: prerequisite.id, limit: 1 };
+  const before = listTasks();
+  const board = f.registry.snapshot();
+  const changes = openDb().prepare("SELECT total_changes() AS n").get();
+  const events: unknown[] = [];
+  const unsub = f.registry.subscribe((event) => {
+    if (event.type.startsWith("task_") || event.type.startsWith("session_")) events.push(event);
+  });
+  t.after(unsub);
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = (await f.call<TaskPage>("list_tasks", { ...query, ...(cursor ? { cursor } : {}) }))!;
+    assert.equal(page.tasks.length, 1);
+    const task = page.tasks[0]!;
+    assert.equal(Object.hasOwn(task, "intent"), false);
+    assert.equal(task.repository, repoA);
+    assert.deepEqual(task.labels, [label, "api"]);
+    assert.equal(task.sessionId, null);
+    assert.equal(task.outcomeUrl, null);
+    ids.push(task.id);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  assert.deepEqual(ids, wanted.map((task) => task.id).sort().reverse());
+  const full = (await f.call<TaskPage>("list_tasks", { ...query, limit: 100, includeIntent: true }))!;
+  assert.equal(full.nextCursor, null);
+  assert.equal(full.tasks[0]!.intent, wanted[0]!.intent);
+  const empty = (await f.call<TaskPage>("list_tasks", { labels: [randomUUID()] }))!;
+  assert.deepEqual(empty, { tasks: [], nextCursor: null });
+  assert.deepEqual(listTasks(), before, "no task configuration, status, timestamp or rank changes");
+  assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), changes, "no SQLite writes");
+  const after = f.registry.snapshot();
+  assert.deepEqual(after.sessions, board.sessions, "no sessions launched");
+  assert.deepEqual(after.tasks, board.tasks, "no board task mutations");
+  assert.deepEqual(events, [], "reads publish no task or session events");
+});
+
+test("get_task reads full configuration in every status, including off-board completed tasks", async (t) => {
+  const f = await fixture(t);
+  const advertised = (await f.client.listTools()).tools;
+  for (const name of ["list_tasks", "get_task"]) {
+    const tool = advertised.find((tool) => tool.name === name)!;
+    assert.match(tool.description!, /read-only/i);
+    assert.equal(tool.annotations?.readOnlyHint, true);
+    assert.equal(tool.annotations?.destructiveHint, false);
+  }
+  const label = `statuses-${randomUUID().slice(0, 8)}`;
+  for (const status of TASK_STATUSES) {
+    const created = await f.create({ title: `Read ${status}`, intent: `Full ${status} intent`, labels: [label],
+      workflowId: null, agent: "codex", model: "gpt-6-sol", effort: "high", additionalRepositories: [repoB] });
+    // Update storage directly, leaving the board stale, as with records not restored at startup.
+    const sessionId = `sdk:private-${created.id}`;
+    const prUrl = "https://github.com/example/repo/pull/42";
+    const outcomeUrl = status === "running" ? null : prUrl;
+    openDb().prepare("UPDATE tasks SET status = ?, session_id = ?, outcome_url = ? WHERE id = ?")
+      .run(status, sessionId, outcomeUrl, created.id);
+    if (status === "running") {
+      openDb().prepare(`INSERT INTO task_work_episode_bindings
+        (task_id, episode_id, session_id, agent_session_id, pr_url, bound_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 1, 1)`).run(created.id, randomUUID(), sessionId, "private-native-id", prUrl);
+    }
+    const before = getTask(created.id)!;
+    const changes = openDb().prepare("SELECT total_changes() AS n").get();
+    const read = (await f.call<ReadTask>("get_task", { taskId: created.id }))!;
+    for (const [key, value] of Object.entries(created)) {
+      if (["status", "dependsOnTaskIds", "dependsOnCurrentSession", "planPrerequisites"].includes(key)) continue;
+      assert.deepEqual(read[key as keyof ReadTask], value, `get_task preserves ${key}`);
+    }
+    assert.equal(read.status, status);
+    assert.equal(read.sessionId, sessionId);
+    assert.equal(read.outcomeUrl, outcomeUrl);
+    assert.equal(read.prUrl, prUrl, "running tasks expose durable PR bindings before an outcome exists");
+    assert.equal(read.repoPrs[0]?.prUrl, prUrl);
+    assert.equal(Object.hasOwn(read, "transcript"), false);
+    const page = (await f.call<TaskPage>("list_tasks", { status, labels: [label], repository: "secondary" }))!;
+    assert.deepEqual(page.tasks.map((task) => task.id), [created.id], "status and secondary repo match durable rows");
+    assert.deepEqual(getTask(created.id), before);
+    assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), changes, "get_task and list_tasks perform no writes");
+  }
+  await f.call("get_task", { taskId: "missing-task" }, /404.*no such task/);
+});
+
+test("task read cursors survive deletion and newer inserts and reject invalid or changed-filter requests", async (t) => {
+  const f = await fixture(t);
+  const label = `cursor-${randomUUID().slice(0, 8)}`;
+  const older = await f.create({ labels: [label], workflowId: null });
+  const newer = await f.create({ labels: [label], workflowId: null });
+  openDb().prepare("UPDATE tasks SET created_at = 100 WHERE id = ?").run(older.id);
+  openDb().prepare("UPDATE tasks SET created_at = 200 WHERE id = ?").run(newer.id);
+  const first = (await f.call<TaskPage>("list_tasks", { labels: [label], limit: 1 }))!;
+  assert.deepEqual(first.tasks.map((task) => task.id), [newer.id]);
+  assert.ok(first.nextCursor);
+  await f.call("delete_task", { taskId: newer.id });
+  await f.create({ labels: [label], workflowId: null });
+  const next = (await f.call<TaskPage>("list_tasks", { labels: [label], cursor: first.nextCursor }))!;
+  assert.deepEqual(next.tasks.map((task) => task.id), [older.id]);
+  assert.equal(next.nextCursor, null);
+  await f.call("list_tasks", { labels: [label], enabled: false, cursor: first.nextCursor }, /Invalid task cursor or changed filters/);
+  await f.call("list_tasks", { cursor: "not-a-cursor" }, /Invalid task cursor/);
+  for (const body of [{ labels: [label], enabled: false, cursor: first.nextCursor }, { cursor: "not-a-cursor" }]) {
+    const response = await f.app.request("/mcp/tasks/list", { method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": ensureToken() }, body: JSON.stringify(body) });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "Invalid task cursor or changed filters" });
+  }
+  for (const args of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { status: "unknown" }, { kind: "unknown" },
+    { enabled: "false" }, { labels: "api" }, { priority: "unknown" }, { taskId: "ignored" }]) {
+    await f.call("list_tasks", args, /Invalid|Unrecognized|Number/);
+  }
+  const unset = (await f.call<TaskPage>("list_tasks", { labels: [label], priority: null }))!;
+  assert.equal(unset.tasks.length, 2);
+});
+
+test("task read HTTP routes enforce token authentication and independent body validation", async (t) => {
+  const f = await fixture(t);
+  for (const [route, body] of [["list", {}], ["get", { taskId: "missing" }]] as const) {
+    for (const token of [undefined, "wrong-token"]) {
+      const response = await f.app.request(`/mcp/tasks/${route}`, { method: "POST",
+        headers: { "content-type": "application/json", ...(token ? { "x-harness-token": token } : {}) },
+        body: JSON.stringify(body) });
+      assert.equal(response.status, 401);
+    }
+  }
+  for (const [route, body] of [["list", { limit: 101 }], ["list", { status: "unknown" }],
+    ["list", { cursor: "invalid" }], ["get", {}], ["get", { taskId: " " }], ["get", { taskId: "id", intent: "no writes" }]] as const) {
+    const response = await f.app.request(`/mcp/tasks/${route}`, { method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": ensureToken() }, body: JSON.stringify(body) });
+    assert.equal(response.status, 400, await response.text());
+  }
+});
+
+test("list_tasks canonicalizes linked worktree repository selectors", async (t) => {
+  const f = await fixture(t);
+  const root = gitRepo(`read-worktree-${randomUUID().slice(0, 8)}`);
+  execFileSync("git", ["-C", root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"]);
+  const worktree = join(home, `linked-${randomUUID()}`);
+  execFileSync("git", ["-C", root, "worktree", "add", "--detach", worktree], { stdio: "pipe" });
+  const first = await f.create({ repository: root, workflowId: null });
+  const second = await f.create({ repository: root, workflowId: null });
+  const fromWorktree = (await f.call<TaskPage>("list_tasks", { repository: worktree, limit: 1 }))!;
+  assert.equal(fromWorktree.tasks[0]!.repository, root);
+  assert.ok(fromWorktree.nextCursor);
+  const fromRoot = (await f.call<TaskPage>("list_tasks", { repository: root, cursor: fromWorktree.nextCursor }))!;
+  assert.deepEqual([...fromWorktree.tasks, ...fromRoot.tasks].map((task) => task.id).sort(), [first.id, second.id].sort());
+  assert.equal(fromRoot.nextCursor, null);
+});
+
+test("read tools include durable attached-repository PRs without live session feedback", async (t) => {
+  const f = await fixture(t);
+  const labels = [`attached-pr-${randomUUID().slice(0, 8)}`];
+  const created = await f.create({ agent: "codex", additionalRepositories: [repoB], labels, workflowId: null });
+  const sessionId = `sdk:attached-pr-${created.id}`;
+  const episodeId = randomUUID();
+  const abandonedEpisodeId = randomUUID();
+  const attachedPrUrl = "https://github.com/example/secondary/pull/1369";
+  openDb().prepare(`INSERT INTO task_work_episode_bindings
+    (task_id, episode_id, session_id, agent_session_id, bound_at, updated_at)
+    VALUES (?, ?, ?, 'attached-native-id', 1, 1)`).run(created.id, episodeId, sessionId);
+  openDb().prepare(`INSERT INTO work_episode_prs
+    (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha, merged_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'open', 'attached-head', NULL, 1)`)
+    .run(episodeId, repoB, sessionId, created.id, attachedPrUrl);
+  openDb().prepare(`INSERT INTO work_episode_prs
+    (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha, merged_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'open', 'abandoned-head', NULL, 2)`)
+    .run(abandonedEpisodeId, repoB, sessionId, created.id, "https://github.com/example/secondary/pull/1368");
+  const abandonedRow = openDb().prepare("SELECT * FROM work_episode_prs WHERE task_id = ? AND episode_id = ? AND repo_root = ?");
+  const abandonedBefore = abandonedRow.get(created.id, abandonedEpisodeId, repoB);
+  assert.equal(f.registry.getTask(created.id)!.extraRepos[0]!.prUrl, null,
+    "the live board has not loaded the durable attached PR");
+  assert.deepEqual(f.registry.snapshot().sessions, [], "no session or live PR feedback is needed");
+
+  for (const stage of [
+    { name: "current open PR", episode: episodeId, status: "running", prUrl: attachedPrUrl, prState: "open", mergedAt: null },
+    { name: "abandoned unmerged PR", episode: randomUUID(), status: "running", prUrl: null, prState: null, mergedAt: null },
+    { name: "merged PR from a previous episode", episode: randomUUID(), status: "done", prUrl: attachedPrUrl, prState: "merged", mergedAt: 1000 },
+  ] as const) {
+    openDb().prepare("UPDATE task_work_episode_bindings SET episode_id = ? WHERE task_id = ?")
+      .run(stage.episode, created.id);
+    openDb().prepare("UPDATE tasks SET status = ?, session_id = ? WHERE id = ?")
+      .run(stage.status, sessionId, created.id);
+    openDb().prepare("UPDATE work_episode_prs SET pr_state = ?, merged_at = ? WHERE task_id = ? AND episode_id = ? AND repo_root = ?")
+      .run(stage.mergedAt === null ? "open" : "merged", stage.mergedAt, created.id, episodeId, repoB);
+    const writesBefore = openDb().prepare("SELECT total_changes() AS n").get();
+    const task = (await f.call<ReadTask>("get_task", { taskId: created.id }))!;
+    const page = (await f.call<TaskPage>("list_tasks", { repository: repoB, labels }))!;
+    assert.equal(page.tasks.length, 1);
+    const expectedRepos = [
+      { repoRoot: repoA, primary: true, prUrl: null, prState: null, mergedAt: null, feedback: null },
+      { repoRoot: repoB, primary: false, prUrl: stage.prUrl, prState: stage.prState, mergedAt: stage.mergedAt, feedback: null },
+    ];
+    for (const [tool, result] of [["get_task", task], ["list_tasks", page.tasks[0]!]] as const) {
+      assert.equal(result.id, created.id);
+      assert.equal(result.status, stage.status);
+      assert.equal(result.prUrl, null, "the secondary PR is not substituted for the primary");
+      assert.equal(result.outcomeUrl, null, "there is no outcome URL to fall back to");
+      assert.deepEqual(result.repoPrs, expectedRepos, `${tool}: ${stage.name}`);
+    }
+    assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), writesBefore,
+      "loading durable PR bindings is read-only");
+    assert.deepEqual(abandonedRow.get(created.id, abandonedEpisodeId, repoB), abandonedBefore,
+      "the distinct abandoned open PR is preserved and never returned");
+  }
 });

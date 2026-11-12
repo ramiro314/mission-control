@@ -36,6 +36,7 @@ import type {
   TaskSummary,
 } from "../src/shared/types.ts";
 import type { TerminalHandle } from "../src/shared/terminal.ts";
+import type { StackStanding } from "../src/shared/stacking.ts";
 import { inspectorSummaryOf } from "../src/shared/inspector.ts";
 import { mkInspection } from "./helpers/inspection-fixture.ts";
 import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "../src/shared/workflow.ts";
@@ -94,6 +95,7 @@ function queue(openCount: number): SessionQueueSummary {
 /** A session parked idle on an OPEN PR - the base case a nudge fires on. Override per test. */
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "s1",
     agent: "claude",
     name: "atlas",
@@ -434,6 +436,24 @@ test("reviewFollowupPrs keeps the card's PR first and appends an adopted PR on t
     headSha: null,
     conflictEscalated: false,
   });
+});
+
+test("reviewFollowupPrs follows an adopted row by its agent id across a session id re-mint", () => {
+  const card = { prUrl: null, prNumber: null, prState: null, inspector: null };
+  const byAgent = adoptedRow({ sessionId: "s1", noteKey: "agent-1" });
+  // The row names the predecessor's synthetic id; the restarted session kept its agent id.
+  const restarted = mkSession({ ...card, id: "s1-restarted", agentSessionId: "agent-1" });
+  assert.deepEqual(reviewFollowupPrs(restarted, [byAgent]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  // The same live session keeps it after its agent id binds or rotates: the id still names it.
+  const rebound = mkSession({ ...card, id: "s1", agentSessionId: "agent-after-clear" });
+  assert.deepEqual(reviewFollowupPrs(rebound, [byAgent]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  // Adopted before the agent id was bound: the session id is the only match, as before.
+  const provisional = adoptedRow({ sessionId: "s1", noteKey: null });
+  assert.deepEqual(reviewFollowupPrs(mkSession({ ...card, id: "s1", agentSessionId: "agent-1" }), [provisional]).map((pr) => pr.prKey), [ADOPTED_KEY]);
+  assert.deepEqual(reviewFollowupPrs(restarted, [provisional]), []);
+  // Another agent on another session is never this one.
+  const stranger = mkSession({ ...card, id: "s9", agentSessionId: "agent-9" });
+  assert.deepEqual(reviewFollowupPrs(stranger, [byAgent]), []);
 });
 
 test("reviewFollowupPrs ignores an adopted row that is not this session's open PR on this branch", () => {
@@ -1386,6 +1406,41 @@ test("trackMergeConflicts off neither nudges nor escalates a conflict", () => {
   assert.equal(pass(conflictingOn("A"), escalated, NOW, { cfg }).d.kind, "skip");
 });
 
+test("a pending stack prompt holds the conflict: no conflict nudge and no escalation until it clears", () => {
+  // The restack the stack prompt asks for is what resolves a stacked child's conflict.
+  const stack = (status: "pending" | "sent"): StackStanding => ({
+    state: "restack-needed", parentUrl: "https://github.com/owner/repo/pull/6", parentNumber: 6, brokenReason: null,
+    retargetError: null, prompt: { kind: "restack", tip: "M", status }, actions: [], awaitingReplacement: false,
+    sessionId: "s1", sentActions: [], sessionHasPane: true, parentTaskId: null, label: null, inProgress: false,
+    facts: { prNumber: 7, prUrl: "https://github.com/owner/repo/pull/7", headRefName: "feat/x", parentNumber: 6,
+      parentUrl: "https://github.com/owner/repo/pull/6", parentHeadRefName: "feat/parent", defaultBranch: "main" },
+  });
+  const stacked = (head: string, status: "pending" | "sent", over: Partial<Session> = {}) =>
+    conflictingOn(head, { inspector: inspector({ stack: stack(status) }), ...over });
+  const cfg = { trackReviewComments: true, trackCiFailures: true, trackMergeConflicts: true, stackPrompts: true, settleMs: SETTLE };
+  const capped: FollowupMark = { ...observe(stacked("C", "pending")), conflictHead: "C", conflictNudges: 3, conflictNudgedAt: NOW - MIN };
+  const escalated: FollowupMark = { ...capped, conflictEscalated: true, conflictEscalatedAt: NOW - 2 * MIN };
+
+  // Idle: the stack prompt alone goes out, and the conflict half of the mark is untouched.
+  const idle = pass(stacked("D", "pending"), capped, NOW, { cfg });
+  assert.equal(idle.d.kind, "nudge");
+  if (idle.d.kind !== "nudge") return;
+  assert.ok(idle.d.stack, "the stack prompt, not a conflict nudge");
+  assert.doesNotMatch(idle.d.payload, /merge conflicts with/);
+  assert.equal(idle.mark.conflictNudges, 3);
+  assert.equal(idle.mark.conflictEscalated, false);
+
+  // Busy: escalation types nothing, yet neither the cap nor a due re-send escalates.
+  const busy = { state: "working" } as const;
+  assert.equal(pass(stacked("D", "pending", busy), capped, NOW, { cfg }).d.kind, "skip");
+  assert.equal(pass(stacked("C", "pending", busy), escalated, NOW, { cfg }).d.kind, "skip");
+
+  // Once the prompt is no longer pending, or stack prompts are off, the conflict path is back.
+  assert.equal(pass(stacked("D", "sent", busy), capped, NOW, { cfg }).d.kind, "escalate");
+  const off = { ...cfg, stackPrompts: false };
+  assert.equal(pass(stacked("D", "pending", busy), capped, NOW, { cfg: off }).d.kind, "escalate");
+});
+
 test("an active workflow owns its session's conflict: no nudge and no escalation", () => {
   const escalated: FollowupMark = { ...observe(conflictingOn("A")), conflictEscalated: true };
   assert.deepEqual(pass(conflictingOn("A"), escalated, NOW, { workflowOwnsSession: true }).d, {
@@ -1682,4 +1737,11 @@ test("a config without ciStrictness counts every check", () => {
   const d = decide({ session: ciSession("failing", ciProjection({ required: "passing" })), cfg: legacy });
   assert.equal(d.kind, "nudge");
   assert.deepEqual(ciFollowup(onlyPr(ciSession("failing", ciProjection({ headSha: null })))), { failing: true, required: false });
+});
+
+test("a blocked session is not nudged about review feedback until the blocker clears", () => {
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const held = decide({ session: mkSession({ blocker, inspector: inspector({ open: 2 }) }) });
+  assert.deepEqual(held, { kind: "skip", why: "the session is blocked" });
+  assert.equal(decide({ session: mkSession({ inspector: inspector({ open: 2 }) }) }).kind, "nudge");
 });

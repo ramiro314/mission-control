@@ -38,10 +38,12 @@ export function dependencyInputOf(dependency: TaskDependency): TaskDependencyInp
   switch (dependency.type) {
     case "plan":
       return { type: "plan", repoKey: dependency.repoKey, planId: dependency.planId, revision: dependency.revision };
+    // The operator's stack/after-merge override travels with the edge, so an edit that only
+    // touches another field does not silently reset it to the inherited default.
     case "task":
-      return { type: "task", taskId: dependency.taskId };
+      return { type: "task", taskId: dependency.taskId, ...(dependency.mode ? { mode: dependency.mode } : {}) };
     case "session":
-      return { type: "session", sessionId: dependency.sessionId };
+      return { type: "session", sessionId: dependency.sessionId, ...(dependency.mode ? { mode: dependency.mode } : {}) };
     case "source":
       return {
         type: "source",

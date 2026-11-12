@@ -154,7 +154,10 @@ blocks [YOLO mode](#what-has-to-be-true) outright:
 2. **The GitHub Inspector drops it in conversation.** If you reply in one of its threads and it
    agrees its comment was wrong, it says so, resolves the thread, and closes the finding.
    Its answer and its ledger are the same act; it cannot say "dropping this" and go on
-   blocking the merge over it.
+   blocking the merge over it. If you reply and resolve the GitHub thread together, Inspector
+   still evaluates the new reply on its next poll while its local finding remains open.
+   Resolving a GitHub thread alone does not clear the finding: Inspector must agree with
+   the reply. This works on an unchanged commit and needs no workflow restart or empty push.
 3. **You resolve it yourself** - **Resolve**, on the row in **Settings → GitHub Inspector →
    Inspections**. This is the way out of the case the first two cannot reach: a finding
    whose fix was pushed and reviewed once, and which the review then never mentions again.
@@ -279,7 +282,8 @@ posted earlier".
 Findings recorded before Mission Control tracked posting report only what their row
 proves. An open finding, or one with replies, was on GitHub. A dry-run draft never was. A
 resolved finding with no replies could be either, and it reads as **unknown** rather than
-guessing.
+guessing, until a tick finds its own thread or review on the pull request, which proves it
+was posted.
 
 A posted finding also records where it is. An inline finding links to the first comment of
 its thread. A finding folded into the review body, because it had no line to anchor to,
@@ -359,20 +363,25 @@ Drafts share the round's comment cap with new findings. At the same severity a n
 comes first.
 
 A refusal counts against a draft only when GitHub's answer is about that draft. Mission
-Control reads the HTTP status `gh` reports:
+Control reads the HTTP status `gh` reports and GitHub's message:
 
 | GitHub's answer | What happens |
 | --- | --- |
 | A rate limit (429, or a 403 secondary limit), an auth or SSO refusal, a server error, any other status that is not 422 | The round fails as any failed review does: the findings stay drafts, the head is reviewed again after backoff, and nothing is counted. |
-| A 422 on a head that moved during the review | The same, after one read of the pull request's head. |
-| A 422 on an unmoved head | A validation refusal, attributed below. |
+| A 422 whose message names no comment that could not be anchored, such as the limit of one pending review per pull request | The same. A refusal about the review as a whole says nothing about any draft. |
+| A 422 that says a line, path or position could not be resolved or is not in the diff, on a head that moved during the review | The same, after one read of the pull request's head. |
+| That 422 on an unmoved head | A validation refusal, attributed below. |
 
 For a validation refusal, a review that also carried new findings is sent again at once
 without the drafts. If GitHub refuses that one too, nothing is counted and the round fails as
 above. Then the drafts are attributed. A single draft records the refusal. Several drafts are
 each posted in a review of their own, so a valid draft is never charged for a bad sibling. Each
-of those reviews is its own notification on the pull request. A response that never arrived is
-not a refusal and is never counted.
+of those reviews is its own notification on the pull request. A draft refused alone is charged
+only when at least one of the others was accepted. When GitHub refuses every one, a refusal
+they all share cannot be pinned on any of them, so nothing is counted. The round still
+finishes, because reviewing the same head again would only repeat the refusals, and the drafts
+are offered again on the next push.
+A response that never arrived is not a refusal and is never counted.
 
 Every retry reuses the round's review, so no second model run is made. Once the refusals are
 pinned, the round finishes and the head counts as reviewed live. A refused draft stays a draft,
@@ -482,8 +491,11 @@ Every one of these, on the same read of the pull request:
 
 | Gate | Why |
 |---|---|
-| The GitHub Inspector reviewed **this** push | a review of the previous head is not a review of what would land |
+| The GitHub Inspector reviewed **this** push, against **this** base | a review of the previous head is not a review of what would land, and the same head against another base is a different diff |
 | The GitHub Inspector **published** that review | on, **live**, and the repo on *its* allowlist - see below |
+| The pull request targets the repository's **default branch**, or the base branch its task names (`base-not-default`) | YOLO mode lands work on the default branch, or on the base branch the task was told to open its pull request against, and nowhere else, whoever chose the base. A base or default branch GitHub did not report fails closed. Stacked pull requests answer this through the next two gates instead |
+| A [stacked pull request](#stacked-pull-requests) targets the **default branch** (`stacked-base`) | merging a child into its parent's branch would fold it into the parent's pull request and skip its own review. Only a pull request with stack lineage is evaluated |
+| A stacked pull request has been **released** for its current head (`stack-hold`) | a base change alone proves nothing: GitHub retargets a child by itself when the parent's branch is deleted. Only a pull request with stack lineage is evaluated |
 | No active GitHub Inspector-gated workflow owns the PR | YOLO mode cannot merge around incomplete Personas or final-gate handling |
 | No open GitHub Inspector findings | posted or previewed in dry run - a finding is a finding. [Three ways one closes](#how-a-finding-gets-closed) |
 | No unresolved review threads | stricter than the above on purpose: not merging over a colleague's unanswered question, whoever asked it |
@@ -554,6 +566,298 @@ as an obstruction is how the safety valve ends up turned down to zero. When GitH
 outright - a branch protection rule this app cannot see - its own message is shown there
 verbatim, because that is the only account you get of a rule nothing here can read. The
 queue is drawn as the [same paged table](#dry-run) the GitHub Inspector's is, over the same 50 rows.
+
+### Stacked pull requests
+
+A dependent task can **stack** on its prerequisite's open pull request instead of waiting for
+it to merge. It starts from the prerequisite's head, opens its own pull request against the
+prerequisite's branch, and lands after it. Stacking follows declared
+[dependencies](dispatch-and-backlog.md#stacked-dependencies), never a whole repository, so unrelated
+work is never chained together.
+
+**Settings → Shipping → Stacked pull requests** sets the default for same-repository
+dependencies: *Wait for merge* or *Stack on its branch*. It ships as *Stack on its branch*,
+because the [stack lifecycle](#the-stack-lifecycle) catches a stacked child up, retargets and
+restacks it, and holds it with a named reason and a fix when its stack breaks. It lands a stack
+automatically when the conditions in [when a stack lands by itself](#the-stack-lifecycle) hold;
+that section also lists what needs an operator. An install that never chose a value follows the shipped default,
+and only an explicit choice is stored, so an explicit *Wait for merge* is kept. **Maximum stack depth** (1 to 5, default 3) caps how many stacked pull requests may
+sit above one that targets the default branch. Each dependency can override the default from
+its chip in the dispatch form and the backlog editor: **Stack** or **After merge**.
+
+A dependency stacks only when all of these hold. Otherwise it waits for merge as before.
+
+- Its mode is Stack, set on the chip or inherited from the default.
+- The prerequisite is a task in the same primary repository. Stacking covers the primary
+  repository only; a dependent's secondary repositories are always cut from their default
+  branch, and their pull requests carry no stack lineage.
+- It is the only unmerged same-repository prerequisite, every prerequisite in another
+  repository has merged, and every secondary repository the prerequisite changed has merged.
+  A secondary repository counts as changed unless the daemon has observed it unchanged, so a
+  change with no pull request yet, or one it could not read, keeps the dependent waiting.
+- Neither the dependent nor the prerequisite names its own base branch. A task with one opens
+  its pull request against that branch, so its dependencies wait for merge (`base-branch`).
+- The stack under the prerequisite is shorter than the depth cap.
+
+The dependent is released to **start** (not completed: the edge is still unsatisfied, and
+*Mark done* and *Unblock dependents* are unchanged) once the prerequisite's current episode
+has an open, non-draft pull request in its primary repository and its agent has finished
+the episode: idle, nothing queued. The primary repository is the one the checkout's `gh` calls
+target: the repository `gh repo set-default` pinned, otherwise `origin`'s when `origin` is a
+GitHub remote. A pull request in any other remote's repository is never stacked on, and a
+checkout where neither rule names one stacks on nothing, because the child's own pull request would open somewhere else and get no
+stack lineage. The daemon records that readiness on the dependency edge,
+and the backlog card and the Line row read *Stacked on #N*. It clears the readiness when the
+prerequisite starts a new turn, or when the edge stops qualifying, for example when the
+default is switched back to *Wait for merge*. Dispatch reads the parent pull request again
+before it starts: it must still be open, not a draft, on the same branch and episode, and its
+agent still finished. The dispatch then fetches the parent branch at the repository root (from
+`origin`, or from the pinned GitHub remote when `origin` is another remote that lacks it) and
+pins the worktree to its current head, but only when that commit is exactly the head GitHub
+reports for the parent pull request. A branch name alone proves nothing: a pull request from a
+fork can share its name with an unrelated branch here. If the parent pushes while that check
+runs, the check is made again on the new head, up to three times, and the dispatch is refused
+rather than started on a superseded commit if the parent is still moving. A refused readiness read is looked at
+again about a minute later, so a draft marked ready on GitHub releases its dependent without
+anything changing locally. A stamp that stands is read again on the same interval, so a parent
+turned back into a draft, closed, or moved out of the primary repository on GitHub withdraws it
+and the dependent reads as waiting again. A read that only failed keeps the stamp, because the
+dispatch checks everything again before it starts anything. If the parent head lacks the merge commit of another
+same-repository prerequisite that already merged, the dependent keeps waiting. That covers a
+standalone-session prerequisite too, when its merged pull request is in a repository this
+checkout's remotes name. Nothing falls
+back to the default branch silently: a stacked task that cannot be pinned is refused with the
+reason. A stacked task is always dispatched into a fresh worktree; it is never assigned to an
+existing agent.
+
+The task contract and the pull-request packets tell the session which base its pull request
+targets, with the REST create command that names `origin`'s repository and that base, and that
+the description starts with "Stacked on #N". The task contract states this as a fact about the
+stack: opening the pull request is still left to the workflow's Pull Request action, Foreman's
+wrap-up or the human.
+The expected base is the current parent's branch while that parent is open, and the default
+branch once it has merged or closed. When the pull request is adopted, the daemon records
+its **stack lineage** on the ledger row: the current parent pull request and the commit the
+child was cut at. The lineage is written in the same step as the adoption, before anything can
+inspect the row, so a stacked pull request is never seen without it. A later pull request of
+the same task, repository and work episode (a replacement) inherits that lineage unchanged, while a rescheduled task's next episode starts
+fresh from its new dispatch. The daemon then checks the pull request's base and corrects it
+with GitHub's API if it is wrong. Nothing is ever retargeted to a merged or closed parent's
+branch.
+
+A pull request with lineage is held by the two stacking gates above until a **release
+check** passes for its current head, evaluated on the GitHub Inspector tick from GitHub data
+only:
+
+| Current parent | Released when | Manual action that satisfies it |
+|---|---|---|
+| Merged | the base is the default branch and the parent's merge commit is in the child's history | merge the default branch, which now contains the parent's merge commit, into the child and push |
+| Closed without merging | the base is the default branch and neither the commit the child was cut at nor the parent's last head is in the child's history | cherry-pick only the child's own commits onto a fresh branch cut from the default branch and open a replacement pull request against it. Merging the default branch into the old child does not help |
+| Open | never | the parent has to merge or close first |
+
+The release is recorded against the head it was verified for, and a new head is checked
+again. Anything that cannot be read holds. The release also records the parent state it was
+granted under. One granted under a merged parent is final, because a merge cannot be undone
+and that release verified the merge commit is in the child. One granted under a closed parent
+is checked again on every tick, because a closed pull request can be reopened. A reopened
+parent, a parent that can no longer be read, or a base that is no longer the default branch
+withdraws it. A parent that is reopened and then merges needs its merge commit in the child,
+like any merged parent. The child is held until the check passes again. Lineage belongs to the pull request, so switching
+the setting off or flipping a chip to *After merge* stops **new** stacks only: a pull request
+that is already stacked keeps its hold until it is released. The
+[stack lifecycle](#the-stack-lifecycle) below brings it to the state this check accepts.
+
+**Review while stacked.** The GitHub Inspector reviews the pull request's diff against its
+current base, and the reviewed head records that base. A base that changes under an
+unchanged head (a retarget without a restack) is reviewed again rather than trusted, and a
+review recorded before bases were recorded counts only while the base is the default branch.
+The review also records the base's commit, because a parent rebased or force-pushed under an
+unchanged child keeps both branch names while the diff GitHub shows changes. When the base
+commit moves, GitHub's merge base for the old and new commit is compared: the same merge base
+keeps the review (the parent only moved forward), and a different one, or an old commit GitHub
+no longer knows, means review again. If GitHub cannot report the merge base for the current
+commit, the pull request neither merges nor reuses the review on that sweep. This applies to a
+pull request with stack lineage or a known base other than the default branch.
+Workflow Personas and the CodeRabbit merge base use the same base for a stacked task: the
+pull request's current base, read from GitHub for each review rather than taken from the last
+poll (a pull request adopted moments ago has not been polled yet), or the parent branch before
+a pull request exists. Because the parent keeps moving after dispatch, every review diff first
+fetches that branch at the repository root and checks the fetched commit against what origin
+advertises. The child's head is read from the repository root too (`git worktree list`), the
+merge base the diff starts from is computed there from explicit commit ids, and the diff is
+read from the repository root as well, naming the child's checkout explicitly (`--git-dir`,
+`--work-tree`) and staging its working tree into a temporary index and object directory, so
+the child's own index is never written. Either half can fail, and neither falls back to
+another base or to an ordinary diff:
+
+- **Resolving the base** (reading the pull request's current base, fetching and verifying the
+  branch, reading the child's head, computing the merge base) fails with *stacked base could
+  not be refreshed*, followed by the reason.
+- **Capturing the child's work** fails the review capture with *Could not capture repository
+  diff*, followed by the step that failed. For example, *could not stage the child's working
+  tree* when staging fails, or *could not capture the child's working tree* when the tree
+  cannot be written.
+
+The review capture every workflow shares (status, content tree, review snapshot) still reads
+the session's checkout, read-only, exactly as it does for any other task.
+
+It never merges into a branch other than the default branch, never force-pushes, never
+stacks across repositories, and never runs a git command that changes a worktree's checkout,
+branches or commits. The only GitHub write it makes on its own is a pull request's base.
+
+#### The stack lifecycle
+
+A stack keeps itself landable. On every Inspector tick, each open pull request with stack
+lineage is observed with its current parent: their states and heads, whether the parent's head
+is in the child's history, and how many commits the child is behind (GitHub's compare API).
+That observation is recorded on the ledger row, and the lifecycle **state** is derived from it
+and from the release record. It runs whatever the Shipping setting says, with the GitHub
+Inspector and CodeRabbit both off, and with the child's session gone: the lineage belongs to
+the pull request. When more than one state applies, the first in this order wins, so a parent
+that advanced and then merged or closed never gets a catch-up prompt:
+
+| State | When | What happens |
+|---|---|---|
+| Released | the release check passed for the child's current head | nothing: an ordinary pull request against the default branch, merged by the ordinary gates |
+| Broken | the parent closed without merging, the parent task was cancelled, failed or rescheduled back into the backlog while its pull request was open, or GitHub closed the child | held, with a named reason and the actions below |
+| Parent merged, needs retarget | the parent merged and the child's base is not yet the default branch | the base is retargeted on this tick |
+| Restack needed | the parent merged, the child is on the default branch, and the release check has not passed for its head (including a head moved by an unrelated push) | the **restack** prompt |
+| Parent moved | the parent is open and its head is not in the child's history | the **catch-up** prompt |
+| Current | none of the above | nothing |
+
+**Base reconciliation.** Every tick compares the child's base with the branch it belongs on
+(the parent's branch while it is open, the default branch once it merged or closed) and
+retargets it through GitHub's API when they differ. It is skipped when they already match,
+which covers GitHub's own retarget after an auto-deleted branch. A refused retarget is tried
+again on the next tick, and until it succeeds the merge queue reads *Retarget failed:* with
+GitHub's reason. The base-aware review record forces a re-review after a retarget, and
+`stack-hold` keeps the child held until the restack is verified.
+
+**Prompts.** Two prompts go to the child's session, both through Foreman's review follow-up,
+the same path and rules as the CodeRabbit follow-up:
+
+- *catch up*: merge the parent branch in, resolve conflicts, run focused checks, push;
+- *restack*: merge `origin/<default branch>` in, resolve conflicts, run focused checks, push.
+
+Both say never to force-push or rebase. Each is claimed before it is typed, keyed to the pull
+request, the prompt kind and the tip that made it necessary (the parent's head for a catch-up,
+the parent's merge commit for a restack), never to the child's head. An unrelated push to the
+child therefore sends nothing new, while the parent pushing again, or a different parent
+merging after a replacement, re-arms it. A restart, a push or a setting toggle never re-arms a
+claim. Foreman types one only into the child's single live owning session, while it is idle with
+no queued turns, no work queue and no active workflow, and only when Foreman is on, live,
+allowed in the repository and invited into that session. Those session conditions and the idle
+settle window are one shared rule (`followupSessionBlocker`, `foremanSettleMs`) that Foreman's
+decision and the daemon's recheck both call, so the worker never selects a prompt the daemon
+then refuses. The daemon builds the text from the
+ledger row and checks every condition again inside the delivery. A confirmed non-delivery
+releases the claim. A delivery that may have landed (a lost response, a restart between the
+claim and the confirmation) stays *uncertain* and is never retried automatically, because a
+retry could deliver it twice.
+
+The merge queue row keeps the gate label (`stacked-base` or `stack-hold`) and shows the
+lifecycle as its detail, which never becomes a gate value:
+
+| Lifecycle label | Meaning | Action offered |
+|---|---|---|
+| *Stacked on #A (waiting for it to merge)* | current, or caught up | none |
+| *Catching up with #A* | the catch-up prompt is pending or delivered | none |
+| *Restacking onto main* | retarget or restack under way (counted with **waiting**, not **blocked**) | none |
+| *Catch-up needed: no session* / *Restack needed: no session* | no live session owns the child. Nothing is sent and nothing restarts it | resume the task with its **Resume** control. That gives the prompt a live owner again: if Foreman may drive the resumed session (on and live, invited, hooks seen, a pane, allowed in the repository), it delivers the prompt once on the session's first settled-idle tick; otherwise the row reads *Foreman is off* or *Foreman can't send it* and offers the manual send |
+| *Catch-up needed: Foreman is off* / *Restack needed: Foreman is off* | Foreman is switched off or not live | **Send catch-up prompt** / **Send restack prompt** |
+| *Restack needed: Foreman can't send it - <reason>* (or *Catch-up needed: ...*) | Foreman is on, but its own session rule will never type into the owning session: not invited, no hooks seen, no pane, or not allowed in this repository. The same rule (`followupStableBlocker`) Foreman's decision and the delivery recheck use, so a prompt is never shown as on its way that Foreman would refuse | **Send catch-up prompt** / **Send restack prompt** |
+| *Catch-up prompt delivery uncertain* / *Restack prompt delivery uncertain* | the claim was stored but the delivery never confirmed | **Send catch-up prompt** / **Send restack prompt**, which finishes the uncertain claim, claims again and sends once |
+| *Catch-up needed: the session has no pane to type into - resume its task to restore one* (or *Restack needed: ...*) | the one live owner has no pane, so neither Foreman nor the operator can type into it | resume the task; no send is offered until a pane exists |
+| *Catch-up prompt went to a session that has gone - send it to the resumed one* (or *Restack prompt ...*) | the prompt was delivered, but that session exited before acting on it and the resumed session owns the child now. (While no session owns it, the row reads *no session*.) | **Send catch-up prompt** / **Send restack prompt**, which re-arms the old claim for the resumed session once; Foreman never re-sends it |
+| *Retarget failed: <reason>* | GitHub refused the base edit | none; retried every tick |
+| *Checking #A on GitHub - prompts wait until it can be read* | the last tick could not read the current parent. Its last known facts are kept, but the parent may have merged or closed since, so no prompt or action is offered on them, Foreman cannot deliver one, and nothing is retargeted | none; the next successful read clears it |
+| *Stack broken: #A closed* | the parent closed without merging | **Move onto main**, **Wait for a replacement** |
+| *Stack broken: GitHub closed this pull request after #A merged* | the child was closed when its base branch was deleted | **Reopen against main** |
+| *Stack broken: GitHub closed this pull request and #A closed* | as above, with a parent that closed unmerged | **Move onto main** |
+| *Stack broken: this pull request was closed while #A is still open* | the child was closed (by hand, say) while its parent is open | **Reopen on #A's branch** |
+| *Stack broken: #A's task was cancelled* (or *failed*) | the parent task stopped while its pull request is open | **Reschedule #A's task** |
+| *Stack broken: #A's task was rescheduled* | the parent task is back in the backlog and has not started again | **Start #A's task** |
+
+The child's board tile shows the same label and buttons. The manual sends use the same inject
+route and guards as Foreman, minus Foreman's own switches: the session must still be idle with
+no queued turns, no work queue and no active workflow.
+
+**Broken stacks.** A broken child is already held by `stacked-base` or `stack-hold`.
+
+- **Move onto main** asks the session to cherry-pick only its own commits onto a new branch cut
+  from the default branch, open a replacement pull request against it and close the old one.
+  The replacement inherits the old row's current parent, stack base and lineage history, stays
+  on the default branch, and is released only when the closed-parent branch of the release
+  check passes. The closed row then reads *Replaced by #N* and offers nothing.
+- **Reopen against main** (the child was closed by GitHub and its parent merged) asks the
+  session to open a new pull request from the same branch against the default branch, then
+  merge the default branch in and push. The new pull request inherits the lineage, and the
+  restack and the merged-parent release apply as usual.
+A closed child that no later pull request of its task and work episode has replaced keeps being
+observed every sweep (GitHub reads only), so the action it offers follows its parent: a child
+closed while #A was open offers *Reopen on #A's branch*, and once #A merges it offers *Reopen
+against main* instead. Every recovery prompt also reads the parent again just before it is
+typed, and is refused if the parent's state - or, for *Reopen on #A's branch*, its branch - no
+longer matches what the offer was based on, or GitHub cannot be read; inside the delivery's
+write lock it is checked once more against the latest observation. Closed children are read a
+bounded page per sweep, round-robin, so every one is reached however many there are, and one
+whose parent is confirmed merged is no longer read, since its offer cannot change. A
+recovery prompt is claimed like a catch-up or restack, keyed to the stack state it answers:
+once delivered it reads *(sent)* and is not sent again - a second *Move onto main* would ask
+for a second replacement pull request - until that state changes.
+
+- **Reopen on #A's branch** (the child was closed while its parent is still open) asks the
+  session to open a new pull request from the same branch against the open parent's branch.
+  It inherits the closed row's lineage, base correction keeps it there, and it is an ordinary
+  stacked child again; the closed row then reads *Replaced by #N*.
+- **Wait for a replacement** (offered only while the child is open and its parent closed
+  unmerged) records the choice. When the parent task opens a replacement pull request in the
+  **same work episode** (a session of the parent task, adopted by the Inspector after the closed
+  one), the **replacement-parent transition** runs on the next tick. It is the only writer that
+  changes a row's current parent, and it writes only the open child's own row, in one step that
+  re-checks, as it writes, that the child is still open, the operator still waits for a
+  replacement, and the release check has not released its current head meanwhile:
+  it appends `{from, to, at}` to the lineage history, makes the replacement the current parent
+  and clears the release. The commit the child was cut at never changes. It is idempotent, and
+  never runs for a released child or one from the parent task's next episode. The child is then
+  retargeted onto the replacement's branch and caught up with it, and is released through the
+  merged-parent branch once the replacement merges and the child restacks. A replacement that
+  also closes unmerged makes the child broken again, with the same actions.
+
+- **Reschedule #A's task** and **Start #A's task** (the parent task stopped while its pull
+  request is still open) restart the parent's work through the task's own reschedule and
+  dispatch controls. The child cannot release itself while that pull request is open, so the fix
+  is the parent's: once it is running again, in this work episode or a later one, its open pull
+  request can be pushed to and merge, and the child reads as stacked again and restacks as usual.
+  Closing the parent pull request on GitHub instead turns this into the closed-parent case above,
+  with *Move onto main*.
+
+A stacked child is running while its parent's pull request is open, so it is never in the
+backlog; the stopped parent is named on the child's own tile and merge-queue row. Flipping an edge to *After merge*, or the Shipping default to *Wait for merge*, after
+the child started changes nothing for it.
+
+**When a stack lands by itself.** With YOLO mode on, a two-pull-request stack lands bottom-up
+with no human step except conflicts - the parent merges, the child is retargeted, restacked,
+released, reviewed clean and merged - when all of these hold:
+
+- the child's task has exactly one live session, and Foreman may drive it: Foreman is on and
+  live, invited into that session, the session has reported hooks and has a pane, and the
+  repository is on Foreman's allowlist;
+- the Inspector reviews live in that repository and YOLO mode may merge there (the ordinary
+  merge gates above);
+- each prompt Foreman types is confirmed delivered. A delivery whose outcome is uncertain is
+  never retried automatically, so it waits for the operator's send (below);
+- GitHub can be read for the parent on each tick.
+
+When a prompt is needed and Foreman may not drive the one live session that owns the child, the
+child is held and its row says why (*Foreman is off*, or *Foreman can't send it - <reason>*) and
+offers **Send catch-up prompt** or **Send restack prompt**: one click from the operator, after
+which the stack carries on as above. The same send is offered when a delivery's outcome is
+uncertain (*Catch-up prompt delivery uncertain*, *Restack prompt delivery uncertain*), because
+Foreman never retries one itself. With no live session the row reads *no session* and waits
+for **Resume**. While the parent cannot be read, the row reads *Checking #A on GitHub* and
+nothing is offered until GitHub answers. A failing merge gate holds the child exactly as it
+holds any pull request.
 
 ### When a task's pull request merges
 

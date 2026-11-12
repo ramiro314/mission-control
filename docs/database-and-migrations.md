@@ -36,7 +36,7 @@ and no row holds a claim variable's value or a claim step's output. A pool's med
 rate are computed from these rows on read. Rows have no foreign key, so a destroyed slot's rows stay
 until retention ages them out: each maintenance pass drops rows
 older than 90 days, then anything beyond 2,000 rows per pool, oldest first. Retention is the table's
-only delete. The table arrived with schema version 11, a fork entry: the migration is
+only delete. The table arrived with a fork schema entry, now part of fork version 28: the migration is
 `CREATE ... IF NOT EXISTS` and is not gated by the number, so an upstream 11 can renumber it, as
 #618 did for the fork's 7 to 9.
 
@@ -45,15 +45,15 @@ store holds, written only by `HistoryStore` from the daemon's reconciler (see
 [Session History](history.md)). Rows are derived from transcripts, but unlike the archive index the
 table is not disposable: when Claude Code's retention deletes a transcript, its row is marked
 `transcript_state = 'gone'` and kept, and is then the only record of the session. Rows are never
-deleted. The table arrived with schema version 12, a fork entry, created in `migrate()` with
+deleted. The table arrived with a fork schema entry, now part of fork version 28, created in `migrate()` with
 `CREATE ... IF NOT EXISTS` and not gated by the number, so an upstream 12 can renumber it.
 
 `history_search_segments` is the text History's search scans, keyed by agent, session id and
 ordinal and written only by `HistoryStore` beside the session's row: ordinal 0 holds the title
 fields, cwd, repository and branch, later ordinals the user prompts in overlapping chunks. It
 stores only a JavaScript-folded copy and is matched as a literal substring, following
-`archive_search_segments`; FTS5 is deliberately not used. It arrived with schema version 13, a
-fork entry created in `migrate()`. A database that already holds `history_sessions` rows when
+`archive_search_segments`; FTS5 is deliberately not used. It arrived with a fork schema
+entry, now part of fork version 28, created in `migrate()`. A database that already holds `history_sessions` rows when
 the table is first created has their fingerprints cleared in the same step, so the reconciler
 re-reads each present transcript from the top and indexes its prompts; a row whose transcript is
 already gone gets its fields segment from the row itself. User prompts are therefore copied into
@@ -70,8 +70,16 @@ bound to, its state (`pending`, `expired`, `bound`, `ended`,
 set when an `ended` launch kept its slot leased because the slot was not clean. `kept_reason` is
 added with `addColumn`, so a database already stamped 14 gains it on its next open. A partial unique index over `(agent, source_session_id)`
 where the state is `pending` or `expired` allows one open launch per session, which is what makes
-the row's insert a Resume's claim. Rows are never deleted. It arrived with schema version 14, a
-fork entry created in `migrate()` and not gated by the number.
+the row's insert a Resume's claim. Rows are never deleted. It arrived with a fork schema entry,
+now part of fork version 28, created in `migrate()` and not gated by the number.
+`session_blockers` (schema 25) holds one durable [session blocker](sessions.md#blocked-sessions)
+per note key, the same key that carries notes, goals, invites and standing instructions across
+restarts, with the bound `task_id` recorded for reference. It is created in `migrate()`, so a
+schema 24 database gains an empty table on its next open. The Registry loads it at
+construction, moves a row on every note-key rotation, deletes it when the task it was reported
+for reaches a terminal status, and prunes a key no session has held for the goal pruning window.
+`last_held_at` records when a live session was last seen holding the key, so that window counts
+observed absence and a restart does not reset it.
 
 ## Full-database recovery points
 
@@ -81,7 +89,7 @@ backup, retention, validation, failure-handling, and offline-restore procedure.
 
 Backup status appears in **Settings > Storage**: the interval and counts, Back up now, the last
 success and last failure of each kind, the kept copies with their total size, and a Problems list
-that names a failing capture until a capture succeeds, and a worktree return refused for over an
+that names a failing capture until a capture of either kind succeeds, and a worktree return refused for over an
 hour (see [task worktree retention](worktrees-and-checks.md#task-worktree-retention)).
 
 ## Recovering the product database

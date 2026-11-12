@@ -156,6 +156,7 @@ export function createPosixProcessInspector(runner: CommandRunner = defaultComma
       return {
         rows,
         failure,
+        overflowed: a.overflowed === true || b.overflowed === true,
         collectorPids: [a.childPid, b.childPid].filter(
           (pid): pid is number => Number.isInteger(pid) && (pid ?? 0) > 0,
         ),

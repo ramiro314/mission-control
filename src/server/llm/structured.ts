@@ -97,14 +97,16 @@ export function createLimiter(concurrency: number): <T>(fn: () => Promise<T>) =>
  * existing extractor (with its envelope/fence handling) stays the single source of that
  * logic.
  */
-export async function runStructured<S extends ZodTypeAny>(
+// `S` only names the reply's type when a caller states it (`runStructured<typeof Schema>`);
+// otherwise `T` is inferred from `extract`, which is the one argument that carries it.
+export async function runStructured<S extends ZodTypeAny = ZodTypeAny, T = TypeOf<S>>(
   run: (prompt: string) => Promise<string>,
   prompt: string,
-  extract: (raw: string) => TypeOf<S> | ModelReplyMiss | null,
+  extract: (raw: string) => T | ModelReplyMiss | null,
   label = "The model",
   observer?: StructuredAttemptObserver,
   opts?: { shapeGuaranteed?: boolean; maxAttempts?: 1 | 2 },
-): Promise<StructuredResult<TypeOf<S>>> {
+): Promise<StructuredResult<T>> {
   // A provider-guaranteed INPUT shape makes a JSON-syntax re-prompt redundant. Extraction
   // still runs below on every path: callers consume Zod's OUTPUT type, including transforms
   // and refinements no provider-side JSON Schema can execute.
@@ -171,14 +173,29 @@ function clip(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 3)}...`;
 }
 
+/** A primitive an enum or literal accepts, quoted as JSON where JSON can say it. */
+function expectedValue(value: unknown): string {
+  return typeof value === "bigint" ? `${value}n` : JSON.stringify(value) ?? String(value);
+}
+
+/**
+ * The received TYPE of an `invalid_type` issue. Zod 4 drops the input from the issue, so it
+ * is read back from Zod's own default message, which names only a type; a custom message
+ * gives none.
+ */
+function receivedType(message: string): string | null {
+  return /^Invalid input: expected \S+, received (\S+)$/.exec(message)?.[1] ?? null;
+}
+
 /** One `path: message` line per issue. Enum and key issues drop the received value. */
 export function describeReplyIssues(issues: readonly ZodIssue[]): string[] {
   return issues.slice(0, MAX_REPLY_ISSUES).map((issue) => {
-    const path = issue.path.length ? clip(issue.path.join("."), MAX_ISSUE_PATH) : "(root)";
+    const path = issue.path.length ? clip(issue.path.map(String).join("."), MAX_ISSUE_PATH) : "(root)";
+    const received = issue.code === "invalid_type" ? receivedType(issue.message) : null;
     const message = issue.code === "invalid_type"
-      ? `Expected ${issue.expected}, received ${issue.received}`
-      : issue.code === "invalid_enum_value"
-        ? `Expected one of ${issue.options.map((o) => JSON.stringify(o)).join(" | ")}`
+      ? `Expected ${issue.expected}${received ? `, received ${received}` : ""}`
+      : issue.code === "invalid_value"
+        ? `Expected one of ${issue.values.map(expectedValue).join(" | ")}`
         : issue.code === "unrecognized_keys"
           ? "Unrecognized key(s) in object"
           : issue.message;

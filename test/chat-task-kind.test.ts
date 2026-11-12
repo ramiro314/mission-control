@@ -104,7 +104,13 @@ test("an immediate chat persists and dispatches with its opener as the exact pro
       pullRequestGrant: false,
     })}\n\n## Chat task publication\n`),
   );
-  assert.equal(kindMissionMcpRequirement(task, null), null);
+  assert.deepEqual(kindMissionMcpRequirement(task, null)?.tools, ["create_task", "dispatch_task"]);
+});
+
+test("chat requires scheduling and dispatch without losing caller requirements", () => {
+  const requirement = kindMissionMcpRequirement(mkTask({ kind: "chat" }), { tools: ["report_status"] }, true)!;
+  assert.deepEqual(requirement.tools, ["report_status", "create_task", "dispatch_task", "submit_workflow_evidence"]);
+  assert.deepEqual(kindMissionMcpRequirement(mkTask({ kind: "chat" }), requirement, true), requirement);
 });
 
 // An unbound chat has no automatic publisher, so its dispatch message is the human's own

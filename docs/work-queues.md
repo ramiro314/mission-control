@@ -328,8 +328,11 @@ The session card shows only the PR its current work episode accepted, so a sessi
 to an older PR's branch can show none. Foreman also follows the GitHub Inspector's adoption: an
 open PR the Inspector adopted under that session, in its repository, whose head branch is the
 session's current branch, has its unresolved findings relayed even when the card shows no PR.
-Such a PR carries only its findings. CI, conflict and CodeRabbit follow-through stay with the
-card's PR.
+"Under that session" means the same session id, or the agent id recorded when the PR was
+adopted, which survives a restart that re-mints the session id. A PR adopted before the
+session's agent id was known matches on the session id alone. Such a PR carries only its
+findings. CI, conflict, CodeRabbit and stacked pull request follow-through stay
+with the card's PR.
 
 Each nudge is typed into the session's pane, so it carries the usual gates and one more:
 
@@ -346,8 +349,8 @@ Each nudge is typed into the session's pane, so it carries the usual gates and o
   exception: one that spent its repair budget, or stopped on `unchanged_evidence_exhausted` or
   `session_disappeared`, delivers nothing while it waits, so findings, failing CI and conflicts
   reach the session again. Granting rounds, reattaching or resubmitting puts the run back in
-  charge, and every other blocked phase keeps holding the session. CodeRabbit follow-up still
-  waits for the run to finish;
+  charge, and every other blocked phase keeps holding the session. CodeRabbit follow-up and
+  stacked pull request prompts still wait for the run to finish;
 - the findings half counts every **unresolved** GitHub Inspector finding, whether it was
   posted on GitHub, is being posted, or was drafted and never posted (in dry run, for example).
   The Inspector's mode decides only whether a finding reaches GitHub, never whether the session
@@ -400,6 +403,9 @@ was posted on GitHub, the body, and the fingerprint. The whole message stays und
 8,000-byte ceiling. Past it, whole findings are dropped from the lowest severity up, and a closing
 line says how many were left out. They stay open and come back in the next relay.
 
+The daemon-built CodeRabbit follow-up replaces Foreman's message for its pull request, so it
+carries the same findings, rendered the same way.
+
 **Merge conflicts are capped, then handed to you.** A conflict is nudged **once per
 conflicting head** and at most **3 times per conflict episode**. The episode re-arms only when
 GitHub reports the PR's current head mergeable. A head GitHub has not answered for yet, which
@@ -409,6 +415,10 @@ Foreman **escalates** the conflict to the operator, once per episode, when:
 - a new conflicting head appears after 3 nudges, or
 - the session sits settled-idle for 2 minutes on the head it was nudged about, still
   conflicting, which means the agent parked without pushing a fix.
+
+While a stacked child's catch-up or restack prompt is pending, its conflict is neither nudged
+nor escalated: the merge that prompt asks for is what resolves it
+([Stacked pull requests](inspector-and-shipping.md)).
 
 An escalation types nothing. It is logged, recorded as a Foreman episode, and sent to the
 daemon (`POST /api/pr-conflicts/escalate`), which marks the PR's open conflict episode. The PR
@@ -511,7 +521,10 @@ click **launch new agent** yourself. Dry-run means dry-run.
 tool-less call through the effective Foreman Provider sees every planning
 item's title and intent and returns, for each item, what it must wait for. The reply isn't trusted as written: ids that aren't in the backlog are dropped,
 self-references are dropped, **only the edges that close a cycle** are cut, and any item
-the model forgot is appended unblocked. A cycle would deadlock two cards forever and look
+the model forgot is appended unblocked. The planner is told to name tasks by title in each
+`reason` and the `note`, since the board shows them verbatim and never shows a task id. Any id a
+reply still carries there - a backlog task's, or any other saved task's that an intent mentions -
+is served to the board as that task's title, while the stored plan keeps the reply's own words. A cycle would deadlock two cards forever and look
 exactly like two cards waiting their turn;
 a forgotten item would leave the plan permanently stale, which is an unbounded replanning
 loop. Every dependency that isn't part of a cycle survives, whatever order the model listed

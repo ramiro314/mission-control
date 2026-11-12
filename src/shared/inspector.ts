@@ -177,8 +177,10 @@ export function resolveInspectorModel(
  * The Inspector chip facts for one ledger row: what a session card carries as `inspector`, and
  * what Foreman's follow-through builds for a pull request it found by adoption instead.
  *
- * `enabled` is read from the config, not the row, because turning the Inspector off changes
- * no row (ci-strictness D5). `codeRabbit` is included only when the caller has one to give.
+ * `mode` and `enabled` are read from the config, not the row, because changing either
+ * changes no row (ci-strictness D5). `codeRabbit` is included only when the caller has one
+ * to give. A pull request's stack standing needs the registry, so the session card adds it
+ * after this.
  */
 export function inspectorSummaryOf(
   row: InspectorInspection,

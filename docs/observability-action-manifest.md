@@ -50,7 +50,7 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`fetchCostConfig`](../src/web/lib/api.ts#L384) | `/api/cost/config` |
 | [`fetchInspectorConfig`](../src/web/lib/api.ts#L385) | `/api/inspector/config` |
 | [`fetchInspectorPrs`](../src/web/lib/api.ts#L398) | `/api/inspector/prs`<br>`/api/inspector/prs?adoptedSince=:id` |
-| [`fetchInspectorFindings`](../src/web/lib/api.ts#L428) | `/api/inspector/findings?pr=:id` |
+| [`fetchInspectorFindings`](../src/web/lib/api.ts#L481) | `/api/inspector/findings?pr=:id` |
 | [`fetchInspectorStatus`](../src/web/lib/api.ts#L404) | `/api/inspector/status` |
 | [`fetchLlmConfig`](../src/web/lib/api.ts#L406) | `/api/llm/config` |
 | [`fetchLlmStatus`](../src/web/lib/api.ts#L414) | `/api/llm/status` |
@@ -252,6 +252,8 @@ The MCP `http` boundary supplies declared agent provenance and an operation ID. 
 | `request_input` | Review creation, `attention.request`; subsequent polling excluded |
 | `report_product_issue` | Product-issue submission owner, `task.issue_submit` |
 | `report_status` | Explicitly excluded liveness/status update |
+| `report_blocker` | Session blocker owner, `session.blocker_report` |
+| `clear_blocker` | Session blocker owner, `session.blocker_clear` |
 | `respond_to_file_comments` | File-comment owner, `file.comment_reply` |
 | `adopt_pipeline_run` | Pipeline owner, `pipeline.adopt` |
 | `report_pipeline_workspace` | Pinned workspace owner, `pipeline.workspace` |

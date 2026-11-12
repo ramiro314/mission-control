@@ -117,16 +117,16 @@ export function migrateSettingsBackupSnapshot(
   return {
     snapshot,
     settings,
-    personas: SettingsBackupPersonaSchema.array().parse(payload("personas")),
-    sessionActions: SettingsBackupSessionActionSchema.array().parse(payload("session-actions")),
+    personas: SettingsBackupPersonaSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("personas")),
+    sessionActions: SettingsBackupSessionActionSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("session-actions")),
     workflowCommands: withSlotsAddedSinceSnapshot(
-      SettingsBackupWorkflowCommandSchema.array().parse(payload("workflow-commands")),
+      SettingsBackupWorkflowCommandSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("workflow-commands")),
     ),
-    testingSettings: SettingsBackupTestingSettingsSchema.array().parse(payload("testing-settings")),
-    workflows: SettingsBackupWorkflowDefinitionSchema.array().parse(payload("workflow-definitions")),
-    workflowVersions: SettingsBackupWorkflowVersionSchema.array().parse(payload("workflow-versions")),
+    testingSettings: SettingsBackupTestingSettingsSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("testing-settings")),
+    workflows: SettingsBackupWorkflowDefinitionSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("workflow-definitions")),
+    workflowVersions: SettingsBackupWorkflowVersionSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("workflow-versions")),
     residentProfiles: byDomain.has("resident-profiles")
-      ? SettingsBackupResidentProfileSchema.array().parse(payload("resident-profiles"))
+      ? SettingsBackupResidentProfileSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("resident-profiles"))
       : null,
   };
 }

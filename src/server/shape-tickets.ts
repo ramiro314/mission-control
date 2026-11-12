@@ -1,5 +1,5 @@
 import type { PlanIdentity } from "@shared/managed-plans.ts";
-import type { ShapeTicketsOutcome } from "@shared/protocol.ts";
+import type { ShapeTicketsOutcome, TaskDependencyInput } from "@shared/protocol.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import { isLocalPlanningTask } from "@shared/task.ts";
 import type { PlanDecisionAnswer, ShapeTicketsState, Task, TaskShapeTickets } from "@shared/types.ts";
@@ -57,6 +57,17 @@ export type ShapeTicketsAcceptance =
   | { ok: false; reason: string };
 
 const LOCAL_PLAN_REF_PREFIX = "plan:";
+
+/**
+ * The edge a ticket gates on its calling session with (`create_task` with
+ * `dependsOnCurrentSession`). When that session runs a shape task the edge is pinned to
+ * after merge, so a ticket is released when the planning PR merges and never stacks on the
+ * plan's open pull request. Every other edge, a ticket's edges to its sibling tickets among
+ * them, keeps no mode and follows the Shipping default.
+ */
+export function ticketSessionEdge(sessionId: string, task: Pick<Task, "kind"> | undefined): TaskDependencyInput {
+  return { type: "session", sessionId, ...(task?.kind === "shape" ? { mode: "merge" as const } : {}) };
+}
 
 /** A published local revision as a follow-up relation stores it. */
 export function localShapePlanRef(plan: PlanIdentity): string {

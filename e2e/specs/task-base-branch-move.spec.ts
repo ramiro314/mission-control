@@ -162,7 +162,8 @@ test("a task moved onto main, sent back and stacked again is offered the move ag
   // control by clearing the base; a base named again must bring it back.
   await api(daemon, `/api/tasks/${filed.id}/requeue`, {});
   await expect.poll(async () => (await taskById(daemon, filed.id))?.status, { timeout: 60_000 }).toBe("backlog");
-  await api(daemon, `/api/tasks/${filed.id}/update`, { baseBranch: "feat/other" });
+  // Returning a running task switches it off (upstream #1361), so it is switched back on here.
+  await api(daemon, `/api/tasks/${filed.id}/update`, { baseBranch: "feat/other", enabled: true });
   await api(daemon, `/api/tasks/${filed.id}/dispatch`, {});
   await expect.poll(async () => (await taskById(daemon, filed.id))?.status, { timeout: 60_000 }).toBe("running");
   const again = (await taskById(daemon, filed.id))!;

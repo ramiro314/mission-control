@@ -157,6 +157,13 @@ test("the Findings modal lists every finding and whether each was posted", async
 
   const modal = findingsDialog(dashboard, 601);
   await expect(modal).toBeVisible();
+  await expect(modal).toHaveAttribute("aria-modal", "true");
+  await expect(modal).toBeFocused();
+  // Tab and Shift+Tab cycle inside the dialog, never reaching the Resolve control behind it.
+  for (const key of ["Tab", "Tab", "Shift+Tab", "Shift+Tab", "Shift+Tab"]) {
+    await dashboard.keyboard.press(key);
+    expect(await modal.evaluate((dialog) => dialog.contains(document.activeElement))).toBe(true);
+  }
   await expect(modal.getByRole("heading", { name: "GitHub Inspector findings" })).toBeVisible();
   await expect(modal.getByRole("link", { name: "owner/repo#601" }))
     .toHaveAttribute("href", "https://github.example/owner/repo/pull/601");
@@ -216,6 +223,7 @@ test("the Findings modal lists every finding and whether each was posted", async
 
   await modal.locator(".modal-foot").getByRole("button", { name: "Close" }).click();
   await expect(modal).toHaveCount(0);
+  await expect(open).toBeFocused();
   // Resolve was never touched from the modal, so the row still carries its findings.
   await expect(dashboard.locator(".sc-row").filter({ hasText: "repo#601" })).toContainText("4 findings");
 });
@@ -465,4 +473,27 @@ test("a failed refresh keeps the findings on screen, says so, and recovers on th
   await expect(modal.getByText(retry)).toHaveCount(0);
   await expect(modal.getByText("BODY only in Mission Control.")).toBeVisible();
   await shoot(dashboard, "findings-modal-recovered", modal);
+});
+
+test("a findings read slower than the panel's poll still reaches the screen", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedLedger(daemon, [{ number: 609, posture: "live", findings: [SIX[0]!] }]);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/inspector`);
+  // Each read takes longer than two 4-second polls, so a poll must not discard the read in flight.
+  await dashboard.route("**/api/inspector/findings?*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 9_000));
+    await route.continue();
+  });
+  await findingsButton(dashboard, 609).click();
+  const modal = findingsDialog(dashboard, 609);
+  const rows = modal.locator("tr.wf-run-finding-row");
+  await expect(rows).toHaveCount(1, { timeout: 15_000 });
+  await expect(modal.getByText("Loading findings…")).toHaveCount(0);
+
+  withDaemonDb(daemon, (db) => {
+    insertFinding(db, "owner/repo#609", { ...SIX[2]!, id: "while-slow" }, Date.now());
+  });
+  await expect(rows).toHaveCount(2, { timeout: 25_000 });
 });

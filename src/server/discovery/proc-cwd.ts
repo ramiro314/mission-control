@@ -1,6 +1,7 @@
 import type { ReadOptions } from "../process-inspection/contract.ts";
 import { processInspector } from "../process-inspection/index.ts";
-import { unansweredOutcome } from "../util/exec.ts";
+import { createPosixProcessInspector, defaultCommandRunner } from "../process-inspection/posix.ts";
+import { unansweredOutcome, type run } from "../util/exec.ts";
 
 export interface ProcCwdSnapshot {
   cwds: Map<number, string>;
@@ -32,11 +33,19 @@ export interface ProcCwdSnapshot {
  * survivors. The partial map remains available to discovery callers; destructive callers
  * independently recheck an omitted PID before treating it as gone.
  */
-export async function readProcCwdsSnapshot(pids: number[], options?: ReadOptions): Promise<ProcCwdSnapshot> {
+export async function readProcCwdsSnapshot(
+  pids: number[],
+  options?: ReadOptions,
+  // A test's command runner: the POSIX inspector's reads, issued through it.
+  runCommand?: typeof run,
+): Promise<ProcCwdSnapshot> {
   const uniq = [...new Set(pids)].filter((p) => Number.isInteger(p) && p > 0);
   if (uniq.length === 0) return { cwds: new Map(), unreadable: new Set(), unknownReason: null };
 
-  const { cwds, unreadable, result: res } = await processInspector().readCwds(uniq, options);
+  const inspector = runCommand
+    ? createPosixProcessInspector({ ...defaultCommandRunner, run: runCommand })
+    : processInspector();
+  const { cwds, unreadable, result: res } = await inspector.readCwds(uniq, options);
   // lsof exits 1 when one PID vanishes during a batched read, while still printing the
   // survivors. A partial answer is usable evidence, but omission is not proof of exit;
   // destructive callers compare unresolved PIDs against a fresh process snapshot.

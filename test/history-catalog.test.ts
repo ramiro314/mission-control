@@ -735,3 +735,12 @@ test("with two readers, neither one's walk clears the other's empty-file and dup
   assert.deepEqual(counted.map(({ calls }) => calls.length), [0, 0], "and neither reads anything again");
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
+
+test("the store watcher is on unless MISSION_HISTORY_WATCH is 0", async () => {
+  const { historyWatch } = await import("../src/server/config.ts");
+  assert.equal(historyWatch(undefined), true);
+  assert.equal(historyWatch(""), true);
+  assert.equal(historyWatch("1"), true);
+  assert.equal(historyWatch("0"), false);
+  assert.equal(historyWatch(" 0 "), false);
+});

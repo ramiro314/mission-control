@@ -116,3 +116,37 @@ test("a base branch is set, refused, labelled on the card, and edited back to th
   await card.getByRole("button", { name: title, exact: true }).click();
   await expect(editBase).toHaveValue("");
 });
+
+test("a dependency on a task with its own base branch waits for merge, and its card says why", async ({ dashboard, daemon }) => {
+  execFileSync("git", ["-C", daemon.repo, "push", "-q", "origin", "main:refs/heads/release/next"], {
+    stdio: "pipe",
+  });
+  const create = async (body: object): Promise<{ id: string; title: string }> => {
+    const response = await fetch(`${daemon.baseURL}/api/tasks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repoRoot: daemon.repo, kind: "ship", agent: "claude", backlog: true, workflowId: null, enabled: false, ...body,
+      }),
+    });
+    expect(response.ok, `creating a task answered ${response.status}`).toBe(true);
+    return await response.json() as { id: string; title: string };
+  };
+  // An explicit Stack choice, so only the base branch can be what holds it back.
+  // Enabled, so the card's reason is the stacking one rather than a disabled prerequisite.
+  const parent = await create({
+    title: "Backport the lock", intent: "Backport the lock.", baseBranch: "release/next", enabled: true,
+  });
+  const child = await create({
+    title: "Follow the backport",
+    intent: "Follow the backport.",
+    dependencies: [{ type: "task", taskId: parent.id, mode: "stack" }],
+  });
+
+  await useBoard(dashboard, daemon.baseURL);
+  const card = dashboard.locator(".bl-card", { hasText: child.title });
+  await expect(card.locator(".bl-blocked"))
+    .toHaveText("can't stack yet - Backport the lock targets release/next, so it has to merge first", { timeout: 30_000 });
+  await expect(card.locator(".bl-stacked")).toHaveCount(0);
+  await shoot(dashboard, "03-base-branch-waits-for-merge", card);
+});

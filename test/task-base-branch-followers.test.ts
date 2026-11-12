@@ -560,6 +560,20 @@ test("a merge gh reports with no base branch does not count for a task that name
   assert.equal(f.tasks.dependencyBlockers(f.dependent())[0]?.state, "stopped");
 });
 
+test("YOLO mode is told the base branch of the task owning a pull request, and nothing for one with none", () => {
+  const url = "https://github.com/example/repo/pull/950";
+  const f = withDependent("yolo-base");
+  f.branchPoll(url, "open", "release/2.0");
+  assert.equal(f.registry.prTaskBaseBranch(url), "release/2.0");
+  assert.equal(f.registry.prTaskBaseBranch(`${url}/files`), "release/2.0", "matched by pull request, not spelling");
+  assert.equal(f.registry.prTaskBaseBranch("https://github.com/example/repo/pull/951"), null, "no task owns it");
+
+  const plain = "https://github.com/example/repo/pull/952";
+  const g = withDependent("yolo-no-base", null);
+  g.branchPoll(plain, "open", "main");
+  assert.equal(g.registry.prTaskBaseBranch(plain), null);
+});
+
 test("a task with no base branch completes on a merge into any branch, exactly as before", async () => {
   const url = "https://github.com/example/repo/pull/904";
   const f = withDependent("no-base", null);

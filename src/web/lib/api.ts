@@ -95,6 +95,8 @@ import type {
   StandingInstructionsView,
   WorktreesConfig,
   WorktreesConfigPatch,
+  AttentionDismissal,
+  AttentionDismissalWrite,
   InspectorFindingsResponse,
 } from "@shared/protocol.ts";
 import {
@@ -617,11 +619,19 @@ export const fetchResolvedStandingInstructions = (
   agent: AgentType,
   runtime: SessionRuntime,
   signal?: AbortSignal,
+  launch: {
+    /** The dispatch Persona the form has chosen, appended the way the launch appends it. */
+    personaId?: string | null;
+    /** The task kind, whose launch owner decides what is sent - a Pipeline host gets no rules. */
+    kind?: TaskKind;
+  } = {},
 ) => {
   const q = new URLSearchParams();
   for (const path of repoPaths) q.append("repoPath", path);
   q.set("agent", agent);
   q.set("runtime", runtime);
+  if (launch.personaId) q.set("personaId", launch.personaId);
+  if (launch.kind) q.set("kind", launch.kind);
   return fetchJsonWithSignal<StandingInstructionsDelivery>(`/api/instructions/resolved?${q}`, signal);
 };
 
@@ -1023,6 +1033,29 @@ export async function resolveRepo(
     // subdirectory matters. An older daemon does not send it; falling back to the root
     // reproduces the previous behaviour rather than failing the lookup.
     return { ok: true, repoRoot: data.repoRoot, path: data.path ?? data.repoRoot };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** What accepting a goal's objective answered: the full record, or the refusal. */
+export type AcceptGoalResult =
+  | { ok: true; goal: SessionGoal }
+  | { ok: false; error: string; status?: number };
+
+/**
+ * POST the accept route and hand back the full goal it answers with. Its own fetch rather than
+ * `post`, which spreads the body into an `ActionResult` and would mix the record's fields with
+ * the transport's. Never throws.
+ */
+async function acceptGoal(id: string): Promise<AcceptGoalResult> {
+  try {
+    const res = await actionFetch(`/api/sessions/${encodeURIComponent(id)}/goal/accept`, {
+      method: "POST",
+    });
+    const data = (await res.json().catch(() => ({}))) as SessionGoal & { error?: string };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
+    return { ok: true, goal: data };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -1654,8 +1687,11 @@ export interface DispatchInput {
   model?: string;
   /** Reasoning-effort override; omitted follows the harness default at dispatch time. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /** Library Persona the agent launches with; omitted launches with none. */
+  personaId?: string;
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
+  planStorage?: "repository" | "local" | null;
   /** Grill me first, for a plan task; omitted follows the Settings -> Tasks default. */
   grillFirst?: boolean;
   /** Backlog-task or live-session prerequisites. */
@@ -1838,6 +1874,14 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/launch`, { backend, payload }),
   rename: (id: string, name: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/rename`, { name }),
+  /**
+   * Flag a likely answer on this session's blocker. Never clears it, never messages it.
+   * `blockerId` names the blocker on screen, so a stale band cannot act on a newer one.
+   */
+  flagBlockerReply: (id: string, input: { blockerId: string; note?: string; referenceUrl?: string }) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/blocker/reply`, input),
+  clearBlocker: (id: string, blockerId: string, resolution?: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/blocker/clear`, { blockerId, ...(resolution ? { resolution } : {}) }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   /**
    * Stop what the session is doing right now and drop what was queued behind it, leaving
@@ -2101,6 +2145,17 @@ export const api = {
   // backlog kind again as the same task, and files a chat again as a new one.
   dismissLaunchFailures: (taskIds: readonly string[]) =>
     post<ActionResult & { dismissed?: number }>(`/api/launch-failures/dismiss`, { taskIds }),
+  // Attention-inbox rows dismissed without resolving them (`src/server/attention-dismissals.ts`).
+  // Null from the read means "not known", never "nothing dismissed".
+  listAttentionDismissals: () =>
+    fetchJsonWithSignal<{ dismissals: AttentionDismissal[] }>("/api/attention/dismissals"),
+  // Refused with 409 and `superseded` when another window dismissed one of these rows since this
+  // window last saw it (see `AttentionDismissalWriteSchema`).
+  dismissAttentionItems: (items: readonly AttentionDismissalWrite[]) =>
+    post<ActionResult & {
+      accepted?: { itemId: string; revision: number }[];
+      superseded?: string[];
+    }>(`/api/attention/dismissals`, { items }),
   reportLaunchFailure: (taskId: string, repoRoot: string) =>
     post<ActionResult & { task?: Task; existing?: boolean }>(`/api/launch-failures/report`, { taskId, repoRoot }),
   retryLaunchFailure: (taskId: string) =>
@@ -2129,6 +2184,12 @@ export const api = {
    * to none. A refusal names the task that stopped it.
    */
   bulkUpdateTasks: (body: BulkUpdateTasksInput) => post(`/api/tasks/bulk-update`, body),
+  /**
+   * Drop one dependency edge from a backlog task. The daemon removes it from the task as it
+   * holds it now, so an edge added after the caller last rendered the task survives.
+   */
+  removeTaskDependency: (id: string, dependency: TaskDependencyInput) =>
+    post(`/api/tasks/bulk-update`, { taskIds: [id], dependencies: { remove: [dependency] } } satisfies BulkUpdateTasksInput),
   /**
    * Delete several backlog tasks. Not atomic (see `TaskManager.bulkRemove`), so a late
    * refusal carries the ids that did and did not go.
@@ -2173,6 +2234,18 @@ export const api = {
    */
   resolveInspectorFindings: (prKey: string) =>
     post<ActionResult & ResolveFindingsResult>(`/api/inspector/resolve-findings`, { prKey }),
+  /**
+   * Stacked pull requests: send a catch-up or restack prompt, or a broken-stack action, to the
+   * child's owning session. Through the same inject route and guards Foreman's follow-up uses;
+   * the daemon builds the text, so `text` here is only a placeholder the route replaces.
+   */
+  sendStackPrompt: (sessionId: string, stack: import("@shared/stacking.ts").StackPromptRequest) =>
+    post(`/api/sessions/${encodeURIComponent(sessionId)}/inject`, {
+      text: `Stacked pull request: ${stack.kind}`, buffer: false, origin: "human", stack,
+    }),
+  /** *Wait for a replacement* on a broken stack, or withdraw it. */
+  stackAwaitReplacement: (prKey: string, wait: boolean) =>
+    post(`/api/inspector/stack/await-replacement`, { prKey, wait }),
 
   // --- LLM (which provider does the app's own offline work, and on which model) ---
   setLlmConfig: (cfg: LlmConfigPatch) => put(`/api/llm/config`, cfg),
@@ -2278,6 +2351,12 @@ export const api = {
   /** Full resolved intent for the Foreman drawer; the session snapshot carries only its summary. */
   goal: (id: string) =>
     fetchJson<SessionGoal>(`/api/sessions/${encodeURIComponent(id)}/goal`),
+  /**
+   * Accept the current objective as is: record every pending instruction as steering and let
+   * Foreman judge completion against this objective on its next tick. Never changes the
+   * objective. 404 without a goal, 409 without an objective, otherwise the full record.
+   */
+  acceptGoal: (id: string) => acceptGoal(id),
 
   /**
    * The answers this session's human gave, oldest first - the durable half of the

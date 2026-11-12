@@ -9,8 +9,8 @@ import { withProcessEnv } from "./helpers/process-env.ts";
 import { agentIsFree } from "../src/server/foreman/backlog-machine.ts";
 import type { BacklogConfig } from "../src/server/foreman/backlog-machine.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { TaskDependency } from "../src/shared/types.ts";
 import { isWorkDependency } from "../src/shared/task-dependency.ts";
+import type { TaskDependency } from "../src/shared/types.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-task-completion-reconciler-"));
 process.env.HARNESS_HOME = home;
@@ -19,6 +19,12 @@ const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { openDb, replaceSessionWorkEpisode, historicalTaskWorkEpisodeBindingsForTask, taskWorkEpisodeForTask } = await import("../src/server/db.ts");
+
+/** The pull request a task or session edge recorded; the other edge kinds carry none. */
+function prUrlOf(edge: TaskDependency | undefined): string | null {
+  assert.ok(edge && isWorkDependency(edge), "expected a task or session edge");
+  return edge.prUrl;
+}
 
 const managers: InstanceType<typeof TaskManager>[] = [];
 afterEach(async () => {
@@ -67,12 +73,6 @@ const CFG: BacklogConfig = {
   planExhausted: false,
 };
 const NOW = 5_000_000;
-
-/** The pull request a task or session edge recorded; the other edge kinds carry none. */
-function prUrlOf(edge: TaskDependency | undefined): string | null {
-  assert.ok(edge && isWorkDependency(edge), "expected a task or session edge");
-  return edge.prUrl;
-}
 
 function discovered(id: string, cwd: string, over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {
@@ -656,7 +656,7 @@ test("manual completion without the override heals stale edges from a later dura
   await pollMerged(f.registry, url);
   const healed = f.registry.getTask("manual-dependent")!;
   assert.notEqual(healed.dependencies[0]!.satisfiedAt, null);
-  assert.equal(prUrlOf(healed.dependencies[0]), url);
+  assert.equal(prUrlOf(healed.dependencies[0]!), url);
   assert.deepEqual(f.tasks.dependencyBlockers(healed), []);
   assert.deepEqual(f.registry.getTask(f.taskId), completed, "never re-complete or rewrite the operator's outcome");
   f.tasks.reconcileMergedTasks();
@@ -773,7 +773,7 @@ test("completion with an already verified merge satisfies dependents when the ov
 
   const dependent = registry.getTask(dependentId)!;
   assert.equal(typeof dependent.dependencies[0]!.satisfiedAt, "number");
-  assert.equal(prUrlOf(dependent.dependencies[0]), url);
+  assert.equal(prUrlOf(dependent.dependencies[0]!), url);
   assert.deepEqual(tasks.dependencyBlockers(dependent), []);
 });
 
@@ -823,7 +823,7 @@ test("a completed task discovers an unobserved historical branch after rollover 
   }, async () => null);
   assert.ok(asked.includes(f.episode.branch!));
   const dependent = restarted.getTask(f.dependentId)!;
-  assert.equal(prUrlOf(dependent.dependencies[0]), url);
+  assert.equal(prUrlOf(dependent.dependencies[0]!), url);
   assert.equal(typeof dependent.dependencies[0]!.satisfiedAt, "number");
   assert.deepEqual(tasks.dependencyBlockers(dependent), []);
   assert.deepEqual(restarted.getTask(f.taskId), before);
@@ -995,7 +995,7 @@ test("retained commits survive rollover and allow a late-opened historical PR", 
   const url = "https://github.com/example/repo/pull/1317";
   await pollAndReconcilePrs(registry, async () => ({ url, number: 1317, state: "merged", checks: "passing",
     createdAt: at, mergedAt: at + 1, headSha: sha, worktreeHeadSha: null }), async () => null);
-  assert.equal(prUrlOf(registry.getTask("late-history-dependent")!.dependencies[0]), url);
+  assert.equal(prUrlOf(registry.getTask("late-history-dependent")!.dependencies[0]!), url);
   assert.equal(typeof registry.getTask("late-history-dependent")!.dependencies[0]!.satisfiedAt, "number");
   assert.equal(taskWorkEpisodeForTask(f.taskId)!.prUrl, null);
 });
@@ -1040,7 +1040,7 @@ process.stdout.write(JSON.stringify(rows));\n`, { mode: 0o755 });
     assert.doesNotMatch(search, /\.\d{3}Z/, "GitHub search qualifiers use whole-second timestamps");
   }
   assert.ok(args.some(a => a.some(v => v.startsWith(`${sha} created:>=`))));
-  assert.equal(prUrlOf(f.registry.getTask(f.dependentId)!.dependencies[0]), older.url);
+  assert.equal(prUrlOf(f.registry.getTask(f.dependentId)!.dependencies[0]!), older.url);
   assert.equal(typeof f.registry.getTask(f.dependentId)!.dependencies[0]!.satisfiedAt, "number");
 });
 
@@ -1080,7 +1080,7 @@ for (const boundary of ["completion", "rollover"] as const) {
     assert.deepEqual(taskWorkEpisodeForTask(f.taskId), bindingBefore);
     assert.deepEqual(historicalTaskWorkEpisodeBindingsForTask(f.taskId), historyBefore);
     assert.equal(f.registry.getTask(f.dependentId)!.dependencies[0]!.satisfiedAt, null);
-    assert.equal(prUrlOf(f.registry.getTask(f.dependentId)!.dependencies[0]), null);
+    assert.equal(prUrlOf(f.registry.getTask(f.dependentId)!.dependencies[0]!), null);
   });
 }
 
@@ -1293,6 +1293,6 @@ else process.stdout.write(JSON.stringify([${JSON.stringify(candidate)}]));\n`, {
   const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
   assert.ok(calls.some(args => args[0] === "pr" && args[1] === "view" && args.includes(oldUrl)));
   assert.ok(calls.some(args => args.includes("--search") && args.includes(f.episode.branch!)));
-  assert.equal(prUrlOf(f.registry.getTask(f.dependentId)!.dependencies[0]), newUrl);
+  assert.equal(prUrlOf(f.registry.getTask(f.dependentId)!.dependencies[0]!), newUrl);
   assert.equal(typeof f.registry.getTask(f.dependentId)!.dependencies[0]!.satisfiedAt, "number");
 });

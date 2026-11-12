@@ -1,3 +1,5 @@
+import type { SdkUsage } from "./harness/types.ts";
+import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
 import { CodeRabbitRecordSchema, type CodeRabbitRecord } from "./inspector/code-rabbit-state.ts";
 import type { CodeRabbitFinding, CodeRabbitSummary } from "@shared/code-rabbit.ts";
@@ -92,16 +94,22 @@ import type {
   TaskPriority,
   TaskResidentRestart,
   TaskRepoEntry,
+  StackEdgeFields,
+  StackLineage,
   TaskStatus,
   TrackedGap,
   WorkItem,
   WorkItemState,
   WorkCycleSummary,
   WorktreeProvider,
+  SessionBlocker,
+  SessionBlockerKind,
+  SessionBlockerReply,
 } from "@shared/types.ts";
 import {
   DEFAULT_TASK_KIND,
   PROMPTED_COMPLETION_OUTCOMES,
+  SESSION_BLOCKER_KINDS,
   SHAPE_TICKETS_STATES,
   TASK_KINDS,
   type ShapeTicketsState,
@@ -156,6 +164,7 @@ import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import { parseLaunchFailure } from "@shared/launch-failure.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
+import { parseStackObservation, type StackObservation } from "@shared/stacking.ts";
 import {
   isRetentionCandidate,
   isRetentionRetryable,
@@ -202,31 +211,54 @@ let db: DatabaseSync | undefined;
 // 17: retain per-repository episode change evidence across checkout teardown.
 // 18: a task's advisor pin (`tasks.advisor_model`) and the SDK driver row's copy of it
 //     (`sdk_sessions.advisor_model`), nullable with no backfill: NULL inherits.
-// 19: fork - the fork's own 10 to 14, shipped before upstream's 10 to 14 arrived, combined
-//    above upstream's 18 so a fork database stamped anywhere from 10 to 18 takes its recovery
-//    point before the combined upgrade. They are, as fork entries numbered then:
-//    - 10: the fork's own 7, 8 and 9 (renumbered by #618): the stored testing settings catalog
-//      (`testing_settings`), pending Command document proposals (`command_document_proposals`,
-//      machine state with no settings backup domain), and the refused worktree return columns
-//      (`first_refused_at`, `last_refusal`) on `task_worktree_returns` and
-//      `workflow_check_leases`, each empty or NULL on an upgraded database.
-//    - 11: the slot history table (`worktree_slot_history`), empty on an upgraded database.
-//    - 12: Session History's catalog (`history_sessions`), empty on an upgraded database and
-//      filled in the background after the daemon is serving.
-//    - 13: History's search text (`history_search_segments`); when the table is new, existing
-//      `history_sessions` rows are queued for a re-read so their prompts are indexed.
-//    - 14: History Resume's launch records (`history_resume_launches`), empty on an upgraded
-//      database.
-//    None of these migrations, fork or upstream, is gated by this number: each is
-//    `CREATE ... IF NOT EXISTS` or `addColumn` in `migrate()`, so a fork database stamped 14
-//    still gains upstream's 10 to 18. When the next upstream sync brings its own 19, renumber
-//    this entry above upstream's highest, as #618 and this sync did.
-// 20: fork - a moved base branch's record (`tasks.base_branch_moved_from` and
-//     `tasks.base_branch_moved_sha`), NULL with no backfill: no task moved before they existed.
-// 21: fork - a task's Grill me first pin (`tasks.grill_first`), 0 with no backfill: every task
-//     filed before it started without grilling; and the Grill action's operator text
-//     (`builtin_session_action_overrides`), empty on an upgraded database.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 21;
+// 19: durable driver usage checkpoints, result receipts, and legacy replay flags.
+// 20: Stacked pull requests: a task's stack pin (`tasks.stack_parent_task_id`,
+//     `stack_base_branch`, `stack_base_sha`, `stack_pr_url`) and a pull request's base,
+//     review base and stack lineage on `inspector_prs`. All nullable with no backfill: NULL is
+//     unstacked, and a row with no recorded base counts only on the default branch.
+// 21: Stacked pull requests lifecycle: a child's last stack observation
+//     (`inspector_prs.stack_state`), the operator's *Wait for a replacement* choice
+//     (`stack_await_replacement_at`), and the catch-up / restack prompt claims
+//     (`stack_prompt_claims`). Nullable, no backfill: a Phase 1 row reads as unobserved.
+// 22: a task's dispatch Persona (`tasks.persona_id`), nullable with no backfill: NULL is a
+//     task that launches with no Persona, which is what every older task did.
+// 23: enable the Mockups skill once, preserving the master switch and later opt-outs.
+// 24: attention-inbox dismissals (`attention_dismissals`), a new empty table: nothing was
+//     dismissed before the inbox could dismiss.
+// 25: durable session blockers (`session_blockers`), keyed by note key. Additive: an
+//     upgraded database gains an empty table and no session reads as blocked.
+// 26: a swept item's parent (`tasks.source_parent`), nullable with no backfill: NULL is an item
+//     with no recorded parent, which is what every older task has.
+// 27: whether each GitHub Inspector finding was posted (`inspector_comments.posted_at`,
+//     `github_url`, `legacy_posted`), draft refusals (`post_refusals`, `last_post_error`),
+//     and the adopting session's note key (`inspector_prs.note_key`, nullable, no backfill).
+//     `legacy_posted` is backfilled once, so this one rewrites rows.
+// 28: fork - the fork's own 19, 20 and 21, shipped before upstream's 19 to 27 arrived, combined
+//     above upstream's 27 so a fork database stamped anywhere from 19 to 27 takes its recovery
+//     point before the combined upgrade. They are, as fork entries numbered then:
+//     - 19: the fork's own 10 to 14 (renumbered by the sync that brought upstream's 10 to 18):
+//       the stored testing settings catalog (`testing_settings`), pending Command document
+//       proposals (`command_document_proposals`, machine state with no settings backup domain),
+//       the refused worktree return columns (`first_refused_at`, `last_refusal`) on
+//       `task_worktree_returns` and `workflow_check_leases`, the slot history table
+//       (`worktree_slot_history`), Session History's catalog (`history_sessions`), History's
+//       search text (`history_search_segments`; when the table is new, existing
+//       `history_sessions` rows are queued for a re-read so their prompts are indexed) and
+//       History Resume's launch records (`history_resume_launches`), each empty or NULL on an
+//       upgraded database.
+//     - 20: a moved base branch's record (`tasks.base_branch_moved_from` and
+//       `tasks.base_branch_moved_sha`), NULL with no backfill: no task moved before they existed.
+//     - 21: a task's Grill me first pin (`tasks.grill_first`), 0 with no backfill: every task
+//       filed before it started without grilling; and the Grill action's operator text
+//       (`builtin_session_action_overrides`), empty on an upgraded database.
+//     None of these migrations, fork or upstream, is gated by this number: each is
+//     `CREATE ... IF NOT EXISTS` or `addColumn` in `migrate()`, so a fork database stamped 21
+//     still gains upstream's 19 to 27. Upstream's 26 (`tasks.source_parent`) and 27 (the
+//     Inspector finding posting columns) are the upstream ports of fork columns a fork database
+//     already has under the same names, so `addColumn` finds them present and only the
+//     `legacy_posted` backfill's own guard decides whether it runs. When the next upstream sync
+//     brings its own 28, renumber this entry above upstream's highest, as this sync did.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 28;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -368,6 +400,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   }
   migrateTelemetry(d);
   migrate(d);
+  migrateMockupsSkill(d);
   markDatabaseSchemaCurrent(d);
 }
 
@@ -440,6 +473,8 @@ function createSchemaObjects(d: DatabaseSync): void {
       effort        TEXT,
       -- Advisor override (opus | sonnet | off). NULL inherits the operator's Claude settings.
       advisor_model TEXT,
+      -- Library Persona whose guidance the launch carries as standing instructions. NULL is none.
+      persona_id    TEXT,
       -- Published Workflow identity armed for this task's completion. The immutable
       -- version is selected only when the launched session can be bound.
       workflow_id   TEXT,
@@ -478,6 +513,12 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- that iterates task_repos alone therefore cannot see the primary and must read this.
       -- Nullable: every task dispatched before this column existed genuinely has no baseline.
       base_sha      TEXT,
+      -- Stacked pull requests: what the CURRENT episode's primary repository was cut on.
+      -- Written at every dispatch (NULL for an unstacked one). See Task.stackParentTaskId.
+      stack_parent_task_id TEXT,
+      stack_base_branch    TEXT,
+      stack_base_sha       TEXT,
+      stack_pr_url         TEXT,
       home_name     TEXT,               -- name of the terminal home, any backend (was tmux_session)
       home_backend  TEXT,               -- exact creator, NULL for automatic or legacy launches
       terminal_resource_id TEXT,
@@ -2010,6 +2051,16 @@ function createSchemaObjects(d: DatabaseSync): void {
     -- column, so an existing database would fail to open on a CREATE naming it. See the
     -- addColumn beside it.
 
+    -- Conversation checkpoints survive driver replacement and ledger retention. The ledger
+    -- rows and checkpoint advance in one transaction, never in the adapter's event pump.
+    CREATE TABLE IF NOT EXISTS driver_usage_snapshots (
+      note_key TEXT PRIMARY KEY,
+      snapshot_json TEXT NOT NULL,
+      baseline_gap_turn_id TEXT,
+      unpriced_baseline_models_json TEXT NOT NULL DEFAULT '[]',
+      updated_at INTEGER NOT NULL
+    );
+
     -- Durable byte cursors for harness-owned append-only usage sources. The event rows
     -- and cursor move in one transaction, so a crash can replay but cannot skip usage.
     CREATE TABLE IF NOT EXISTS usage_sources (
@@ -2217,6 +2268,23 @@ function createSchemaObjects(d: DatabaseSync): void {
       head_ref_name      TEXT,           -- the branch the PR is opened FROM
       title              TEXT,           -- as of the last poll; NULL until one happens
       observed_ci_json   TEXT,           -- the head commit's check runs, keyed to that commit
+      base_ref_name      TEXT,           -- the branch the PR targets, as of the last poll
+      reviewed_base_ref  TEXT,           -- the base head_sha's review was made against
+      reviewed_base_sha  TEXT,           -- that base's tip, for the merge-base check
+      merge_commit_sha   TEXT,           -- GitHub's merge commit once it merged
+      -- Stack lineage (Stacked pull requests). Written once at adoption for a stacked
+      -- task's primary repository; stack_parent_pr_url NULL = no lineage. See StackLineage.
+      stack_task_id      TEXT,
+      stack_episode      TEXT,
+      stack_adopted_at   INTEGER,
+      stack_parent_pr_url TEXT,
+      stack_base_sha     TEXT,
+      stack_released_head_sha TEXT,
+      stack_released_basis TEXT,         -- merged | closed: the parent state the release was granted under
+      stack_lineage_history TEXT,
+      stack_note         TEXT,
+      stack_state        TEXT,           -- JSON StackObservation: the last lifecycle observation
+      stack_await_replacement_at INTEGER, -- the operator chose Wait for a replacement
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -3469,6 +3537,27 @@ function createSchemaObjects(d: DatabaseSync): void {
   createTelemetryTables(d);
 }
 
+/** One rollout, not a default applied again whenever the app is upgraded. */
+function migrateMockupsSkill(d: DatabaseSync): void {
+  // Keep this boundary fixed when CURRENT_DATABASE_SCHEMA_VERSION advances.
+  if (databaseSchemaVersion(d) >= 23) return;
+  const entry = APP_CONFIG_ENTRIES.skills;
+  const row = d.prepare("SELECT value FROM app_config WHERE key = ?").get(entry.key) as
+    | { value: string }
+    | undefined;
+  // Missing settings already default on. Corrupt settings must still fail closed.
+  if (!row) return;
+  try {
+    if (!entry.schema.safeParse(JSON.parse(row.value)).success) return;
+  } catch {
+    return;
+  }
+  // Preserve all other values, including sparse-map policy and reload generation.
+  // Startup reconciliation owns symlinks and advances the generation if they change.
+  d.prepare("UPDATE app_config SET value = json_set(value, '$.skills.mockups', json('true')) WHERE key = ?")
+    .run(entry.key);
+}
+
 /** Close the daemon's singleton connection before releasing state-directory ownership. */
 export function closeDb(): void {
   if (!db) return;
@@ -4108,6 +4197,40 @@ function migrate(d: DatabaseSync): void {
       WHERE writer = '' AND cost_basis IN ('api-equivalent', 'unpriced');
     UPDATE usage_ledger SET writer = 'otel' WHERE writer = '';
   `);
+  // One-time uncertainty flag, not a guessed repair: pre-checkpoint Claude driver rows
+  // may include resumed conversation history. Prices remain the provider's reported prices.
+  if (addColumn(d, "usage_ledger", "accounting_issue", "TEXT NOT NULL DEFAULT ''")) {
+    d.exec(`UPDATE usage_ledger SET accounting_issue = 'possible_resume_replay'
+      WHERE agent = 'claude' AND writer = 'driver' AND spend_kind = 'session'`);
+  }
+  // Receipts have no retention deadline: a conversation may resume after its economic
+  // rows have aged out. Create and seed atomically so an interrupted upgrade cannot leave
+  // an empty receipt table that appears migrated on the next startup.
+  if (!d.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'driver_usage_receipts'").get()) {
+    d.exec("BEGIN IMMEDIATE;");
+    try {
+      d.exec(`
+        CREATE TABLE IF NOT EXISTS driver_usage_receipts (
+          note_key TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          PRIMARY KEY(note_key, turn_id)
+        ) WITHOUT ROWID;
+        INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+          SELECT note_key, window_end_ns FROM usage_ledger
+          WHERE writer = 'driver' AND spend_kind = 'session';
+        INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+          SELECT note_key, json_extract(snapshot_json, '$.turnId') FROM driver_usage_snapshots
+          WHERE json_extract(snapshot_json, '$.turnId') IS NOT NULL;
+        INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+          SELECT note_key, baseline_gap_turn_id FROM driver_usage_snapshots
+          WHERE baseline_gap_turn_id IS NOT NULL;
+      `);
+      d.exec("COMMIT;");
+    } catch (err) {
+      try { d.exec("ROLLBACK;"); } catch {}
+      throw err;
+    }
+  }
   addColumn(d, "usage_sources", "discard_partial", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "usage_sources", "file_id", "TEXT NOT NULL DEFAULT ''");
 
@@ -4287,6 +4410,39 @@ function migrate(d: DatabaseSync): void {
   // `advisor_model`: the per-task advisor override. NULL inherits the operator's own
   // Claude settings, which is exactly what every task dispatched before it existed did.
   addColumn(d, "tasks", "advisor_model", "TEXT");
+  // `persona_id`: the Library Persona a task launches with. NULL launches with none, which is
+  // exactly what every task filed before a dispatch could name a Persona did.
+  addColumn(d, "tasks", "persona_id", "TEXT");
+  // Schema 25: what a session is waiting on outside the operator. Keyed like
+  // session_standing_instructions (noteKeyFor = agentSessionId ?? synthetic id), so a resumed
+  // conversation comes back blocked; `task_id` is recorded for reference and for the
+  // terminal-task clear. `reply` is a JSON object or NULL. Created here, beside its upgrade
+  // path, so a database from before schema 25 gains the table on its next open.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS session_blockers (
+      note_key      TEXT PRIMARY KEY,
+      task_id       TEXT,
+      kind          TEXT NOT NULL,
+      reason        TEXT NOT NULL,
+      waiting_on    TEXT NOT NULL,
+      resume_when   TEXT NOT NULL,
+      details       TEXT,
+      reference_url TEXT,
+      started_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      checked_at    INTEGER,
+      reply         TEXT,
+      last_held_at  INTEGER,
+      blocker_id    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_blockers_task ON session_blockers(task_id);
+  `);
+  // When a live session was last seen holding the key, so pruning measures OBSERVED absence
+  // across restarts rather than restarting the clock from an empty process.
+  addColumn(d, "session_blockers", "last_held_at", "INTEGER");
+  // Each blocker's identity, kept across re-reports. A row written before it existed reads
+  // back with an id derived from its key and start (see `rowToSessionBlocker`).
+  addColumn(d, "session_blockers", "blocker_id", "TEXT");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -4337,6 +4493,13 @@ function migrate(d: DatabaseSync): void {
   // backfill, like the column above.
   addColumn(d, "tasks", "base_branch_moved_sha", "TEXT");
   addColumn(d, "tasks", "worktree_lease_id", "TEXT");
+  // Stacked pull requests. Nullable with no default: an existing row was never stacked, and
+  // NULL is exactly that reading. Every dispatch writes all four, so a rescheduled task's next
+  // episode records its own parent or none.
+  addColumn(d, "tasks", "stack_parent_task_id", "TEXT");
+  addColumn(d, "tasks", "stack_base_branch", "TEXT");
+  addColumn(d, "tasks", "stack_base_sha", "TEXT");
+  addColumn(d, "tasks", "stack_pr_url", "TEXT");
   // A dispatch that failed before its session started. NULL on an upgraded row is the honest
   // reading: nothing recorded whether its failure, if any, was a launch failure, and drawing
   // every historical failed task as a fresh "did not start" would bury the board.
@@ -4440,6 +4603,43 @@ function migrate(d: DatabaseSync): void {
   // never a second poller.
   addColumn(d, "inspector_prs", "observed_ci_json", "TEXT");
   addColumn(d, "inspector_prs", "code_rabbit_state", "TEXT");
+  // Stacked pull requests. All nullable with no default. A row written before these existed
+  // has no recorded base (its review counts only while the base is the default branch), no
+  // merge commit, and no stack lineage - so neither stacking gate ever evaluates it.
+  addColumn(d, "inspector_prs", "base_ref_name", "TEXT");
+  addColumn(d, "inspector_prs", "reviewed_base_ref", "TEXT");
+  addColumn(d, "inspector_prs", "reviewed_base_sha", "TEXT");
+  addColumn(d, "inspector_prs", "merge_commit_sha", "TEXT");
+  addColumn(d, "inspector_prs", "stack_task_id", "TEXT");
+  addColumn(d, "inspector_prs", "stack_episode", "TEXT");
+  addColumn(d, "inspector_prs", "stack_adopted_at", "INTEGER");
+  addColumn(d, "inspector_prs", "stack_parent_pr_url", "TEXT");
+  addColumn(d, "inspector_prs", "stack_base_sha", "TEXT");
+  addColumn(d, "inspector_prs", "stack_released_head_sha", "TEXT");
+  addColumn(d, "inspector_prs", "stack_released_basis", "TEXT");
+  addColumn(d, "inspector_prs", "stack_lineage_history", "TEXT");
+  addColumn(d, "inspector_prs", "stack_note", "TEXT");
+  // Stacked pull requests lifecycle (schema 21). Nullable with no default: a row stacked
+  // before this has no observation yet and reads as `current` until the first tick, and no
+  // operator has chosen to wait for a replacement parent.
+  addColumn(d, "inspector_prs", "stack_state", "TEXT");
+  addColumn(d, "inspector_prs", "stack_await_replacement_at", "INTEGER");
+  // One row per (pull request, prompt kind, condition tip): the claim taken BEFORE a catch-up
+  // or restack prompt is typed, exactly as CodeRabbit's receipts are. `outcome` is
+  // `uncertain` from the claim until delivery is confirmed (`delivered`); a confirmed
+  // non-delivery deletes the row. Never re-armed by a restart, a push or a setting toggle:
+  // only a new tip is a new key. A new table, so it is created here beside its upgrade path.
+  d.exec(`CREATE TABLE IF NOT EXISTS stack_prompt_claims (
+    pr_key     TEXT NOT NULL,
+    kind       TEXT NOT NULL,      -- catch-up | restack | a recovery action kind
+    tip        TEXT NOT NULL,      -- parent head (catch-up), parent merge commit (restack), or the stack state an action was offered in
+    claim_id   TEXT NOT NULL,
+    outcome    TEXT NOT NULL,      -- uncertain | delivered
+    session_id TEXT,
+    claimed_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (pr_key, kind, tip)
+  )`);
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -4459,7 +4659,7 @@ function migrate(d: DatabaseSync): void {
   // so the other two live here. Written ONCE, by this backfill: the upsert never names the
   // column, so `ON CONFLICT DO UPDATE` leaves it alone, and every row this build creates
   // keeps it NULL.
-  if (addColumn(d, "inspector_comments", "legacy_posted", "TEXT")) backfillInspectorLegacyPosted(d);
+  migrateInspectorLegacyPosted(d);
   // Validation refusals GitHub pinned on a drafted finding the planner offered after a switch
   // to live, and GitHub's reason for the newest one. Zero and NULL are the truthful values for
   // every existing row: no build before this one offered a draft again, so none was refused.
@@ -4467,6 +4667,11 @@ function migrate(d: DatabaseSync): void {
   // No index: nothing selects on either column.
   addColumn(d, "inspector_comments", "post_refusals", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "inspector_comments", "last_post_error", "TEXT");
+  // The adopting session's agent id (its note key), written once at adoption like
+  // `session_id`. The session id re-mints on every restart and the agent id does not, so
+  // Foreman also matches adopted pull requests on this. NULL when the agent id was not yet
+  // bound, or for a row adopted before the column; either still matches on `session_id`.
+  addColumn(d, "inspector_prs", "note_key", "TEXT");
 
   // Whether a parked repair round resumes itself. NULLABLE with NO default on purpose: a
   // NULL is the truthful record of a draft authored, or a version PUBLISHED, by a build
@@ -4613,6 +4818,8 @@ function migrate(d: DatabaseSync): void {
   // job has always covered the whole episode, so null reads as "the episode" rather than as a
   // value that went missing.
   addColumn(d, "archive_capture_jobs", "scope_json", "TEXT");
+  // Null preserves legacy directory capture; [] is an explicit (invalid) selection, never discovery.
+  addColumn(d, "archive_capture_jobs", "files_json", "TEXT");
 
   // Prompt context is additive in both places. The capture row is immutable recovery
   // coordination; the archive row is a disposable projection rebuilt from manifests.
@@ -4625,6 +4832,24 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "archives", "source_session_json", "TEXT");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archives_session ON archives(producer_id, source_session_id, sort_at DESC, key DESC)");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_session ON archive_capture_jobs(session_id)");
+
+  // Attention-inbox items the operator dismissed without resolving them (schema 24). One row per
+  // dismissal key (`attentionDismissalKeys`): an inbox row's item id, or for a row of questions
+  // each question's own `review:<id>`. `occurrence` is the fold's fingerprint of what it said
+  // when it was dismissed, so it comes back only when it says something new. Rows never expire and are
+  // never pruned (`src/server/attention-dismissals.ts`). `revision` is assigned afresh on every
+  // write, which rewrites the row, and AUTOINCREMENT never reuses a number - not even the one
+  // that rewrite just deleted - so a write that names an older revision than the one stored was
+  // made without seeing the newer dismissal and is refused rather than allowed to overwrite it.
+  // A new table, so it is created here beside its upgrade path.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS attention_dismissals (
+      revision     INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id      TEXT NOT NULL UNIQUE,
+      occurrence   TEXT NOT NULL,
+      dismissed_at INTEGER NOT NULL
+    );
+  `);
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);
@@ -5028,6 +5253,23 @@ function hasColumn(d: DatabaseSync, table: string, column: string): boolean {
  * hang a one-time data backfill off "the column is new" rather than re-running it on every
  * open - see the `home_name` migration.
  */
+/**
+ * Add `legacy_posted` and run its backfill in one transaction. `addColumn` answers "added" only
+ * once, so a column committed without its backfill would leave every legacy row NULL for good.
+ */
+function migrateInspectorLegacyPosted(d: DatabaseSync): void {
+  try {
+    d.exec("BEGIN IMMEDIATE;");
+    if (addColumn(d, "inspector_comments", "legacy_posted", "TEXT")) backfillInspectorLegacyPosted(d);
+    d.exec("COMMIT;");
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw err;
+  }
+}
+
 /**
  * Classify every finding that predates `posted_at` by what its row proves.
  *
@@ -5945,6 +6187,7 @@ interface TaskRow {
   model: string | null;
   effort: string | null;
   advisor_model: string | null;
+  persona_id: string | null;
   workflow_id: string | null;
   source_id: string | null;
   external_id: string | null;
@@ -5963,6 +6206,10 @@ interface TaskRow {
   provider: string | null;
   worktree_lease_id: string | null;
   base_sha: string | null;
+  stack_parent_task_id?: string | null;
+  stack_base_branch?: string | null;
+  stack_base_sha?: string | null;
+  stack_pr_url?: string | null;
   home_name: string | null;
   home_backend: string | null;
   terminal_resource_id: string | null;
@@ -6208,6 +6455,31 @@ function parseLabels(raw: string | null): string[] {
   }
 }
 
+/**
+ * The stacked-pull-request fields of one stored edge. Every one is optional: an edge written
+ * before stacking existed has none, and reads as "inherit, unstamped" - the fields absent,
+ * the same shape as an edge created in memory. An unknown `mode` is dropped to "inherit"
+ * rather than failing the whole row.
+ */
+function parseStackEdgeFields(row: Record<string, unknown>): StackEdgeFields {
+  const out: StackEdgeFields = {};
+  if (row.mode === "merge" || row.mode === "stack") out.mode = row.mode;
+  // A stamp is all four facts or none: half a stamp could not have been written by the
+  // daemon, and reading it as stamped would release a dependent on a guess.
+  if (
+    typeof row.stackReadyAt === "number" &&
+    typeof row.stackBaseBranch === "string" && row.stackBaseBranch &&
+    typeof row.stackBaseSha === "string" && row.stackBaseSha &&
+    typeof row.stackPrUrl === "string" && row.stackPrUrl
+  ) {
+    out.stackReadyAt = row.stackReadyAt;
+    out.stackBaseBranch = row.stackBaseBranch;
+    out.stackBaseSha = row.stackBaseSha;
+    out.stackPrUrl = row.stackPrUrl;
+  }
+  return out;
+}
+
 /** Read dependency JSON defensively: one stale row must not take down the backlog. */
 function parseTaskDependencies(raw: string | null): Task["dependencies"] {
   if (!raw) return [];
@@ -6221,6 +6493,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
       const row = value as Record<string, unknown>;
       const selectedAt = typeof row.selectedAt === "number" ? row.selectedAt : null;
       const satisfiedAt = typeof row.satisfiedAt === "number" ? row.satisfiedAt : null;
+      const stack = parseStackEdgeFields(row);
       if (row.type === "plan") {
         const identity = PlanIdentitySchema.parse({ repoKey: row.repoKey, planId: row.planId, revision: row.revision });
         out.push({ ...identity, type: "plan", title: typeof row.title === "string" ? row.title : "Plan publication",
@@ -6239,6 +6512,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
             prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
             selectedAt,
             satisfiedAt,
+            ...stack,
           });
         }
         seen.add(key);
@@ -6259,6 +6533,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
             prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
             selectedAt,
             satisfiedAt,
+            ...stack,
           });
         }
         seen.add(key);
@@ -6286,8 +6561,8 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
       } else if (row.type !== "task" && row.type !== "session" && row.type !== "source") {
         // A type this build does not know - a newer build wrote it. Kept, unsatisfied, and
         // written back verbatim: dropping it here would release work the newer build was
-        // holding back, the moment anybody ran this one. A malformed KNOWN type fails closed
-        // below, as upstream's parser does for every edge it cannot read.
+        // holding back, the moment anybody ran this one. A malformed KNOWN type still fails
+        // closed below: this build does know what that edge should look like.
         const key = JSON.stringify(row);
         if (!seen.has(`unknown:${key}`)) {
           const edgeType = typeof row.type === "string" ? row.type : "unknown";
@@ -6303,9 +6578,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
           });
         }
         seen.add(`unknown:${key}`);
-      } else {
-        throw new Error("Invalid dependency");
-      }
+      } else { throw new Error("Invalid dependency"); }
     }
     return out;
   } catch {
@@ -6411,6 +6684,7 @@ function rowToTask(
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
     advisorModel: parseAdvisor(r.agent as Task["agent"], r.advisor_model),
+    personaId: r.persona_id || null,
     workflowId: r.workflow_id,
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
@@ -6435,6 +6709,10 @@ function rowToTask(
     provider: r.provider as WorktreeProvider | null,
     worktreeLeaseId: r.worktree_lease_id,
     baseSha: r.base_sha,
+    stackParentTaskId: r.stack_parent_task_id ?? null,
+    stackBaseBranch: r.stack_base_branch ?? null,
+    stackBaseSha: r.stack_base_sha ?? null,
+    stackPrUrl: r.stack_pr_url ?? null,
     extraRepos,
     homeName: r.home_name,
     homeBackend: r.home_backend,
@@ -6505,23 +6783,24 @@ export function upsertTask(t: Task): string[] {
     d.prepare(
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, grill_first, enabled, backlog_rank,
-         model, effort, advisor_model,
+         model, effort, advisor_model, persona_id,
          workflow_id, source_id, external_id, source_url, source_parent, repo_root, base_branch,
          base_branch_moved_from, base_branch_moved_sha, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
-         base_sha,
+         base_sha, stack_parent_task_id, stack_base_branch, stack_base_sha, stack_pr_url,
          home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, claim_warnings, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
          grill_first=excluded.grill_first, enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
          model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
+         persona_id=excluded.persona_id,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url, source_parent=excluded.source_parent,
@@ -6538,6 +6817,9 @@ export function upsertTask(t: Task): string[] {
          worktree_path=excluded.worktree_path, branch=excluded.branch,
          provider=excluded.provider, worktree_lease_id=excluded.worktree_lease_id,
          base_sha=excluded.base_sha, home_name=excluded.home_name,
+         stack_parent_task_id=excluded.stack_parent_task_id,
+         stack_base_branch=excluded.stack_base_branch,
+         stack_base_sha=excluded.stack_base_sha, stack_pr_url=excluded.stack_pr_url,
          home_backend=excluded.home_backend,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          terminal_launch=excluded.terminal_launch,
@@ -6565,6 +6847,7 @@ export function upsertTask(t: Task): string[] {
       t.model,
       t.effort,
       t.advisorModel,
+      t.personaId,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.sourceParent ? JSON.stringify(t.sourceParent) : null,
@@ -6574,6 +6857,7 @@ export function upsertTask(t: Task): string[] {
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
       t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,
+      t.stackParentTaskId ?? null, t.stackBaseBranch ?? null, t.stackBaseSha ?? null, t.stackPrUrl ?? null,
       t.homeName, t.homeBackend ?? null, t.terminalResourceId,
       t.terminalLaunch ? JSON.stringify(t.terminalLaunch) : null, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
@@ -6622,6 +6906,20 @@ export function upsertTask(t: Task): string[] {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
   }
+}
+
+/**
+ * The titles of whichever of `ids` name a task, in any status. Ids that name nothing are
+ * absent from the result. Reads two columns rather than building whole `Task`s, because the
+ * only caller wants a name to print in place of an id.
+ */
+export function getTaskTitles(ids: readonly string[]): Map<string, string> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map();
+  const rows = openDb()
+    .prepare(`SELECT id, title FROM tasks WHERE id IN (${unique.map(() => "?").join(", ")})`)
+    .all(...unique) as unknown as { id: string; title: string }[];
+  return new Map(rows.map((row) => [row.id, row.title]));
 }
 
 export function getTask(id: string): Task | undefined {
@@ -11489,6 +11787,37 @@ export function upsertSessionGoalWithSteering(g: SessionGoal, note: WorkflowStee
   }
 }
 
+/**
+ * Commit a goal and several steering records together: a person accepting the objective as
+ * is resolves every pending revision at once. Same transaction and conflict rule as the
+ * single-note writer, which stays the refiner's path; this one never replaces it.
+ */
+export function upsertSessionGoalWithSteeringNotes(g: SessionGoal, notes: WorkflowSteeringNote[]): void {
+  const parsed = notes.map((note) => WorkflowSteeringNoteSchema.parse(note));
+  if (
+    g.relationship !== "steer" ||
+    parsed.length === 0 ||
+    parsed.some((note) => note.revision > g.resolvedPromptRevision)
+  ) {
+    throw new Error("Steering must belong to the resolved goal revision");
+  }
+  const db = openDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    upsertSessionGoal(g);
+    const insert = db.prepare(`INSERT INTO session_goal_steering
+      (note_key, revision, instruction, relationship, rationale, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(note_key, revision) DO NOTHING`);
+    for (const note of parsed) {
+      insert.run(g.noteKey, note.revision, note.instruction, note.relationship, note.rationale, note.timestamp);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 /** Select newest revisions first, then return the retained suffix in conversation order. */
 export function readSessionGoalSteering(noteKey: string, resolvedRevision: number): WorkflowSteeringNote[] {
   const rows = openDb().prepare(`SELECT revision, instruction, relationship, rationale, timestamp
@@ -12153,6 +12482,140 @@ export function pruneStandingInstructions(liveKeys: Iterable<string>, olderThan:
   return Number(r.changes);
 }
 
+// ---- session blockers ----
+
+/** A stored blocker and the two columns the wire record does not carry. */
+export interface SessionBlockerRecord {
+  noteKey: string;
+  taskId: string | null;
+  blocker: SessionBlocker;
+  /** When a live session was last seen holding this key; null until first observed. */
+  lastHeldAt: number | null;
+}
+
+interface SessionBlockerRow {
+  note_key: string;
+  task_id: string | null;
+  kind: string;
+  reason: string;
+  waiting_on: string;
+  resume_when: string;
+  details: string | null;
+  reference_url: string | null;
+  started_at: number;
+  updated_at: number;
+  checked_at: number | null;
+  reply: string | null;
+  last_held_at: number | null;
+  blocker_id: string | null;
+}
+
+const SESSION_BLOCKER_COLUMNS = `note_key, task_id, kind, reason, waiting_on, resume_when, details,
+  reference_url, started_at, updated_at, checked_at, reply, last_held_at, blocker_id`;
+
+function parseBlockerReply(raw: string | null): SessionBlockerReply | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<SessionBlockerReply> | null;
+    if (!v || typeof v.flaggedAt !== "number" || typeof v.flaggedBy !== "string") return null;
+    return {
+      flaggedAt: v.flaggedAt,
+      flaggedBy: v.flaggedBy,
+      note: typeof v.note === "string" ? v.note : null,
+      referenceUrl: typeof v.referenceUrl === "string" ? v.referenceUrl : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function rowToSessionBlocker(r: SessionBlockerRow): SessionBlockerRecord {
+  // An unknown kind (a newer build appended one) reads as `other` rather than dropping the
+  // blocker: the hold is the part that must survive a downgrade, not the label.
+  const kind = (SESSION_BLOCKER_KINDS as readonly string[]).includes(r.kind)
+    ? (r.kind as SessionBlockerKind)
+    : "other";
+  return {
+    noteKey: r.note_key,
+    taskId: r.task_id,
+    blocker: {
+      id: r.blocker_id ?? `legacy:${r.note_key}:${r.started_at}`,
+      kind,
+      reason: r.reason,
+      waitingOn: r.waiting_on,
+      resumeWhen: r.resume_when,
+      details: r.details,
+      referenceUrl: r.reference_url,
+      startedAt: r.started_at,
+      updatedAt: r.updated_at,
+      checkedAt: r.checked_at,
+      reply: parseBlockerReply(r.reply),
+    },
+    lastHeldAt: r.last_held_at,
+  };
+}
+
+/** Every stored blocker, reloaded into the registry on start. */
+export function loadSessionBlockers(): SessionBlockerRecord[] {
+  const rows = openDb()
+    .prepare(`SELECT ${SESSION_BLOCKER_COLUMNS} FROM session_blockers ORDER BY started_at`)
+    .all() as unknown as SessionBlockerRow[];
+  return rows.map(rowToSessionBlocker);
+}
+
+/** Write a blocker whole: a first report, a re-report, a reply flag. */
+export function upsertSessionBlocker(record: SessionBlockerRecord): void {
+  const b = record.blocker;
+  openDb()
+    .prepare(
+      `INSERT INTO session_blockers (${SESSION_BLOCKER_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         task_id=excluded.task_id, kind=excluded.kind, reason=excluded.reason,
+         waiting_on=excluded.waiting_on, resume_when=excluded.resume_when,
+         details=excluded.details, reference_url=excluded.reference_url,
+         started_at=excluded.started_at, updated_at=excluded.updated_at,
+         checked_at=excluded.checked_at, reply=excluded.reply, last_held_at=excluded.last_held_at,
+         blocker_id=excluded.blocker_id`,
+    )
+    .run(
+      record.noteKey, record.taskId, b.kind, b.reason, b.waitingOn, b.resumeWhen, b.details,
+      b.referenceUrl, b.startedAt, b.updatedAt, b.checkedAt,
+      b.reply ? JSON.stringify(b.reply) : null, record.lastHeldAt, b.id,
+    );
+}
+
+/** Record that a live session holds each of these keys right now. */
+export function touchSessionBlockersHeld(noteKeys: readonly string[], now: number): void {
+  if (!noteKeys.length) return;
+  openDb()
+    .prepare(`UPDATE session_blockers SET last_held_at = ? WHERE note_key IN (${noteKeys.map(() => "?").join(",")})`)
+    .run(now, ...noteKeys);
+}
+
+export function deleteSessionBlocker(noteKey: string): void {
+  openDb().prepare(`DELETE FROM session_blockers WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Carry a blocker across a note-key rotation - every rotation, as standing instructions move:
+ * a `/clear` inside the same task does not resolve what the task is waiting on.
+ */
+export function moveSessionBlocker(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(`DELETE FROM session_blockers WHERE note_key = ? AND EXISTS
+      (SELECT 1 FROM session_blockers WHERE note_key = ?)`).run(toKey, fromKey);
+    d.prepare(`UPDATE session_blockers SET note_key = ? WHERE note_key = ?`).run(toKey, fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
 // ---- usage ledger (API-equivalent estimates and token usage) ----
 
 /**
@@ -12484,6 +12947,7 @@ export function recordDriverSessionUsage(input: {
   agent: string;
   turnId: string;
   ts: number;
+  snapshot?: { usage: SdkUsage; resumed: boolean };
   models: readonly {
     modelId: string;
     input: number;
@@ -12493,8 +12957,8 @@ export function recordDriverSessionUsage(input: {
     cacheWrite: number;
     reportedCostUsd: number | null;
   }[];
-}): void {
-  if (input.models.length === 0) return;
+}): readonly import("@shared/llm-spend.ts").LlmSpendModelUsage[] {
+  if (input.models.length === 0) return [];
   const d = openDb();
   const insert = d.prepare(
     `INSERT INTO usage_ledger
@@ -12506,7 +12970,47 @@ export function recordDriverSessionUsage(input: {
   );
   try {
     d.exec("BEGIN IMMEDIATE;");
-    for (const m of input.models) {
+    // Claim the result before interpreting lower counters as a reset. Unlike economic
+    // rows, receipts survive retention, including baseline-only results with no ledger row.
+    // This claim rolls back with the snapshot/ledger write if any part fails.
+    const receipt = d.prepare(`INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+      VALUES (?, ?)`).run(input.noteKey, input.turnId);
+    if (receipt.changes === 0) {
+      d.exec("COMMIT;");
+      return [];
+    }
+    const previousRow = d.prepare("SELECT snapshot_json, baseline_gap_turn_id, unpriced_baseline_models_json FROM driver_usage_snapshots WHERE note_key = ?")
+      .get(input.noteKey) as { snapshot_json: string; baseline_gap_turn_id: string | null; unpriced_baseline_models_json: string } | undefined;
+    const previous = previousRow ? JSON.parse(previousRow.snapshot_json) as SdkUsage : null;
+    // A legacy/imported resume has no trustworthy starting point. Its ledger may
+    // already be inflated, so summing those rows would merely hide the next few turns.
+    // Establish a baseline once, retaining an explicit gap rather than booking history.
+    const baselineOnly = !!input.snapshot?.resumed && previous === null;
+    let models = baselineOnly ? [] : input.snapshot
+      ? cumulativeUsageDelta(input.snapshot.usage, previous).models ?? []
+      : input.models;
+    let unpricedBaselineModels: string[] = baselineOnly
+      ? (input.snapshot?.usage.models ?? []).filter(m => m.reportedCostUsd === null).map(m => m.modelId)
+      : previousRow ? JSON.parse(previousRow.unpriced_baseline_models_json) : [];
+    if (input.snapshot && previous && unpricedBaselineModels.length) {
+      const current = input.snapshot.usage;
+      const priorModels = new Map(previous.models?.map(m => [m.modelId, m]));
+      // A proven reset retires the legacy cost uncertainty even if this result is still
+      // unpriced. Use the same reset predicates as the cumulative delta/baseline logic.
+      unpricedBaselineModels = cumulativeUsageReset(current, previous) ? []
+        : unpricedBaselineModels.filter(id => {
+          const prior = priorModels.get(id);
+          const model = current.models?.find(m => m.modelId === id);
+          return !prior || !model || !cumulativeModelUsageReset(model, prior);
+        });
+    }
+    if (unpricedBaselineModels.length) {
+      // If the initial legacy snapshot had no price, the first later price is also
+      // a baseline, not new spend. Preserve token deltas while marking price unknown.
+      models = models.map(m => unpricedBaselineModels.includes(m.modelId)
+        ? { ...m, reportedCostUsd: null } : m);
+    }
+    for (const m of models) {
       insert.run(
         input.noteKey,
         input.sessionId,
@@ -12524,7 +13028,23 @@ export function recordDriverSessionUsage(input: {
         m.cacheWrite,
       );
     }
+    if (input.snapshot) {
+      const baseline = cumulativeUsageBaseline(input.snapshot.usage, previous);
+      d.prepare(`INSERT INTO driver_usage_snapshots
+        (note_key, snapshot_json, baseline_gap_turn_id, unpriced_baseline_models_json, updated_at)
+        VALUES (?, ?, ?, ?, ?) ON CONFLICT(note_key) DO UPDATE SET
+        snapshot_json = excluded.snapshot_json,
+        unpriced_baseline_models_json = excluded.unpriced_baseline_models_json,
+        updated_at = excluded.updated_at`)
+        .run(input.noteKey, JSON.stringify(baseline), baselineOnly ? input.turnId : null,
+          JSON.stringify(unpricedBaselineModels.filter(id =>
+            !baseline.models?.some(m => m.modelId === id && m.reportedCostUsd !== null))), input.ts);
+    }
     d.exec("COMMIT;");
+    if (baselineOnly) {
+      console.warn(`[usage] ${input.noteKey}: resumed without a usage checkpoint; result ${input.turnId} establishes the baseline only (transition usage unknown)`);
+    }
+    return models;
   } catch (err) {
     try { d.exec("ROLLBACK;"); } catch {}
     throw err;
@@ -14650,6 +15170,7 @@ interface InspectorPrRow {
   repo_root: string | null;
   cwd: string | null;
   session_id: string | null;
+  note_key?: string | null;
   source: string;
   state: string;
   head_sha: string | null;
@@ -14670,8 +15191,57 @@ interface InspectorPrRow {
   observed_at: number | null;
   head_ref_name: string | null;
   title: string | null;
+  base_ref_name?: string | null;
+  reviewed_base_ref?: string | null;
+  reviewed_base_sha?: string | null;
+  merge_commit_sha?: string | null;
+  stack_task_id?: string | null;
+  stack_episode?: string | null;
+  stack_adopted_at?: number | null;
+  stack_parent_pr_url?: string | null;
+  stack_base_sha?: string | null;
+  stack_released_head_sha?: string | null;
+  stack_released_basis?: string | null;
+  stack_lineage_history?: string | null;
+  stack_note?: string | null;
+  stack_state?: string | null;
+  stack_await_replacement_at?: number | null;
   adopted_at: number;
   updated_at: number;
+}
+
+/** A lineage history blob read defensively: a malformed one reads as empty, never throws. */
+function parseLineageHistory(raw: string | null | undefined): StackLineage["history"] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      const row = entry as Record<string, unknown> | null;
+      return row && typeof row.from === "string" && typeof row.to === "string" && typeof row.at === "number"
+        ? [{ from: row.from, to: row.to, at: row.at }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function rowToStackLineage(r: InspectorPrRow): StackLineage | null {
+  if (!r.stack_parent_pr_url || !r.stack_task_id) return null;
+  return {
+    taskId: r.stack_task_id,
+    episode: r.stack_episode ?? null,
+    adoptedAt: r.stack_adopted_at ?? r.adopted_at,
+    parentPrUrl: r.stack_parent_pr_url,
+    baseSha: r.stack_base_sha ?? null,
+    releasedHeadSha: r.stack_released_head_sha ?? null,
+    releasedBasis: r.stack_released_basis === "merged" || r.stack_released_basis === "closed" ? r.stack_released_basis : null,
+    history: parseLineageHistory(r.stack_lineage_history),
+    note: r.stack_note ?? null,
+    observation: parseStackObservation(r.stack_state),
+    awaitReplacementAt: r.stack_await_replacement_at ?? null,
+  };
 }
 
 function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
@@ -14684,6 +15254,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     repoRoot: r.repo_root,
     cwd: r.cwd,
     sessionId: r.session_id,
+    noteKey: r.note_key ?? null,
     source: r.source === "hook" || r.source === "pipeline" ? r.source : "legacy",
     state: r.state as InspectorPrState,
     headSha: r.head_sha,
@@ -14704,6 +15275,11 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     observedAt: r.observed_at,
     headRefName: r.head_ref_name,
     title: r.title,
+    baseRefName: r.base_ref_name ?? null,
+    reviewedBaseRef: r.reviewed_base_ref ?? null,
+    reviewedBaseSha: r.reviewed_base_sha ?? null,
+    mergeCommitSha: r.merge_commit_sha ?? null,
+    stack: rowToStackLineage(r),
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
   };
@@ -14721,12 +15297,12 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
   const res = openDb()
     .prepare(
       `INSERT INTO inspector_prs
-         (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
+         (key, url, owner, repo, number, repo_root, cwd, session_id, note_key, source, state,
           head_sha, review_posture, review_complete, clean_review_head_sha, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
           next_attempt_at, last_attempt_sha, merged_at, merge_block,
           observed_head_sha, observed_state, observed_at, head_ref_name, title,
           adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -14738,6 +15314,7 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.repoRoot,
       pr.cwd,
       pr.sessionId,
+      pr.noteKey ?? null,
       pr.source,
       pr.state,
       pr.headSha,
@@ -14798,6 +15375,12 @@ export function updateInspectorPr(
     headRefName?: string | null;
     /** Re-recorded every tick, so a retitled pull request stops being stale. */
     title?: string | null;
+    baseRefName?: string | null;
+    /** Written beside `headSha` by a completed review. */
+    reviewedBaseRef?: string | null;
+    /** Written beside `reviewedBaseRef`; advanced when GitHub confirms the same merge base. */
+    reviewedBaseSha?: string | null;
+    mergeCommitSha?: string | null;
   },
   now: number,
 ): void {
@@ -14813,7 +15396,7 @@ export function updateInspectorPr(
               next_attempt_at = ?, last_attempt_sha = ?,
               merged_at = ?, merge_block = ?,
               observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
-              title = ?,
+              title = ?, base_ref_name = ?, reviewed_base_ref = ?, reviewed_base_sha = ?, merge_commit_sha = ?,
               updated_at = ?
         WHERE key = ?`,
     )
@@ -14837,6 +15420,10 @@ export function updateInspectorPr(
       next.observedAt,
       next.headRefName,
       next.title,
+      next.baseRefName ?? null,
+      next.reviewedBaseRef ?? null,
+      next.reviewedBaseSha ?? null,
+      next.mergeCommitSha ?? null,
       now,
       key,
     );
@@ -14885,6 +15472,269 @@ function ciProjection(json: string | null): InspectorCiProjection {
   const required = requiredChecksRollup(observation.checkRuns);
   const truncated = (observation.totalCount ?? 0) > observation.checkRuns.length;
   return { headSha: observation.headSha, required: truncated && required !== "failing" ? null : required };
+}
+
+/**
+ * Write a pull request row's stack lineage, once.
+ *
+ * Guarded in SQL on the lineage still being absent, so a repeated adoption signal, a restart
+ * or a second writer can never rewrite what the row is built on. The current parent changes
+ * only through the replacement-parent transition, which is not this function.
+ */
+export function recordInspectorPrLineage(key: string, lineage: Omit<StackLineage, "releasedHeadSha" | "releasedBasis" | "note">): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE inspector_prs
+          SET stack_task_id = ?, stack_episode = ?, stack_adopted_at = ?,
+              stack_parent_pr_url = ?, stack_base_sha = ?, stack_lineage_history = ?,
+              stack_released_head_sha = NULL, stack_released_basis = NULL
+        WHERE key = ? AND stack_parent_pr_url IS NULL`,
+    )
+    .run(
+      lineage.taskId,
+      lineage.episode,
+      lineage.adoptedAt,
+      lineage.parentPrUrl,
+      lineage.baseSha,
+      lineage.history.length > 0 ? JSON.stringify(lineage.history) : null,
+      key,
+    );
+  return Number(result.changes) > 0;
+}
+
+/**
+ * The lineage a later child pull request of the same task inherits: the most recently
+ * adopted earlier row for this task, repository and work episode. Highest `stack_adopted_at`
+ * wins, and the higher rowid breaks a tie. Never crosses an episode, so a rescheduled task's
+ * first pull request is seeded from its new dispatch instead.
+ */
+export function latestStackLineage(
+  taskId: string,
+  owner: string,
+  repo: string,
+  episode: string | null,
+  exceptKey: string,
+): StackLineage | null {
+  return latestStackedPr(taskId, owner, repo, episode, exceptKey)?.stack ?? null;
+}
+
+/** The row `latestStackLineage` reads, whole: its current base is what a review diffs against. */
+export function latestStackedPr(
+  taskId: string,
+  owner: string,
+  repo: string,
+  episode: string | null,
+  exceptKey = "",
+): InspectorPr | null {
+  const row = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE stack_task_id = ? AND lower(owner) = lower(?) AND lower(repo) = lower(?)
+          AND stack_episode IS ? AND stack_parent_pr_url IS NOT NULL AND key <> ?
+        ORDER BY stack_adopted_at DESC, rowid DESC
+        LIMIT 1`,
+    )
+    .get(taskId, owner, repo, episode, exceptKey) as InspectorPrRow | undefined;
+  return row ? rowToInspectorPr(row) : null;
+}
+
+/**
+ * Record that the stack release check passed for exactly this child head, and under which
+ * parent state (`basis`). Rewritten when either changes: a release first granted under a
+ * closed parent that later merged is re-recorded as merged once that ancestry is verified.
+ */
+export function releaseInspectorPrStack(key: string, headSha: string, basis: "merged" | "closed", now: number): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE inspector_prs SET stack_released_head_sha = ?, stack_released_basis = ?, updated_at = ?
+        WHERE key = ? AND stack_parent_pr_url IS NOT NULL
+          AND (stack_released_head_sha IS NULL OR stack_released_head_sha <> ?
+               OR stack_released_basis IS NULL OR stack_released_basis <> ?)`,
+    )
+    .run(headSha, basis, now, key, headSha, basis);
+  return Number(result.changes) > 0;
+}
+
+/**
+ * Withdraw a stack release that no longer holds (its parent was reopened, or can no longer be
+ * confirmed). The next release check has to pass again before the row may merge.
+ */
+export function revokeInspectorPrStack(key: string, now: number): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE inspector_prs SET stack_released_head_sha = NULL, stack_released_basis = NULL, updated_at = ?
+        WHERE key = ? AND stack_released_head_sha IS NOT NULL`,
+    )
+    .run(now, key);
+  return Number(result.changes) > 0;
+}
+
+/** Record the stack lifecycle's latest observation of a child row. */
+export function recordStackObservation(key: string, observation: StackObservation, now: number): void {
+  openDb()
+    .prepare(`UPDATE inspector_prs SET stack_state = ?, updated_at = ? WHERE key = ? AND stack_parent_pr_url IS NOT NULL`)
+    .run(JSON.stringify(observation), now, key);
+}
+
+/** The operator's *Wait for a replacement* choice for one child row; null withdraws it. */
+export function setStackAwaitReplacement(key: string, at: number | null, now: number): boolean {
+  const result = openDb()
+    .prepare(`UPDATE inspector_prs SET stack_await_replacement_at = ?, updated_at = ? WHERE key = ? AND stack_parent_pr_url IS NOT NULL`)
+    .run(at, now, key);
+  return Number(result.changes) > 0;
+}
+
+/**
+ * The replacement-parent transition: the ONLY writer that changes `stack_parent_pr_url`.
+ *
+ * Writes the open child's own row and nothing else, in one statement guarded on the parent it
+ * is replacing, so it is idempotent: run again with the same replacement it finds the parent
+ * already swapped and changes nothing. Appends `{from, to, at}` to the lineage history, makes
+ * the replacement the current parent and clears the release, which was verified against the
+ * old parent. `stack_base_sha` - the commit the child was cut at - is never touched. The
+ * operator's wait choice is spent by the swap.
+ */
+export function transitionStackParent(key: string, from: string, to: string, now: number, childHeadSha: string | null = null): boolean {
+  return stackAtomically(() => {
+    const row = openDb()
+      .prepare(
+        `SELECT stack_parent_pr_url, stack_lineage_history, state, stack_await_replacement_at, stack_released_head_sha
+           FROM inspector_prs WHERE key = ?`,
+      )
+      .get(key) as {
+        stack_parent_pr_url: string | null;
+        stack_lineage_history: string | null;
+        state: string;
+        stack_await_replacement_at: number | null;
+        stack_released_head_sha: string | null;
+      } | undefined;
+    if (!row || row.stack_parent_pr_url !== from || from === to) return false;
+    // Re-checked HERE, in the transaction that writes, not only where the caller decided: the
+    // replacement's read is awaited in between, and in that gap the operator can withdraw the
+    // choice, the child can close, or the release check can release this very head. Any of
+    // those makes the swap wrong.
+    if (row.state !== "open" || row.stack_await_replacement_at === null) return false;
+    if (childHeadSha && row.stack_released_head_sha === childHeadSha) return false;
+    const history = [...parseLineageHistory(row.stack_lineage_history), { from, to, at: now }];
+    const result = openDb()
+      .prepare(
+        `UPDATE inspector_prs
+            SET stack_parent_pr_url = ?, stack_lineage_history = ?,
+                stack_released_head_sha = NULL, stack_released_basis = NULL,
+                stack_await_replacement_at = NULL, updated_at = ?
+          WHERE key = ? AND stack_parent_pr_url = ? AND state = 'open' AND stack_await_replacement_at IS NOT NULL`,
+      )
+      .run(to, JSON.stringify(history), now, key, from);
+    return Number(result.changes) > 0;
+  });
+}
+
+/** `inTransaction`, or the caller's own transaction when one is already open. */
+function stackAtomically<T>(fn: () => T): T {
+  return openDb().isTransaction ? fn() : inTransaction(fn);
+}
+
+/**
+ * One page of the stacked children the ledger retired as closed (not merged): the rows whose
+ * recovery action still depends on a parent that can move. Ordered by key and resumed after
+ * `afterKey`, so a caller walking the pages reaches every row in turn. Ordering by recency
+ * would starve the oldest rows, since observing a row makes it recent again.
+ */
+export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL AND merged_at IS NULL
+          AND (observed_state IS NULL OR observed_state <> 'MERGED') AND key > ?
+        ORDER BY key ASC LIMIT ?`,
+    )
+    .all(afterKey, limit) as unknown as InspectorPrRow[];
+  return rows.map(rowToInspectorPr);
+}
+
+/** One catch-up or restack prompt claim. */
+export interface StackPromptClaim {
+  prKey: string;
+  /** A prompt (`catch-up`, `restack`) or a broken-stack recovery action typed as one. */
+  kind: "catch-up" | "restack" | "move-onto-main" | "reopen-against-main" | "reopen-on-parent";
+  tip: string;
+  claimId: string;
+  outcome: "uncertain" | "delivered";
+  sessionId: string | null;
+  claimedAt: number;
+}
+
+export function readStackPromptClaim(prKey: string, kind: StackPromptClaim["kind"], tip: string): StackPromptClaim | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM stack_prompt_claims WHERE pr_key = ? AND kind = ? AND tip = ?`)
+    .get(prKey, kind, tip) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    prKey: String(row.pr_key),
+    kind: (["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"] as const)
+      .find((kind) => kind === row.kind) ?? "catch-up",
+    tip: String(row.tip),
+    claimId: String(row.claim_id),
+    outcome: row.outcome === "delivered" ? "delivered" : "uncertain",
+    sessionId: typeof row.session_id === "string" ? row.session_id : null,
+    claimedAt: Number(row.claimed_at),
+  };
+}
+
+/**
+ * Claim one prompt before it is typed. Null when it is already claimed - delivered, or
+ * uncertain - so nothing is ever sent twice for the same condition. `rearm` is the operator's
+ * explicit re-arm: it finishes an UNCERTAIN claim, or a DELIVERED one whose session is no longer
+ * the one sending (it exited before acting, and the task was resumed), and claims afresh for
+ * `sessionId`. A prompt delivered to the very session asking again is never re-sent.
+ */
+export function claimStackPrompt(
+  prKey: string,
+  kind: StackPromptClaim["kind"],
+  tip: string,
+  sessionId: string | null,
+  now: number,
+  rearm = false,
+): string | null {
+  return stackAtomically(() => {
+    const existing = readStackPromptClaim(prKey, kind, tip);
+    const rearmable = existing !== null && rearm
+      && (existing.outcome === "uncertain" || (existing.sessionId !== null && existing.sessionId !== sessionId));
+    if (existing && !rearmable) return null;
+    if (existing) {
+      openDb().prepare(`DELETE FROM stack_prompt_claims WHERE pr_key = ? AND kind = ? AND tip = ? AND claim_id = ?`)
+        .run(prKey, kind, tip, existing.claimId);
+    }
+    const claimId = randomUUID();
+    openDb()
+      .prepare(
+        `INSERT INTO stack_prompt_claims (pr_key, kind, tip, claim_id, outcome, session_id, claimed_at, updated_at)
+         VALUES (?, ?, ?, ?, 'uncertain', ?, ?, ?)`,
+      )
+      .run(prKey, kind, tip, claimId, sessionId, now, now);
+    return claimId;
+  });
+}
+
+/**
+ * Settle a claim by its id: `delivered` confirms it, `refused` - a delivery the transport
+ * POSITIVELY reported as not having landed - releases it so the prompt can be sent again.
+ * Anything else leaves it uncertain.
+ */
+export function finishStackPrompt(claimId: string, outcome: "delivered" | "refused", now: number): void {
+  if (outcome === "refused") {
+    openDb().prepare(`DELETE FROM stack_prompt_claims WHERE claim_id = ? AND outcome = 'uncertain'`).run(claimId);
+    return;
+  }
+  openDb().prepare(`UPDATE stack_prompt_claims SET outcome = 'delivered', updated_at = ? WHERE claim_id = ?`).run(now, claimId);
+}
+
+/** One line about the last stacked-base correction, shown in the merge queue. */
+export function noteInspectorPrStack(key: string, note: string | null, now: number): void {
+  openDb()
+    .prepare(`UPDATE inspector_prs SET stack_note = ?, updated_at = ? WHERE key = ? AND stack_parent_pr_url IS NOT NULL`)
+    .run(note, now, key);
+
 }
 
 export function getInspectorPr(key: string): InspectorPr | null {

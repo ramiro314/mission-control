@@ -71,6 +71,7 @@ export async function maybeMerge(
   rows: Map<string, InspectorComment>,
   now: number,
   workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
+  taskBaseBranch: (prUrl: string) => string | null = () => null,
 ): Promise<boolean> {
   const cfg = getShippingConfig();
   const verdict = mergeVerdict({
@@ -89,7 +90,17 @@ export async function maybeMerge(
       reviewDecision: s.reviewDecision,
       checks: s.checks,
       unresolvedThreads: s.threads.filter((t) => !t.isResolved).length,
+      baseRefName: s.baseRefName || null,
+      defaultBranch: s.defaultBranch || null,
     },
+    // Lineage is a fact of the ROW, written at adoption, so it holds whatever the Shipping
+    // setting says now: switching stacking off never releases an already-stacked pull request.
+    stack: {
+      lineage: Boolean(pr.stack?.parentPrUrl),
+      releasedForHead: Boolean(s.headSha) && pr.stack?.releasedHeadSha === s.headSha,
+    },
+    taskBaseBranch: taskBaseBranch(pr.url),
+    reviewedBase: pr.reviewedBaseRef ?? null,
     reviewedSha: pr.headSha,
     reviewPosture: pr.reviewPosture,
     rounds: pr.round,

@@ -1,16 +1,29 @@
+# Dialog keyboard actions
+
+**Cmd+Enter** (or **Ctrl+Enter**) performs the topmost dialog's default action, such as
+Dispatch now, Send answer, Submit decisions, Save, or a confirmation. It works from any
+control in the dialog. Disabled actions stay disabled, including incomplete questions and
+actions already in flight. Plain Enter and Shift+Enter keep their normal field behavior.
+
+When a review queue contains several questions, the question holding keyboard focus owns
+the shortcut. With focus outside the questions, the first question is next. An incomplete
+question never falls through to a different question's enabled action. Covered dialogs
+cannot act on the shortcut.
+
 # The Line (the pipeline strip above the fleet)
 
-A permanent strip sits above every fleet layout: **intake → backlog → working → review
-→ decide → shipped**. Six stages, wired left to right, each carrying a glyph, a count and one
-sentence - the fleet's whole pipeline in one glance, in the order work actually moves through
-it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
+Unless you switch it off, a strip sits above every fleet layout: **intake → backlog →
+working → review → decide → shipped**. Six stages, wired left to right, each carrying a
+glyph, a count and one sentence - the fleet's whole pipeline in one glance, in the order work
+actually moves through it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
 
-It draws at one of two **densities**, and the shipped default is the shorter one:
+It draws at one of two **densities**, or not at all, and the shipped default is the shorter one:
 
 | Density | Band | What it draws |
 |---------|------|---------------|
 | **Condensed** (default) | ~38px | One row of six segments: glyph, name, count. No sentences, no wires. Whatever is amber has its sentence promoted to the right of the row, beside that stage's glyph. |
 | **Expanded** | ~86px | Two rows: the same six stages as cards, each with its sentence underneath, wired left to right. |
+| **Disabled** | none | No strip. The fleet starts directly under the top bar, and the stage drawers are not reachable from the fleet. |
 
 The strip is `flex: none` inside a shell that does not scroll, so the **~47px** between the
 two is handed straight to the conversation pane below - about 11% more of the window on a
@@ -18,8 +31,18 @@ two is handed straight to the conversation pane below - about 11% more of the wi
 and each stage's sentence stays in its tooltip and in its accessible name.
 
 Fold it with the **caret at the right of the strip**, with <kbd>Shift+L</kbd> from the fleet,
-or from **Settings → Display → The Line**. All three write one per-machine preference
+or from **Settings → Display → Top bar → The Line**. All three write one per-machine preference
 (`app_config.ui.lineDensity`), so it survives a reload and cannot disagree with itself.
+The settings section draws a live preview of the strip at the selected density above the
+choices, so you can see what each one changes before leaving the page.
+
+**Disabled** is chosen only in Settings. The caret goes with the strip, and <kbd>Shift+L</kbd>
+neither switches the Line off nor back on, so a stray keypress on the fleet cannot undo the
+choice. It is stored as its own preference (`app_config.ui.lineHidden`) beside the density,
+so switching the Line back on returns to the density it was switched off from, and an older
+build reading the same state simply draws the strip rather than failing to load your display
+preferences. The See work tour still shows the strip, condensed, for its first stop while the tour
+runs, without changing the stored preference.
 
 | Stage | The count is | The sentence says | Amber when |
 |-------|--------------|-------------------|------------|
@@ -264,7 +287,7 @@ screenshot locators, never repository metadata or filesystem paths. See
 environment line and image locators may contain and what they never contain.
 
 **Publishing takes one press.** Once the daemon-derived preview is ready, **Report publicly**
-has its trusted control click captured by the isolated desktop preload, authorizes that exact
+or Cmd+Enter / Ctrl+Enter has its trusted input event captured by the isolated desktop preload, authorizes that exact
 preview through the desktop shell, and files it without a warning dialog or
 a second button press. The button stays busy through the internal authorization, confirmation,
 and submission requests, so another press cannot race the first one. If the derived content
@@ -322,7 +345,7 @@ chip** and a second line saying what the thing is, or what it is doing right now
 
 | Group | Kinds | The second line says |
 | --- | --- | --- |
-| **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
+| **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission`, `resident` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows; a live resident's label and state, found by its name or label, opening its full detail in either [resident placement](residents.md#finding-a-resident) |
 | **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, [report product feedback](#report-product-feedback), browse tours, or start a guided tour |
 | **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
 
@@ -355,7 +378,8 @@ The `page` kind has exactly one member, and that is a statement about the app ra
 unfinished list: the [Ship log](library-and-line.md#the-ship-log) is the only full page with no door in the
 permanent chrome. The one door it does have is two clicks inside the fleet - the Line's ⚑
 Shipped stage opens its [drawer](#the-stage-drawers), whose header escalates here - so
-<kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app.
+<kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app, and
+the only way at all while the Line is Disabled.
 Fleet, the Library, Runs, Scouts and History are one press of the segmented control away, and a
 palette row beside a visible door would only be a second door. Scouts has one anyway,
 because the words an operator reaches for - investigation, findings, evidence, research -
@@ -456,7 +480,8 @@ work tour** in the palette's **Do** group. It teaches
 the operating half of the product and runs an isolated evaluation of `driver.js@1.8.0`. It has
 no resume state, new top-bar control, or chapter beyond this one guided sequence:
 
-1. **Fleet and the Line** spotlights the permanent pipeline strip.
+1. **Fleet and the Line** spotlights the pipeline strip, drawing it condensed for the tour
+   when the Line is Disabled.
 2. **Board View** switches through the existing layout owner and spotlights the real Board.
 3. **Session detail** opens an existing session's Board drill-in and describes Conversation,
    Work queue, Workflows, Diff, and Files as one desk. When the tour starts on an empty fleet,
@@ -752,6 +777,11 @@ on **Board**; an install that already stored a layout keeps it:
 | **Board** (default) | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
 
+**Settings → Display → Residents → Where residents live** sits beside it. **Drawer**, the
+default, keeps residents off the Board columns and the Console rail, in a drawer on the right
+edge; **Board and Console** draws them in the fleet with every other session. It applies live and
+persists per machine. See [Finding a resident](residents.md#finding-a-resident).
+
 Stored preferences for the retired `grid` layout migrate to Board when loaded. New
 configuration accepts only Console or Board, so the dashboard cannot render the retired layout.
 Switching layouts does not change the underlying sessions. Controls repeated across
@@ -772,7 +802,10 @@ available:
   spacing, then the launchers' words and chord hints, then Foreman's word - so it stays one
   line, every tab keeps its own word, and every control keeps its name for a screen reader
   and its tooltip for a pointer. The chords keep working at every width.
-  The **Board** drills into that same detail when you open a tile. In Console and Board, the
+  The **Board** drills into that same detail when you open a tile. Its outer tracks animate,
+  while the conversation lays out at its final reading width so opening a task does not
+  rewrap its history and displace the initial position at the bottom. New output still
+  leaves intentional scrollback alone. In Console and Board, the
   Diff tab contains the complete checkout diff reader; the tab itself and
   <kbd>⇧</kbd><kbd>D</kbd> reveal it in place.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:
@@ -827,10 +860,10 @@ available:
   restores it. Any column can be collapsed, including **Backlog** and **needs you**, and
   several at once. Only one column is expanded at a time, and expanding one returns the
   previous one to normal. Double-clicking a header still expands or restores it. A collapsed
-  column stays collapsed after a reload; an expanded one returns to normal. An empty **needs
-  you** is already the slim all-clear rail, so it has no width control until something needs
-  you. A **needs you** you collapsed stays a strip when it empties, and when a session starts
-  waiting on you the strip stays collapsed and its count pulses. The arrow keys and the <kbd>⌘</kbd>-number shortcuts skip the cards a
+  column stays collapsed after a reload; an expanded one returns to normal. An empty column is not on
+  the board at all, so it has nothing to collapse. A collapsed **needs you** that still holds
+  a card stays a strip when another session starts waiting on you, and its count pulses; one
+  that empties leaves the board like any empty column. The arrow keys and the <kbd>⌘</kbd>-number shortcuts skip the cards a
   collapsed column is hiding. Opening a session from a collapsed column (from the Line or a
   notification, say) shows that column as the drill-in rail in full, and it is collapsed
   again when you come back to the board.
@@ -859,6 +892,17 @@ available:
   is two cells sharing one line. The choice is per browser and stored through the daemon, so
   it survives a reload; a second dashboard tab already open picks it up on its next load
   rather than live, which is true of every Display preference.
+- **A blocked session is red.** A session waiting on someone other than you records a
+  [blocker](sessions.md#blocked-sessions), and its card takes the danger tone on its spine
+  and border with a **Blocked · 3h** flag among the attention flags. Like the **held** tag,
+  the tone and the flag are the card's state and cannot be switched off. Five Board card items
+  say what it is blocked on, all on by default: **Blocker kind** (Question, Dependency,
+  Service or Other), **Blocker reason**, **Waiting on**, **Blocker link** (a glyph that opens
+  the thread, pull request or status page) and **Reply flagged** (a pill once a resident or you
+  saw a likely answer). A blocked idle session stays in the Idle column. The Conversation tab
+  opens with a red band: one row with the kind, reason, age, **Flag reply** and **Clear
+  blocker**, which expands in place to every other field and the collapsible details. Any
+  flagged reply prints under the row.
 - **Every task says what kind it is.** A session working on a task is marked with its kind -
   ship, bugfix, scout, plan, pipeline, chat or document - on both surfaces, `ship` included. Each kind
   has its own icon and colour. Every style prints the kind's word beside the icon except the
@@ -944,14 +988,19 @@ available:
   and the heading's name is what tells them apart. Arrow keys walk straight past the headings.
   Turn the whole thing off with **Group by repository** in Settings → Display → Layout, and
   every column returns to one flat, tone-ordered list.
-- **Empty columns get out of the way.** An empty **needs you** keeps its place but narrows to
-  a slim rail: its swatch, its name turned on end, a green tick and a `0`. Hover the rail for
-  "All clear. Nothing is waiting on you." The moment a session needs you, the rail widens back
-  into a full column in the same spot, so it keeps its place in the column order. Every other
-  empty column leaves the board and becomes a chip in the **empty** stash beside the last column;
-  click a chip to bring that column back. Uncheck **Show the empty-column stash** in
-  Settings → Display → Layout to hide the stash entirely, so empty columns simply leave. The
-  needs you rail is not in the stash and stays either way.
+- **Empty columns get out of the way.** Every column exists, but it is drawn only while it
+  has a card in it. An empty column leaves the board and leaves nothing behind - no slim
+  rail and no chip - and the columns that remain widen into the space. That holds for every
+  column: **needs you**, **working**, **idle**, **unconfirmed**, **gone**, and the
+  **Backlog**. When nothing is waiting on you, **needs you** takes no room at all, and the
+  moment a session needs you it comes back in its place in the column order. With no tasks
+  queued the Backlog leaves, and the first task you save to it brings it back. An empty
+  Backlog has nothing to drag, so hiding it takes no drop target away. Opening a session
+  keeps the same rule: the drill-in rail is the open session's column, and no empty column
+  is mounted beside it, even for the morph. When the open session's own column has no card
+  to list - a resident opened from the Residents drawer, or a session a fleet filter hides -
+  no rail is drawn at all: the conversation takes the whole board, and a back button at the
+  front of its header returns you to the board, as <kbd>Esc</kbd> does.
 - **An [ensemble](ensembles.md#multi-agent-ensembles)'s members are drawn together, in every layout.**
   Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
   ordering decides where every session goes, and it puts them adjacent. On the **Board** they
@@ -1211,6 +1260,29 @@ typing or while an overlay is open. HTML preview
 remains inert: its document renders immediately, then a bounded set of checkout-local
 stylesheets is inlined through the contained file reader without granting the sandbox scripts
 or network access. A slow stylesheet read therefore delays styling, not the document itself.
+
+A turn that **presents** an HTML page or a browser image also previews it inline, in a card at
+the foot of the turn. Presenting means the path stands on its own line, alone or after a short
+label of letters and spaces and a colon (`Report: docs/reports/x/report.html`,
+`Mockup: docs/mockups/x/screen.png`), or is the destination of a Markdown link. A path mentioned
+mid-sentence stays an ordinary link, and a turn previews at most three files. The card reserves
+a fixed 420px, arrives expanded, and remembers a collapse while the tab stays open. A page
+renders in the same sandbox as Files; an image is scaled down to fit and never enlarged.
+**Refresh** re-reads the file, **View** opens it in Files, and **Comment** opens it in Files with
+comment mode on. Comment is offered for pages only, because an image has no lines to comment on.
+A file that has gone, is over 5 MiB, or cannot be decoded says so in the card instead of drawing
+nothing.
+
+The checkout listing behind these links and previews is read when the conversation opens and
+again whenever a new message lands while the session is between turns, so a file the agent writes
+while you watch is linked and previewed in the turn that names it. The listing holds the
+checkout's tracked and untracked files, leaving out what git ignores, with one exception. HTML
+pages and browser images that git ignores under `docs/mockups/` are listed anyway, because that
+is where the [Mockups skill](skills-and-settings.md#skills-every-session-mixed-reload-behavior)
+keeps mock-ups git-ignored so they are never committed. The exception covers only those two
+formats: an ignored `.env` or other file there, or anything under a dot-named folder, stays out
+of the list. A file under `docs/mockups/` that git does not ignore is listed like any other
+checkout file.
 
 The boundary beside the Files list is draggable, so a long document can take space back from
 the list or a deeply nested checkout can give the list more room. The Diff tab uses the same
@@ -1738,6 +1810,9 @@ either platform.
 | <kbd>⇧</kbd><kbd>S</kbd> | Open **Scouts** - the archive of finished investigations | Anywhere |
 | <kbd>h</kbd> | Open **History** - every agent session this machine holds on disk ([Session History](history.md)) | Anywhere |
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
+| <kbd>⇧</kbd><kbd>A</kbd> | Open the **Residents** page | Anywhere |
+| <kbd>⇧</kbd><kbd>H</kbd> | Open or close the [Residents drawer](residents.md#the-residents-drawer), going to Fleet to show it; closing a pinned drawer unpins it. With **Board and Console** placement it opens the Residents dock instead | Anywhere |
+| <kbd>⌥</kbd><kbd>1</kbd>…<kbd>⌥</kbd><kbd>9</kbd> | Open live resident 1 to 9's full detail, in the order the drawer and the dock list them: the drill-in on the **Board**, the detail pane in **Console**. Matched on the physical digit key, so it works where Option+digit types a symbol; ignored while a text field has focus, and reserved from rebinding | Anywhere, both resident placements |
 | <kbd>+</kbd> | Start the guided dispatch pass. <kbd>Tab</kbd> reaches the ordinary form in one key | Anywhere |
 | type, <kbd>↑</kbd><kbd>↓</kbd>, <kbd>Enter</kbd> | Filter repositories by name, move through the matches and take one | Guided dispatch: Repo |
 | <kbd>p</kbd> / <kbd>t</kbd> / <kbd>l</kbd> / <kbd>c</kbd> | Choose ship / scout / plan / chat | Guided dispatch: Kind |
@@ -1747,9 +1822,9 @@ either platform.
 | <kbd>Backspace</kbd> | Delete a Repo-filter character, or go back one question from a later step | Guided dispatch |
 | <kbd>Tab</kbd> | Leave the guided pass, keep every answer and focus the task box | Guided dispatch |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog), or **Scouts** search while on that page | Anywhere |
-| <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
+| <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions, live residents and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
-| <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge | Any session with a pending review |
+| <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. With no fleet session asking, it addresses the first resident in the Residents drawer's **Needs you** group, including one that is also a row in the **Needs you** rail: its review queue, or its conversation with the cursor in the reply box when it needs you without a review. While the drawer is on screen, its residents count only in that second step, even when one is the selected session, so a fleet session's review always comes first. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge. With keycaps on, the Board's **Needs you** column prints it beside its name while a review is waiting there, and the drawer's **Needs you** group prints it whenever the group is shown | Any session with a pending review, or a resident in the drawer's Needs you group |
 | <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab. Unclaimed while **Workflow details** is unchecked, which is how it ships - there is no disclosure to drive | Selected Board card with a workflow, with **Workflow details** on |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in** reveals the Conversation tab; the **Board** overview opens the drill-in, which starts there | Selected session |
 | <kbd>u</kbd> / <kbd>d</kbd> | Page the open conversation up or down, from either the session rail or the reader. Conversation claims <kbd>d</kbd> before the global Delete action | Console or Board drill-in with Conversation open |

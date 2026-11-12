@@ -104,6 +104,57 @@ test("Storage shows backup config, status and kept copies, saves counts that pru
   await shoot(dashboard, "02-saved-and-backed-up");
 });
 
+test("Save sends only the field edited here, so a setting another window saved is not put back", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  const interval = dashboard.getByLabel("Backup interval");
+  const scheduledCount = dashboard.getByLabel("Scheduled copies kept");
+  await expect(interval).toHaveValue("1");
+
+  // Another window saves a longer interval; this page still holds the config it loaded.
+  const elsewhere = await dashboard.request.put(`${daemon.baseURL}/api/storage/backups/config`, {
+    data: { intervalHours: 6 },
+  });
+  expect(elsewhere.ok()).toBe(true);
+
+  await scheduledCount.fill("5");
+  await dashboard.getByRole("button", { name: "Save" }).click();
+  await expect(dashboard.getByText("Backup settings saved.", { exact: false })).toBeVisible();
+  const stored = await (await dashboard.request.get(`${daemon.baseURL}/api/storage`)).json() as {
+    config: { scheduledCount: number; preMigrationCount: number; intervalHours: number };
+  };
+  expect(stored.config).toEqual({ scheduledCount: 5, preMigrationCount: 2, intervalHours: 6 });
+  await expect(interval).toHaveValue("6");
+});
+
+test("a save from another window reaches this page, keeps an edit in progress, and can be set back", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  const interval = dashboard.getByLabel("Backup interval");
+  const scheduledCount = dashboard.getByLabel("Scheduled copies kept");
+  await expect(interval).toHaveValue("1");
+  await scheduledCount.fill("5");
+
+  const elsewhere = await dashboard.request.put(`${daemon.baseURL}/api/storage/backups/config`, {
+    data: { intervalHours: 6 },
+  });
+  expect(elsewhere.ok()).toBe(true);
+  await expect(interval).toHaveValue("6");
+  await expect(scheduledCount).toHaveValue("5");
+
+  await interval.selectOption("1");
+  await dashboard.getByRole("button", { name: "Save" }).click();
+  await expect(dashboard.getByText("Backup settings saved.", { exact: false })).toBeVisible();
+  const stored = await (await dashboard.request.get(`${daemon.baseURL}/api/storage`)).json() as {
+    config: { scheduledCount: number; preMigrationCount: number; intervalHours: number };
+  };
+  expect(stored.config).toEqual({ scheduledCount: 5, preMigrationCount: 2, intervalHours: 1 });
+});
+
 test("a failed Back up now appears in Problems and clears on the next success", async ({ dashboard, daemon }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
   await expect(dashboard.getByText("No storage problems.")).toBeVisible();
@@ -184,6 +235,53 @@ test("with the stream down after its snapshot, Back up now still shows the copy 
   await expect(copies.getByRole("row").filter({ hasText: "Manual" })).toHaveCount(1);
   await expect(dashboard.getByRole("article", { name: "Manual backups" })).not.toContainText("Last success: Never");
   expect(streams).toBeGreaterThanOrEqual(1);
+});
+
+test("a slow first read that lands after Back up now's re-read never replaces the newer copies", async ({
+  dashboard,
+  daemon,
+}) => {
+  // With the stream down, only the route reads can change the page, so the order they land in
+  // is the only thing deciding what it shows.
+  const snapshot = await realSnapshot(daemon);
+  let streams = 0;
+  await dashboard.route("**/events", (route) => {
+    streams += 1;
+    if (streams > 1) return route.abort();
+    return route.fulfill({ contentType: "text/event-stream", body: `data: ${JSON.stringify(snapshot)}\n\n` });
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let held!: () => void;
+  const holding = new Promise<void>((resolve) => { held = resolve; });
+  let reads = 0;
+  await dashboard.route("**/api/storage", async (route) => {
+    reads += 1;
+    if (reads > 1) return route.continue();
+    const stale = await route.fetch();
+    held();
+    await released;
+    return route.fulfill({ response: stale });
+  });
+  await dashboard.reload();
+  await holding;
+
+  await dashboard.getByRole("button", { name: "Back up now" }).click();
+  await expect(dashboard.getByText("Backup taken.", { exact: false })).toBeVisible();
+  const manualRows = dashboard.getByRole("table", { name: "Kept copies, newest first" })
+    .getByRole("row").filter({ hasText: "Manual" });
+  await expect(manualRows).toHaveCount(1);
+
+  const staleLanded = dashboard.waitForResponse((response) => new URL(response.url()).pathname === "/api/storage");
+  release();
+  await staleLanded;
+  await dashboard.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(manualRows).toHaveCount(1);
+  await expect(dashboard.getByText("No copies are kept yet.", { exact: false })).toHaveCount(0);
+  // The mount read, the re-read when the stream opens (`storageConfigRevision`), and Back up now's.
+  expect(reads).toBe(3);
 });
 
 const DISMISSALS_KEY = "mission-control.storage-banner.dismissed";

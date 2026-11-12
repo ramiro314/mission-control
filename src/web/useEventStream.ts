@@ -223,6 +223,15 @@ export interface MissionState {
   harnessesRevision: number;
   /** Content-free invalidation counter for the bounded Settings > Worktrees query. */
   worktreesRevision: number;
+  /** Content-free invalidation counter for the backup config Settings > Storage edits. */
+  storageConfigRevision: number;
+  /**
+   * Content-free invalidation counter for the attention-inbox dismissals
+   * (`GET /api/attention/dismissals`). Bumped on every (re)connect as well as on
+   * `attention_dismissals_changed`, because the set rides no snapshot: a row dismissed in
+   * another window while this stream was down is otherwise never heard of.
+   */
+  attentionDismissalsRevision: number;
   /**
    * How many times the local archive library has changed since this stream opened, plus one
    * per (re)connect. A COUNTER, for `harnessesRevision`'s reason and one more: archive
@@ -301,6 +310,8 @@ export function useEventStream(): MissionState {
   const [storageHealth, setStorageHealth] = useState<StorageHealth | null>(null);
   const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [worktreesRevision, setWorktreesRevision] = useState(0);
+  const [storageConfigRevision, setStorageConfigRevision] = useState(0);
+  const [attentionDismissalsRevision, setAttentionDismissalsRevision] = useState(0);
   const [archivesRevision, setArchivesRevision] = useState(0);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [settingsRestoreNotice, setSettingsRestoreNotice] = useState<SettingsRestoredEvent | null>(null);
@@ -322,6 +333,8 @@ export function useEventStream(): MissionState {
       // part of the reconnect snapshot - so treat regaining the stream as a reason to re-read.
       setHarnessesRevision((n) => n + 1);
       setWorktreesRevision((n) => n + 1);
+      setStorageConfigRevision((n) => n + 1);
+      setAttentionDismissalsRevision((n) => n + 1);
       // Same rule for the archive library, which rides no snapshot at all: bundles can be
       // reconciled, refused, or pruned while the channel is down, and a mounted Archives page
       // would otherwise go on showing the page it had before the gap.
@@ -705,6 +718,13 @@ export function useEventStream(): MissionState {
         case "worktrees_changed":
           setWorktreesRevision((n) => n + 1);
           break;
+        case "storage_config_changed":
+          setStorageConfigRevision((n) => n + 1);
+          break;
+        // Counted: the frame carries no rows, and the hook holding them re-reads the route.
+        case "attention_dismissals_changed":
+          setAttentionDismissalsRevision((n) => n + 1);
+          break;
         // Counted for the same reason, and one batch of reconciled bundles is one bump: the
         // page's response is to re-run its own bounded, filtered query, and forty frames
         // would not tell it anything one does not.
@@ -832,6 +852,8 @@ export function useEventStream(): MissionState {
     storageHealth,
     harnessesRevision,
     worktreesRevision,
+    storageConfigRevision,
+    attentionDismissalsRevision,
     archivesRevision,
     historyRevision,
     settingsRestoreNotice,

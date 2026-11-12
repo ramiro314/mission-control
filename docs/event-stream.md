@@ -100,3 +100,11 @@ stream value while the stream is down. Each problem's id names one occurrence an
 state, so a daemon restart never changes it. The dashboard's storage banner keys its dismissals
 by that id: each aggregate, snapshot or event, refreshes the dismissals it still lists before
 dropping any unseen for over an hour (`src/web/lib/storageBannerDismissals.ts`). See [Backup and restore](sqlite-database.html#backup).
+
+The backup config is not part of that aggregate. Saving it through
+`PUT /api/storage/backups/config` emits the content-free `storage_config_changed`, and the
+hook's `storageConfigRevision` counter, bumped on that event and on every reconnect, makes each
+open Settings > Storage re-read the route. `storage_health` cannot carry that signal: a save
+that prunes nothing leaves the aggregate unchanged, so no frame is sent. A re-read replaces only
+the fields not edited in that window, and Save sends only the fields edited there.
+

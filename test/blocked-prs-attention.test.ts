@@ -90,6 +90,7 @@ function render(prs: BlockedPr[]): string {
       createElement(AttentionInbox, {
         fold: foldAttention({ sessions: [], reviews: [], ensembles: [], blockedPrs: prs }),
         onClose: () => {},
+        onDismiss: async () => null,
         onOpenEnsemble: () => {},
         onOpenSession: () => {},
       }),

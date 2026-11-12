@@ -52,7 +52,7 @@ writes among them, including the ones that decide what runs: worktree pool polic
 testing settings (`PUT /api/testing-settings`), and both of those for a whole repository at once
 through a Command document (`POST /api/command-documents/apply`). The
 per-machine token above guards ingress only. The narrow agent tools, such as
-`set_affected_tests_command`, bound what an agent may do **through MCP**; they do not stop the
+`set_affected_tests_command` and `configure_workflow_command`, bound what an agent may do **through MCP**; they do not stop the
 same agent from calling the `/api/*` route directly. The same holds for
 `propose_command_document`: the operator's review of a proposed Command document is an approval
 step on the MCP surface, and the apply route it leads to accepts a document from any loopback
@@ -102,14 +102,15 @@ Dismissed, orphaned, moved-to-chat, free-form, malformed, and non-human review a
 nothing.
 
 The dashboard's [Feedback form](ui.md#report-product-feedback) publishes from one **Report
-publicly** press. The context-isolated Electron preload captures the trusted click on that exact
-control through a capability claimed once as the authorization module loads and retained only in
-that module's closure, outside the React hot-refresh boundary. The owned control requires a
-trusted native click before it uses the capability with the current preview's request id and
-draft identity. Synthetic clicks, implicit form submits,
+publicly** press or Cmd+Enter / Ctrl+Enter. The context-isolated Electron preload captures the
+trusted input event through a capability claimed once as the authorization module loads and
+retained only in that module's closure, outside the React hot-refresh boundary. The dialog requires a
+trusted native input event before it uses the capability with the current preview's request id and
+draft identity. Synthetic clicks and key events, implicit form submits,
 and page scripts without that capability cannot arm a report. The shell accepts the request only
 from the main
-dashboard web contents, with the preload requiring a trusted click still in dispatch.
+dashboard web contents, with the preload requiring a trusted click or non-repeating,
+non-composing Cmd+Enter / Ctrl+Enter still in dispatch.
 A held press remains valid even if Chromium's transient user activation expires before release;
 synthetic clicks and calls after dispatch ends remain refused. It shows no
 second dialog. The daemon then asks
@@ -118,7 +119,7 @@ port. An authorization is short-lived and single-use, so another loopback proces
 call the confirmation route but cannot produce the private reply that mints a grant.
 
 The daemon keeps preview and mutation separate internally. Previewing never returns a publish
-token. After the shell authorizes the Report click, the daemon mints a grant pinned to one report
+token. After the shell authorizes the Report action, the daemon mints a grant pinned to one report
 opening and exact derived content, valid for two minutes, and single-use. Re-deriving target,
 labels, source, environment and body at submission prevents a configuration change between
 preview and publication from sending content the form did not show. The request id and submission
@@ -188,7 +189,12 @@ there is no signing and no trust badge.
 What that does not cover is the content itself. Mission Control does not encrypt the scout
 library, an archive can hold whatever the investigation touched, and a synchronised folder
 takes its contents wherever it goes. Deletion is explicit and local.
+## MCP task reads
 
+The read-only backlog MCP tools `list_tasks` and `get_task` use the same daemon-token
+boundary as task creation and editing. They read saved task configuration and durable pull
+request references, including completed tasks. They do not expose session transcripts or
+private session state and do not require the session-control grant below.
 
 ## Delegated session control
 
@@ -201,7 +207,7 @@ resident profile whose pinned revision turns **Control other sessions** on (see
 surface and session-control tools cannot create one. Resetting or replacing that identity
 revokes it.
 
-The MCP read/action endpoints require both the machine token and the existing signed
+The delegated session-control MCP read/action endpoints require both the machine token and the existing signed
 Registry session credential. A public session id, working directory, task credential, or
 machine token alone cannot select a controller. The daemon checks the current grant and
 live credential binding on every request, then translates a closed set of typed operations
@@ -344,7 +350,7 @@ type, URL and headers as configured, so the entry carries exactly those, with an
 table. The trade-off is that this server's URL, and only its URL, appears in the agent's
 launch-scoped MCP configuration (`--mcp-config`) instead of staying private to the launcher. The
 login itself never passes through Mission Control: Claude Code reads it from its own credential
-store. `strictMcpConfig` pins the set exactly as for every other server.
+store. On a pinned set, `strictMcpConfig` pins it exactly as for every other server.
 
 Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
 `env_http_headers`, and a Claude Code `${VAR}` that names a set variable - read the environment
@@ -355,6 +361,19 @@ Claude Code itself, as above; when Claude Code has no usable login for it, the s
 naming it. A custom server's argument in a credential
 form is refused when it is saved; detection is a guard rather than a proof, which is why the
 editor says arguments are stored and backed up as written.
+
+**All native sources puts native servers and connectors outside that boundary.** A Claude Code
+profile on [all native sources](residents.md#all-native-sources) launches without
+`strictMcpConfig` and without `disableClaudeAiConnectors`, which the operator confirms in the
+editor and Dispatch's summary states as `MCP: all native sources (not pinned)`. Mission Control's
+own server and the profile's selected custom servers keep the boundary: the custom servers are
+still snapshotted and still reach their own processes only through the scoped launcher, as above.
+Everything else - Claude Code's user, local, project and plugin servers and the account's
+claude.ai connectors - Claude Code loads itself, at every start, from its own
+configuration and with its own stored logins, so each carries its full account-level access into
+an autonomous, looping run. Mission Control holds no copy of those definitions, does not decide
+which of their values reach the agent, and does not refuse a start when one of them fails or
+needs a login. Codex offers no such choice.
 
 **A value belongs to its connection.** An edit that changes a custom server's command, arguments,
 URL, or a plain environment variable or header refuses to keep a secret left blank, naming each

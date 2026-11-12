@@ -111,7 +111,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "line-density",
     label: "Line density",
-    description: "Fold the pipeline strip to one row, or expand it to read each stage's sentence.",
+    description: "Under Top bar: fold the pipeline strip to one row, expand it to read each stage's sentence, or turn it off.",
     category: "display",
     anchor: "display/line-density",
     keywords: [
@@ -124,6 +124,10 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "expand",
       "vertical space",
       "real estate",
+      "top bar",
+      "shipping bar",
+      "disable",
+      "hide",
     ],
     kind: "jump",
     backup: backupDomains("ui"),
@@ -158,25 +162,23 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
-    // Somebody looking for this types what they saw beside the last column ("empty", "stash")
-    // or what they want gone ("hide empty columns").
-    id: "board-empty-columns",
-    label: "Show the empty-column stash",
-    description:
-      "Show or hide the chips the Board's empty columns fold into, beside the last column.",
-    category: "display",
-    anchor: "display/board-empty-columns",
-    keywords: ["empty", "stash", "column", "columns", "hide", "board", "chip", "all clear"],
-    kind: "jump",
-    backup: backupDomains("ui"),
-  },
-  {
     id: "board-sidebar",
     label: "Show all sessions in sidebar",
     description: "Select Board layout to show every session state in the drill-in sidebar.",
     category: "display",
     anchor: "display/layout",
     keywords: ["board", "sidebar", "sessions", "states", "rail", "drill-in"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "resident-placement",
+    label: "Where residents live",
+    description:
+      "Keep residents in a drawer on the right edge, or on the Board and Console with every other session.",
+    category: "display",
+    anchor: "display/residents",
+    keywords: ["resident", "residents", "drawer", "dock", "board", "console", "rail", "placement", "long-running"],
     kind: "jump",
     backup: backupDomains("ui"),
   },
@@ -1098,6 +1100,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     category: "shipping",
     anchor: "shipping/method",
     keywords: ["squash", "rebase", "merge commit", "method"],
+    kind: "jump",
+    backup: backupDomains("shipping"),
+  },
+  {
+    id: "stacked-pull-requests",
+    label: "Stacked pull requests",
+    description: "Whether a same-repository dependent starts on its prerequisite's open pull request or waits for it to merge.",
+    category: "shipping",
+    anchor: "shipping/stacking",
+    keywords: ["stack", "stacked", "dependency", "dependent", "base branch", "parent", "after merge", "depth"],
     kind: "jump",
     backup: backupDomains("shipping"),
   },
