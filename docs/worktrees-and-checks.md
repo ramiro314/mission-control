@@ -363,9 +363,9 @@ Otherwise the claim runs in place, so a small lockfile change stays an increment
   anything is placed in the target. A source is only read, so its fingerprint stays valid.
 - **Copy-on-write only.** On macOS each path is cloned with one `clonefile(2)` call for the whole
   tree, through the `clone-tree` native addon (`native/clone-tree`, built by `npm run build:native`
-  into `dist/native/clone-tree.node`). `cp -c -R` clones one file at a time, which an endpoint
-  security agent that inspects every file creation slows to about 165 entries a second; one call
-  on the directory clones the hierarchy in the kernel. The call runs on the libuv thread pool,
+  into `dist/native/clone-tree.node`). `cp -c -R` clones one file at a time, and an endpoint
+  security agent that inspects every file creation can make that far slower than the install
+  the seed replaces; one call on the directory clones the hierarchy in the kernel. The call runs on the libuv thread pool,
   never on the daemon's event loop. Where the volume cannot clone, `clonefile` refuses (`ENOTSUP`,
   or `EXDEV` across volumes) and there is no seed: it never copies bytes. On Linux each path is
   cloned with `cp -R --reflink=always`, which refuses the same way. A byte copy is never the plan,
