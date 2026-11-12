@@ -144,15 +144,16 @@ test("the attribution line that ends a PR body is not part of its last section",
   assert.deepEqual(block(attribution), block(""));
   assert.equal(block(attribution)?.features[0]?.blocks[0]?.text, "None.");
 
-  // Only a closing attribution line is dropped: inside a fence, or with text after it, it stays.
-  const fenced = parseForkChanges(
-    `## Fork feature changes\n\n### fork:session-history\n#### Plan docs\nbase: new\n\`\`\`\n${attribution}\n\`\`\`\n`,
-  );
-  assert.equal(fenced?.features[0]?.blocks[0]?.text, `\`\`\`\n${attribution}\n\`\`\``);
-  assert.throws(
-    () => parseForkChanges(`## Fork feature changes\n\nnone\n\n${attribution}\n\nmore\n`),
-    (error: unknown) => error instanceof ForkDeltaFormatError,
-  );
+  // Only the section's closing line is dropped. An attribution line with block text after it, or
+  // inside a fence, is part of the block.
+  const planDocs = (text: string) =>
+    parseForkChanges(`## Fork feature changes\n\n### fork:session-history\n#### Plan docs\nbase: new\n${text}`)?.features[0]
+      ?.blocks[0]?.text;
+  assert.equal(planDocs(`None.\n${attribution}\nmore\n`), `None.\n${attribution}\nmore`);
+  assert.equal(planDocs(`\`\`\`\n${attribution}\n\`\`\`\n`), `\`\`\`\n${attribution}\n\`\`\``);
+  // A fence left open runs to the end of the body, so the body's last line is code even though
+  // nothing follows it: it stays.
+  assert.equal(planDocs(`\`\`\`\n${attribution}`), `\`\`\`\n${attribution}`);
 });
 
 test("a malformed section gets a format error naming what is wrong", () => {
