@@ -615,17 +615,31 @@ test("resolveTranscriptPath prefers the cwd's own file over one elsewhere with t
 });
 
 test("resolveTranscriptPath picks the most recently written of several files elsewhere", () => {
+  // Run twice with the newer file on opposite sides: once in the folder that sorts and is
+  // created last, once in the one that sorts and is created first. Whatever order the
+  // directory lists in, a resolver that kept the first or the last match fails one of them;
+  // only the mtime comparison passes both.
+  for (const newest of ["/pool/1/app", "/pool/2/app"]) {
+    const root = mkdtempSync(join(tmpdir(), "proj-"));
+    const paths = new Map<string, string>();
+    for (const cwd of ["/pool/1/app", "/pool/2/app"]) {
+      const dir = join(root, encode(cwd));
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `${UUID}.jsonl`);
+      writeFileSync(file, "{}\n");
+      const at = new Date(cwd === newest ? 2_000_000_000 : 1_000_000_000);
+      utimesSync(file, at, at);
+      paths.set(cwd, file);
+    }
+    assert.equal(resolveTranscriptPath(session({ cwd: "/pool/3/app" }), root), paths.get(newest));
+  }
+});
+
+test("resolveTranscriptPath returns null, without throwing, when the projects folder cannot be read", () => {
+  // A fresh machine has no `~/.claude/projects` at all; the search must not turn that into a
+  // throw on every transcript read.
   const root = mkdtempSync(join(tmpdir(), "proj-"));
-  const older = join(root, encode("/pool/1/app"));
-  const newer = join(root, encode("/pool/2/app"));
-  mkdirSync(older, { recursive: true });
-  mkdirSync(newer, { recursive: true });
-  const stale = join(older, `${UUID}.jsonl`);
-  const live = join(newer, `${UUID}.jsonl`);
-  writeFileSync(stale, "{}\n");
-  writeFileSync(live, "{}\n");
-  utimesSync(stale, new Date(1_000_000), new Date(1_000_000));
-  assert.equal(resolveTranscriptPath(session({ cwd: "/pool/3/app" }), root), live);
+  assert.equal(resolveTranscriptPath(session({ cwd: "/pool/3/app" }), join(root, "missing")), null);
 });
 
 test("resolveTranscriptPath returns null when neither locates a file", () => {
