@@ -63,6 +63,7 @@ test("the row names the repository and who proposed it, and offers the review", 
       createElement(AttentionInbox, {
         fold: foldAttention({ sessions: [], reviews: [], ensembles: [], commandDocumentProposals: [mkProposal()] }),
         onClose: () => {},
+        onDismiss: async () => null,
         onOpenEnsemble: () => {},
         onOpenSession: () => {},
       }),

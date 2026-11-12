@@ -152,7 +152,7 @@ test("testing entries are bounded at 400: the 400th is accepted and the 401st re
   assert.deepEqual(problems({ version: 1, testing: entries(400) }), []);
   const refused = problems({ version: 1, testing: entries(401) });
   assert.equal(refused.length, 1);
-  assert.match(refused[0]!, /^testing: Array must contain at most 400 element\(s\)$/);
+  assert.match(refused[0]!, /^testing: Too big: expected array to have <=400 items$/);
 });
 
 test("text that is not JSON, or nothing at all, is refused before any rule", () => {

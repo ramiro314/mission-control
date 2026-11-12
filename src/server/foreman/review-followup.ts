@@ -89,8 +89,11 @@ export interface ReviewFollowupConfig {
   trackCiFailures: boolean;
   /** Which failing checks count, from `ForemanConfig.ciStrictness`. Absent reads as `all`. */
   ciStrictness?: CiStrictness;
-  /** Keep conflicting pull requests on track, from `ForemanConfig.trackMergeConflicts`. */
-  trackMergeConflicts: boolean;
+  /**
+   * Keep conflicting pull requests on track, from `ForemanConfig.trackMergeConflicts`.
+   * Absent reads as off.
+   */
+  trackMergeConflicts?: boolean;
   /**
    * Deliver Stacked pull requests' catch-up and restack prompts. Not a separate Foreman
    * setting: a stacked child is held until it is restacked, and these prompts are what
@@ -561,7 +564,7 @@ function feedbackState(
   return {
     findings,
     ...ciFeedback(pr, cfg),
-    conflicting: cfg.trackMergeConflicts && mergeabilityOf(pr) === "conflicting",
+    conflicting: !!cfg.trackMergeConflicts && mergeabilityOf(pr) === "conflicting",
     codeRabbit: !!cfg.codeRabbitAutoResolve && cr?.status === "complete" && cr.pending > 0
       && !!cr.observationId && (cr.freshUntil ?? 0) >= now,
     stack: !!cfg.stackPrompts && pr.inspector?.stack?.prompt?.status === "pending",

@@ -294,9 +294,10 @@ export interface PrSnapshot {
   /**
    * CI on the head commit, check by check, keyed to the commit it was read from (which is
    * the head `headSha` names; both come from this one query). Null when GitHub returned no
-   * head commit. Read by the Wait for CI node and the Inspector's flake reading.
+   * head commit. Read by the Wait for CI node and the Inspector's flake reading. Optional so
+   * a hand-built snapshot without it reads as "no head commit".
    */
-  ci: {
+  ci?: {
     headSha: string;
     checkRuns: CiCheckRun[];
     flakeReport: FlakeReport | null;

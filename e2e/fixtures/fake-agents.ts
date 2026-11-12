@@ -136,8 +136,6 @@ export interface FakePullRequest {
   headRefOid: string;
   /** GitHub's mergeability for `headRefOid`. Omitted reads as `UNKNOWN`, like a fresh push. */
   mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
-  /** The pull request's base branch. */
-  baseRefName?: string;
 }
 
 /** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
