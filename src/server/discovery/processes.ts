@@ -342,7 +342,7 @@ export async function listProcessesSnapshot(
       : effectiveUid === null
         ? "process listing failed: effective user identity is unavailable"
         : null,
-    overflowed: table.failure?.overflowed === true,
+    overflowed: table.overflowed ?? table.failure?.overflowed === true,
     cwdScopePids,
     completedCollectorPids: table.collectorPids,
   };
