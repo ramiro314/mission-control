@@ -6,7 +6,8 @@ launch it from **Dispatch > Resident**. It runs as an ordinary session in the Ag
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
 This page describes profiles, launch, the persistent wake loop, repository-free residents,
-skill sources, session control, MCP servers and their dashboard controls. Skill selection remains a later phase of
+[instruction changes a resident proposes](#changing-instructions-from-the-conversation) and its
+retro, skill sources, session control, MCP servers and their dashboard controls. Skill selection remains a later phase of
 [the residents plan](plans/persistent-agent-profiles/plan.md).
 
 ## Resident profiles
@@ -18,13 +19,22 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 |---|---|---|
 | Identity | The name (unique among live profiles) and an optional description | required |
 | Persona | The Library Persona whose guidance becomes the resident's standing role | none |
+| Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Instructions | Markdown added after the Persona's guidance; without a Persona, the whole role | empty |
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
 | Workspace | The repository Dispatch pre-fills | none |
-| Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
-| Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 | MCP servers | A pinned set or, on Claude Code, all native sources; whether the harness's global servers ride along, and which global or [custom](#custom-mcp-servers) servers are added; see [MCP servers](#mcp-servers) | pinned, inherit on, none selected |
+| Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
+
+Each section is a card. When the editor has room, the cards form two columns: identity, Persona,
+instructions and MCP servers on the wide left, with board presence, the runtime, the workspace,
+authority and the profile's durable state beside them, and **Loop and guardrails** across the
+full width between the two bands, its six limits as tiles beside the loop prompt. A narrow
+editor stacks the cards in the order of the table. **Board presence** previews the board card
+the next launch draws: its glow, its label chip, its name and model, and, while pinned, its place
+above the cards around it. Granting **Control other sessions** marks its row in the attention
+color.
 
 A profile needs a Persona, profile instructions, or both: one with neither has no role and is
 refused on save and at launch. Leave the Persona at **No Persona** to run a resident on its
@@ -57,6 +67,9 @@ unsaved profile named `<name> copy` with the same settings. Your copy is an ordi
 editable, archivable, and never touched by an upgrade. Every saved profile also offers
 **Duplicate**.
 
+Agent Shepherd ships with a **$40 spend cap per rolling 24 hours**. New custom profiles default
+to $20.
+
 A built-in launches like any profile. **Upgrading Mission Control updates it**: when a new build
 ships different settings, the daemon writes them as the built-in's next revision at startup. A
 resident already running keeps the revision it launched with. Use **Restart on new profile** to
@@ -73,6 +86,11 @@ live-profile limit. Settings snapshots do not carry them, and a restore never ar
 
 The instructions are [`residents/agent-shepherd.md`](../residents/agent-shepherd.md), compiled into
 the build. See [`residents/README.md`](../residents/README.md) for how to change or add one.
+
+The **Meet your residents** guided tour walks this page on Agent Shepherd, then opens the
+[Residents drawer](#the-residents-drawer) and points at **Pin**. Start it from **Settings > Help &
+tours** or the palette; the startup tour picker announces it once to profiles that predate it.
+See [guided tours](ui.md#meet-your-residents).
 
 ## Launching a resident
 
@@ -105,7 +123,9 @@ A launch is a task of kind `resident`:
   [repository standing instructions](skills-and-settings.md), on the harness's own channel:
   `systemPrompt.append` for Claude Code and developer instructions for Codex. They are recorded
   once at launch, shown under the session's **See standing instructions** control, and replayed on
-  resume, so compaction or a daemon restart never loses who the agent is.
+  resume, so compaction or a daemon restart never loses who the agent is. After a compaction the
+  next wake also restates them in the conversation; see
+  [Keeping the mission through compaction](#keeping-the-mission-through-compaction).
 - It has no backlog, dependencies, schedule, autopilot, after-work Workflow or task-kind contract.
   Single agent Dispatch, MCP `create_task`, recurring missions and task sources do not offer it.
 
@@ -361,7 +381,9 @@ messages, and never clears a blocker without evidence that its `resumeWhen` cond
 
 After each completed turn a resident waits for its next wake. Foreman never completes it
 automatically. It ends when you choose **Complete & close** on its session,
-or when its session goes away, which settles its task through the ordinary task lifecycle. A
+or when its session goes away, which settles its task through the ordinary task lifecycle. The
+Complete dialog first offers a [retro](#retro-before-completing) that turns your steering into
+proposed instruction changes. A
 failed launch, or one interrupted by a daemon restart before its session started, is recorded
 with its reason and is never relaunched; launch the profile again.
 
@@ -408,6 +430,12 @@ already running turn.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
+When the resident is busy - a turn in progress, a human message waiting, an open request for
+you, or a compaction - Run now queues the iteration instead of refusing. The status reads
+**run queued** and the control becomes **Cancel queued run**. Whatever had priority finishes
+first; the queued iteration then runs once, on the next idle moment, without waiting for the
+cadence. The request is durable across reloads and daemon restarts. Pausing drops it, and Run
+now on a paused, busy resident resumes the loop and queues.
 After a profile edit, **Restart on new profile** ends the old run, so its session stops waking,
 and launches the latest revision in a new conversation. The old task and session stay open, and
 Restart ends by opening the Complete dialog for the old session, wherever you clicked it: complete
@@ -434,8 +462,17 @@ for that conversation.
 Before a wake at or above the context threshold, the daemon asks the harness to compact and
 waits for a measured result below that threshold. Compaction and human turns do not count as
 iterations. Missing or invalid context readings pause before a wake until a fresh measurement
-is available and you resume. An interrupted or unconfirmed compaction also pauses instead of
-sending a loop prompt.
+is available and you resume. A compaction never sends the loop prompt until it is measured
+below the threshold.
+
+A compaction that makes no progress for ten minutes is interrupted, so the harness turn ends
+and the session is idle again instead of working indefinitely. A failed compaction (stalled,
+ended without a measured boundary, or refused by the harness) is retried after 1, 5 and then
+15 minutes; the status names the failure and the next retry. A fourth consecutive failure
+pauses with that reason, and Resume starts a fresh set of retries. A measured compaction resets
+the count. Two failures pause at once: a compaction that could not be interrupted, because the
+session may still be mid-turn, and one that finished above the threshold. A human message that
+arrives during a failing compaction keeps precedence, and the next wake compacts again.
 
 The editor and every live-run surface name the active compaction layers:
 
@@ -450,6 +487,34 @@ The editor and every live-run surface name the active compaction layers:
   Older sessions without a saved limit must resolve it from the catalog once.
   Codex's compact operation does not accept a focus instruction;
   the focus field is used by Claude.
+
+#### Keeping the mission through compaction
+
+The standing instructions ride on the harness's own channel, so a compaction never deletes them.
+What a compaction does remove is everything in the conversation that pointed at them. The opening
+turn is only "Begin your standing task." and every wake says "Continue your standing task", so
+once the history is a summary, the most specific thing left is the summary's current work and
+next step. A resident that acted on that alone would carry on with the last item in flight
+instead of its role. Two things keep it on its role:
+
+- **A mission-preserving focus.** Every compaction the daemon starts is sent with a built-in
+  focus that asks the summary to restate the standing task and every instruction, correction or
+  decision you gave in the conversation word for word, and to report the latest item only as
+  current work. The profile's **Compaction focus** is added after it, never instead of it.
+  Claude Code uses the focus; Codex compacts without one.
+- **A restated wake.** The first wake after any compaction opens with **Your standing task,
+  restated after compaction**: a line saying the summary is context rather than the mission,
+  then the run's resident section exactly as its launch composed it (Persona guidance, profile
+  instructions, run instructions and the durable-state note), then the loop prompt. That covers
+  compactions the daemon did not start too: Claude Code's own auto-compact, Codex's native
+  backstop, and a `/compact` you typed. Repository standing instructions are not repeated,
+  because they are not the resident's role.
+
+The restatement appears once per compaction, as the resident's wake in the conversation. Only a
+delivered wake settles it. A wake that was released before sending, or whose delivery is
+unconfirmed after a restart, leaves it owed, so the next wake restates it again rather than risk
+none. A compaction during the restated wake's own turn owes another. Restart recovery confirms a
+restated wake by the exact text it recorded, so it is never resent and never counted twice.
 
 The default rolling 24-hour limits are **200 iterations** and **$20**. Clearing either cap in
 the editor disables that cap for new runs. Launch is iteration one only after the session
@@ -486,6 +551,62 @@ unconfirmed**, counts conservatively, and pauses for you; it is never silently r
 Sent and released delivery rows are retained for seven days. Unresolved claims are reconciled
 before pruning, and uncertain deliveries stay until the run ends. Pruning never decreases the
 cumulative iteration or reuses a sequence. Pacing receipts remain for the run's lifetime.
+
+## Changing instructions from the conversation
+
+A resident can propose changes to its own standing instructions, so a rule you work out with it
+in conversation does not have to be copied into the editor by hand. Ask it to update its
+instructions and it uses two Mission Control tools:
+
+- `get_resident_instructions` returns the current text of the profile's instructions and of the
+  Persona it names, their revisions, and whether each can be edited.
+- `propose_resident_instruction_changes` asks you, as a `request_input` question, which of its
+  proposed changes to apply, and waits for your answer. Each change replaces one exact passage,
+  removes one, or appends a new one, in the profile instructions or in the Persona's guidance.
+
+The question arrives on the same **input** card as any agent's `request_input` question. It shows
+every change in full, exactly as it would be written, with one checkbox per change. Tick the ones
+you want and choose **Submit**. Mission Control writes exactly those:
+
+- Profile changes become the profile's next revision, as if you had saved them in the editor.
+- Persona changes become the Persona's next revision. Every profile and task that uses that
+  Persona reads it at its next launch.
+
+Text in **Other** goes back to the resident as guidance and is never applied.
+**Dismiss** or **Chat about it** writes nothing.
+
+- **Only your answer applies a proposal.** Foreman and sessions with session control cannot
+  approve one, and no tool lets a resident write its profile or Persona directly (see
+  [security](security.md#resident-instruction-changes)). The answer applies when you give it, even
+  if the resident's tool call timed out first.
+- **Every selection applies.** A proposal is checked against the current text before you see it:
+  each replaced passage must occur exactly once, no two changes may overlap, and even with every
+  growing change applied the result must fit its limit: characters for profile instructions, UTF-8
+  bytes for Persona guidance.
+- **A stale proposal writes nothing.** If the profile or Persona a selected change edits was
+  changed after the proposal was made, or a selected Persona change is for a Persona the profile no
+  longer names, the answer applies none of it and the resident is told to read the text again. A
+  selection that would leave the resident with no role, or exceed the instruction limits, also
+  writes nothing.
+- **Built-ins stay read-only.** A built-in resident's profile and a built-in Persona cannot be
+  edited. Duplicate the resident to shape its instructions.
+
+The running resident keeps the revision it launched with. Its band shows **Profile changed since
+launch (now revision N)**; choose **Restart on new profile** when you want it to run on the change.
+
+### Retro before completing
+
+When you choose **Complete** on a resident that can still take a turn, the Complete dialog offers
+**Run a retro first**. It types a retrospective into the resident's own conversation: the resident
+reads its conversation back, finds where you corrected or redirected it, and proposes changes to
+its instructions or Persona through the same `request_input` question. Choose what to apply,
+then complete it.
+
+The retro completes nothing and needs no skill, because the only write it can make is a proposal
+you approve. It is offered whether or not you steered the resident, because Complete is the last
+time its conversation can be read back. It is not offered for a built-in resident or for one that
+can no longer receive a turn. It never writes [repository memory](repository-memory.md); a
+resident's card does not offer the memory retro.
 
 ## MCP servers
 
@@ -534,6 +655,19 @@ profile, marked *loads natively*, and comes back into the set if you switch to *
 launch**. A global server residents cannot carry no longer refuses the launch, because Mission
 Control does not resolve it. A custom server named like one of Claude Code's global servers is
 still refused, because both would load under one name.
+
+If plugin MCP tools disappear when the account has a claude.ai connector for the same server,
+enable **Disable claude.ai connectors** under **MCP servers**. Claude Code can suppress both
+copies during non-interactive startup. This opt-in workaround passes
+`ENABLE_CLAUDEAI_MCP_SERVERS=false` through the run's launch-scoped settings, keeping native
+plugin sources enabled. It disables **every** claude.ai connector for that resident, including
+Claude Docs. It does not change the machine's Claude settings or other sessions.
+
+The checkbox is off by default and applies only with **All native sources (not pinned)**.
+Dispatch shows **claude.ai connectors off** when enabled. Save the profile and launch a new
+resident to apply a change; an existing run keeps its launch revision's choice on resume.
+Switching to **Pinned at launch** keeps the checkbox's saved preference for a later switch
+back, but the pinned set continues to exclude native plugins and cloud connectors as before.
 
 ### What a run starts
 

@@ -1,3 +1,4 @@
+import type { PauseRelease } from "./pause/release.ts";
 import { newPlanPolicy, taskPlanStorageLocked, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
 import { latestPublicationReceiptForTask, publicationReceipt, validatePlanInputs, validatePlanInputDependencies, taskPlanInputProblem, taskPlanDiscovery } from "./plans/inputs.ts";
 import { localWorkflowProblem, localPlanRecoveryPending } from "./plans/publication.ts";
@@ -159,9 +160,10 @@ import { worktreeReturnBlocker } from "./git/worktree-return-safety.ts";
 import { treeSeed } from "./worktrees/config.ts";
 import { storageProblem, type StorageProblemLink } from "@shared/storage-health.ts";
 import type { StorageProblemObservation } from "./storage-health.ts";
-import { inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
+import { describeWorktreeOccupants, inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
 import { gitInfo } from "./util/git.ts";
 import {
+  grillFirstMissionMcpTools,
   kindMissionMcpRequirement,
   missionMcpDescriptor,
   verifyMissionMcpToolsForRunningSession,
@@ -583,6 +585,11 @@ export interface TaskManagerStartupDeps {
   teardown?: typeof teardownWorktree;
   occupancy?: typeof inspectWorktreeOccupancy;
   returnBlocker?: typeof worktreeReturnBlocker;
+  /**
+   * The Mission-tools probe an edit awaits after reading its base row. Injectable so a test can
+   * hold an edit at exactly that point and land another write underneath it.
+   */
+  missionTools?: typeof missionToolsAvailability;
 }
 
 interface TaskCleanupJob {
@@ -891,12 +898,22 @@ function refusedAsDisabled(task: Task, overrideDisabled: boolean | undefined): b
 export interface DispatchOptions extends TaskDispatchOptions {
   /** The caller is deliberately starting a parked task. See `DISABLED_REFUSAL`. */
   overrideDisabled?: boolean;
+  /**
+   * The caller is a person (or a launch a person started) launching while the operator's
+   * launch hold stands - Pause all with launches held, or a priority session. A separate claim
+   * from `overrideDisabled` because the two holds are separate decisions: starting a parked
+   * task is not consent to launch during a pause, nor the other way round. Absent means held,
+   * by `DISABLED_REFUSAL`'s inversion, so a Foreman worker older than this field is held too.
+   */
+  overridePauseHold?: boolean;
 }
 
 /** The seams and the one decision `TaskManager.assign` takes from its caller. */
 export interface AssignOptions {
   /** The caller is deliberately handing over a parked task. See `DISABLED_REFUSAL`. */
   overrideDisabled?: boolean;
+  /** The caller is handing work over during the operator's launch hold. See `DispatchOptions`. */
+  overridePauseHold?: boolean;
   /**
    * The caller has accepted what the handover reset discards beyond git state. False -
    * the default, and what an omitted flag gets - means a reset with anything to lose is
@@ -980,23 +997,6 @@ export const MISSION_SESSION_CLOSURE_DEADLINE_MS = 240_000;
 export const MISSION_SESSION_CLOSURE_RETRY_MS = 10_000;
 
 /**
- * When a refused completion return may run again: 30 seconds after the first refusal, doubling
- * with each consecutive one, never longer than 15 minutes apart.
- *
- * Every attempt pays for up to three occupancy guards, each a pair of system-wide `ps` reads
- * plus an `lsof` over every pid this user owns. A flat 30 seconds made a return that can never
- * succeed (a checkout something keeps open, or a provider that keeps refusing) cost that much
- * forever, once per stuck task. The obligation itself stays durable in SQLite, so backing off
- * only spaces the attempts out; it never abandons the return.
- */
-export const COMPLETED_RETURN_RETRY_MS = 30_000;
-export const COMPLETED_RETURN_RETRY_CAP_MS = 15 * 60_000;
-
-export function completedReturnRetryDelay(refusals: number): number {
-  return Math.min(COMPLETED_RETURN_RETRY_MS * 2 ** refusals, COMPLETED_RETURN_RETRY_CAP_MS);
-}
-
-/**
  * When asking stops being enough and the session is retired instead.
  *
  * Three minutes, deliberately INSIDE the four-minute guarantee rather than at it. Retirement
@@ -1054,7 +1054,13 @@ export interface AssignOutcome extends Ok {
 
 export type DispatchOutcome =
   | { ok: true; task: Task }
-  | { ok: false; error: string; task?: Task };
+  /**
+   * `launchHeld`: refused only because the operator's launch hold stands (Pause all with
+   * launches held, or a priority session). A caller that launches on its own waits that out
+   * rather than treating it as a failure, and it reads that from here, never by asking the
+   * hold again later, when it may already have lifted.
+   */
+  | { ok: false; error: string; task?: Task; launchHeld?: true };
 
 export type PipelineRecoveryOutcome =
   | { ok: true; task: Task }
@@ -1093,6 +1099,12 @@ function describeResetLoss(c: AssignResetConfirm): string {
   return parts.join(", ");
 }
 
+/** What the task manager needs of the daemon's `PauseManager`. */
+export interface TaskPause extends PauseRelease {
+  /** Why automatic launches are held right now, or null. */
+  launchHoldReason(): string | null;
+}
+
 /**
  * Owns the task lifecycle: create/queue, kick off dispatch, cancel (tearing down
  * the live session + terminal home + optional worktree), complete with an outcome, and
@@ -1100,6 +1112,11 @@ function describeResetLoss(c: AssignResetConfirm): string {
  * policy layer routes call into - the task analog of ReviewManager.
  */
 export class TaskManager {
+  /** Why automatic launches are held right now, or null; nothing without a `PauseManager`. */
+  private launchHold(): string | null {
+    return this.pause?.launchHoldReason() ?? null;
+  }
+
   private dispatcher: Dispatcher;
   private readonly worktrees: WorktreeManager;
   private readonly legacyWorktrees: LegacyTreehouseService;
@@ -1136,9 +1153,7 @@ export class TaskManager {
    * are exactly the awaits during which a second caller used to be able to walk in.
    */
   private readonly cleanupReservations = new Set<string>();
-  private readonly nextCompletedReturn = new Map<string, number>();
-  /** Consecutive refused completion returns per task; see `completedReturnRetryDelay`. */
-  private readonly completedReturnRefusals = new Map<string, number>();
+  private readonly nextCompletedReturn = new Map<string, { ownership: string; failures: number; due: number }>();
   /** Told after every automatic worktree return outcome, so storage health can recompute. */
   private readonly worktreeReturnListeners = new Set<() => void>();
   private readonly killedSessionReturns = new Map<string, { taskId: string; ownership: string }>();
@@ -1223,6 +1238,12 @@ export class TaskManager {
     private startupDeps: TaskManagerStartupDeps = {},
     worktrees?: WorktreeManager,
     legacyWorktrees?: LegacyTreehouseService,
+    /**
+     * The daemon's `PauseManager`: the launch hold automatic launches respect, and the thaw a
+     * stop or reset starts with. Absent - every focused test's bare manager - nothing is held
+     * and nothing can be frozen.
+     */
+    private pause?: TaskPause,
   ) {
     this.worktrees = worktrees ?? new WorktreeManager();
     this.legacyWorktrees = legacyWorktrees ?? new LegacyTreehouseService();
@@ -1351,7 +1372,6 @@ export class TaskManager {
       if (e.type === "task_remove") {
         this.autoCompleted.delete(e.id);
         this.nextCompletedReturn.delete(e.id);
-        this.completedReturnRefusals.delete(e.id);
       }
       // A kept tree reclaimed by Return, Clean up or retention, or a task removed, takes its
       // problem with it. The source decides what is gone; this only asks it again promptly.
@@ -2260,7 +2280,7 @@ export class TaskManager {
         MISSION_SESSION_CLOSURE_STOP_TIMEOUT_MS,
       ));
     });
-    const attempt = stopSession(session, this.supervisor, this.closeMergedSessionDeps.kill)
+    const attempt = stopSession(session, this.supervisor, this.closeMergedSessionDeps.kill, this.pause)
       .catch((error: unknown): ActionResult => ({
         ok: false,
         error: error instanceof Error ? error.message : String(error),
@@ -2623,6 +2643,7 @@ export class TaskManager {
       currentSession,
       this.supervisor,
       this.closeMergedSessionDeps.kill,
+      this.pause,
     );
     if (!killed.ok) {
       throw new Error(killed.error ?? "could not close the merged task's session");
@@ -3880,6 +3901,12 @@ export class TaskManager {
       return { ok: false, error: RESIDENT_TASK_REFUSAL, task: t };
     }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
+      // The operator's launch hold (Pause all, or a priority session), by the same inversion
+      // and with its own claim: only a launch that claims `overridePauseHold` gets through it.
+      // Asked after the kind and Disabled refusals, which outrank it, and before dependencies.
+      const outranked = !taskKindAllowsBacklog(t.kind) || refusedAsDisabled(t, options.overrideDisabled);
+      const held = outranked || options.overridePauseHold === true ? null : this.launchHold();
+      if (held) return { ok: false, error: held, task: t, launchHeld: true };
       const refusal = this.backlogDispatchRefusal(t, options);
       if (refusal) return { ok: false, error: refusal, task: t };
       // The same backstop shape for a Persona archived or deleted while the task waited: the
@@ -3985,6 +4012,12 @@ export class TaskManager {
       // again. The launch-only value now travels with the launch, and an unpinned task stays
       // unpinned; the model a session actually ran on is recorded on the SESSION, which is
       // where it belongs and where the card reads it from.
+      //
+      // The launch hold asked again, in front of the launch: stacked readiness above can wait
+      // on GitHub, and Pause all or a priority session may have begun meanwhile. The same claim
+      // and the same refusal as the first check.
+      const heldNow = options.overridePauseHold === true ? null : this.launchHold();
+      if (heldNow) return { ok: false, error: heldNow, task: this.registry.getTask(id) ?? t, launchHeld: true };
       void this.dispatcher.dispatch(id, launch);
       // A tickets follow-up whose first launch was refused left its source `queued`; this
       // later dispatch, by hand or by the autopilot, is the one it was waiting for.
@@ -4439,22 +4472,26 @@ export class TaskManager {
     patch: UpdateTask,
     options: { backlogOnly?: boolean } = {},
   ): Promise<Ok & { task?: Task }> {
-    const prepared = await this.prepareUpdate(id, patch);
-    if (!prepared.ok) return prepared;
-    // Preparation can await titling or tool availability. MCP edits must still name the
-    // same shelved row at the write boundary, including annotation-only edits.
-    if (options.backlogOnly) {
+    // Preparation can await tool availability or the plan-storage lock after reading its base
+    // row, and writing the prepared row would undo anything written meanwhile, a dispatch
+    // included. A dashboard edit prepares once more from the newer row, which re-runs every
+    // check; an MCP edit is refused outright and must also still name a shelved row.
+    for (let attempt = 0; ; attempt++) {
+      const prepared = await this.prepareUpdate(id, patch);
+      if (!prepared.ok) return prepared;
       const current = this.registry.getTask(id);
       if (!current) return { ok: false, error: "no such task" };
-      if (current.status !== "backlog") {
+      if (options.backlogOnly && current.status !== "backlog") {
         return { ok: false, error: `task is ${current.status}, not in the backlog` };
       }
-      if (current !== prepared.base) {
+      if (current === prepared.base) {
+        this.registry.upsertTask(prepared.task);
+        return { ok: true, task: prepared.task };
+      }
+      if (options.backlogOnly || attempt > 0) {
         return { ok: false, error: "task changed while preparing the update; retry" };
       }
     }
-    this.registry.upsertTask(prepared.task);
-    return { ok: true, task: prepared.task };
   }
 
   /**
@@ -4619,7 +4656,7 @@ export class TaskManager {
         this.workflowEvidenceEnabledForTask(missionToolsTask),
       )
     ) {
-      const tools = await missionToolsAvailability(agent);
+      const tools = await (this.startupDeps.missionTools ?? missionToolsAvailability)(agent);
       if (!tools.available) return { ok: false, error: tools.reason! };
     }
     // A switch into a planning kind pins the policy then, as creation does; a planning task keeps its own.
@@ -4640,6 +4677,8 @@ export class TaskManager {
         }
         if (patch.workflowId === undefined && (becomesPlan
           || (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")
+            // A None row makes a stored null look like the default; it is an opt-out.
+            && t.workflowId !== null
             && t.workflowId === resolveTaskWorkflowId(undefined, patch.kind ?? t.kind, t.planPolicy?.storage ?? "repository")))) {
           workflowId = resolveTaskWorkflowId(undefined, patch.kind ?? t.kind, planPolicy.storage);
         }
@@ -5120,6 +5159,8 @@ export class TaskManager {
     if (refusedAsDisabled(t, opts.overrideDisabled)) {
       return { ok: false, error: DISABLED_REFUSAL, scope: "task" };
     }
+    const held = opts.overridePauseHold === true ? null : this.launchHold();
+    if (held) return { ok: false, error: held, scope: "task" };
     const dependencyBlockers = this.dependencyBlockers(t);
     if (dependencyBlockers.length > 0) {
       return {
@@ -5202,6 +5243,7 @@ export class TaskManager {
           undefined,
           driverClearFor(this.supervisor),
           this.pendingTurns,
+          this.pause,
           // The checkout is about to take THIS task, so it lands where the task starts.
           t.baseBranch ?? null,
         ));
@@ -5281,7 +5323,8 @@ export class TaskManager {
     // agent's own submission failure is the backstop for the remaining case, and it happens
     // with the checkout intact rather than after it was reset.
     const workflowEvidence = this.workflowEvidenceEnabledForTask(t);
-    const requiresSubmissionTool = t.kind === "scout" || workflowEvidence || !!t.planInputs?.length;
+    const grillsFirst = taskGrillsFirst(t);
+    const requiresSubmissionTool = t.kind === "scout" || workflowEvidence || !!t.planInputs?.length || grillsFirst;
     const mcpDescriptor = requiresSubmissionTool
       ? await (opts.missionMcpDescriptor ?? missionMcpDescriptor)(s.cwd ?? undefined)
       : null;
@@ -5292,6 +5335,9 @@ export class TaskManager {
           ? "this is a scout, and Mission Control's MCP server is not built on this machine, so "
             + "the agent could not submit the report the task needs to finish"
           : t.planInputs?.length ? "This task has pinned plan inputs, but Mission Control's MCP reader is not built on this machine"
+          : grillsFirst && !workflowEvidence
+            ? "this task starts with Grill me first, but Mission Control's MCP server is not built on this "
+              + "machine, so the agent could not ask its questions"
           : "this workflow accepts image evidence, but Mission Control's MCP server is not built on this machine",
         scope: "task",
       };
@@ -5325,6 +5371,7 @@ export class TaskManager {
             ...(t.kind === "scout" ? [SUBMIT_SCOUT_ARTIFACTS_TOOL] : []),
             ...(t.planInputs?.length ? ["read_plan" as const] : []),
             ...(workflowEvidence ? [SUBMIT_WORKFLOW_EVIDENCE_TOOL] : []),
+            ...grillFirstMissionMcpTools(t),
           ],
           s.startedAt,
           mcpDescriptor,
@@ -5340,7 +5387,9 @@ export class TaskManager {
           error: t.kind === "scout"
             ? `this is a scout${workflowEvidence ? " with a workflow that accepts evidence" : ""}, `
               + `and ${published.reason}, so the agent could not hand over what the task needs to finish`
-            : `this workflow accepts image evidence, and ${published.reason}`,
+            : grillsFirst && !workflowEvidence
+              ? `this task starts with Grill me first, and ${published.reason}`
+              : `this workflow accepts image evidence, and ${published.reason}`,
           scope: "task",
         };
       }
@@ -5388,7 +5437,7 @@ export class TaskManager {
       return { ok: false, error: planSkills.message, scope: "task" };
     }
     // Grill me first's skill, against this session's watermark like the planning skills above.
-    const grillFirst = taskGrillsFirst(t)
+    const grillFirst = grillsFirst
       ? grillFirstForSession(s, grillAction((id) => this.registry.getSessionAction(id)))
       : null;
     if (grillFirst && !grillFirst.ok) {
@@ -7057,18 +7106,13 @@ export class TaskManager {
   ): boolean {
     if (this.closuresStopped) return false;
     if (reason === "complete" && !taskOwesWorktreeReturn(task)) return false;
-    if (reason === "complete" && (this.nextCompletedReturn.get(task.id) ?? 0) > Date.now()) return false;
     const ownership = this.worktreeOwnership(task);
+    const retry = this.nextCompletedReturn.get(task.id);
+    if (reason === "complete" && retry?.ownership === ownership && retry.due > Date.now()) return false;
     return this.cleanupQueue.enqueue({
       taskId: task.id,
       repoKeys: taskCleanupRepoKeys(task),
       run: async () => {
-        // Closure sweeps can run in quick succession. Refused return retries at a bounded,
-        // backing-off cadence, while the explicit durable obligation survives daemon restart.
-        const refusals = this.completedReturnRefusals.get(task.id) ?? 0;
-        if (reason === "complete") {
-          this.nextCompletedReturn.set(task.id, Date.now() + completedReturnRetryDelay(refusals));
-        }
         const context = { taskId: task.id, reason };
         console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_started", ...context })}`);
         let outcome: "returned" | "retained" | "failed" = "failed";
@@ -7083,19 +7127,28 @@ export class TaskManager {
           detail = readFailureClass(error);
           throw error;
         } finally {
+          let retryAt: number | undefined;
+          if (reason === "complete" && outcome !== "returned") {
+            const current = this.registry.getTask(task.id);
+            if (current && taskOwesWorktreeReturn(current)) {
+              const remaining = this.worktreeOwnership(current);
+              // Progress (including a partial provider return) and a new attempt start fresh.
+              const failures = remaining === ownership && retry?.ownership === ownership
+                ? Math.min(retry.failures + 1, 7) : 1;
+              retryAt = Date.now() + Math.min(30_000 * 2 ** (failures - 1), 1_800_000);
+              this.nextCompletedReturn.set(task.id, { ownership: remaining, failures, due: retryAt });
+            } else this.nextCompletedReturn.delete(task.id);
+          }
           if (outcome === "returned") {
-            this.nextCompletedReturn.delete(task.id);
-            this.completedReturnRefusals.delete(task.id);
             clearTaskWorktreeReturnRefusal(task.id);
           } else if (reason === "complete") {
-            this.completedReturnRefusals.set(task.id, refusals + 1);
             // Durable, so a return refused across restarts still becomes `stuck-return`.
             recordTaskWorktreeReturnRefusal(task.id, {
               reason: detail ?? "the return failed", processes,
             }, Date.now());
           }
           this.notifyWorktreeReturnOutcome();
-          console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_completed", ...context, outcome, detail })}`);
+          console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_completed", ...context, outcome, detail, retryAt })}`);
         }
       },
     });
@@ -7126,10 +7179,10 @@ export class TaskManager {
       const occupancy = await (this.startupDeps.occupancy ?? inspectWorktreeOccupancy)(paths);
       for (const path of paths) {
         const state = occupancy.get(path);
-        if (!state || state.status === "unknown") return "checkout occupancy is unknown";
+        if (!state || state.status === "unknown") return `checkout occupancy is unknown: ${state?.reason.slice(0, 1024) ?? "not observed"}`;
         if (state.occupants.length) {
           blocking = state.occupants.map(({ pid, command }) => ({ pid, command }));
-          return "a process still uses a checkout";
+          return `a process still uses a checkout: ${describeWorktreeOccupants(state.occupants)}`;
         }
       }
       return owned() ? null : "task ownership changed";

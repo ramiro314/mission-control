@@ -18,7 +18,7 @@ import { api } from "../../lib/api.ts";
 import { useTerminalTargets } from "../../lib/terminalTargets.ts";
 import { agentRowUnavailable, LaunchList } from "../LaunchMenu.tsx";
 import { Overlay, OVERLAY_IDS } from "../Overlay.tsx";
-import { RUNTIME_LABEL } from "../session-bits.tsx";
+import { RUNTIME_LABEL } from "../../lib/session-text.ts";
 import { Tooltip } from "../Tooltip.tsx";
 
 /**

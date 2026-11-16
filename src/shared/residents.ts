@@ -240,6 +240,8 @@ export type ResidentMcpNativeSources = (typeof RESIDENT_MCP_NATIVE_SOURCES)[numb
 export const ResidentMcpSectionSchema = z
   .object({
     nativeSources: z.enum(RESIDENT_MCP_NATIVE_SOURCES).default("pinned"),
+    /** Opt-in workaround for Claude's plugin/connector double suppression. Only applies to all native sources. */
+    disableClaudeAiConnectors: z.boolean().optional(),
     inheritDefaults: z.boolean().default(true),
     selected: z
       .array(ResidentMcpServerRefSchema)
@@ -302,6 +304,20 @@ export function residentMarker(settings: Pick<ResidentProfileRevision, "identity
  */
 export const RESIDENT_LOOP_PROMPT = "Continue your standing task. Check what has changed since your last iteration, act on it, and end with a one-line status. Call `schedule_next_iteration` if you need to wake sooner or later than usual.";
 
+/**
+ * Sent with every resident `/compact`, ahead of the profile's own focus.
+ *
+ * Without it the summarizer's generic template names "Begin your standing task." as the
+ * primary request and the last item in flight as the next step, so the resident resumes that
+ * item rather than its mandate. One line, because it rides on the command's argument line.
+ */
+export const RESIDENT_COMPACTION_FOCUS = "This is a long-running resident whose standing task is defined in its standing instructions. Under the primary request, restate that standing task and every instruction, correction or decision the operator gave in this conversation verbatim, not paraphrased. Report the most recent item only as current work, never as the primary request.";
+
+/** The focus a resident's compaction is sent with: the built-in focus, then the profile's own. */
+export function residentCompactionFocus(profileFocus: string): string {
+  return [RESIDENT_COMPACTION_FOCUS, profileFocus.trim()].filter(Boolean).join(" ");
+}
+
 export const ResidentLoopSectionSchema = z.object({
   prompt: z.string().trim().min(1).max(8_000).default(RESIDENT_LOOP_PROMPT),
   delaySeconds: z.number().int().min(1).max(604_800).default(300),
@@ -339,6 +355,8 @@ export interface ResidentLoopStatus {
   consumedGeneration: number | null;
   pauseReason: string | null;
   wakeReason: string | null;
+  /** When Run now was pressed while the resident was busy; it runs once the session is idle. */
+  runRequestedAt: number | null;
 }
 
 export const RESIDENT_PROFILE_SECTIONS = {
@@ -579,7 +597,7 @@ export function residentRunSummary(run: ResidentRun): ResidentRunSummary | null 
     compaction: HARNESS_CAPABILITIES[run.settings.execution.agent].residentCompaction!,
     loopState: run.loopState, iteration: run.iteration, lastSeq: run.lastSeq,
     nextWakeAt: run.nextWakeAt, consumedGeneration: run.consumedGeneration,
-    pauseReason: run.pauseReason, wakeReason: run.wakeReason,
+    pauseReason: run.pauseReason, wakeReason: run.wakeReason, runRequestedAt: run.runRequestedAt,
     settings: residentRunSummarySettings(run.settings),
     createdAt: run.createdAt,
   };
@@ -707,7 +725,7 @@ export type ResidentLaunchResult =
 export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly string[]): string {
   const resolved = labels && labels.length === mcp.selected.length ? labels : null;
   if (mcp.nativeSources === "all") {
-    const base = "MCP: all native sources (not pinned)";
+    const base = `MCP: all native sources (not pinned)${mcp.disableClaudeAiConnectors ? ", claude.ai connectors off" : ""}`;
     const custom = mcp.selected.flatMap((ref, at) => (ref.source === "custom" ? [at] : []));
     if (custom.length === 0) return base;
     return `${base} + ${resolved ? custom.map((at) => resolved[at]).join(", ") : `${custom.length} custom`}`;

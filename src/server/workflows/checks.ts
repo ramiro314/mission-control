@@ -120,6 +120,8 @@ export interface CheckExecutionRequest {
    * absent for origin's default. Read by the slot that selects by what changed, `affected-tests`.
    */
   baseBranch?: string | null;
+  /** Expected publishable content, when captured by the publication policy. */
+  publicationTreeOid?: string | null;
   /** Frozen from the catalog before the attempt starts. */
   timeoutMs?: number;
   coderabbit?: CodeRabbitComparison;
@@ -428,6 +430,7 @@ export interface RunCheckInput {
     headSha: string | null;
     /** The task's base branch for this repository, or null - see `CheckExecutionRequest`. */
     baseBranch?: string | null;
+    publicationTreeOid?: string | null;
 }
 
 export async function runCheck(
@@ -548,6 +551,7 @@ export async function runCheck(
     // global default, which names no repository, runs at the checkout root.
     workingSubpath: resolved.workingSubpath,
     headSha: input.headSha,
+    ...(input.publicationTreeOid ? { publicationTreeOid: input.publicationTreeOid } : {}),
     timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command!),
     baseBranch: input.baseBranch ?? null,
     ...(affectedTargets ? { affectedTargets } : {}),

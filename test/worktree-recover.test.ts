@@ -344,7 +344,7 @@ test("a quarantined slot raises one bannered problem keyed by its durable entry 
   });
 
   // Quarantining an already quarantined slot continues the same occurrence.
-  m.store.quarantine(slot.id, "slot Git state is unknown", null, slot.quarantinedAt! + 60_000);
+  m.store.quarantine(slot.id, "transition", "slot Git state is unknown", null, slot.quarantinedAt! + 60_000);
   assert.equal(m.store.slot(slot.id)?.quarantinedAt, slot.quarantinedAt);
   assert.equal(quarantinedSlotProblems(m.store.slots())[0]?.id, problem!.id);
 
@@ -355,7 +355,7 @@ test("a quarantined slot raises one bannered problem keyed by its durable entry 
   assert.equal(m.store.slot(slot.id)?.state, "available");
   assert.deepEqual(quarantinedSlotProblems(m.store.slots()), []);
   const reentered = slot.quarantinedAt! + 120_000;
-  m.store.quarantine(slot.id, "slot Git state is unknown", null, reentered);
+  m.store.quarantine(slot.id, "transition", "slot Git state is unknown", null, reentered);
   assert.equal(m.store.slot(slot.id)?.quarantinedAt, reentered);
   const [again] = quarantinedSlotProblems(m.store.slots());
   assert.equal(again?.id, `quarantined-slot:${slot.id}:${reentered}`);
@@ -465,7 +465,7 @@ test("a recorded refusal is shown only for the quarantine it judged", async () =
 
   // Still quarantined, but quarantined again: the version moved, so the old refusal no longer
   // describes it, and neither the manager nor the inventory shows it.
-  const requarantined = m.store.quarantine(slot.id, "slot Git registration is bare, locked, or prunable", null, Date.now(), judged.version);
+  const requarantined = m.store.quarantine(slot.id, "transition", "slot Git registration is bare, locked, or prunable", null, Date.now(), judged.version);
   assert.ok(requarantined);
   assert.equal(requarantined.state, "quarantined");
   assert.equal(m.recoveryRefusal(requarantined), null);
@@ -547,7 +547,7 @@ async function quarantinedSlot(
   assert.equal((await m.release(held, { ownerAuthorized: true })).outcome, "released");
   const available = m.store.slot(held.slotId)!;
   assert.equal(available.state, "available");
-  assert.ok(m.store.quarantine(held.slotId, reason, detail, Date.now(), available.version));
+  assert.ok(m.store.quarantine(held.slotId, "transition", reason, detail, Date.now(), available.version));
   return { path: held.path, slotId: held.slotId };
 }
 
@@ -621,7 +621,7 @@ for (const { name, refusal, deps, arrange } of STAYS_QUARANTINED) {
     const { clone, sha } = repository("mission-recover-stays-");
     const m = manager(deps);
     const held = await leased(m, clone, sha, "task-stays");
-    assert.ok(m.store.quarantine(held.slotId, "slot process occupancy is unknown", null, Date.now(), held.slotVersion));
+    assert.ok(m.store.quarantine(held.slotId, "transition", "slot process occupancy is unknown", null, Date.now(), held.slotVersion));
     write(held.path, "notes.md", "draft\n");
     arrange?.(held.path);
     const judged = m.store.slot(held.slotId)!;
@@ -706,7 +706,7 @@ test("a quarantine outside the candidates is never judged, even once every read 
   const m = manager();
   const { slotId } = await quarantinedSlot(m, clone, sha, "task-never", "slot Git state is unknown");
   for (const reason of [...REGISTRATION_OR_IDENTITY_REASONS, ...OTHER_FAULTS]) {
-    assert.ok(m.store.quarantine(slotId, reason, null, Date.now()));
+    assert.ok(m.store.quarantine(slotId, "transition", reason, null, Date.now()));
     const row = m.store.slot(slotId)!;
     // Repair answers these in the pass; `test/worktree-repair.test.ts` holds what it does.
     if (!registrationRepairQuarantine(reason)) await m.recoverQuarantines();
@@ -726,7 +726,7 @@ test("a registration or identity quarantine carrying Git's lock text is still ne
   const { path, slotId } = await quarantinedSlot(m, clone, sha, "task-never-lock", "slot Git state is unknown");
   const lockText = `git checkout failed: fatal: Unable to create '${await lockPath(path)}': File exists.`;
   for (const reason of [...REGISTRATION_OR_IDENTITY_REASONS, "slot path or Git registration is missing: cause"]) {
-    assert.ok(m.store.quarantine(slotId, reason, lockText, Date.now()));
+    assert.ok(m.store.quarantine(slotId, "transition", reason, lockText, Date.now()));
     const row = m.store.slot(slotId)!;
     assert.equal(lockCausedQuarantine(row.lastError), true, "the error alone reads as lock-caused");
     if (!registrationRepairQuarantine(reason)) await m.recoverQuarantines();

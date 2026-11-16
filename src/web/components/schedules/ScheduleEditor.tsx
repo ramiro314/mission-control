@@ -224,6 +224,9 @@ export function ScheduleEditor({
     useState<KindWorkflowDefaults | "unreadable" | null>(null);
   // A kind preset written before the rows were known, corrected when they land.
   const provisionalWorkflow = useRef<{ kind: TaskKind; workflowId: string } | null>(null);
+  // Where the mission stood at a first switch made before the rows were known, so whether it
+  // sat on its kind's row can be asked again against the real rows.
+  const deferredOrigin = useRef<{ kind: TaskKind; workflowId: string } | null>(null);
   const [repos, setRepos] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<ScheduleValidationField, string>>>(
@@ -265,18 +268,48 @@ export function ScheduleEditor({
   const rowsKnown = kindWorkflowDefaults !== null && kindWorkflowDefaults !== "unreadable";
   const rows: KindWorkflowDefaults = rowsKnown ? kindWorkflowDefaults : {};
 
-  // The rows landed after a kind switch guessed at them: replace the guess with the kind's
-  // real row, unless the operator has since chosen, or the kind has moved on.
-  useEffect(() => {
-    const guess = provisionalWorkflow.current;
-    if (!rowsKnown || !guess) return;
+  const pendingGuesses = () => ({ guess: provisionalWorkflow.current, origin: deferredOrigin.current });
+
+  /**
+   * Re-answer what kind switches decided before the rows were known: the kind's preset, and
+   * what a return to a preset-less kind restores. Returns the draft correction; a manual
+   * After work edit clears both guesses, so it is never undone. Safe to apply twice.
+   */
+  function settleGuesses(
+    { guess, origin }: ReturnType<typeof pendingGuesses>,
+    configured: KindWorkflowDefaults,
+  ): (prev: EditorDraft) => EditorDraft {
     provisionalWorkflow.current = null;
-    const resolved = missionPresetWorkflowId(guess.kind, rows);
-    if (resolved === undefined || resolved === guess.workflowId) return;
-    setDraft((prev) =>
-      prev.kind === guess.kind && prev.workflowId === guess.workflowId
-        ? { ...prev, workflowId: resolved }
-        : prev);
+    deferredOrigin.current = null;
+    const restoreFor = (of: KindWorkflowDefaults): string | null => {
+      if (!origin) return null;
+      const preset = missionPresetWorkflowId(origin.kind, of);
+      return preset !== undefined && origin.workflowId === preset ? "" : origin.workflowId;
+    };
+    const guessedRestore = restoreFor({});
+    const realRestore = restoreFor(configured);
+    if (guessedRestore !== null && workflowBeforeKindDefault.current === guessedRestore) {
+      workflowBeforeKindDefault.current = realRestore;
+    }
+    return (prev) => {
+      if (guess && prev.kind === guess.kind && prev.workflowId === guess.workflowId) {
+        const resolved = missionPresetWorkflowId(guess.kind, configured);
+        return resolved === undefined ? prev : { ...prev, workflowId: resolved };
+      }
+      if (
+        realRestore !== null
+        && missionPresetWorkflowId(prev.kind, configured) === undefined
+        && prev.workflowId === guessedRestore
+      ) {
+        return { ...prev, workflowId: realRestore };
+      }
+      return prev;
+    };
+  }
+
+  useEffect(() => {
+    if (!rowsKnown) return;
+    setDraft(settleGuesses(pendingGuesses(), rows));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when the rows arrive
   }, [kindWorkflowDefaults]);
 
@@ -284,8 +317,12 @@ export function ScheduleEditor({
     if (kind === draft.kind) return;
     provisionalWorkflow.current = null;
     const preset = (of: TaskKind): string | undefined => missionPresetWorkflowId(of, rows);
-    workflowBeforeKindDefault.current ??=
-      preset(draft.kind) !== undefined && draft.workflowId === preset(draft.kind) ? "" : null;
+    // Only before the first switch: null is also what an explicit After work edit leaves.
+    if (workflowBeforeKindDefault.current === undefined) {
+      workflowBeforeKindDefault.current =
+        preset(draft.kind) !== undefined && draft.workflowId === preset(draft.kind) ? "" : null;
+      if (kindWorkflowDefaults === null) deferredOrigin.current = { kind: draft.kind, workflowId: draft.workflowId };
+    }
     let workflowId = draft.workflowId;
     const kindPreset = preset(kind);
     if (kindPreset !== undefined) {
@@ -366,6 +403,23 @@ export function ScheduleEditor({
     return errors;
   }
 
+  /**
+   * The draft's definition, with a kind preset guessed before the rows loaded resolved
+   * against the real rows first: saved as-is, every future run would take a built-in the
+   * operator may have replaced. Rows that cannot be read keep the guess, as the hint says.
+   */
+  async function settledDefinition(): Promise<ScheduleDefinitionPayload> {
+    const pending = pendingGuesses();
+    if (kindWorkflowDefaults !== null || (!pending.guess && !pending.origin)) return definition;
+    const fetched = await fetchKindWorkflowDefaults();
+    setKindWorkflowDefaults(fetched ?? "unreadable");
+    if (!fetched) return definition;
+    const correct = settleGuesses(pending, fetched);
+    setDraft(correct);
+    const settled = correct(draft);
+    return settled === draft ? definition : draftToDefinition(settled);
+  }
+
   async function save(enable: boolean): Promise<void> {
     const local = localValidation();
     if (Object.keys(local).length > 0) {
@@ -376,24 +430,25 @@ export function ScheduleEditor({
     setSaving(true);
     setFieldErrors({});
     setFormError(null);
+    const payload = await settledDefinition();
 
     // Save & enable must first obtain a successful preview for the CURRENT definition, so
     // a stale or failed cadence can never be enabled. Save paused skips this - a paused
     // schedule starts no clock - but still relies on the save route's own validation.
     if (enable) {
-      const preview = await previewSchedule({ ...definition, excludeScheduleId: schedule?.id });
+      const preview = await previewSchedule({ ...payload, excludeScheduleId: schedule?.id });
       if (!preview.ok) {
         setSaving(false);
         setFieldErrors({ [preview.error.field]: preview.error.message });
         setFormError("The cadence must preview successfully before it can be enabled.");
         return;
       }
-      setPreviewedOk(fingerprint);
+      setPreviewedOk(scheduleDefinitionFingerprint(payload));
     }
 
     // A create is atomic: the route takes `enabled` in one write.
     if (!schedule) {
-      const result = await createSchedule({ ...definition, enabled: enable });
+      const result = await createSchedule({ ...payload, enabled: enable });
       setSaving(false);
       if (!result.ok) {
         if (result.field) setFieldErrors({ [result.field]: result.error ?? "Invalid value." });
@@ -426,7 +481,7 @@ export function ScheduleEditor({
       }
     }
 
-    const result = await updateSchedule(schedule.id, definition);
+    const result = await updateSchedule(schedule.id, payload);
     if (!result.ok) {
       // The save failed: undo the pre-emptive pause so the mission is left exactly as it
       // was (enabled, previous revision) rather than stopped by a rejected edit.
@@ -661,6 +716,7 @@ export function ScheduleEditor({
                 onChange={(event) => {
                   workflowBeforeKindDefault.current = null;
                   provisionalWorkflow.current = null;
+                  deferredOrigin.current = null;
                   update({ workflowId: event.target.value });
                 }}
               >
@@ -682,8 +738,8 @@ export function ScheduleEditor({
           {afterWorkWhy && <span className="field-hint">{afterWorkWhy}</span>}
           {kindWorkflowDefaults === "unreadable" && !afterWorkWhy && (
             <span className="field-hint">
-              Each kind's After work on Settings → Tasks could not be read, so choosing a kind
-              preselects its built-in Workflow. Check the choice before saving.
+              The After work defaults on Settings → Tasks could not be read, so choosing a
+              kind preselects its built-in Workflow. Check the choice before saving.
             </span>
           )}
           {strandedWorkflow && !afterWorkWhy && (

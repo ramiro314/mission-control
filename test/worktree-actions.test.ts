@@ -573,7 +573,7 @@ test("an owned quarantine names its owner, offers the owner's own Return, and re
     notifyChanged: () => {},
     diskBytes: async () => 0,
   });
-  ownedManager.store.quarantine(primary.lease.slotId, "worktree reset failed", "git checkout failed", Date.now());
+  ownedManager.store.quarantine(primary.lease.slotId, "transition", "worktree reset failed", "git checkout failed", Date.now());
   const card = async () => (await owned.inventory()).repositories.flatMap((repo) => repo.slots)
     .find((slot) => slot.id === primary.lease.slotId)!;
 
@@ -653,7 +653,7 @@ test("a quarantined slot under a warm lease offers no Return, and the preview na
     "UPDATE worktree_slots SET active_owner_kind = 'warm', active_owner_key = 'warm-op-1' WHERE id = ?",
   ).run(acquired.lease.slotId);
   (seedManager as unknown as { liveWarmOwners: Set<string> }).liveWarmOwners.add("warm-op-1");
-  seedManager.store.quarantine(acquired.lease.slotId, "worktree reset failed", null, Date.now());
+  seedManager.store.quarantine(acquired.lease.slotId, "transition", "worktree reset failed", null, Date.now());
   const seeded = new WorktreeOperationsService(seedManager, {
     legacy: new LegacyTreehouseService(db),
     tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },

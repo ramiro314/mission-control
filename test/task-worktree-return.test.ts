@@ -12,7 +12,7 @@ import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-return-"));
 process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager, completedReturnRetryDelay, COMPLETED_RETURN_RETRY_CAP_MS } = await import("./helpers/task-manager-fixture.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { WorktreeTeardownError, teardownWorktree } = await import("../src/server/dispatcher.ts");
 const { worktreeReturnBlocker } = await import("../src/server/git/worktree-return-safety.ts");
 const { getTaskSessionClosure, openTaskSessionClosure, openDb, closeDb, taskOwesWorktreeReturn,
@@ -320,20 +320,49 @@ for (const table of ["task_worktree_returns", "task_session_closures"]) {
   });
 }
 
-test("a partial completion return retains its obligation until the secondary tree returns", async (t) => {
+test("partial completion return resets backed-off retries while retaining the secondary tree obligation", async (t) => {
   let now = Date.now();
   t.mock.method(Date, "now", () => now);
+  const completed: Array<{ outcome: string; retryAt?: number }> = [];
+  t.mock.method(console, "info", (message: string) => {
+    if (!message.startsWith("[tasks] {")) return;
+    const record = JSON.parse(message.slice("[tasks] ".length));
+    if (record.event === "worktree_return_completed") completed.push(record);
+  });
   const w = world({ sessionId: null, extraRepos: [extra] });
   w.sessions.clear();
-  w.state.partial = true;
+  w.state.occupancy = { status: "unknown", reason: "scan unavailable" };
   await w.manager.complete(w.task.id, "finished");
   await w.manager.settleWorktreeReturns();
-  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, null);
-  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), true);
-  w.state.partial = false;
-  now += 30_001;
+  assert.equal(completed.at(-1)?.retryAt, now + 30_000);
+  now += 30_000;
   await w.manager.sweepMissionSessionClosures();
   await w.manager.settleWorktreeReturns();
+  assert.equal(completed.length, 2);
+  assert.equal(completed.at(-1)?.retryAt, now + 60_000);
+
+  now += 60_000;
+  w.state.occupancy = { status: "known", occupants: [] };
+  w.state.partial = true;
+  await w.manager.sweepMissionSessionClosures();
+  await w.manager.settleWorktreeReturns();
+  assert.equal(completed.length, 3);
+  assert.equal(completed.at(-1)?.outcome, "retained");
+  assert.equal(completed.at(-1)?.retryAt, now + 30_000, "partial progress resets the next delay, rather than doubling it to 120 seconds");
+  assert.deepEqual(w.state.released, ["/pool/one"]);
+  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, null);
+  assert.equal(w.registry.getTask(w.task.id)?.extraRepos[0]?.worktreePath, "/pool/two");
+  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), true);
+  w.state.partial = false;
+  now += 29_999;
+  await w.manager.sweepMissionSessionClosures();
+  await w.manager.settleWorktreeReturns();
+  assert.equal(completed.length, 3, "no return before the reset delay expires");
+  now++;
+  await w.manager.sweepMissionSessionClosures();
+  await w.manager.settleWorktreeReturns();
+  assert.equal(completed.length, 4);
+  assert.equal(completed.at(-1)?.outcome, "returned");
   assert.deepEqual(w.state.released, ["/pool/one", "/pool/two"]);
   assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), false);
 });
@@ -365,7 +394,6 @@ test("a completion return that keeps being refused backs off instead of retrying
   await sweepAfter(120_001);
   assert.equal(attempts(), 4);
   assert.deepEqual(w.state.released, ["/pool/one"]);
-  assert.equal(completedReturnRetryDelay(40), COMPLETED_RETURN_RETRY_CAP_MS, "the wait is capped");
 });
 
 test("a refused completion return records its first refusal and latest reason, and success clears them", async (t) => {
@@ -384,7 +412,7 @@ test("a refused completion return records its first refusal and latest reason, a
   assert.deepEqual(listTaskWorktreeReturnRefusals(), [{
     taskId: w.task.id,
     firstRefusedAt: first,
-    refusal: { reason: "a process still uses a checkout", processes: [{ pid: 4242, command: "node vite" }] },
+    refusal: { reason: "a process still uses a checkout: PID 4242 node vite", processes: [{ pid: 4242, command: "node vite" }] },
   }]);
 
   w.state.occupancy = { status: "unknown", reason: "ps timed out" };
@@ -394,7 +422,7 @@ test("a refused completion return records its first refusal and latest reason, a
   assert.deepEqual(listTaskWorktreeReturnRefusals(), [{
     taskId: w.task.id,
     firstRefusedAt: first,
-    refusal: { reason: "checkout occupancy is unknown", processes: [] },
+    refusal: { reason: "checkout occupancy is unknown: ps timed out", processes: [] },
   }], "a later refusal keeps the first time and replaces the reason");
 
   w.state.occupancy = { status: "known", occupants: [] };
@@ -516,4 +544,52 @@ for (const outcome of ["returned", "retained", "failed"] as const) {
     ]);
     if (outcome !== "returned") assert.equal(typeof records[1]?.detail, "string");
   });
+}
+
+for (const observation of ["unknown", "occupied"] as const) {
+ test(`${observation} completion returns back off from completion time, cap at thirty minutes, and recover`, async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  let scans = 0;
+  let blocked = true;
+  const records: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "info", (message: string) => {
+    if (message.startsWith("[tasks] {")) records.push(JSON.parse(message.slice("[tasks] ".length)));
+  });
+  const w = world({ sessionId: null }, true, {
+    occupancy: async (paths) => {
+      scans++;
+      now += 1_000; // A slow observation must not spend its own retry delay.
+      return new Map(paths.map((path) => [path, blocked
+        ? observation === "unknown"
+          ? { status: "unknown" as const, reason: "lsof timed out" }
+          : { status: "known" as const, occupants: [{ pid: 99, ppid: 1, startRaw: "now", startMs: 1,
+              command: "node dev-server", cwd: path, knownOwner: null }] }
+        : { status: "known" as const, occupants: [] }]));
+    },
+  });
+  w.sessions.clear();
+  await w.manager.complete(w.task.id, "finished");
+  await w.manager.settleWorktreeReturns();
+  assert.match(String(records[1]?.detail), observation === "unknown" ? /lsof timed out/ : /PID 99 node dev-server/);
+  assert.equal(records[1]?.retryAt, now + 30_000);
+  for (const delay of [30_000, 60_000, 120_000, 240_000, 480_000, 960_000, 1_800_000, 1_800_000]) {
+    const before = scans;
+    now += delay - 1;
+    await w.manager.sweepMissionSessionClosures();
+    await w.manager.settleWorktreeReturns();
+    assert.equal(scans, before, `no scan before ${delay} ms`);
+    now++;
+    await w.manager.sweepMissionSessionClosures();
+    await w.manager.settleWorktreeReturns();
+    assert.equal(scans, before + 1);
+  }
+  blocked = false;
+  now += 1_800_000;
+  await w.manager.sweepMissionSessionClosures();
+  await w.manager.settleWorktreeReturns();
+  assert.deepEqual(w.state.released, ["/pool/one"]);
+  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), false);
+});
+
 }

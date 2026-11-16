@@ -1,3 +1,4 @@
+import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -25,7 +26,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb, workCycleFor, openTaskSessionClosure, getTaskSessionClosure, clearTaskSessionClosure, getTask } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
+const { MAX_RESUME_DEFERRALS, RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
   "../src/server/sdk/supervisor.ts"
 );
 const { CAPACITY_CONTINUATION_PROMPT, CAPACITY_RETRY_MAX_ATTEMPTS, capacityRetryPlan } = await import(
@@ -59,7 +60,7 @@ test("a retired mission's failed SDK stop stays owed and rejects follow-up until
   const fake = withFakeDriver(async () => handle);
   t.after(fake.restore);
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const tasks = new TaskManager(registry, undefined, supervisor);
   t.after(() => tasks.stopMissionSessionClosures());
   const session = await supervisor.start(START);
@@ -234,7 +235,7 @@ test("a resident's measured native limit is persisted and replayed by a fresh su
   t.after(fake.restore);
   const registry = new Registry();
   registry.upsertTask(mkTask({ id: "native-task", kind: "resident", status: "running", agent: "codex" }));
-  const original = new SdkSupervisor(registry);
+  const original = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const session = await original.start({ ...START, agent: "codex", model: "test-model", taskId: "native-task" });
   first.push({ kind: "bound", agentSessionId: "native-thread", transcriptPath: null, modelId: "test-model", pid: null });
   await drain();
@@ -246,7 +247,7 @@ test("a resident's measured native limit is persisted and replayed by a fresh su
   assert.equal(getSdkSession(session.id)?.residentCompactionTokenLimit, 180880);
   residents.markResidentRunLaunched("native-run", null);
   await original.stopAll();
-  const restored = new SdkSupervisor(new Registry());
+  const restored = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
   t.after(() => restored.stopAll());
   await restored.restore();
   assert.equal(fake.calls[1]?.resume, "native-thread");
@@ -261,7 +262,7 @@ test("a task's advisor pin is kept on the driver row and replayed by a restore",
   const handles = [first, fakeHandle()];
   const fake = withFakeDriver(async () => handles.shift()!);
   t.after(fake.restore);
-  const original = new SdkSupervisor(new Registry());
+  const original = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
   const session = await original.start({ ...START, cwd: "/wt/advisor-pin", advisorModel: "opus" });
   assert.equal(fake.calls[0]?.advisorModel, "opus");
   first.push({ kind: "bound", agentSessionId: "advisor-pin-thread", transcriptPath: null, modelId: null, pid: null });
@@ -269,7 +270,7 @@ test("a task's advisor pin is kept on the driver row and replayed by a restore",
   assert.equal(getSdkSession(session.id)?.advisorModel, "opus");
   await original.stopAll();
 
-  const restored = new SdkSupervisor(new Registry());
+  const restored = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
   t.after(() => restored.stopAll());
   await restored.restore();
   const relaunch = fake.calls.slice(1).find((call) => call.resume === "advisor-pin-thread");
@@ -281,7 +282,7 @@ test("a task's advisor pin is kept on the driver row and replayed by a restore",
   const inheritHandle = fakeHandle();
   const inherit = withFakeDriver(async () => inheritHandle);
   t.after(inherit.restore);
-  const plainSupervisor = new SdkSupervisor(new Registry());
+  const plainSupervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
   t.after(() => plainSupervisor.stopAll());
   const plain = await plainSupervisor.start({ ...START, cwd: "/wt/advisor-inherit" });
   assert.equal(getSdkSession(plain.id)?.advisorModel, null);
@@ -295,7 +296,7 @@ test("the supervisor persists the observed child lifetime after the stream ends 
   t.after(fake.restore);
   const registry = new Registry();
   let scans = 0;
-  const supervisor = new SdkSupervisor(registry, { processSnapshot: async () => {
+  const supervisor = new SdkSupervisor(registry, { ...MISSION_TEST_MCP_DEPS,  processSnapshot: async () => {
     scans++;
     return { processes: [{ pid: pid!, ppid: 1, tty: null, startRaw: "fixture", startMs: pid! * 100,
       command: "fixture", agent: null, agentNative: false }], unknownReason: null, cwdScopePids: [], completedCollectorPids: [] };
@@ -477,7 +478,7 @@ test("the SDK supervisor persists macOS start and command identity without retai
   t.after(fake.restore);
   const startRaw = 'Tue Nov 3 10:00:00 2026';
   const command = '/fixture/sdk-driver --private SECRET';
-  const supervisor = new SdkSupervisor(new Registry(), {processSnapshot: async () => ({
+  const supervisor = new SdkSupervisor(new Registry(), { ...MISSION_TEST_MCP_DEPS, processSnapshot: async () => ({
     processes: [{pid, ppid: 1, tty: null, startRaw, startMs: Date.parse(startRaw), command, agent: null, agentNative: false}],
     unknownReason: null, cwdScopePids: [], completedCollectorPids: [],
   })});
@@ -504,7 +505,7 @@ test("Codex SDK sessions carry their synthetic identity into Mission MCP", async
     env: { MISSION_CONTROL_URL: "http://127.0.0.1:7317" },
   };
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   try {
     const first = await supervisor.start({
       ...START,
@@ -549,7 +550,7 @@ test("start persists a row, registers the card, and records the binding", async 
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const driverPrompt = `${START.prompt}\n\nserver-owned launch context`;
     const session = await supervisor.start({
       ...START,
@@ -613,7 +614,7 @@ test("an embedded session releases its disposable state home when its driver end
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     await supervisor.start(START);
     const stateHome = fake.calls[0]?.stateHome;
     assert.ok(stateHome);
@@ -631,7 +632,7 @@ test("an acknowledged human follow-up updates Goal only for its original convers
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.push({
       kind: "bound",
@@ -690,7 +691,7 @@ async function boundFollowUpSession(conversation: string) {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const session = await supervisor.start(START);
   handle.push({ kind: "bound", agentSessionId: conversation, transcriptPath: null, modelId: null, pid: null });
   await waitFor(() => registry.getGoal(session.id)?.prompt === START.prompt);
@@ -996,7 +997,7 @@ test("accepted launch-window follow-ups wait for the native Goal key in order", 
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
 
     await supervisor.send(
@@ -1034,7 +1035,7 @@ for (const when of ["before", "after"] as const) {
     const fake = withFakeDriver(async () => handle);
     t.after(fake.restore);
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     const conversation = `agent-launch-window-echo-${when}`;
     const text = `a launch-window follow-up acknowledged ${when} the bind`;
@@ -1072,7 +1073,7 @@ test("an in-flight launch-window follow-up echoed before its acknowledgement ope
   const fake = withFakeDriver(async () => handle);
   t.after(fake.restore);
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const session = await supervisor.start(START);
   const conversation = "agent-launch-window-early-echo";
   const text = "a launch-window follow-up whose echo beats its acknowledgement";
@@ -1112,7 +1113,7 @@ test("a launch-window acknowledgement survives the first binding race", async ()
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     const sending = supervisor.send(
       session.id,
@@ -1159,7 +1160,7 @@ test("a clear before the first binding discards the replaced conversation's Goal
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
 
     assert.equal(await supervisor.clearContext(session.id), true);
@@ -1207,7 +1208,7 @@ test("a completed turn preserves durability while an accepted follow-up remains"
       if (event.kind === "turn_done") observedCompletions.push(event);
       applyDriverEvent(id, event, options);
     };
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
 
     handle.push({ kind: "state", state: "working", activity: null });
@@ -1235,7 +1236,7 @@ test("a follow-up is durably recoverable before the driver can accept it", async
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.push({ kind: "turn_done", usage: null });
     await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
@@ -1261,7 +1262,7 @@ test("a queued send rechecks its target inside session serialization", async () 
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.push({ kind: "turn_done", usage: null });
     await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
@@ -1299,7 +1300,7 @@ test("a prompt queued before mission completion cannot reach the concluded SDK d
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
   t.after(fake.restore);
-  const supervisor = new SdkSupervisor(new Registry());
+  const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
   const session = await supervisor.start(START);
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
@@ -1321,7 +1322,7 @@ test("idle-only delivery rolls back its durable reservation when the driver beca
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.push({ kind: "turn_done", usage: null });
     await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
@@ -1357,7 +1358,7 @@ test("a steered follow-up leaves no completion outstanding once the turn ends", 
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.send = async (turn) => {
       handle.sent.push(turn);
@@ -1398,7 +1399,7 @@ test("a delivery absorbed by a vendor-started turn is retired by that turn's com
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.push({ kind: "turn_done", usage: null });
     await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
@@ -1430,7 +1431,7 @@ test("a rejected follow-up releases only its recovery reservation", async () => 
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.send = async () => {
       assert.equal(
@@ -1472,7 +1473,7 @@ test("a failed recovery write prevents the driver from accepting the turn", asyn
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.push({ kind: "turn_done", usage: null });
     await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
@@ -1504,7 +1505,7 @@ test("a driver we cannot take ownership of is stopped, not leaked", async () => 
   const fake = withFakeDriver(async () => handles.shift()!);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     // A duplicate id is the only way `adopt` refuses, and it is the one that matters: two
     // handles believing they own one card would leave the loser pumping into a session it
@@ -1537,7 +1538,7 @@ test("an exit evicts the card through the ordinary sequence", async (t) => {
     registry.subscribe((e: ServerEvent) => {
       if (e.type === "session_remove") removed.push(e.id);
     });
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.push({ kind: "exited", reason: "done", resumable: false });
     handle.end();
@@ -1599,7 +1600,7 @@ test("restore preparation publishes only readable live rows with stable display 
      ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, 0, NULL, ?, ?)`,
   ).run("sdk:prepared-future", "claude", "agent-future", "/repo/future", "paused-v2", 300, 300);
 
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   assert.equal(supervisor.prepareRestore(), 1);
   assert.equal(supervisor.prepareRestore(), 1, "preparation is idempotent and does not republish");
   assert.deepEqual(registry.snapshot().restoringSessions, [{
@@ -1637,7 +1638,7 @@ test("shutdown joins an in-flight restore and never launches the next prepared r
   const fake = withFakeDriver(() => launchHeld);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     assert.equal(supervisor.prepareRestore(), 2);
     const restoring = supervisor.restore();
     await waitFor(() => fake.calls.length === 1);
@@ -1682,7 +1683,7 @@ test("shutdown stays bounded while an in-flight restore owns late handle cleanup
   const fake = withFakeDriver(() => launchHeld);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     supervisor.prepareRestore();
     const restoring = supervisor.restore();
     await waitFor(() => fake.calls.length === 1);
@@ -1716,7 +1717,7 @@ test("shutdown owns a fresh SDK launch already waiting on its provider", async (
   const fake = withFakeDriver(() => launchHeld);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const starting = supervisor.start({ ...START, sessionId: id });
     await waitFor(() => fake.calls.length === 1);
 
@@ -1759,7 +1760,7 @@ test("restore carries durable task attribution through session telemetry", async
       cwd: "/wt/restore-telemetry", taskId: "task-restore-telemetry", model: null,
       effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
     });
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     await supervisor.restore();
     handle.push({ kind: "state", state: "working", activity: null });
     handle.push({ kind: "turn_done", usage: null });
@@ -1836,7 +1837,7 @@ test("restore resumes the same conversation rather than starting a new one", asy
       turnInProgress: false,
     });
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry, {
+    const supervisor = new SdkSupervisor(registry, { ...MISSION_TEST_MCP_DEPS,
       missionMcpDescriptor: async () => descriptor,
     });
     await supervisor.restore();
@@ -1937,9 +1938,11 @@ test("restore preserves a managed Pipeline task's launch-scoped MCP identity", a
         slug: "restore-pipeline",
       },
     }));
-    const supervisor = new SdkSupervisor(registry, {
+    const supervisor = new SdkSupervisor(registry, { ...MISSION_TEST_MCP_DEPS,
       missionMcpDescriptor: async () => descriptor,
       verifyMissionMcpTools: async (tools, scoped) => {
+        // Every Claude or Codex resume first confirms the decision tool (`request_input`).
+        if (tools.length === 1 && tools[0] === "request_input") return { ok: true };
         assert.deepEqual(tools, ["adopt_pipeline_run", "report_pipeline_workspace"]);
         callerCredential = pipelineCredentialFromDescriptor(scoped);
         assert.match(callerCredential, /^[A-Za-z0-9_-]{43}$/);
@@ -2018,7 +2021,7 @@ test("a failed managed Pipeline restore revokes its launch capability", async ()
         slug: "restore-pipeline-failed",
       },
     }));
-    const supervisor = new SdkSupervisor(registry, {
+    const supervisor = new SdkSupervisor(registry, { ...MISSION_TEST_MCP_DEPS,
       missionMcpDescriptor: async () => ({
         serverName: "mission-control",
         command: "/usr/bin/node",
@@ -2033,6 +2036,310 @@ test("a failed managed Pipeline restore revokes its launch capability", async ()
     assert.equal(registry.managedPipelineCaller(callerCredential), null);
   } finally {
     fake.restore();
+  }
+});
+
+/** One Claude row to resume, and what the restore made of it. */
+async function restoreDecisionRow(
+  t: import("node:test").TestContext,
+  mode: string,
+  deps: ConstructorParameters<typeof SdkSupervisor>[1],
+) {
+  const id = `sdk:resume-decisions-${mode}`;
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: `agent-decisions-${mode}`,
+    cwd: `/repo/resume-decisions-${mode}`,
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  let stateHome: string | undefined;
+  const logged: string[] = [];
+  const log = (...args: unknown[]) => logged.push(args.map(String).join(" "));
+  const error = t.mock.method(console, "error", log);
+  const warn = t.mock.method(console, "warn", log);
+  const fake = withFakeDriver(async () => assert.fail("the driver must not launch"));
+  const registry = new Registry();
+  const descriptor = deps?.missionMcpDescriptor;
+  try {
+    await new SdkSupervisor(registry, {
+      ...deps,
+      missionMcpDescriptor: async (cwd?: string, home?: string) => {
+        stateHome = home;
+        return descriptor ? descriptor(cwd, home) : null;
+      },
+    }).restore();
+  } finally {
+    fake.restore();
+    error.mock.restore();
+    warn.mock.restore();
+  }
+  assert.equal(fake.calls.length, 0, `${mode}: no session was launched`);
+  assert.ok(stateHome, `${mode}: the resume minted a state home for the check`);
+  assert.equal(existsSync(stateHome!), false, `${mode}: and removed it`);
+  return { id, registry, logged };
+}
+
+const MISSION_DESCRIPTOR = { serverName: "mission-control", command: "/usr/bin/node", args: ["/m.mjs"], env: {} };
+
+test("restore FAILS a session only when its bundle is verified not to publish request_input", async (t) => {
+  // A verdict: the bundle answered the handshake without the tool, which only a rebuild
+  // changes. Starting the session would leave it able to ask its decisions only outside
+  // request_input, so it is refused, failed and evicted with the reason.
+  const { id, registry, logged } = await restoreDecisionRow(t, "missing-tool", {
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async (tools: readonly string[]) => {
+      assert.deepEqual(tools, ["request_input"], "the resume asks for exactly the decision tool");
+      return { ok: false as const, cause: "missing-tools" as const, reason: "the built bundle does not publish request_input" };
+    },
+  });
+  assert.equal(getSdkSession(id)?.status, "failed");
+  assert.equal(registry.getSession(id)?.state, "exited");
+  const refusal = logged.find((line) => line.includes(`could not resume ${id}`));
+  assert.ok(refusal, "the refusal is reported");
+  assert.match(refusal!, /asks its decisions through Mission Control's request_input tool, but the built bundle does not publish request_input/);
+});
+
+test("restore DEFERS a session whose request_input could not be confirmed, keeping it for the next restore", async (t) => {
+  // Not a verdict on the session, so not terminal: a bundle mid-rebuild, a handshake that
+  // timed out under a loaded boot, or no server resolved yet. Failing the row would lose a
+  // conversation a later restore could resume, so it stays live (`suspended`), unregistered,
+  // and the reason is reported.
+  const cases: { mode: string; deps: ConstructorParameters<typeof SdkSupervisor>[1]; reason: RegExp }[] = [
+    { mode: "no-server", deps: {}, reason: /its MCP server could not be resolved for the resume - rebuild with: npm run build/ },
+    {
+      mode: "unbuilt",
+      deps: {
+        missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+        verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unbuilt" as const, reason: "the MCP server is not built" }),
+      },
+      reason: /the MCP server is not built/,
+    },
+    {
+      mode: "unreachable",
+      deps: {
+        missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+        verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unreachable" as const, reason: "the handshake timed out" }),
+      },
+      reason: /the handshake timed out/,
+    },
+    {
+      mode: "throws",
+      deps: {
+        missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+        verifyMissionMcpTools: async () => {
+          throw new Error("the MCP handshake crashed");
+        },
+      },
+      reason: /its MCP server could not be checked: the MCP handshake crashed/,
+    },
+  ];
+  for (const { mode, deps, reason } of cases) {
+    const { id, registry, logged } = await restoreDecisionRow(t, mode, deps);
+    assert.equal(getSdkSession(id)?.status, "suspended", `${mode}: kept live for the next restore`);
+    assert.equal(registry.getSession(id), undefined, `${mode}: not registered, so not evicted`);
+    const deferred = logged.find((line) => line.includes(`left ${id} suspended for the next restore`));
+    assert.ok(deferred, `${mode}: the deferral is reported`);
+    assert.match(deferred!, reason, mode);
+  }
+});
+
+test("a deferral that never clears is refused visibly after a bounded number of restores", async (t) => {
+  // A bundle that is never built would otherwise defer the row on every restart, with no card
+  // and no reason anywhere but a log. Past the bound it takes the ordinary refusal: the row is
+  // failed, a card is registered and evicted with the reason, and the task can settle.
+  const id = "sdk:resume-decisions-bounded";
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: "agent-decisions-bounded",
+    cwd: "/repo/resume-decisions-bounded",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  const deps = {
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unbuilt" as const, reason: "the MCP server is not built" }),
+  };
+  const logged: string[] = [];
+  const log = (...args: unknown[]) => logged.push(args.map(String).join(" "));
+  const error = t.mock.method(console, "error", log);
+  const warn = t.mock.method(console, "warn", log);
+  const fake = withFakeDriver(async () => assert.fail("the driver must not launch"));
+  let last = new Registry();
+  try {
+    for (let restore = 1; restore <= MAX_RESUME_DEFERRALS; restore++) {
+      last = new Registry();
+      await new SdkSupervisor(last, deps).restore();
+      if (restore < MAX_RESUME_DEFERRALS) {
+        assert.equal(getSdkSession(id)?.status, "suspended", `restore ${restore} defers`);
+        assert.equal(last.getSession(id), undefined, `restore ${restore} registers nothing`);
+      }
+    }
+  } finally {
+    fake.restore();
+    error.mock.restore();
+    warn.mock.restore();
+  }
+  assert.equal(fake.calls.length, 0, "nothing was ever launched");
+  assert.equal(getSdkSession(id)?.status, "failed", "the bounded restore is refused, not deferred again");
+  assert.equal(last.getSession(id)?.state, "exited", "with a card, evicted the ordinary way");
+  assert.ok(logged.some((line) => line.includes(`left ${id} suspended for the next restore (1 of ${MAX_RESUME_DEFERRALS})`)));
+  const refusal = logged.find((line) => line.includes(`could not resume ${id}`) && line.includes(`after ${MAX_RESUME_DEFERRALS} restores`));
+  assert.ok(refusal, "the refusal says why, and how long it waited");
+  assert.match(refusal!, /the MCP server is not built/);
+});
+
+test("a deferral interrupted by shutdown is not counted toward the bound", async () => {
+  // A daemon restarted again and again during boot is exactly when a handshake is slow or the
+  // bundle is mid-rebuild. Those interrupted restores must not spend the bound: after any number
+  // of them, the row still gets its full allowance of calm deferrals.
+  const id = "sdk:resume-decisions-shutdown";
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: "agent-decisions-shutdown",
+    cwd: "/repo/resume-decisions-shutdown",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  const fake = withFakeDriver(async () => assert.fail("a deferred restore must not launch"));
+  try {
+    for (let restore = 0; restore < MAX_RESUME_DEFERRALS; restore++) {
+      let supervisor: InstanceType<typeof SdkSupervisor> | null = null;
+      supervisor = new SdkSupervisor(new Registry(), {
+        missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+        // The daemon is told to stop while the check is still running, and the check then
+        // comes back without an answer - a handshake cut short by the shutdown.
+        verifyMissionMcpTools: async () => {
+          // Not awaited: stopAll waits for the restore this very check is part of.
+          void supervisor!.stopAll(50);
+          return { ok: false as const, cause: "unreachable" as const, reason: "the handshake was cut short" };
+        },
+      });
+      await supervisor.restore();
+      assert.equal(getSdkSession(id)?.status, "suspended", `interrupted restore ${restore + 1} leaves the row live`);
+    }
+    // Every calm deferral short of the bound still defers: none of the allowance was spent.
+    for (let restore = 1; restore < MAX_RESUME_DEFERRALS; restore++) {
+      await new SdkSupervisor(new Registry(), {
+        missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+        verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unreachable" as const, reason: "the handshake timed out" }),
+      }).restore();
+      assert.equal(getSdkSession(id)?.status, "suspended", `calm deferral ${restore} still defers`);
+    }
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a resume that goes through starts the count of deferrals over", async () => {
+  const id = "sdk:resume-decisions-reset";
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: "agent-decisions-reset",
+    cwd: "/repo/resume-decisions-reset",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  const defer = {
+    missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+    verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unreachable" as const, reason: "the handshake timed out" }),
+  };
+  const refused = withFakeDriver(async () => assert.fail("a deferred restore must not launch"));
+  try {
+    for (let restore = 1; restore < MAX_RESUME_DEFERRALS; restore++) await new SdkSupervisor(new Registry(), defer).restore();
+  } finally {
+    refused.restore();
+  }
+  assert.equal(getSdkSession(id)?.status, "suspended", "one deferral short of the bound");
+
+  const handle = fakeHandle();
+  const launched = withFakeDriver(async () => handle);
+  const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
+  try {
+    await supervisor.restore();
+    assert.ok(launched.calls.some((call) => call.resume === "agent-decisions-reset"), "the confirmed restore resumes it");
+  } finally {
+    launched.restore();
+    await supervisor.stopAll();
+  }
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: "agent-decisions-reset",
+    cwd: "/repo/resume-decisions-reset",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+
+  // A fresh run of trouble gets the full bound again, not the remainder of the last one.
+  const again = withFakeDriver(async () => assert.fail("a deferred restore must not launch"));
+  try {
+    await new SdkSupervisor(new Registry(), defer).restore();
+  } finally {
+    again.restore();
+  }
+  assert.equal(getSdkSession(id)?.status, "suspended", "deferred, not refused: the count started over");
+});
+
+test("a deferred session is resumed by the next restore once its decision tool is confirmed", async () => {
+  const id = "sdk:resume-decisions-deferred-then-ok";
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: "agent-decisions-deferred-then-ok",
+    cwd: "/repo/resume-decisions-deferred-then-ok",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  const first = withFakeDriver(async () => assert.fail("the first restore must not launch"));
+  try {
+    await new SdkSupervisor(new Registry(), {
+      missionMcpDescriptor: async () => MISSION_DESCRIPTOR,
+      verifyMissionMcpTools: async () => ({ ok: false as const, cause: "unreachable" as const, reason: "the handshake timed out" }),
+    }).restore();
+  } finally {
+    first.restore();
+  }
+  assert.equal(getSdkSession(id)?.status, "suspended");
+
+  const handle = fakeHandle();
+  const second = withFakeDriver(async () => handle);
+  const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
+  try {
+    await supervisor.restore();
+    const relaunch = second.calls.find((call) => call.resume === "agent-decisions-deferred-then-ok");
+    assert.ok(relaunch, "the next restore resumed the same conversation");
+  } finally {
+    second.restore();
+    await supervisor.stopAll();
   }
 });
 
@@ -2067,7 +2374,7 @@ test("restore refuses a managed Pipeline host without a current adoption tool", 
     }));
     const fake = withFakeDriver(async () => assert.fail("the driver must not launch"));
     try {
-      const supervisor = new SdkSupervisor(registry, {
+      const supervisor = new SdkSupervisor(registry, { ...MISSION_TEST_MCP_DEPS,
         missionMcpDescriptor: async () => mode === "missing"
           ? null
           : {
@@ -2111,7 +2418,7 @@ test("restore automatically continues an interrupted turn without replaying its 
     });
 
     const registry = new Registry();
-    await new SdkSupervisor(registry).restore();
+    await new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS).restore();
 
     assert.equal(fake.calls.length, 1);
     assert.equal(fake.calls[0]?.resume, "agent-interrupted");
@@ -2191,7 +2498,7 @@ test("the continuation's authorship is on file before the send resolves", async 
       turnInProgress: true,
     });
 
-    const restoring = new SdkSupervisor(new Registry()).restore();
+    const restoring = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS).restore();
     await waitFor(() => releaseSend !== null);
     assert.equal(
       originDuringSend,
@@ -2240,7 +2547,7 @@ test("a refused continuation records no authorship, so a later turn keeps its ow
     const registry = new Registry();
     // Resume swallows the rejection on purpose: the conversation itself DID resume, so this
     // must not take the unresumable eviction path.
-    await new SdkSupervisor(registry).restore();
+    await new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS).restore();
 
     assert.equal(handle.sent.length, 0, "the driver took nothing");
     assert.equal(
@@ -2277,20 +2584,20 @@ test("a second restart retries unfinished recovery, but completion disarms the n
   const handles = [first, second, third];
   const fake = withFakeDriver(async () => handles.shift()!);
   try {
-    const firstSupervisor = new SdkSupervisor(new Registry());
+    const firstSupervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     await firstSupervisor.restore();
     assert.equal(first.sent.length, 1);
     await firstSupervisor.stopAll();
     assert.equal(getSdkSession("sdk:continue-again")?.turnInProgress, true);
 
-    const secondSupervisor = new SdkSupervisor(new Registry());
+    const secondSupervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     await secondSupervisor.restore();
     assert.equal(second.sent.length, 1, "unfinished recovery is attempted in the new daemon");
     second.push({ kind: "turn_done", usage: null });
     await waitFor(() => getSdkSession("sdk:continue-again")?.turnInProgress === false);
     await secondSupervisor.stopAll();
 
-    const thirdSupervisor = new SdkSupervisor(new Registry());
+    const thirdSupervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     await thirdSupervisor.restore();
     assert.deepEqual(third.sent, [], "a completed turn does not receive another continuation");
     await thirdSupervisor.stopAll();
@@ -2322,7 +2629,7 @@ test("a resume that fails still shows a card and takes it away, so the task sett
     registry.subscribe((e: ServerEvent) => {
       if (e.type === "session_remove") removed.push(e.id);
     });
-    await new SdkSupervisor(registry).restore();
+    await new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS).restore();
 
     assert.equal(getSdkSession("sdk:restore-2")?.status, "failed");
     // Registered, then evicted: a row failed quietly in the database leaves the task it was
@@ -2350,7 +2657,7 @@ test("a shutdown suspends rather than exits, and a suspended row is resumed", as
     registry.subscribe((event: ServerEvent) => {
       if (event.type === "session_remove") removed.push(event.id);
     });
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.push({
       kind: "bound",
@@ -2378,7 +2685,7 @@ test("a shutdown suspends rather than exits, and a suspended row is resumed", as
     const resumed = fakeHandle();
     const again = withFakeDriver(async () => resumed);
     try {
-      await new SdkSupervisor(new Registry()).restore();
+      await new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS).restore();
       assert.equal(again.calls.length, 1, "a suspended session is picked back up");
       assert.equal(again.calls[0]!.resume, "agent-5");
     } finally {
@@ -2393,7 +2700,7 @@ test("task liveness answers true or false for an embedded task, and null for any
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     // Null is not uncertainty here - it is "this task has no embedded session", so the
     // caller goes on to ask the terminal axis. `homeAlive`'s null (nobody could tell us) is
     // a question this supervisor never has to pose.
@@ -2411,7 +2718,7 @@ test("task liveness answers true or false for an embedded task, and null for any
 });
 
 test("a task re-dispatched after a failure is answered by its newest row", async () => {
-  const supervisor = new SdkSupervisor(new Registry());
+  const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
   upsertSdkSession(
     { id: "sdk:old", agent: "claude", agentSessionId: null, cwd: "/wt", taskId: "t", model: null, effort: null, permissionMode: null, status: "failed", turnInProgress: false },
     1_000,
@@ -2432,7 +2739,7 @@ test("live controls reach the handle and persist what restart will reuse", async
   handle.setEffort = async (effort) => void efforts.push(effort);
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     await supervisor.setPermissionMode(session.id, "acceptEdits");
     await supervisor.setEffort(session.id, "xhigh");
@@ -2451,7 +2758,7 @@ test("an interrupt reaches the driver, and says so when there is no driver to re
   handle.interrupt = async () => void (interrupts += 1);
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     assert.equal(await supervisor.interrupt(session.id), "interrupted");
     assert.equal(interrupts, 1);
@@ -2479,7 +2786,7 @@ test("an interrupt that arrives after the turn ended reports finding nothing", a
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     assert.equal(await supervisor.interrupt(session.id), "interrupted");
 
@@ -2520,7 +2827,7 @@ test("an interrupt is not queued behind the send it exists to cancel", async () 
   handle.interrupt = async () => void order.push("interrupt");
   const fake = withFakeDriver(async () => handle);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
+    const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     const sending = supervisor.send(session.id, { text: "go down the wrong path" });
     await waitFor(() => order.includes("send:start"));
@@ -2546,7 +2853,7 @@ test("the driver's own turn_done reconciles an interrupted turn, with no help fr
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.push({ kind: "state", state: "working", activity: null });
     await waitFor(() => registry.getSession(session.id)?.state === "working");
@@ -2590,7 +2897,7 @@ test("a cleared Codex replacement conversation survives its old task cancellatio
   const fake = withFakeCodexDriver(async () => handles.shift()!);
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const taskId = "task-before-clear";
     registry.upsertTask(mkTask({ id: taskId, status: "running", sessionId: null }));
     const session = await supervisor.start({ ...START, agent: "codex", taskId });
@@ -2612,7 +2919,7 @@ test("a cleared Codex replacement conversation survives its old task cancellatio
     assert.equal(getTask(taskId)?.sessionId, null);
 
     await supervisor.stopAll();
-    const next = new SdkSupervisor(new Registry());
+    const next = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
     await next.restore();
     assert.equal(next.handleFor(session.id), restored, "the replacement conversation remains available after the old task was cancelled");
     assert.deepEqual(restored.sent, []);
@@ -2675,7 +2982,7 @@ test("a dispatch interrupted mid-launch is COMPLETED on restart, not failed", as
       sessionId: null,
     }),
   );
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   assert.equal(supervisor.taskLiveness("task-mid"), true);
   // The id is what finishes the dispatch - liveness alone cannot bind anything.
   assert.equal(supervisor.liveSessionForTask("task-mid"), "sdk:midflight");
@@ -2720,7 +3027,7 @@ test("a prebound pipeline SDK host restores without a Mission Control worktree",
       },
     }),
   );
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
 
   new TaskManager(registry, undefined, supervisor);
   await waitFor(() => registry.getTask("task-pipeline-mid")?.status !== "dispatching");
@@ -2752,7 +3059,7 @@ test("a dead embedded row still fails an interrupted dispatch", async () => {
   registry.upsertTask(
     mkTask({ id: "task-dead", status: "dispatching", repoRoot: "/repo", worktreePath: "/wt/dead" }),
   );
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   assert.equal(supervisor.liveSessionForTask("task-dead"), null);
   assert.equal(supervisor.taskLiveness("task-dead"), false);
 });
@@ -2777,7 +3084,7 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
   const fake = withFakeDriver(async () => (accepted.length ? second : first));
   try {
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start({ ...START, model: "old-model", effort: "low" });
     assert.equal(session.configuredModel, "old-model");
     // A binding is what makes the row resumable at all.
@@ -2819,7 +3126,7 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     // would hit the duplicate-registration refusal and prove nothing about restore.
     await supervisor.stopAll(50);
     const restoredRegistry = new Registry();
-    await new SdkSupervisor(restoredRegistry).restore();
+    await new SdkSupervisor(restoredRegistry, MISSION_TEST_MCP_DEPS).restore();
     assert.equal(restoredRegistry.getSession(session.id)?.configuredModel, "new-model");
     const relaunch = fake.calls.at(-1)!;
     assert.equal(relaunch.resume, "agent-rebound", "the latest conversation binding");
@@ -2846,7 +3153,7 @@ for (const scenario of ["restored", "rollback refused", "previous unknown"] as c
     const handles = [first, fakeHandle()];
     const fake = withFakeDriver(async () => handles.shift()!);
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     try {
       const session = await supervisor.start({ ...START, model: previous });
       first.push({ kind: "bound", agentSessionId: "model-write-failure", transcriptPath: null, modelId: previous, pid: null });
@@ -2883,7 +3190,7 @@ for (const scenario of ["restored", "rollback refused", "previous unknown"] as c
       }
       openDb().exec("DROP TRIGGER reject_model_write");
       await supervisor.stopAll(50);
-      await new SdkSupervisor(new Registry()).restore();
+      await new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS).restore();
       assert.equal(fake.calls.at(-1)?.model, previous, "restart matches compensation, or the explicit partial-acceptance warning");
     } finally {
       openDb().exec("DROP TRIGGER IF EXISTS reject_model_write");
@@ -2901,7 +3208,7 @@ test("a matching nonterminal hook cannot revive an SDK card while stop is in pro
   const fake = withFakeDriver(async () => handle);
   t.after(fake.restore);
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const session = await supervisor.start(START);
   t.after(async () => { releaseStop(); await supervisor.stop(session.id); });
   handle.push({ kind: "bound", agentSessionId: "native-stopping", transcriptPath: null, modelId: null, pid: null });
@@ -2929,7 +3236,7 @@ for (const ending of ["driver exit", "explicit stop"] as const) {
     const fake = withFakeDriver(async () => handle);
     t.after(fake.restore);
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
     const session = await supervisor.start(START);
     handle.push({ kind: "bound", agentSessionId: "native-closure", transcriptPath: null, modelId: null, pid: null });
     handle.push({ kind: "turn_done", usage: null });
@@ -2951,7 +3258,7 @@ for (const ending of ["driver exit", "explicit stop"] as const) {
     assert.equal(registry.getSession(session.id)?.state, "exited", "late hooks cannot revive a closing card");
     for (let restart = 0; restart < 2; restart++) {
       const next = new Registry();
-      await new SdkSupervisor(next).restore();
+      await new SdkSupervisor(next, MISSION_TEST_MCP_DEPS).restore();
       assert.equal(next.getSession(session.id), undefined);
     }
     assert.equal(fake.calls.length, 1, "closed drivers are never relaunched");
@@ -2981,7 +3288,7 @@ for (const { scenario, status, pointer, reused, retire, turnInProgress } of [
     for (let restart = 0; restart < 2; restart++) {
       // Deliberately use a fresh Registry: durable ownership must not depend on cached tasks.
       const next = new Registry();
-      const supervisor = new SdkSupervisor(next);
+      const supervisor = new SdkSupervisor(next, MISSION_TEST_MCP_DEPS);
       await supervisor.restore();
       await supervisor.restore();
       if (retire) {
@@ -3012,7 +3319,7 @@ async function startWorking(t: import("node:test").TestContext) {
   const fake = withFakeDriver(async () => handle);
   t.after(fake.restore);
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   const session = await supervisor.start(START);
   handle.push({ kind: "state", state: "working", activity: null });
   await drain();
@@ -3070,6 +3377,78 @@ test("a capacity failure holds the turn open and retries with progressive backof
     "Model at capacity - retrying in 15s (attempt 1 of 8)",
     "a successful turn resets the backoff",
   );
+});
+
+test("a pause that lands while the capacity retry waits its turn keeps the retry instead of settling the turn", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const HOLD = "this session is paused - resume it before sending it anything";
+  let gateReads = 0;
+  let freezeAtRead = Number.POSITIVE_INFINITY;
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, {
+    ...MISSION_TEST_MCP_DEPS,
+    pause: { releaseNow: () => null, frozenRefusal: () => (++gateReads >= freezeAtRead ? HOLD : null) },
+  });
+  const session = await supervisor.start(START);
+  handle.push({ kind: "state", state: "working", activity: null });
+  await drain();
+  const sentBefore = handle.sent.length;
+  const continuations = () =>
+    handle.sent.slice(sentBefore).filter((turn) => turn.text === CAPACITY_CONTINUATION_PROMPT).length;
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+
+  // The retry's own check and the send's first one pass; the freeze lands while the send
+  // waits its turn on the session's chain, so the execution-time gate refuses it.
+  freezeAtRead = gateReads + 3;
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0, "nothing reached the frozen child");
+  const card = registry.getSession(session.id);
+  assert.equal(card?.state, "working", "the turn the pause interrupted is not reported finished");
+  assert.equal(card?.workCycle?.active, true);
+
+  // Thawed: the retry that was kept fires and continues the work.
+  freezeAtRead = Number.POSITIVE_INFINITY;
+  t.mock.timers.tick(15_000);
+  await drain();
+  assert.equal(continuations(), 1, "the kept retry continues the work after the thaw");
+});
+
+test("a capacity retry waits out a pause that holds the session without freezing it (an in-process agent)", async (t) => {
+  // Pi's driver runs inside the daemon: its pause holds the session but stops no process, so
+  // `frozenRefusal` never answers. The automated retry must wait for the resume all the same.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, {
+    ...MISSION_TEST_MCP_DEPS,
+    pause: { releaseNow: () => null, frozenRefusal: () => null },
+  });
+  const session = await supervisor.start(START);
+  handle.push({ kind: "state", state: "working", activity: null });
+  await drain();
+  const sentBefore = handle.sent.length;
+  const continuations = () =>
+    handle.sent.slice(sentBefore).filter((turn) => turn.text === CAPACITY_CONTINUATION_PROMPT).length;
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+
+  registry.setSessionPause(session.id, { reason: "operator", phase: "frozen", since: Date.now(), interrupted: null, stopped: false });
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0, "no automated turn while the session is held");
+  assert.equal(registry.getSession(session.id)?.workCycle?.active, true, "the interrupted turn is not reported finished");
+
+  registry.setSessionPause(session.id, null);
+  t.mock.timers.tick(15_000);
+  await drain();
+  assert.equal(continuations(), 1, "the kept retry continues the work after the resume");
 });
 
 test("a message delivered during the backoff replaces the retry", async (t) => {

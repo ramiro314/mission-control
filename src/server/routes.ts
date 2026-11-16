@@ -1,4 +1,7 @@
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
+import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
+import type { PauseManager } from "./pause/manager.ts";
+import { registerPauseRoutes } from "./pause/routes.ts";
 import { getResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
@@ -10,7 +13,8 @@ import {
 } from "@shared/resident-mcp.ts";
 import { ResidentMcpServerError } from "./residents/mcp-store.ts";
 import { redeemResidentMcpTicket } from "./residents/mcp-launch.ts";
-import { registerResidentLoopRoutes } from "./residents/routes.ts";
+import { registerResidentInstructionRoutes, registerResidentLoopRoutes } from "./residents/routes.ts";
+import { ResidentInstructionChanges } from "./residents/instruction-changes.ts";
 import type { ResidentLoop } from "./residents/loop.ts";
 import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
@@ -20,6 +24,7 @@ import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt,
 import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
 import type { PrRefs } from "./inspector/github.ts";
 import { activeStackGitHub } from "./stacking/github.ts";
+import { isStackPromptKind } from "@shared/stacking.ts";
 import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
@@ -367,7 +372,7 @@ import { runRetro } from "./retro.ts";
 import { startShapeTicketsFollowup } from "./shape-tickets-followup.ts";
 import { ticketSessionEdge } from "./shape-tickets.ts";
 import { setAffectedTestsCommand, startTestingSetup } from "./testing-setup.ts";
-import { harnessFor, sdkFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, sdkFor, sessionMessages, transcriptFor } from "./harness/index.ts";
 import { prepareTerminalResume, recheckManagedResumes, resumeConversation, revokeUnclaimedResumes,
   type PreparedResume } from "./harness/resume.ts";
 import { resumeContext } from "./resume-context.ts";
@@ -430,12 +435,20 @@ import {
   getTerminalsConfig,
   setTerminalsConfig,
 } from "./terminals-config.ts";
-import { getDatabaseBackupsConfig, setDatabaseBackupsConfig } from "./database-backups/config.ts";
+import {
+  getDatabaseBackupsConfig,
+  setDatabaseBackupsConfig,
+  StaleBackupPreviewError,
+} from "./database-backups/config.ts";
 import type { DatabaseBackupService } from "./database-backups/service.ts";
 import type { StorageHealthService } from "./storage-health.ts";
 import type { OrphanProcessMonitor } from "./worktrees/orphan-processes.ts";
-import { OrphanProcessKillRequestSchema, type StorageView } from "@shared/storage-health.ts";
-import { DatabaseBackupsConfigPatchSchema } from "@shared/database-backups.ts";
+import { OrphanProcessKillRequestSchema, type IdleCachePlanUnavailable, type StorageView } from "@shared/storage-health.ts";
+import { StorageLimitsConfigPatchSchema } from "@shared/storage-limits.ts";
+import { getStorageLimitsConfig, setStorageLimitsConfig } from "./storage-limits.ts";
+import { planIdleCache } from "./storage-pools.ts";
+import type { StorageUsageMonitor } from "./storage-usage.ts";
+import { DatabaseBackupsSaveRequestSchema } from "@shared/database-backups.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -520,7 +533,12 @@ import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
+import {
+  REPO_INDEX_IDENTITY_HEADER,
+  REPO_INDEX_IDENTITY_UNKNOWN,
+  REPOS_SCANNED_AT_HEADER,
+  RepoIndexConfigPatchSchema,
+} from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
 import { currentOwnedRuntime } from "./owned-runtime.ts";
 import type { SetupDeps } from "./setup/types.ts";
@@ -657,6 +675,7 @@ import {
   formDelivered,
   type PaneDeps,
   submitPaneForm,
+  writeHold,
   validateSessionName,
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
@@ -667,6 +686,9 @@ import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
   invalidateReposCache,
   listRepos,
+  isScanUnavailable,
+  listReposScan,
+  repoIndexIdentity,
   resolveRepoPath,
   resolveRepoRoot,
   resolveTaskExtraRepoRoots,
@@ -1065,6 +1087,9 @@ function foremanWriteRefusal(
   if (!structuredAnswer && hasBlocker(session)) {
     return { error: FOREMAN_SESSION_BLOCKED, status: 409 };
   }
+  // No structured-answer exemption here: a paused session is the operator's to resume, and
+  // Foreman answering its menu would start the very turn the pause is holding back.
+  if (session.pause) return { error: PAUSED_SESSION_REASON, status: 409 };
   return null;
 }
 
@@ -1395,6 +1420,11 @@ export interface RouteDeps {
    */
   keepAwake?: KeepAwakeManager;
   /**
+   * The one owner of pausing (`src/server/pause/manager.ts`). Absent, the pause routes answer
+   * 503 rather than building a second owner of the same frozen processes.
+   */
+  pauses?: PauseManager;
+  /**
    * The archive library owner. Absent means the archive routes answer 503 rather than
    * constructing a manager here. A route-built twin would be a second owner of one filesystem
    * library and one reconciler - two background walks over the same directory, two writers of
@@ -1461,6 +1491,10 @@ export interface RouteDeps {
    * `POST /api/worktrees/processes/kill` answers 503 without it.
    */
   orphanProcesses?: OrphanProcessMonitor;
+  /**
+   * The state directory's measurer. Measure now and the pool-cache plan return 503 without it.
+   */
+  storageUsage?: StorageUsageMonitor;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
@@ -1512,6 +1546,7 @@ export const ROUTE_DEP_NAMES = [
   "pendingTurns",
   "paneDeps",
   "keepAwake",
+  "pauses",
   "archives",
   "history",
   "historyResumeLauncher",
@@ -1529,6 +1564,7 @@ export const ROUTE_DEP_NAMES = [
   "databaseBackups",
   "storageHealth",
   "orphanProcesses",
+  "storageUsage",
   "setupDeps",
   "setupInstallDeps",
   "focusTerminals",
@@ -1783,6 +1819,44 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
  * Named only. See `resolveRouteDeps` for why the 27-argument positional form was removed
  * rather than kept for compatibility.
  */
+/**
+ * The answer for a route that needed a workspace scan and could not get one: the walk timed
+ * out or is refused over one still stuck (a stalled mount), and no earlier scan of these
+ * directories is held to answer from. 503 with the reason, rather than a bare 500 - the
+ * operator's fix is to remove the stalled directory in Settings, which still opens. Any other
+ * error is not this and is rethrown.
+ */
+/**
+ * Tell every window the indexed directories changed, after a save that already succeeded.
+ *
+ * Never throws: the write is persisted, and a failure here must not be reported to the caller
+ * as a failed save. If the new identity cannot be computed, windows are told it is unknown -
+ * which still makes them drop their lists, the point of the event - and the cause is logged.
+ */
+function announceRepoIndexChanged(registry: Registry): void {
+  let identity: string;
+  try {
+    identity = repoIndexIdentity();
+  } catch (error) {
+    console.warn(
+      `[repos] saved the repository index but could not compute its identity; telling windows it is unknown: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    identity = REPO_INDEX_IDENTITY_UNKNOWN;
+  }
+  try {
+    registry.emitRepoIndexChanged(identity);
+  } catch (error) {
+    console.warn(
+      `[repos] saved the repository index but could not announce it to open windows: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function scanUnavailableAnswer(c: Context, error: unknown): Response {
+  if (!isScanUnavailable(error)) throw error;
+  return c.json({ error: `workspace scan unavailable: ${error.message}` }, 503);
+}
+
 export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // JavaScript would discard these in silence. The count is named because it is what locates
   // the mistake for the caller.
@@ -1814,6 +1888,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     pendingTurns,
     paneDeps,
     keepAwake,
+    pauses,
     archives,
     history,
     historyResumeLauncher,
@@ -1831,6 +1906,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     databaseBackups,
     storageHealth,
     orphanProcesses,
+    storageUsage,
     setupDeps,
     setupInstallDeps,
     focusTerminals,
@@ -1871,6 +1947,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registry.subscribe?.((e) => {
     if (e.type === "session_remove") agentResumeClaims.delete(e.id);
   });
+  // A resident's proposed changes to its own standing instructions. Built from the managers
+  // already here: the review it opens is an ordinary review, and the human's answer to it is
+  // applied by the resolve route below, inside the transaction that records the answer.
+  // Guarded because route tests build the app with a null or stub `reviews`, as the
+  // `registry.subscribe?.` call above documents for the registry.
+  const residentInstructions = personas && reviews
+    ? new ResidentInstructionChanges({
+      registry,
+      reviews,
+      persona: (id) => personas.store.getPersona(id),
+      writePersonaGuidance: (id, expectedRevision, guidance, at) =>
+        personas.writeGuidance(id, expectedRevision, guidance, at),
+      publishPersona: (persona) => {
+        personas.announce(persona);
+        workflows?.refreshSummaries();
+      },
+    })
+    : null;
+  // A resident whose proposal call timed out learns what the answer applied in the continuation.
+  if (residentInstructions) {
+    reviews?.addContinuationAddendum?.((review) => residentInstructions.continuationNote(review.id));
+  }
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
   // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
@@ -2283,6 +2381,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
+
+  // --- Pausing sessions: one session, Pause all, and the priority session ---
+  registerPauseRoutes(app, pauses);
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
   //
@@ -4708,8 +4809,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const task = tasks.get(c.req.param("id"));
     return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);
   });
-  // Git repos under the workspace roots - the pickable bases for a new dispatch.
-  app.get("/api/repos", async (c) => c.json(await listRepos()));
+  // Git repos under the workspace roots - the pickable bases for a new dispatch. Answers
+  // from the last scan and rescans behind it; `?rescan=1` waits for a scan started after the
+  // request instead. The header orders scans, so a browser holding two answers keeps the
+  // newer one rather than whichever arrived last.
+  app.get("/api/repos", async (c) => {
+    try {
+      const { repos, scannedAt, identity } = await listReposScan({ rescan: c.req.query("rescan") === "1" });
+      c.header(REPOS_SCANNED_AT_HEADER, String(scannedAt));
+      c.header(REPO_INDEX_IDENTITY_HEADER, identity);
+      return c.json(repos);
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
+  });
 
   // The machine-local source of those workspace roots. The environment remains the
   // launch-time authority; when present, the view says so and the saved list is read-only.
@@ -4725,13 +4838,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     try {
       setRepoIndexConfig(parsed.data);
-      return c.json(await repoIndexView());
     } catch (error) {
       if (error instanceof RepoIndexConfigError) {
         return c.json({ error: error.message }, 400);
       }
       throw error;
     }
+    // The save is persisted from here on, so nothing below may answer as if it failed - a
+    // client told "rejected" would keep showing the directories it just replaced.
+    announceRepoIndexChanged(registry);
+    return c.json(await repoIndexView());
   });
   app.post("/api/repo-index/rescan", async (c) => {
     invalidateReposCache();
@@ -4941,6 +5057,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // reason, and it chains: each page reports the `start` the next call passes back. The
   // panel is the only caller, but it belongs on this route rather than the SSE stream
   // because it is a request for history, not a subscription to new turns.
+  /**
+   * The tool call that launched one of this session's background sub-agents, as its
+   * transcript file records it: `{ toolUseId }`, null when it records none.
+   *
+   * Asked by "Jump to launch" for an agent whose source did not name its launching call. The
+   * answer comes from the file because only the file always holds both halves of a launch -
+   * the call and the result naming its agent are written apart, so the dashboard can receive
+   * them in separate appends or on separate pages. The browser then finds the call by its id
+   * among the turns it holds, paging older ones in, exactly as for an agent the source named.
+   */
+  app.get("/api/sessions/:id/subagents/:agentId/launch", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const agentId = c.req.param("agentId");
+    if (!agentId || agentId.length > 256) return c.json({ error: "agentId must be a sub-agent id" }, 400);
+    const spec = transcriptFor(session);
+    // A harness whose transcript ties no call to its agents answers "none", as does a file
+    // that has not appeared yet: both read as a launch this transcript does not record.
+    const path = spec?.subagentLaunch ? spec.locate(session) : null;
+    return c.json({ toolUseId: path && spec?.subagentLaunch ? await spec.subagentLaunch(path, agentId) : null });
+  });
+
   app.get("/api/sessions/:id/transcript", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -5959,7 +6097,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Same task authority as creation/update. The dashboard and MCP share every launch gate.
   app.post("/mcp/tasks/:id/dispatch", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    return dispatchSavedTask(c, c.req.param("id"));
+    return dispatchSavedTask(c, c.req.param("id"), "agent");
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -6627,6 +6765,21 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         assertStandingApprovalGrantable(c.req.param("id"));
       } catch (error) { return planFailure(c, error); }
     }
+    // A resident's proposed instruction changes: only a person's answer applies them, and the
+    // write commits with the answer. Refused before anything settles when the answer is not
+    // the operator's, so the question stays open for them.
+    const instructionChange = residentInstructions?.resolution(
+      c.req.param("id"),
+      parsed.data.action,
+      by,
+      parsed.data.selections ?? null,
+    ) ?? null;
+    if (instructionChange && "refusal" in instructionChange) {
+      return c.json({ error: instructionChange.refusal.error }, instructionChange.refusal.status);
+    }
+    if (grant && instructionChange) {
+      return c.json({ error: "A plan bundle grant cannot answer a resident instruction proposal" }, 409);
+    }
     try {
       // An answer to the questions left beside an auto-approved bundle tells the agent the
       // bundle is already approved, because this form no longer asked about it.
@@ -6641,9 +6794,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         by,
         parsed.data.selections,
         // Committed with the answer, so a failed grant leaves the review pending to retry.
-        grant ? () => grantStandingBundleApproval(c.req.param("id")) : undefined,
+        grant
+          ? () => grantStandingBundleApproval(c.req.param("id"))
+          : instructionChange?.persist,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
+      instructionChange?.publish();
       return c.json(updated);
     } catch (error) {
       if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 400);
@@ -6777,7 +6933,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r, r.ok ? 200 : 409);
     }
-    const r = await selectPaneOption(session, parsed.data, panes);
+    // Re-read at the Enter: the walk to the row takes captures, and a pause can freeze the
+    // agent in between. `session` is the snapshot from before it.
+    const r = await selectPaneOption(session, parsed.data, panes, () => writeHold(registry.getSession(session.id) ?? session));
     if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
     observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
@@ -6831,7 +6989,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         409,
       );
     }
-    const r = await submitPaneForm(session, options, panes);
+    const r = await submitPaneForm(session, options, panes, () => writeHold(registry.getSession(session.id) ?? session));
     // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
     // nothing, and retiring on either drops a decision that is still owed.
     if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, by);
@@ -7000,7 +7158,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const stackGuard = (): string | null => {
       if (!stackRequest) return null;
       try {
-        if (stackParentRead && stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+        if (stackParentRead && !isStackPromptKind(stackRequest.kind)) {
           const changed = stackParentDiffers(getInspectorPr(stackRequest.prKey)?.stack?.observation, stackParentRead, stackRequest.kind);
           if (changed) return changed;
         }
@@ -7022,7 +7180,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (request) return c.json({ error: "One follow-up per delivery", pasted: false }, 400);
       // A recovery action was chosen from the parent's last observed state; read it again
       // before typing, so a parent that merged or closed since never gets a stale instruction.
-      if (stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+      if (!isStackPromptKind(stackRequest.kind)) {
         const recheck = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
         if (recheck.error !== undefined) return c.json({ error: recheck.error, pasted: false }, 409);
         stackParentRead = recheck.parent;
@@ -7306,7 +7464,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
-    const r = await requestSessionStop(session, sdkSessions);
+    const r = await requestSessionStop(session, sdkSessions, undefined, pauses);
     if (r.ok) acceptReturn();
     // The INTENT, recorded whether or not an ending follows. P2 requires the two stay
     // orthogonal: a kill the agent survives and a session that vanishes with no request are
@@ -7344,7 +7502,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
     if (unsupported) return c.json({ error: unsupported }, 400);
-    const r = await interruptSession(session, sdkSessions, pendingTurns, panes);
+    const r = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);
     observeSessionOperation({
       session,
       operation: "interrupt",
@@ -7577,6 +7735,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       undefined,
       driverClearFor(sdkSessions),
       pendingTurns,
+      pauses,
       taskBaseBranch(session),
     );
     return c.json(r, r.ok ? 200 : 500);
@@ -8823,7 +8982,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!isPipelineProviderId(provider)) {
       return c.json({ error: "no such pipeline provider" }, 400);
     }
-    return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+    try {
+      return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
   });
 
   /**
@@ -8837,7 +9000,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, PipelineInstallerLaunchSchema);
     if (!parsed.ok) return parsed.res;
     const body = parsed.data;
-    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, await listRepos());
+    // `fresh`: the launch re-verifies the checkout against the catalog, and must not accept one
+    // from a scan that predates a removal. The candidate list above is a picker and stays instant.
+    let catalog: string[];
+    try {
+      catalog = await listRepos({ fresh: true });
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
+    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, catalog);
     if (!launch.ok) {
       const answer: PipelineInstallerLaunchResult = {
         ok: false,
@@ -9410,13 +9581,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   }, 503);
   // Recomputed on read, so a copy written or removed behind the daemon's back shows at once
   // and reaches every open dashboard through the same `storage_health` event.
+  const storageUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Storage health service is unavailable",
+  }, 503);
   app.get("/api/storage", async (c) => {
-    if (!storageHealth) {
-      return c.json({
-        error: "service_unavailable" as const,
-        message: "Storage health service is unavailable",
-      }, 503);
-    }
+    if (!storageHealth) return storageUnavailable(c);
     // Opening Storage looks at the finished trees now rather than showing the last pass's
     // processes, which can be a maintenance interval old. The scan is single-flight.
     if (orphanProcesses) await orphanProcesses.scan();
@@ -9425,13 +9595,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   app.put("/api/storage/backups/config", async (c) => {
     if (!databaseBackups) return databaseBackupsUnavailable(c);
-    const parsed = await parseBody(c, DatabaseBackupsConfigPatchSchema);
+    const parsed = await parseBody(c, DatabaseBackupsSaveRequestSchema);
     if (!parsed.ok) return parsed.res;
-    // The validated patch always parses, so what throws here is SQLite, as with a full disk.
+    const { expectRemove, ...patch } = parsed.data;
+    // No save deletes a copy its caller did not name. A request without `expectRemove` is taken
+    // to expect no deletions: one that deletes nothing (an interval, a raised count) goes through
+    // as before, and one that would delete copies is refused with the exact list, which the
+    // caller confirms by sending it back. That refusal is the preview for any API caller.
+    // The validated patch always parses, so what throws here is SQLite, as with a full disk, or
+    // a list the copies no longer match.
     let saved;
     try {
-      saved = setDatabaseBackupsConfig(parsed.data, databaseBackups);
+      saved = setDatabaseBackupsConfig(patch, databaseBackups, expectRemove ?? []);
     } catch (error) {
+      if (error instanceof StaleBackupPreviewError) {
+        return c.json(expectRemove === undefined
+          ? {
+              error: "preview_required" as const,
+              message: `Saving these limits deletes ${error.remove.length} ${error.remove.length === 1 ? "copy" : "copies"}. Nothing was saved or deleted; send them as expectRemove to confirm.`,
+              remove: error.remove,
+            }
+          : { error: "stale_preview" as const, message: error.message, remove: error.remove }, 409);
+      }
       return c.json({
         error: "save_failed" as const,
         message: error instanceof Error ? error.message : String(error),
@@ -9440,6 +9625,64 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
     registry.emitStorageConfigChanged();
     return c.json(saved);
+  });
+
+  // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
+  // idle-cache budget only chooses what a cleanup preview offers.
+  app.put("/api/storage/limits", async (c) => {
+    if (!storageHealth) return storageUnavailable(c);
+    const parsed = await parseBody(c, StorageLimitsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    let limits;
+    try {
+      limits = setStorageLimitsConfig(parsed.data);
+    } catch (error) {
+      return c.json({
+        error: "save_failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+    // The limits ride the aggregate, so this publishes them, and any warning they start or end,
+    // to every open dashboard.
+    storageHealth.recompute();
+    return c.json({ limits });
+  });
+
+  // Measure now. The walk runs in the background and can take minutes; the answer is the state
+  // it started, and the finished measurement arrives through `storage_health`.
+  app.post("/api/storage/usage/measure", (c) => {
+    if (!storageUsage || !storageHealth) return storageUnavailable(c);
+    void storageUsage.measure();
+    void storageUsage.checkVolume();
+    return c.json({ usage: storageUsage.usage() }, 202);
+  });
+
+  // What the idle-cache budget would remove right now. On demand rather than in the aggregate,
+  // because it observes every native slot through Git.
+  app.get("/api/storage/pool-caches", async (c) => {
+    if (!storageUsage || !worktreeOperations) {
+      return c.json({
+        error: "worktrees_unavailable",
+        message: "Native worktree pools are unavailable",
+      } satisfies IdleCachePlanUnavailable, 503);
+    }
+    const limits = getStorageLimitsConfig();
+    try {
+      const status = await worktreeOperations.manager.status();
+      return c.json(planIdleCache({
+        status,
+        slotBytes: (path) => storageUsage.slotBytes(path),
+        sizesMeasuredAt: storageUsage.measurement()?.measuredAt ?? null,
+        budgetBytes: limits.poolIdleBudgetBytes,
+        keepWarm: limits.poolKeepWarm,
+        now: Date.now(),
+      }));
+    } catch (error) {
+      return c.json({
+        error: "worktrees_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      } satisfies IdleCachePlanUnavailable, 503);
+    }
   });
 
   // Back up now: a `manual` copy through the same single-flight capture as the hourly one.
@@ -9519,19 +9762,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const result = await (setupInstallDeps?.installPiExtension ?? installPiExtensionFromSetup)();
       return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : result.status);
     }
-    const result = await executeSetupInstall(parsed.data, {
-      catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
-      platform: setupInstallDeps?.platform,
-      homeDir: setupInstallDeps?.homeDir ?? homedir(),
-      listRepoRoots: setupInstallDeps?.listRepoRoots ?? listRepos,
-      listProviderInstallers:
-        setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
-      prepareProviderInstaller:
-        setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
-      resolveExecutable:
-        setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
-      launchTerminal: terminalLauncher,
-    });
+    let result: Awaited<ReturnType<typeof executeSetupInstall>>;
+    try {
+      result = await executeSetupInstall(parsed.data, {
+        catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
+        platform: setupInstallDeps?.platform,
+        homeDir: setupInstallDeps?.homeDir ?? homedir(),
+        // `fresh`: this picks the one verified installer checkout and launches it, so it acts on
+        // the catalog rather than offering it.
+        listRepoRoots: setupInstallDeps?.listRepoRoots ?? (() => listRepos({ fresh: true })),
+        listProviderInstallers:
+          setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
+        prepareProviderInstaller:
+          setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
+        resolveExecutable:
+          setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
+        launchTerminal: terminalLauncher,
+      });
+    } catch (error) {
+      return scanUnavailableAnswer(c, error);
+    }
     return c.json(result.body, result.status as ContentfulStatusCode);
   });
 
@@ -9776,7 +10026,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         const filed = await tasks.reschedule(task.id);
         if (!filed.ok) return c.json({ error: filed.error }, 409);
       }
-      const r = await tasks.dispatch(task.id, { overrideDisabled: true });
+      // The operator's own retry of a failed launch: it is neither held as parked nor by a pause.
+      // Only the operator's: an agent calling this route is held like any other launch.
+      const r = await tasks.dispatch(task.id, { overrideDisabled: true, overridePauseHold: mayOverridePauseHold(c) });
       return r.ok ? c.json({ ok: true, task: r.task }) : c.json({ error: r.error }, 409);
     }
     const workKey = launchWorkKey(task);
@@ -9806,6 +10058,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       effort: task.effort ?? undefined,
       personaId: task.personaId ?? undefined,
       workflowId: task.workflowId,
+      grillFirst: task.grillFirst ?? false,
       priority: task.priority,
       labels: task.labels,
     });
@@ -9820,6 +10073,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   }
 
   if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents });
+  if (residentInstructions) registerResidentInstructionRoutes(app, { registry, changes: residentInstructions });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
   app.put("/api/residents/skill-sources", async (c) => {
     const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);
@@ -10017,6 +10271,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!recipe.dispatch) return c.json({ ok: true, task });
     const launched = await tasks.dispatch(task.id, {
       overrideDisabled: recipe.dispatch.overrideDisabled,
+      // A tour the operator started: theirs to launch whatever is paused. Not a token caller's.
+      overridePauseHold: mayOverridePauseHold(c),
       missionMcp: recipe.dispatch.missionMcp,
     });
     if (!launched.ok) {
@@ -10107,7 +10363,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           resumable: false,
         });
       } else {
-        const stopped = await requestSessionStop(session, sdkSessions);
+        const stopped = await requestSessionStop(session, sdkSessions, undefined, pauses);
         if (!stopped.ok) {
           return c.json(
             { ok: false, error: `task marked done, but the session could not be closed: ${stopped.error ?? "failed"}`, task: completed },
@@ -10247,12 +10503,24 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return pushOutcomeResponse(c, r);
   });
 
-  async function dispatchSavedTask(c: Context, id: string) {
+  /**
+   * Whether this request may lift the operator's launch hold (`overridePauseHold`): only the
+   * operator's own, by the same test the pause routes apply. An agent holding the daemon token
+   * can call any of these routes directly, so a flag in the body is never trusted on its own.
+   */
+  const mayOverridePauseHold = (c: Context): boolean => sessionControlCallerRefusal(c) === null;
+
+  async function dispatchSavedTask(c: Context, id: string, caller: "dashboard" | "agent" = "dashboard") {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
     const refused = taskWorkflowDispatchRefusal(tasks.get(id));
     if (refused) return c.json(refused.body, refused.status);
-    const r = await tasks.dispatch(id, parsed.data);
+    // An agent may not lift the operator's launch hold for itself: the pause is the operator's,
+    // unlike `overrideDisabled`, which the MCP tool documents as the agent's to set. Checked at
+    // this boundary, not only on the MCP route: the dashboard route is reachable with the token.
+    const operator = caller === "dashboard" && mayOverridePauseHold(c);
+    const options = operator ? parsed.data : { ...parsed.data, overridePauseHold: false };
+    const r = await tasks.dispatch(id, options);
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
@@ -10417,6 +10685,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const r = await tasks.assign(id, parsed.data.sessionId, {
       overrideDisabled: parsed.data.overrideDisabled,
+      overridePauseHold: parsed.data.overridePauseHold === true && mayOverridePauseHold(c),
       confirmReset: parsed.data.confirmReset,
     });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);

@@ -233,9 +233,25 @@ let db: DatabaseSync | undefined;
 //     `github_url`, `legacy_posted`), draft refusals (`post_refusals`, `last_post_error`),
 //     and the adopting session's note key (`inspector_prs.note_key`, nullable, no backfill).
 //     `legacy_posted` is backfilled once, so this one rewrites rows.
-// 28: fork - the fork's own 19, 20 and 21, shipped before upstream's 19 to 27 arrived, combined
-//     above upstream's 27 so a fork database stamped anywhere from 19 to 27 takes its recovery
-//     point before the combined upgrade. They are, as fork entries numbered then:
+// 28: dependency claims (`worktree_slots.deps_state`, `deps_fingerprint`, `deps_fingerprint_sha`,
+//     `deps_claimed_at`, `deps_last_error`, and `tasks.claim_warnings`), nullable with no
+//     backfill: no slot was claimed and no task warned before these existed.
+// 29: resident instruction proposals (`resident_instruction_proposals`), a new empty table: no
+//     resident proposed a change to its own instructions before this existed.
+// 30: a task's Grill me first pin (`tasks.grill_first`), 0 with no backfill: every task filed
+//     before it started without grilling; and the Grill action's operator text
+//     (`builtin_session_action_overrides`), a new empty table on an upgraded database.
+// 31: quarantine categories and times (`worktree_slots.quarantine_category`, `quarantined_at`).
+//     The category is backfilled once for quarantines whose recorded reason is one this
+//     allocator only ever wrote for an observer that did not answer, so this one rewrites rows.
+//     Every other legacy quarantine, and every legacy time, stays NULL: neither was recorded.
+// 32: resident compaction epochs (`resident_runs.compaction_epoch`, `reanchored_epoch`) and a
+//     restating wake's exact text (`resident_iterations.wake_text`, `reanchor_epoch`). Zero and
+//     NULL with no backfill: no run owes a restatement until its conversation next compacts.
+// 33: fork - the fork's own 19 and 20, shipped before upstream's 19 to 32 arrived, combined
+//     above upstream's 32 so a fork database stamped anywhere from 19 to 32 takes its recovery
+//     point before the combined upgrade. (The fork's 21, Grill me first, is upstream's 30 now.)
+//     They are, as fork entries numbered then:
 //     - 19: the fork's own 10 to 14 (renumbered by the sync that brought upstream's 10 to 18):
 //       the stored testing settings catalog (`testing_settings`), pending Command document
 //       proposals (`command_document_proposals`, machine state with no settings backup domain),
@@ -248,17 +264,12 @@ let db: DatabaseSync | undefined;
 //       upgraded database.
 //     - 20: a moved base branch's record (`tasks.base_branch_moved_from` and
 //       `tasks.base_branch_moved_sha`), NULL with no backfill: no task moved before they existed.
-//     - 21: a task's Grill me first pin (`tasks.grill_first`), 0 with no backfill: every task
-//       filed before it started without grilling; and the Grill action's operator text
-//       (`builtin_session_action_overrides`), empty on an upgraded database.
+//     The fork's unversioned Warm log column (`worktree_slots.deps_log_path`) rides on this entry.
 //     None of these migrations, fork or upstream, is gated by this number: each is
-//     `CREATE ... IF NOT EXISTS` or `addColumn` in `migrate()`, so a fork database stamped 21
-//     still gains upstream's 19 to 27. Upstream's 26 (`tasks.source_parent`) and 27 (the
-//     Inspector finding posting columns) are the upstream ports of fork columns a fork database
-//     already has under the same names, so `addColumn` finds them present and only the
-//     `legacy_posted` backfill's own guard decides whether it runs. When the next upstream sync
-//     brings its own 28, renumber this entry above upstream's highest, as this sync did.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 28;
+//     `CREATE ... IF NOT EXISTS` or `addColumn` in `migrate()`, so a fork database stamped 28
+//     still gains upstream's 28 to 32. When the next upstream sync brings its own 33, renumber
+//     this entry above upstream's highest, as this sync did.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 33;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -1054,10 +1065,14 @@ function createSchemaObjects(d: DatabaseSync): void {
       last_released_owner_key   TEXT,
       last_used_at              INTEGER,
       quarantine_reason         TEXT,
-      last_error                TEXT,
-      -- When the slot last entered quarantine. Part of its storage problem id, so it is
-      -- durable: a daemon restart never makes a dismissed quarantine look new.
+      -- Why and when the slot entered quarantine. The category vocabulary is append-only
+      -- (WORKTREE_QUARANTINE_CATEGORIES) and decides whether reconciliation may recover it.
+      -- Only the transition into quarantine writes either; every transition out clears both.
+      -- The time is also part of the slot's storage problem id, so it is durable: a daemon
+      -- restart never makes a dismissed quarantine look new.
+      quarantine_category       TEXT,
       quarantined_at            INTEGER,
+      last_error                TEXT,
       -- Dependency claim state. NULL is "never claimed". The vocabulary is append-only
       -- (WORKTREE_DEPS_STATES). A claim writes its intent and clears the fingerprint in one
       -- write before any step runs, so a crash never leaves a fingerprint to trust.
@@ -3633,6 +3648,27 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "resident_iterations", "conversation_key", "TEXT");
   addColumn(d, "resident_iterations", "message_id", "TEXT");
   addColumn(d, "resident_iterations", "message_ts", "INTEGER");
+  // A resident's proposed instruction changes, bound to the review that shows them. The review
+  // is what the human answers; this row is what the answer applies, so a proposal survives a
+  // daemon restart exactly as long as its review does. `outcome` is written in the same
+  // transaction as the review's resolution and never rewritten.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS resident_instruction_proposals (
+      review_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      profile_id TEXT NOT NULL,
+      profile_revision INTEGER NOT NULL,
+      persona_id TEXT,
+      persona_revision INTEGER,
+      proposal TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      outcome TEXT,
+      settled_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_resident_instruction_proposals_profile
+      ON resident_instruction_proposals(profile_id, created_at);
+  `);
 
   // Nullable with no default: a run launched before these existed reads as never granted.
   addColumn(d, "resident_runs", "control_authorized_at", "INTEGER");
@@ -3643,6 +3679,18 @@ function migrate(d: DatabaseSync): void {
   // which keeps the native MCP behaviour it launched with; set (even for an empty set) on
   // every run since, which starts exactly its snapshot.
   addColumn(d, "resident_runs", "mcp_snapshot_at", "INTEGER");
+  // Run now pressed while the resident was busy: fires once on the next idle observation.
+  addColumn(d, "resident_runs", "run_requested_at", "INTEGER");
+  // Consecutive failed compactions before a wake; reset by a measured success or Resume.
+  addColumn(d, "resident_runs", "compaction_failures", "INTEGER NOT NULL DEFAULT 0");
+  // Compactions of the run's conversation, and the newest one a delivered wake has restated
+  // the standing task after. Zero on every existing run, which owes nothing until it compacts.
+  addColumn(d, "resident_runs", "compaction_epoch", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "resident_runs", "reanchored_epoch", "INTEGER NOT NULL DEFAULT 0");
+  // A wake's exact text when it restated the standing task, and the compaction it restated
+  // after. NULL on every other wake, whose text is still its marker and the loop prompt.
+  addColumn(d, "resident_iterations", "wake_text", "TEXT");
+  addColumn(d, "resident_iterations", "reanchor_epoch", "INTEGER");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
@@ -3659,14 +3707,8 @@ function migrate(d: DatabaseSync): void {
   // The most recent Warm's log. Null on every existing slot, which is exact: no Warm ran before
   // this column existed.
   addColumn(d, "worktree_slots", "deps_log_path", "TEXT");
-  // When a slot entered quarantine, the occurrence half of its `quarantined-slot` problem id.
-  // A slot quarantined before this column existed has no entry time on record, so it is
-  // stamped once with the first start that finds it; the guard keeps every later start from
-  // moving that stamp.
+  migrateWorktreeQuarantineCategory(d);
   addColumn(d, "worktree_slots", "quarantined_at", "INTEGER");
-  d.prepare(
-    "UPDATE worktree_slots SET quarantined_at = ? WHERE state = 'quarantined' AND quarantined_at IS NULL",
-  ).run(Date.now());
 
   // HTML preview comments originally persisted only a line-wide quote. When compact HTML
   // puts several elements on one line, that cannot distinguish a paragraph from its inline
@@ -3713,6 +3755,11 @@ function migrate(d: DatabaseSync): void {
   // The task's advisor pin, kept on the driver row so a relaunch renders the same flag
   // layer the first launch did. NULL inherits, which is what every older row did.
   addColumn(d, "sdk_sessions", "advisor_model", "TEXT");
+  // Consecutive restores that deferred this row because its decision tool could not be
+  // confirmed (`ResumeDeferred` in sdk/supervisor.ts). Bounded there, so a bundle that never
+  // builds turns into a visible refusal instead of a silent retry on every restart. 0 on
+  // every older row, which is what they all were.
+  addColumn(d, "sdk_sessions", "resume_deferrals", "INTEGER NOT NULL DEFAULT 0");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -5287,6 +5334,70 @@ function backfillInspectorLegacyPosted(d: DatabaseSync): void {
                WHEN status = 'drafted' THEN 'unposted'
                ELSE 'unknown'
              END`);
+}
+
+/**
+ * Add `quarantine_category` and run its backfill in one transaction, for the same reason as
+ * `migrateInspectorLegacyPosted`: the column is new exactly once.
+ */
+function migrateWorktreeQuarantineCategory(d: DatabaseSync): void {
+  try {
+    d.exec("BEGIN IMMEDIATE;");
+    if (addColumn(d, "worktree_slots", "quarantine_category", "TEXT")) backfillWorktreeQuarantineCategory(d);
+    d.exec("COMMIT;");
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw err;
+  }
+}
+
+/**
+ * The quarantine reasons earlier builds wrote only when an observer did not answer: the
+ * process listing, a Git read, the registration list, or a domain-ownership lookup. Exact text,
+ * or a prefix where the reason carried its detail. This is the one place reason text is ever
+ * read for meaning, and only because a legacy row has nothing else; a new quarantine records
+ * its category directly and is never classified from prose.
+ */
+const LEGACY_OBSERVATION_QUARANTINE_REASONS = [
+  "slot process occupancy is unknown",
+  "slot Git state is unknown",
+  "slot Git state could not be inspected",
+  "Git registrations could not be read",
+  "last-released domain ownership could not be read",
+  "last-released domain ownership is unknown",
+  "leased domain ownership is unknown",
+] as const;
+const LEGACY_OBSERVATION_QUARANTINE_PREFIXES = [
+  "slot occupancy became unknown before ",
+  "Git worktree registrations are unknown: ",
+] as const;
+
+/**
+ * Classify the quarantines that predate the category. Runs once, in the migration that adds
+ * the column, so it only ever sees legacy rows. A legacy reason it does not recognize stays
+ * NULL, which is never recovered automatically. Recovery still re-proves every fact, so a
+ * classified slot that is in fact dirty, occupied, moved or leased stays quarantined.
+ */
+//
+// Category is not the whole of recoverability. The "slot occupancy became unknown before ..."
+// rows this classifies as observations usually still hold the reservation an older build never
+// undid, and recovery never releases a lease, so they can never come back on their own. Any
+// consumer asking "will Reconcile recover this slot?" must use `quarantineAutoRecoverable`
+// (category AND no active lease, the same rule `recoverQuarantined` enforces), never
+// `quarantineRecoverable` on the category alone.
+function backfillWorktreeQuarantineCategory(d: DatabaseSync): void {
+  const exact = LEGACY_OBSERVATION_QUARANTINE_REASONS.map(() => "?").join(", ");
+  // `substr` rather than LIKE: a reason may contain `%` or `_`, and this must be exact.
+  const prefixes = LEGACY_OBSERVATION_QUARANTINE_PREFIXES.map(() => "substr(quarantine_reason, 1, ?) = ?").join(" OR ");
+  d.prepare(
+    `UPDATE worktree_slots SET quarantine_category = 'observation'
+      WHERE state = 'quarantined' AND (quarantine_reason IN (${exact}) OR ${prefixes})`,
+  ).run(
+    ...LEGACY_OBSERVATION_QUARANTINE_REASONS,
+    ...LEGACY_OBSERVATION_QUARANTINE_PREFIXES.flatMap((prefix) => [prefix.length, prefix]),
+  );
 }
 
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {
@@ -15539,6 +15650,24 @@ export function latestStackedPr(
 }
 
 /**
+ * The most recently adopted stacked pull request of a task in one repository, in ANY work
+ * episode. A child merged into its parent's branch is recovered from a new branch, which is a
+ * new episode, so its replacement is not found by `latestStackedPr`'s episode match.
+ */
+export function latestStackedPrForTask(taskId: string, owner: string, repo: string, exceptKey = ""): InspectorPr | null {
+  const row = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE stack_task_id = ? AND lower(owner) = lower(?) AND lower(repo) = lower(?)
+          AND stack_parent_pr_url IS NOT NULL AND key <> ?
+        ORDER BY stack_adopted_at DESC, rowid DESC
+        LIMIT 1`,
+    )
+    .get(taskId, owner, repo, exceptKey) as InspectorPrRow | undefined;
+  return row ? rowToInspectorPr(row) : null;
+}
+
+/**
  * Record that the stack release check passed for exactly this child head, and under which
  * parent state (`basis`). Rewritten when either changes: a release first granted under a
  * closed parent that later merged is re-recorded as merged once that ancestry is verified.
@@ -15639,13 +15768,33 @@ function stackAtomically<T>(fn: () => T): T {
  * recovery action still depends on a parent that can move. Ordered by key and resumed after
  * `afterKey`, so a caller walking the pages reaches every row in turn. Ordering by recency
  * would starve the oldest rows, since observing a row makes it recent again.
+ *
+ * Also a child that merged while its parent could not be read, or whose base or default branch
+ * GitHub did not report, or that merged into its finished parent's branch without a merge commit
+ * or merge times yet: whether its merge reached the default branch, or needs the recovery
+ * prompt, is unresolved until those are read again.
  */
 export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[] {
   const rows = openDb()
     .prepare(
       `SELECT * FROM inspector_prs
-        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL AND merged_at IS NULL
-          AND (observed_state IS NULL OR observed_state <> 'MERGED') AND key > ?
+        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL
+          -- Closed without merging: its recovery action follows a parent that can still move.
+          AND ((merged_at IS NULL AND (observed_state IS NULL OR observed_state <> 'MERGED'))
+            -- Merged, whoever recorded the merge time, with its landing still unresolved.
+            OR (CASE WHEN json_valid(stack_state) THEN CASE WHEN json_extract(stack_state, '$.childState') = 'MERGED' THEN
+                  json_extract(stack_state, '$.parentUnreadSince') IS NOT NULL
+                  OR json_extract(stack_state, '$.baseRefName') IS NULL
+                  OR json_extract(stack_state, '$.defaultBranch') IS NULL
+                  -- Merged into its finished parent's branch, with a fact the recovery prompt
+                  -- needs still unreported (\`strayMergeUndecided\`).
+                  OR (json_extract(stack_state, '$.parentState') = 'MERGED'
+                    AND json_extract(stack_state, '$.baseRefName') = json_extract(stack_state, '$.parentHeadRefName')
+                    AND (json_extract(stack_state, '$.childMergeCommitSha') IS NULL
+                      OR json_extract(stack_state, '$.childMergedAt') IS NULL
+                      OR json_extract(stack_state, '$.parentMergedAt') IS NULL))
+                END END) = 1)
+          AND key > ?
         ORDER BY key ASC LIMIT ?`,
     )
     .all(afterKey, limit) as unknown as InspectorPrRow[];
@@ -15656,7 +15805,7 @@ export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[
 export interface StackPromptClaim {
   prKey: string;
   /** A prompt (`catch-up`, `restack`) or a broken-stack recovery action typed as one. */
-  kind: "catch-up" | "restack" | "move-onto-main" | "reopen-against-main" | "reopen-on-parent";
+  kind: "catch-up" | "restack" | "recover-merge" | "move-onto-main" | "reopen-against-main" | "reopen-on-parent";
   tip: string;
   claimId: string;
   outcome: "uncertain" | "delivered";
@@ -15671,7 +15820,7 @@ export function readStackPromptClaim(prKey: string, kind: StackPromptClaim["kind
   if (!row) return null;
   return {
     prKey: String(row.pr_key),
-    kind: (["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"] as const)
+    kind: (["catch-up", "restack", "recover-merge", "move-onto-main", "reopen-against-main", "reopen-on-parent"] as const)
       .find((kind) => kind === row.kind) ?? "catch-up",
     tip: String(row.tip),
     claimId: String(row.claim_id),

@@ -9,6 +9,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
+import type { PauseState, SessionPause } from "./pause.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { TaskLaunchFailure } from "./launch-failure.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
@@ -479,6 +480,57 @@ export interface WorkCycleSummary {
   updatedAt: number;
 }
 
+/** Where one background sub-agent is. Running is live; the other three are how it ended. */
+export type SubagentState = "running" | "completed" | "failed" | "stopped";
+
+/**
+ * One background sub-agent a session launched, as its harness reported it.
+ *
+ * Every nullable value is null when the source does not report it, never a placeholder: a
+ * terminal hook says only that an agent started and stopped, so its row carries no counters,
+ * and a renderer omits what is null rather than drawing a zero. Elapsed time is not a field -
+ * the browser derives it from `startedAt` and `endedAt`, so a running row ticks without a
+ * frame per second on the wire.
+ */
+export interface SubagentEntry {
+  /** The harness's own id for this agent (Claude's `task_id`). Unique within the summary. */
+  id: string;
+  /** Agent type, such as `Explore` or `general-purpose`. */
+  type: string | null;
+  description: string | null;
+  state: SubagentState;
+  /** Epoch ms the source says it started, else when the daemon first saw it. */
+  startedAt: number;
+  /** Epoch ms it ended; null while running. */
+  endedAt: number | null;
+  toolUses: number | null;
+  tokens: number | null;
+  /** Name of the last tool it ran. */
+  lastTool: string | null;
+  /** The source's one-line progress or result summary. */
+  summary: string | null;
+  /**
+   * The id of the parent's tool call that launched it (Claude's Agent `tool_use` id), which
+   * is what a conversation surface anchors "jump to launch" on.
+   */
+  launchTurnId: string | null;
+}
+
+/**
+ * A session's background sub-agents: live state, rebuilt from the driver's stream and never
+ * persisted. Absent on a session with nothing to show.
+ *
+ * `agents` holds at most `SUBAGENT_LIMIT` entries, running first (oldest start first) and
+ * then the newest finished. A finished agent stays listed until the operator's next turn,
+ * which folds it into `finishedFolded` - except when the list would exceed the limit, which
+ * folds the oldest finished agents at once to make room. Foreground and ambient work never
+ * appears here.
+ */
+export interface SubagentSummary {
+  agents: SubagentEntry[];
+  finishedFolded: number;
+}
+
 /**
  * A persisted SDK session whose driver has not been adopted by this daemon yet.
  *
@@ -600,6 +652,23 @@ export interface Session {
   foremanInvite: ForemanInvite | null;
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
+  /**
+   * The operator's pause, or null/absent when the session runs freely - see `@shared/pause.ts`.
+   *
+   * RESOLVED by the registry from the daemon's `PauseManager`, never by discovery or the SDK
+   * supervisor, the way `sessionControlEnabled` is: a discovery pass cannot clear it. While it
+   * is set, nothing automated starts a turn here; once `phase` is `frozen`, the agent's process
+   * tree is stopped. Optional so a snapshot from an older daemon still parses.
+   */
+  pause?: SessionPause | null;
+  /**
+   * When this session last resumed from a pause, epoch ms, or null. Resolved by the registry
+   * from `PauseManager` like `pause`. Every deadline that started before a pause counts from
+   * here instead - a message held through it, an item awaiting pickup - so the time the agent
+   * was frozen is never read as the time it ignored something. Optional so a snapshot from an
+   * older daemon still parses.
+   */
+  resumedAt?: number | null;
   /**
    * Display name. A discovered terminal session takes it from the highest-priority backend holding
    * its pane - a multiplexer's session name, else an emulator's tab title, else an
@@ -880,6 +949,12 @@ export interface Session {
    * offer rather than making Retro permanent chrome.
    */
   retro?: RetroSummary;
+  /**
+   * The background sub-agents this session launched, or ABSENT when there are none running
+   * or recently finished. Written only by `Registry.setSubagents` from the session's driver,
+   * and cleared when an SDK session registers again or its process is replaced.
+   */
+  subagents?: SubagentSummary;
   /**
    * The pipeline run this session is doing the work of, or null - which is every session
    * on a fleet with no pipeline provider enabled, and so the overwhelmingly common case.
@@ -3747,6 +3822,14 @@ export type ServerEvent =
   | import("./settings-backups.ts").SettingsRestoredEvent
   | {
       type: "snapshot";
+      /**
+       * The current index identity (`repoIndexIdentity`), or `REPO_INDEX_IDENTITY_UNKNOWN`
+       * when the daemon could not read it. Added by the stream, not the registry; optional
+       * only so the registry's own snapshot type, which never carries it, still fits. A window reconnecting after it missed
+       * a `repo_index_changed` compares its repository list against this and drops it on a
+       * mismatch - and keeps it on a match, which is the common reconnect under load.
+       */
+      repoIndexIdentity?: string;
       /** At most 100 unresolved summaries, with a count for the paginated remainder. */
       sessionTransfers?: import("./session-transfer.ts").SessionTransferPage;
       sessions: Session[];
@@ -3895,6 +3978,12 @@ export type ServerEvent =
        * any stale `on` it was drawing before the drop.
        */
       keepAwake: KeepAwakeStatus;
+      /**
+       * Pause all and the priority session at connect time - two nullable singletons, so it is
+       * bounded by construction. Per-session pauses ride on each `Session.pause`. Optional so a
+       * snapshot from an older daemon still parses; absent reads as nothing paused.
+       */
+      pause?: PauseState;
       /**
        * Backups and storage problems at connect time, so Settings > Storage and the banner
        * are right from the first render. Null until the daemon's storage service has computed
@@ -4076,6 +4165,14 @@ export type ServerEvent =
    */
   | { type: "storage_config_changed" }
   /**
+   * The indexed directories (Settings > Repositories) were saved. Carries only the new index
+   * identity (`repoIndexIdentity`, 16 hex characters): every open window drops the repository
+   * list it holds for the Dispatch picker unless that list answers for this identity. The
+   * window that saved forgets before it even writes; this is how every OTHER window stops
+   * offering a repository from a removed directory.
+   */
+  | { type: "repo_index_changed"; identity: string }
+  /**
    * The operator dismissed attention-inbox rows. An invalidation signal: each open dashboard
    * re-reads `GET /api/attention/dismissals`, so a row dismissed in one window leaves the
    * inbox and the `to answer` count in every other.
@@ -4092,6 +4189,12 @@ export type ServerEvent =
    * `Registry.setKeepAwakeStatus`).
    */
   | { type: "keep_awake_status"; status: KeepAwakeStatus }
+  /**
+   * Pause all or the priority session started, changed or ended. Carries the whole state so
+   * every open dashboard converges without a fetch. Per-session pauses travel on
+   * `session_upsert`; this is only the fleet-wide half.
+   */
+  | { type: "pause_state"; state: PauseState }
   /**
    * The storage aggregate moved: a capture settled, copies were pruned, or a maintenance pass
    * found a problem appear or clear. Carries the whole aggregate, for `line_summary`'s reason,
@@ -4145,8 +4248,11 @@ export interface ToolCall {
    */
   input?: string;
   /**
-   * The agent's own id for this call (Claude's `tool_use.id`). Set only by Session History's
-   * reader, which looks a call's result up by it; the live readers leave it out.
+   * The harness's own id for this call (Claude's `tool_use` block id), when the transcript
+   * records one. It is the id the Agent SDK names a background sub-agent's launch by
+   * (`SubagentEntry.launchTurnId`), so the conversation can find the turn that launched an
+   * agent, and Session History's reader looks a call's result up by it. Display-only:
+   * Foreman's window never reads it.
    */
   id?: string;
 }

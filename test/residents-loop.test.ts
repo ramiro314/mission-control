@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
-import type { ServerEvent, Session } from "../src/shared/types.ts";
-import { residentRunSummary, ResidentProfileRevisionSchema, type ResidentLoopSettings } from "../src/shared/residents.ts";
+import type { ServerEvent, Session, TranscriptMessage } from "../src/shared/types.ts";
+import { RESIDENT_COMPACTION_FOCUS, residentRunSummary, ResidentProfileRevisionSchema, type ResidentLoopSettings } from "../src/shared/residents.ts";
 import { foldAttention } from "../src/web/lib/attention.ts";
 import { residentWakeMarker } from "../src/shared/resident-turn.ts";
 import { mkSession, mkTask, mkTaskSummary, meta } from "./helpers/session-fixture.ts";
@@ -10,9 +10,11 @@ import { openDb } from "../src/server/db.ts";
 import * as store from "../src/server/residents/store.ts";
 import * as state from "../src/server/residents/loop-store.ts";
 import { ResidentLoop } from "../src/server/residents/loop.ts";
-import type { TurnDelivered } from "../src/server/registry.ts";
+import { RESIDENT_RESTATEMENT_HEADING, residentStandingRestatement, residentStandingSection } from "../src/server/residents/launch.ts";
+import type { SessionCompacted, TurnDelivered } from "../src/server/registry.ts";
 import type { SessionMessages } from "../src/server/harness/index.ts";
 import { scheduleResidentIteration } from "../src/mcp/resident-pacing.ts";
+import { CompactionCompletion, CompactionError, compactionStallMs } from "../src/server/harness/compaction.ts";
 
 const loops: ResidentLoop[] = [];
 beforeEach(() => openDb().exec("DELETE FROM resident_runs; DELETE FROM resident_profile_revisions; DELETE FROM resident_profiles; DELETE FROM sdk_sessions; DELETE FROM usage_ledger;"));
@@ -72,20 +74,32 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
     workCycle: { logicalKey: "native", generation: 1, active: false, completedAt: now, updatedAt: now }, meta: meta({ contextPct: 5 }) });
   const listeners = new Set<(event: ServerEvent) => void>();
   const humans = new Set<(event: TurnDelivered) => void>();
+  const compactions = new Set<(event: SessionCompacted) => void>();
+  const focuses: string[] = [];
   const calls: string[] = [];
   let send: "accept" | "null" | "gate_throw" | "driver_throw" = "accept";
-  let compact = async () => { calls.push("compact"); session = { ...session, workCycle: { ...session.workCycle!, generation: session.workCycle!.generation + 1 } }; return 5; };
+  // A measured compaction, announced the way both drivers do: the boundary's `compacted` event
+  // reaches the registry's listeners before the result that completes the operation.
+  let compact = async () => {
+    calls.push("compact");
+    for (const fn of compactions) fn({ sessionId: session.id });
+    session = { ...session, workCycle: { ...session.workCycle!, generation: session.workCycle!.generation + 1 } };
+    return 5;
+  };
   let transcript = "";
   let unreadable = false;
   let refreshedContext: number | null = null;
+  let onRefresh: (() => void) | null = null;
   const registry = {
     subscribe: (fn: (e: ServerEvent) => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
     onTurnDelivered: (fn: (event: TurnDelivered) => void) => { humans.add(fn); return () => { humans.delete(fn); }; },
+    onCompacted: (fn: (event: SessionCompacted) => void) => { compactions.add(fn); return () => { compactions.delete(fn); }; },
     getTask: () => mkTask({ id: "task", sessionId: session.id, kind: "resident" }),
     getSession: () => session,
     upsertResidentRun: (run: NonNullable<ReturnType<typeof import("../src/shared/residents.ts").residentRunSummary>>) => { for (const fn of listeners) fn({ type: "resident_run_upsert", run }); },
   };
   const deps = { registry, refreshSession: () => {
+    onRefresh?.();
     if (refreshedContext !== null) session = { ...session, meta: meta({ contextPct: refreshedContext }) };
   }, now: () => now, messages: () => ({ path: "/fixture", read: {
     size: () => transcript.length,
@@ -94,7 +108,7 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
       return { messages: transcript.slice(offset) ? [{ role: "user", text: transcript.slice(offset), ts: now }] : [], end: transcript.length, atEnd: true };
     },
   } } as unknown as SessionMessages), sdk: {
-    compact: async () => compact(),
+    compact: async (_id: string, focus: string) => { focuses.push(focus); return compact(); },
     sendWhenIdle: async (_id: string, turn: { text: string }, before?: () => string | null) => {
       if (send === "gate_throw") throw new Error("gate");
       if (before?.() || send === "null") return null;
@@ -107,14 +121,17 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
   } };
   function loop() { const value = new ResidentLoop(deps); loops.push(value); value.start(); return value; }
   const emit = () => { for (const fn of listeners) fn({ type: "session_upsert", session }); };
-  return { loop, calls, settings, get session() { return session; }, get now() { return now; }, advance: (ms: number) => { now += ms; },
+  return { loop, calls, focuses, settings, get session() { return session; }, get now() { return now; }, advance: (ms: number) => { now += ms; },
     run: () => store.getResidentRun("run")!.run, rows: () => openDb().prepare("SELECT * FROM resident_iterations ORDER BY seq").all() as unknown as state.ResidentIteration[],
     setSend: (value: typeof send) => { send = value; }, setCompact: (fn: typeof compact) => { compact = fn; },
     refreshContext: (value: number) => { refreshedContext = value; },
+    onRefresh: (fn: (() => void) | null) => { onRefresh = fn; },
     patch: (value: Partial<Session>) => { session = { ...session, ...value }; emit(); },
     complete: (generation = session.workCycle!.generation) => { session = { ...session, state: "idle", workCycle: { ...session.workCycle!, generation, active: false, completedAt: now, updatedAt: now } }; emit(); },
     human: (turnId = "human") => { session = { ...session, state: "working", workCycle: { ...session.workCycle!, active: true, generation: session.workCycle!.generation + 1 } }; for (const fn of humans) fn({ sessionId: session.id, turnId, deliveredAt: now }); emit(); },
     transcript: (text: string) => { transcript = text; }, unreadable: () => { unreadable = true; },
+    /** The driver reports a compaction the loop did not start. */
+    compacted: () => { for (const fn of compactions) fn({ sessionId: session.id }); },
   };
 }
 
@@ -166,10 +183,30 @@ test("pending pacing survives restart and continuation under a later generation"
   f.advance(1000); f.loop(); f.complete(4); await flush(); assert.equal(f.run().nextWakeAt, f.now + 1_200_000);
 });
 
+test("Run now on a paused idle session waits for the resume instead of re-waking itself", async t => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  // Bounded, so a regression fails here instead of starving the event loop for good.
+  const forward = globalThis.queueMicrotask.bind(globalThis);
+  let enqueued = 0;
+  t.mock.method(globalThis, "queueMicrotask", (fn: () => void) => { enqueued++; if (enqueued <= 200) forward(fn); });
+  f.patch({ pause: { reason: "operator", phase: "frozen", since: f.now, interrupted: null, stopped: true } });
+  assert.equal(await loop.runNow("run"), "queued");
+  await flush();
+  assert.ok(enqueued < 20, `observation re-woke the run ${enqueued} times`);
+  assert.deepEqual(f.calls, [], "nothing is sent into a paused session");
+  assert.notEqual(f.run().runRequestedAt, null, "the queued Run now is kept for the resume");
+  t.mock.restoreAll();
+  f.patch({ pause: null });
+  await flush();
+  assert.equal(f.calls.length, 1, "lifting the pause sends it");
+  assert.equal(f.run().runRequestedAt, null);
+});
+
 test("human precedence cancels pacing and uses a fresh default cadence", async () => {
   const f = fixture(); const loop = f.loop(); await flush();
   loop.schedule(f.session, { callId: "late", delaySeconds: 60, reason: "old" });
-  f.human(); await flush(); assert.equal(f.run().nextWakeAt, null); await assert.rejects(loop.runNow("run"), /human message or active turn/); assert.equal(f.calls.length, 0);
+  f.human(); await flush(); assert.equal(f.run().nextWakeAt, null); assert.equal(await loop.runNow("run"), "queued");
+  assert.equal(f.run().runRequestedAt, f.now); loop.cancelRunNow("run"); assert.equal(f.run().runRequestedAt, null); assert.equal(f.calls.length, 0);
   f.complete(); await flush(); assert.equal(f.run().nextWakeAt, f.now + 300_000);
   f.human(); loop.schedule(f.session, { callId: "human", delaySeconds: 600, reason: "new" }); f.complete(); await flush();
   assert.equal(f.run().nextWakeAt, f.now + 600_000);
@@ -477,4 +514,323 @@ test("a review without agent pacing uses the profile default after turn completi
   assert.equal(f.run().nextWakeAt, null);
   f.patch({ pendingReviews: 0 }); await flush();
   assert.equal(f.run().nextWakeAt, f.now + 300_000);
+});
+
+test("Run now behind a busy resident queues, lets the turn in progress finish first, then wakes once", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.human(); await flush();
+  assert.equal(await loop.runNow("run"), "queued");
+  const queuedAt = f.now; f.advance(1000);
+  assert.equal(await loop.runNow("run"), "queued", "a second press keeps the first request");
+  assert.equal(f.run().runRequestedAt, queuedAt);
+  assert.equal(residentRunSummary(f.run())!.runRequestedAt, queuedAt, "every surface reads the queued run from the summary");
+  assert.deepEqual(f.calls, [], "the human turn keeps priority");
+  f.complete(); await flush();
+  assert.equal(f.calls.length, 1); assert.match(f.calls[0]!, /mission-resident:run:2/);
+  assert.equal(f.rows()[1]!.trigger, "run_now");
+  assert.equal(f.run().runRequestedAt, null);
+  f.complete(); await flush();
+  assert.equal(f.calls.length, 1, "one queued request is spent by one wake");
+  assert.equal(f.run().nextWakeAt, f.now + 300_000, "the ordinary cadence resumes after it");
+});
+
+test("a pause drops a queued run, and Run now on a paused busy resident resumes and queues", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.human(); await flush();
+  await loop.runNow("run"); loop.pause("run");
+  assert.equal(f.run().runRequestedAt, null);
+  f.complete(); await flush(); assert.deepEqual(f.calls, []);
+  f.human(); await flush();
+  assert.equal(await loop.runNow("run"), "queued");
+  assert.equal(f.run().loopState, "working"); assert.equal(f.run().pauseReason, null);
+  f.complete(); await flush(); assert.equal(f.calls.length, 1);
+  assert.throws(() => loop.cancelRunNow("run"), /No queued run to cancel/);
+});
+
+test("Run now that meets a human turn starting inside the wake is queued, not dropped", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  // Idle when Run now checks; a human turn begins by the time the wake refreshes the session.
+  f.onRefresh(() => { f.onRefresh(null); f.human(); });
+  assert.equal(await loop.runNow("run"), "queued", "the answer reports what actually happened");
+  assert.deepEqual(f.calls, []);
+  assert.notEqual(f.run().runRequestedAt, null);
+  f.complete(); await flush();
+  assert.equal(f.calls.length, 1); assert.match(f.calls[0]!, /mission-resident:run:2/);
+  assert.equal(f.run().runRequestedAt, null);
+});
+
+for (const idleWhileDown of [false, true]) test(`a queued Run now survives a daemon restart and runs exactly once (${idleWhileDown ? "turn finished while down" : "turn finishes after restart"})`, async () => {
+  const f = fixture(); const first = f.loop(); await flush();
+  f.human(); await flush();
+  assert.equal(await first.runNow("run"), "queued");
+  await first.stop();
+  if (idleWhileDown) f.complete();
+  const second = f.loop(); await flush();
+  if (!idleWhileDown) { assert.deepEqual(f.calls, [], "still behind the turn in progress"); f.complete(); await flush(); }
+  assert.equal(f.calls.length, 1); assert.match(f.calls[0]!, /mission-resident:run:2/);
+  assert.equal(f.rows()[1]!.trigger, "run_now");
+  assert.equal(f.run().runRequestedAt, null);
+  f.complete(); await flush();
+  await second.stop(); f.loop(); await flush();
+  assert.equal(f.calls.length, 1, "neither the next completion nor another restart repeats it");
+});
+
+for (const outcome of ["measured", "failed"] as const) test(`a queued Run now outlives a human turn that preempts its ${outcome} compaction`, async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.human(); await flush();
+  assert.equal(await loop.runNow("run"), "queued");
+  f.patch({ meta: meta({ contextPct: 80 }) });
+  // The queued run starts compacting, and a human message lands during it.
+  f.setCompact(async () => {
+    f.calls.push("compact"); f.human();
+    if (outcome === "failed") throw new CompactionError(STALLED);
+    return 5;
+  });
+  f.complete(); await flush();
+  assert.deepEqual(f.calls, ["compact"], "the human turn goes first");
+  assert.notEqual(f.run().runRequestedAt, null, "the request is put back, not spent");
+  assert.equal(f.run().loopState, "working");
+  f.setCompact(async () => { f.calls.push("compact"); return 5; });
+  f.complete(); await flush();
+  assert.match(f.calls.at(-1)!, /mission-resident:run:2/, "the queued run follows the human turn");
+  assert.equal(f.run().runRequestedAt, null);
+});
+
+test("Run now waits behind an open request for the operator", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.patch({ pendingReviews: 1 }); await flush();
+  assert.equal(await loop.runNow("run"), "queued");
+  await flush(); assert.deepEqual(f.calls, []);
+  f.patch({ pendingReviews: 0 }); await flush();
+  assert.equal(f.calls.length, 1);
+});
+
+const STALLED = "Compaction made no progress for 10 minutes and was interrupted.";
+test("a failed compaction retries on a backoff, pauses once retries are spent, and Resume or a success resets it", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) });
+  let fail = true;
+  f.setCompact(async () => { f.calls.push("compact"); if (fail) throw new CompactionError(STALLED); return 5; });
+  for (const [retry, delayMs, wait] of [[1, 60_000, "1m"], [2, 300_000, "5m"], [3, 900_000, "15m"]] as const) {
+    await loop.runNow("run");
+    assert.equal(f.run().loopState, "waiting", `retry ${retry} waits instead of pausing`);
+    assert.equal(f.run().nextWakeAt, f.now + delayMs);
+    assert.equal(f.run().wakeReason, `${STALLED} Retrying in ${wait} (retry ${retry} of 3).`);
+  }
+  await loop.runNow("run");
+  assert.equal(f.run().loopState, "paused");
+  assert.equal(f.run().pauseReason, `${STALLED} Paused after 4 compaction attempts. Resume to try again.`);
+  assert.equal(f.run().iteration, 1, "no failed compaction counts as an iteration");
+  assert.deepEqual(f.calls, ["compact", "compact", "compact", "compact"]);
+  loop.resume("run");
+  await loop.runNow("run");
+  assert.match(f.run().wakeReason!, /\(retry 1 of 3\)/, "Resume starts a fresh set of retries");
+  fail = false; await loop.runNow("run");
+  assert.match(f.calls.at(-1)!, /mission-resident:run:2/, "a measured compaction sends the wake");
+  fail = true; f.complete(); f.patch({ meta: meta({ contextPct: 80 }) }); await loop.runNow("run");
+  assert.match(f.run().wakeReason!, /\(retry 1 of 3\)/, "a success resets the count");
+});
+
+test("each scheduled compaction retry fires on its own at its backoff, with no operator action", async (t) => {
+  const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) }); await flush();
+  f.setCompact(async () => { f.calls.push("compact"); throw new CompactionError(STALLED); });
+  // From here the loop's own wake timers are driven by hand. `flush` waits on a timer itself,
+  // so settling uses immediates, which are not mocked.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const elapse = async (ms: number) => { f.advance(ms); t.mock.timers.tick(ms); await settle(); };
+  await loop.runNow("run"); await settle();
+  assert.deepEqual(f.calls, ["compact"], "the one manual action: the first attempt");
+  for (const [delayMs, retry, next] of [[60_000, 1, "Retrying in 5m (retry 2 of 3)."], [300_000, 2, "Retrying in 15m (retry 3 of 3)."]] as const) {
+    await elapse(delayMs - 1);
+    assert.equal(f.calls.length, retry, `retry ${retry} waits for its full backoff`);
+    await elapse(1);
+    assert.equal(f.calls.length, retry + 1, `retry ${retry} fires from the loop's own timer`);
+    assert.ok(f.run().wakeReason!.endsWith(next));
+  }
+  await elapse(900_000 - 1);
+  assert.equal(f.calls.length, 3);
+  await elapse(1);
+  assert.equal(f.calls.length, 4, "the last retry fires too");
+  assert.equal(f.run().loopState, "paused");
+  assert.equal(f.run().pauseReason, `${STALLED} Paused after 4 compaction attempts. Resume to try again.`);
+  await elapse(3_600_000);
+  assert.equal(f.calls.length, 4, "a paused resident schedules nothing more");
+  assert.equal(f.run().iteration, 1);
+});
+
+test("a compaction that could not be interrupted pauses at once", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) });
+  f.setCompact(async () => { throw new CompactionError("Compaction made no progress for 10 minutes and could not be interrupted: gone", false); });
+  await loop.runNow("run");
+  assert.equal(f.run().loopState, "paused");
+  assert.equal(f.run().pauseReason, "Compaction made no progress for 10 minutes and could not be interrupted: gone Resume to try again.");
+});
+
+test("a retry waits for the interrupted compaction turn to unwind and counts its delay from that completion", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) });
+  f.setCompact(async () => {
+    // The driver's own `/compact` turn is still closing when the stall rejects.
+    f.patch({ state: "working", workCycle: { ...f.session.workCycle!, active: true, generation: f.session.workCycle!.generation + 1, completedAt: null } });
+    throw new CompactionError(STALLED);
+  });
+  await loop.runNow("run");
+  assert.equal(f.run().loopState, "waiting", "the compaction's own turn is not mistaken for a human");
+  assert.equal(f.run().nextWakeAt, null);
+  assert.match(f.run().wakeReason!, /Retrying in 1m/);
+  f.advance(5_000); f.complete(); await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 60_000, "the backoff, not the 5-minute cadence");
+  assert.equal(f.run().wakeReason, `${STALLED} Retrying in 1m (retry 1 of 3).`);
+});
+
+test("a human turn delivered during a failing compaction keeps precedence over the retry", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) });
+  f.setCompact(async () => { f.human(); throw new CompactionError(STALLED); });
+  await loop.runNow("run");
+  assert.equal(f.run().loopState, "working"); assert.equal(f.run().wakeReason, null);
+  f.complete(); await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 300_000);
+});
+
+test("a stalled compaction interrupts its driver turn and rejects as retryable", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const interrupted: string[] = [];
+  const completion = new CompactionCompletion(600_000);
+  const stalled = completion.begin(async () => { interrupted.push("interrupt"); completion.finish(); });
+  t.mock.timers.tick(600_000);
+  await assert.rejects(stalled, (error: unknown) => error instanceof CompactionError && error.retryable &&
+    error.message === STALLED);
+  assert.deepEqual(interrupted, ["interrupt"], "the interrupted turn's own result cannot replace the stall");
+  const refused = completion.begin(async () => { throw new Error("pipe closed"); });
+  t.mock.timers.tick(600_000);
+  await assert.rejects(refused, (error: unknown) => error instanceof CompactionError && !error.retryable &&
+    /could not be interrupted: pipe closed/.test(error.message));
+  // An interrupt the hung CLI never acknowledges is bounded too, and not retryable: the
+  // `/compact` turn may still be open.
+  const silent = completion.begin(() => new Promise<void>(() => {}));
+  t.mock.timers.tick(600_000);
+  let settled = false;
+  const silentRejection = assert.rejects(silent, (error: unknown) => error instanceof CompactionError && !error.retryable &&
+    error.message === "Compaction made no progress for 10 minutes and could not be interrupted: the interrupt was not acknowledged")
+    .finally(() => { settled = true; });
+  t.mock.timers.tick(29_999);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, "the interrupt gets its full 30 seconds");
+  t.mock.timers.tick(1);
+  await silentRejection;
+  const healthy = completion.begin(async () => { throw new Error("never"); });
+  completion.observe(494, 1_000_000); completion.finish();
+  assert.deepEqual(await healthy, { contextTokens: 494, contextWindow: 1_000_000 });
+});
+
+test("the stall bound reads its override and keeps a ten-minute default", () => {
+  assert.equal(compactionStallMs(undefined), 600_000);
+  assert.equal(compactionStallMs(""), 600_000);
+  assert.equal(compactionStallMs("-5"), 600_000);
+  assert.equal(compactionStallMs("1.5"), 600_000);
+  assert.equal(compactionStallMs("2000"), 2_000);
+});
+
+test("the first wake after a compaction restates the standing task verbatim, once, after a mission-preserving /compact", async () => {
+  const f = fixture({ compactionFocus: "Keep the release list." }); const loop = f.loop(); await flush();
+  f.patch({ meta: meta({ contextPct: 80 }) });
+  await loop.runNow("run");
+  assert.deepEqual(f.focuses, [`${RESIDENT_COMPACTION_FOCUS} Keep the release list.`], "the built-in focus leads, the profile's follows");
+  assert.equal(f.calls[0], "compact");
+  const restated = f.calls[1]!;
+  assert.equal(restated, state.residentWakeTurn("run", 2, f.settings.loop.prompt, residentStandingRestatement(f.run())));
+  assert.ok(restated.startsWith(`${residentWakeMarker("run", 2)}\n${RESIDENT_RESTATEMENT_HEADING}\n\n`));
+  assert.ok(restated.includes(residentStandingSection(f.run())), "the run's whole resident section, not a summary of it");
+  assert.ok(restated.includes("## Resident role: Observer\n\nObserve"), "read from the run's pinned Persona snapshot");
+  assert.ok(restated.endsWith(`\n\n---\n\n${f.settings.loop.prompt}`), "the loop prompt still closes the wake");
+  assert.equal(f.rows()[1]!.wake_text, restated, "the exact text is recorded for confirmation and presentation");
+  assert.equal(f.rows()[1]!.reanchor_epoch, 1);
+  assert.deepEqual(epochs(), { compaction_epoch: 1, reanchored_epoch: 1 }, "one compaction, counted once");
+  assert.equal(state.residentRestatementOwed("run"), false);
+  assert.equal(f.run().iteration, 2, "compaction is still not an iteration; the restated wake is");
+
+  f.complete(); await flush();
+  f.patch({ meta: meta({ contextPct: 5 }) });
+  await loop.runNow("run");
+  assert.equal(f.calls[2], `${residentWakeMarker("run", 3)}\n${f.settings.loop.prompt}`, "one restatement per compaction");
+  assert.equal(f.rows()[2]!.wake_text, null);
+});
+
+const epochs = () => ({ ...openDb().prepare("SELECT compaction_epoch, reanchored_epoch FROM resident_runs WHERE id = 'run'").get() });
+
+test("the driver's boundary is the one record of a compaction: completing the loop's compaction records nothing itself", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  // A measured result with no boundary announced: completion settles loop state and generation only.
+  f.setCompact(async () => { f.calls.push("compact"); return 5; });
+  f.patch({ meta: meta({ contextPct: 80 }) });
+  await loop.runNow("run");
+  assert.equal(f.calls[0], "compact");
+  assert.equal(f.run().loopState, "working", "completion still released the wake");
+  assert.deepEqual(epochs(), { compaction_epoch: 0, reanchored_epoch: 0 });
+  assert.equal(f.calls[1], `${residentWakeMarker("run", 2)}\n${f.settings.loop.prompt}`);
+});
+
+test("a compaction the loop did not start is restated on the next wake, and only a delivered restatement settles it", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.compacted();
+  assert.equal(state.residentRestatementOwed("run"), true, "the harness's own compaction is recorded against the run");
+  f.setSend("null"); await loop.runNow("run");
+  assert.equal(f.rows()[1]!.delivery, "released");
+  assert.equal(state.residentRestatementOwed("run"), true, "a released wake never reached the agent");
+  f.setSend("accept"); await loop.runNow("run");
+  assert.ok(!f.calls.includes("compact"), "context below the threshold starts no compaction of its own");
+  assert.equal(f.calls[0], state.residentWakeTurn("run", 3, f.settings.loop.prompt, residentStandingRestatement(f.run())));
+  assert.equal(state.residentRestatementOwed("run"), false);
+});
+
+test("an unconfirmed restated wake leaves the restatement owed, and the next eligible wake restates the mission", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.compacted();
+  // The driver takes the bytes and then loses the acknowledgement: delivery cannot be proven.
+  f.setSend("driver_throw"); await loop.runNow("run");
+  const uncertain = f.rows()[1]!;
+  assert.equal(uncertain.delivery, "unconfirmed");
+  assert.equal(uncertain.reanchor_epoch, 1, "the uncertain wake was the one carrying the restatement");
+  assert.equal(f.calls[0], uncertain.wake_text);
+  assert.equal(f.run().pauseReason, "wake delivery unconfirmed");
+  assert.equal(state.residentRestatementOwed("run"), true, "an unconfirmed restatement may never have reached the agent");
+
+  f.setSend("accept"); loop.resume("run"); await loop.runNow("run");
+  assert.equal(f.calls[1], state.residentWakeTurn("run", 3, f.settings.loop.prompt, residentStandingRestatement(f.run())),
+    "the next eligible wake restates the mission again");
+  assert.equal(f.rows()[2]!.delivery, "sent");
+  assert.equal(state.residentRestatementOwed("run"), false, "only that delivered restatement settles it");
+});
+
+test("a compaction during a restated wake's own turn is owed again; an ended run records nothing", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.compacted();
+  const claim = state.claimResidentWake("run", "loop", 0, f.now, "native", "RESTATED");
+  f.compacted();
+  state.settleResidentClaim(claim!, "sent", f.now);
+  assert.equal(state.residentRestatementOwed("run"), true, "the second compaction came after the restatement was composed");
+  await loop.stop();
+  store.endResidentRun("run", f.now);
+  assert.equal(state.markResidentCompacted("run"), false);
+});
+
+test("restart confirms a restated wake by its recorded text, and the dashboard draws the whole restated turn", async () => {
+  const f = fixture();
+  state.completeResidentGeneration("run", 1, f.now);
+  assert.equal(state.markResidentCompacted("run"), true);
+  const text = state.residentWakeTurn("run", 2, f.settings.loop.prompt, "RESTATED ROLE");
+  assert.equal(state.claimResidentWake("run", "loop", 0, f.now, "native", "RESTATED ROLE")!.wake_text, text);
+  f.transcript(text);
+  const loop = f.loop(); await flush(); await loop.stop();
+  const row = f.rows().find(r => r.seq === 2)!;
+  assert.equal(row.delivery, "sent", "the restated text is the marker evidence, not marker plus loop prompt");
+  assert.equal(f.run().pauseReason, null);
+  assert.equal(state.residentRestatementOwed("run"), false);
+  assert.deepEqual(f.calls, [], "nothing is resent");
+
+  const message: TranscriptMessage = { id: "turn", role: "user", text, tools: [], ts: f.now };
+  const transcript = { path: "/fixture", read: { after: () => ({ messages: [message], end: text.length, atEnd: true }) } } as unknown as SessionMessages;
+  const conversation = { key: "native", transcript };
+  assert.equal(state.residentWakePresentation(message, conversation), `RESTATED ROLE\n\n${f.settings.loop.prompt}`);
+  const plain = { ...message, text: `${residentWakeMarker("run", 2)}\n${f.settings.loop.prompt}` };
+  assert.equal(state.residentWakePresentation(plain, conversation), null, "the bare loop prompt is not this wake");
 });

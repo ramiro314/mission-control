@@ -342,6 +342,31 @@ test("the locator's one login-shell read captures named variables alongside PATH
   assert.equal(locator.snapshot().path.includes("/login/bin"), true, "PATH is still read by the same probe");
 });
 
+test("a name added while a forced probe is in flight is read by the next probe, not left unread", async () => {
+  const asked: Array<readonly string[]> = [];
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const locator = new ExecutableLocator({
+    env: { PATH: "/usr/bin" },
+    probeLoginShell: async (_env, variables) => {
+      asked.push([...variables]);
+      if (asked.length === 1) await firstHeld;
+      return {
+        path: "/login/bin",
+        problem: null,
+        variables: Object.fromEntries(variables.map((name) => [name, `${name}-value`])),
+      };
+    },
+  });
+  const starting = locator.initialize();
+  await waitFor(() => asked.length === 1, "the forced startup probe to begin");
+  const reading = locator.loginShellVariables(["LATE_TOKEN"]);
+  releaseFirst();
+  await starting;
+  assert.deepEqual(await reading, { LATE_TOKEN: "LATE_TOKEN-value" });
+  assert.deepEqual(asked, [[], ["LATE_TOKEN"]]);
+});
+
 test("the real login-shell probe prints each variable between its own markers", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-claim-shell-"));
   const shell = join(root, "shell");
@@ -865,6 +890,32 @@ test("setup runs on the scrubbed base with the union of the pool's claim names",
   assert.ok(seen[0]!.MISSION_HOME && seen[0]!.MISSION_HOME !== process.env.HARNESS_HOME);
   assert.equal(existsSync(seen[0]!.MISSION_HOME), false, "the disposable home is released after setup");
   await m.release(held.lease, { ownerAuthorized: true });
+});
+
+test("a failed setup's reason is redacted of the claim values it received before it is stored", async () => {
+  const fixture = repository("mission-claim-setup-redact-");
+  const claim = claimOf({ steps: [{ argv: ["true"], env: ["ALPHA_TOKEN"] }] });
+  const m = new WorktreeManager(db, {
+    occupancy: emptyOccupancy,
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: ["setup"], claim }),
+    claimEnvironment: async (names) =>
+      buildClaimEnvironment({ names, daemonEnv: DAEMON_ENV, daemonToken: DAEMON_TOKEN, loginShell: {} }),
+    runSetup: async (_argv, _cwd, env) => ({
+      ok: false,
+      reason: `fetch https://registry.example/?token=${env.ALPHA_TOKEN} refused`,
+      outcomeUnknown: false,
+    }),
+    runClaimStep: async () => ({ outcome: "exited", code: 0, signal: null, tail: "", truncatedBytes: 0 }),
+  });
+  const result = await m.acquire({ repositoryPath: fixture.clone, baseSha: fixture.sha, owner: { kind: "manual", key: "setup-redact" } });
+  assert.equal(result.outcome, "outcomeUnknown");
+  assert.ok(result.outcome === "outcomeUnknown");
+  assert.doesNotMatch(result.reason, /alpha-value/);
+  assert.match(result.reason, /\[ALPHA_TOKEN redacted\]/);
+  const slot = onlySlot(m);
+  for (const stored of [slot.quarantineReason, slot.lastError]) {
+    assert.doesNotMatch(stored ?? "", /alpha-value/, "the credential was stored on the slot");
+  }
 });
 
 // ---- crash recovery, maintenance and shutdown ----

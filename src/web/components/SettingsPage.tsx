@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
@@ -15,7 +16,6 @@ import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
 import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { WorktreeSettingsPanel } from "./WorktreeSettingsPanel.tsx";
-import { RepositoriesPanel } from "./RepositoriesPanel.tsx";
 import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
 import { StandingInstructionsPanel } from "./StandingInstructionsPanel.tsx";
 import { ConductorPanel } from "./ConductorPanel.tsx";
@@ -26,6 +26,7 @@ import { TaskSettingsPanel } from "./TaskSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { ResidentPlacementPanel } from "./ResidentPlacementPanel.tsx";
+import { BlockedPlacementPanel } from "./BlockedPlacementPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
@@ -38,7 +39,6 @@ import { SetupPanel } from "./SetupPanel.tsx";
 import type { SetupChecksState } from "../useSetupChecks.ts";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useWorktrees } from "../useWorktrees.ts";
-import { useRepoIndex } from "../useRepoIndex.ts";
 import { useTaskSources } from "../useTaskSources.ts";
 import { useStandingInstructions } from "../useStandingInstructions.ts";
 import { useConductor } from "../useConductor.ts";
@@ -59,7 +59,7 @@ import {
   settingsCategory,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
-import { settingsRailDot, type SettingsDotTone } from "../lib/settings-dots.ts";
+import { settingsRailDot, storageDotTone, type SettingsDotTone } from "../lib/settings-dots.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import type { TourId } from "../tour/contracts.ts";
 import { TOUR_ENTRIES } from "../tour/entries.ts";
@@ -127,10 +127,12 @@ function dotLabel(
       return "GitHub Inspector is live - reviews post to GitHub";
     }
     case "armed":
+      if (category === "storage") return "Mission Control is near its storage limit";
       return category === "trust"
         ? "Trust needs a look - a repository grant is armed"
         : "YOLO mode is armed - clean pull requests may merge themselves";
     case "failing": {
+      if (category === "storage") return "Storage needs attention: free space is low or a backup failed";
       if (category === "telemetry") {
         return "A telemetry destination stopped or is not getting through";
       }
@@ -331,7 +333,6 @@ export function SettingsPage({
   // harnesses config, so it polls only while the page is open.
   const harnesses = useHarnesses(harnessesRevision);
   const worktrees = useWorktrees(worktreesRevision, shown === "worktrees");
-  const repoIndex = useRepoIndex(shown === "repositories");
   // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
   // page reads the Inspector config, so it polls only while the page is open.
   const inspector = useInspector();
@@ -583,6 +584,7 @@ export function SettingsPage({
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
             {/* Beside Layout: where residents are drawn is part of how sessions are arranged. */}
             <ResidentPlacementPanel />
+            <BlockedPlacementPanel />
             <ConversationViewPanel />
             <AppearancePanel />
             {/* Last, and inside out like the three above it: having chosen an arrangement,
@@ -591,6 +593,9 @@ export function SettingsPage({
                 live card, so it belongs at the bottom of the scroll rather than pushing
                 the three one-line choices below the fold. */}
             <BoardCardPanel />
+            {/* Beside the card panel: which pause controls those cards and the console draw,
+                each with its own preview. */}
+            <PauseControlsPanel />
             {/* After the card, because it is the one panel here about the chrome around every
                 page rather than about sessions - and it carries a whole bar as its preview. */}
             <TopbarPanel />
@@ -628,15 +633,13 @@ export function SettingsPage({
         return (
           <TaskSettingsPanel
             state={workflowSettings}
-            skills={skills}
             workflows={workflowSummaries}
             foremanEnabled={foreman.config?.enabled ?? false}
+            skills={skills}
           />
         );
       case "worktrees":
         return <WorktreeSettingsPanel state={worktrees} storageHealth={storageHealth} onOpenSession={onOpenSession} />;
-      case "repositories":
-        return <RepositoriesPanel state={repoIndex} />;
       case "task-sources":
         return (
           <TaskSourcesPanel
@@ -689,7 +692,10 @@ export function SettingsPage({
           <StorageSettingsPanel
             health={storageHealth}
             configRevision={storageConfigRevision}
+            worktreesRevision={worktreesRevision}
             onNavigate={navigateWithAnchor}
+            jumpAnchor={unhandledJump?.anchor ?? null}
+            jumpRequestId={unhandledJump?.id ?? null}
           />
         );
       case "restore":
@@ -807,6 +813,7 @@ export function SettingsPage({
                         foremanEnabled,
                         trustBlindSpot,
                         trustCheckExecution,
+                        storageTone: storageDotTone(storageHealth),
                       })}
                       status={settingsStatus}
                       category={c.id}

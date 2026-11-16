@@ -24,7 +24,10 @@ import {
   repoLeaf,
   sessionTitleDetail,
   type StateDisplay,
+  type Tone,
 } from "../lib/format.ts";
+import { ariaKeyshortcuts, formatChord, useKeybindings } from "../lib/keybindings.ts";
+import { costChipText, RUNTIME_LABEL, subtitle } from "../lib/session-text.ts";
 import type { BacklogTaskNoticeView } from "../lib/backlog-copy.ts";
 import { useSessionRuntimeDisplay } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
@@ -63,32 +66,6 @@ import { PIPELINE_GROUP_LABELS } from "../pipelines/pipeline-run-model.ts";
  * `test/session-leaf-parity.test.ts` pins each drawing to its shared leaves;
  * `test/pr-chip-parity.test.ts` pins the PR decision across all four.
  */
-
-/**
- * Where this session was found, phrased for the small grey subtitle.
- *
- * The pane id rides along only for a MULTIPLEXER, and that asymmetry is about the axis
- * rather than about tmux: a multiplexer names a SESSION that may hold many panes, so which
- * pane this card is only answerable by saying it, while an emulator names the tab itself
- * and has nothing left to disambiguate. Both shipped backends read exactly as they always
- * did; a third one inherits whichever rule its axis already states.
- */
-export function subtitle(session: Session): string {
-  if (session.runtime === "sdk") return RUNTIME_LABEL;
-  const namer = session.terminals.find((h) => h.backend === session.nameSource);
-  if (namer?.kind === "multiplexer") return `${namer.backend} · ${namer.paneId}`;
-  return session.nameSource;
-}
-
-/**
- * What an embedded session is called where a pane string would go.
- *
- * "Agent SDK" rather than the `sdk` the `NameSource` spells, because this line answers
- * "where is this session?" for a human, and the honest answer is that there is nowhere to
- * go and look - it runs inside Mission Control. Named once and shared by all four
- * surfaces, so the three mark vocabularies say the same word.
- */
-export const RUNTIME_LABEL = "Agent SDK";
 
 const RUNTIME_TITLE =
   "This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.";
@@ -679,7 +656,9 @@ export function RepoGroupHead({
  */
 export function RepoGroupCaret(): React.JSX.Element {
   return (
-    <svg className="brh-chevron" viewBox="0 0 12 12" aria-hidden focusable="false">
+    // Sized on the element as well as in CSS (12px, `.brh-chevron`), so it stays a small glyph
+    // wherever it is drawn - Settings' preview card included - even before a rule reaches it.
+    <svg className="brh-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden focusable="false">
       <path
         d="M2.8 4.4 6 7.8l3.2-3.4"
         fill="none"
@@ -1835,7 +1814,7 @@ export function StateBadge({
         label={`${session.pendingReviews} review${session.pendingReviews === 1 ? "" : "s"} waiting on you - open the queue`}
       >
         <button
-          className={`badge badge-${st.tone} badge-btn`}
+          className={`badge badge-${st.tone} badge-btn${session.pause ? " is-paused" : ""}`}
           onClick={(e) => {
             e.stopPropagation();
             onOpenReviews();
@@ -1854,7 +1833,7 @@ export function StateBadge({
     );
   }
   return (
-    <span className={`badge badge-${st.tone}`}>
+    <span className={`badge badge-${st.tone}${session.pause ? " is-paused" : ""}`}>
       <span className="badge-dot" />
       {st.label}
     </span>
@@ -2062,18 +2041,16 @@ function AdvisorChip({ modelId }: { modelId: string }): React.JSX.Element {
  * would claim evidence the ledger does not carry.
  */
 export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Element | null {
-  if (!cost) return null;
+  const text = costChipText(cost);
+  if (!cost || text === null) return null;
   const tokensIn = cost.input + cost.cacheRead + cost.cacheWrite;
   if (cost.costUsd === null) {
-    const total = tokensIn + cost.output;
-    if (total <= 0) return null;
     return (
       <Tooltip label={`${compactTokens(tokensIn)} in / ${compactTokens(cost.output)} out${cost.reasoningOutput ? ` (${compactTokens(cost.reasoningOutput)} reasoning)` : ""}. Standard API pricing unavailable${cost.pricingModels.length ? ` for ${cost.pricingModels.join(", ")}` : " because no exact model was recorded"}.`}>
-        <span className="rt-pill cost-chip">{compactTokens(total)} tok</span>
+        <span className="rt-pill cost-chip">{text}</span>
       </Tooltip>
     );
   }
-  if (cost.costUsd <= 0) return null;
   const tone = costTone(cost.costUsd);
   const missionEstimated = cost.basis === "api-equivalent";
   const models = cost.pricingModels.length ? cost.pricingModels.join(", ") : "unknown model";
@@ -2090,7 +2067,7 @@ export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Elem
             `${compactTokens(cost.output)} out.\nCalculated by Claude Code; not subscription-plan spend or an invoice.`
       }
     >
-      <span className={`rt-pill cost-chip cost-${tone}`}>≈{fmtUsd(cost.costUsd)}</span>
+      <span className={`rt-pill cost-chip cost-${tone}`}>{text}</span>
     </Tooltip>
   );
 }
@@ -2681,6 +2658,136 @@ export function ColumnWidthControl({
   );
 }
 
+/** One state group as the folded session rail counts it. */
+export interface FoldedRailGroup {
+  /** A lifecycle tone, or the Blocked group, which is drawn red wherever the placement puts it. */
+  tone: Tone | "blocked";
+  label: string;
+  count: number;
+}
+
+/** The breakdown a folded rail reads out - "1 needs you, 3 working" - in rail order. */
+export function foldedRailSummary(groups: readonly FoldedRailGroup[]): string {
+  const parts = groups.filter((g) => g.count > 0).map((g) => `${g.count} ${g.label.toLowerCase()}`);
+  return parts.length > 0 ? parts.join(", ") : "no sessions";
+}
+
+/**
+ * The control that folds the session rail beside an open session, drawn in the rail's head.
+ *
+ * Shared by the Console rail and both Board drill-in rails, so the glyph, the name and the
+ * shortcut it prints are one fact wherever the rail is.
+ */
+export function SessionRailFoldButton({ onFold }: { onFold: () => void }): React.JSX.Element {
+  const { bindings } = useKeybindings();
+  return (
+    <Tooltip
+      label={`Fold the session rail to give the conversation its width (${formatChord(bindings.sessionRail)})`}
+    >
+      <button
+        type="button"
+        className="session-rail-fold"
+        aria-label="Fold the session rail"
+        aria-keyshortcuts={ariaKeyshortcuts(bindings.sessionRail)}
+        onClick={onFold}
+      >
+        «
+      </button>
+    </Tooltip>
+  );
+}
+
+/**
+ * A folded session rail: a 40px strip in the folded Board column's register, which counts what
+ * each state group holds and is itself the button that unfolds the rail.
+ *
+ * Counts, never rows. The point of folding is the width it hands back, and a strip of
+ * per-session targets would spend it again. The Needs you count pulses when it goes up, for the
+ * reason `CollapsedColumnStrip` gives - and the rise is tracked here, at the strip, against the
+ * fleet's Needs you count rather than the pill's. A group that was empty is not drawn, so its
+ * first arrival would otherwise mount a pill with nothing to compare against; and on the Board
+ * the strip lists one column, so the column it follows into Needs you is not a rise by itself.
+ */
+export function FoldedSessionRail({
+  label,
+  groups,
+  asking,
+  onUnfold,
+}: {
+  /** What the rail lists, set vertically: "All sessions", or the drilled-in column's name. */
+  label: string;
+  groups: readonly FoldedRailGroup[];
+  /**
+   * The fleet's Needs you count, when the strip lists less than the whole fleet (a Board column
+   * rail). Omitted, it is read from `groups`, which is the whole fleet on the Console.
+   */
+  asking?: number;
+  onUnfold: () => void;
+}): React.JSX.Element {
+  const { bindings } = useKeybindings();
+  const pulses = useRisePulse(asking ?? groups.find((g) => g.tone === "attention")?.count ?? 0, true);
+  const summary = foldedRailSummary(groups);
+  return (
+    <Tooltip label={`Unfold ${label} (${formatChord(bindings.sessionRail)}): ${summary}`}>
+      <button
+        type="button"
+        className="session-rail-strip"
+        aria-label={`Unfold ${label}: ${summary}`}
+        aria-keyshortcuts={ariaKeyshortcuts(bindings.sessionRail)}
+        onClick={onUnfold}
+      >
+        <span className="session-rail-strip-glyph" aria-hidden>»</span>
+        {groups.filter((g) => g.count > 0).map((g) => (
+          <FoldedRailCount key={g.tone} group={g} pulses={g.tone === "attention" ? pulses : 0} />
+        ))}
+        <span className="board-col-strip-name session-rail-strip-name" aria-hidden>
+          {label}
+        </span>
+      </button>
+    </Tooltip>
+  );
+}
+
+/**
+ * One count pill on a folded rail, which pulses only for rises it was on screen for.
+ *
+ * `pulses` is the strip's running count of Needs you rises. The pill measures from the value it
+ * mounted at, so a pill that appears because focus moved into a column that already had sessions
+ * waiting - no new arrival - starts calm; one that appears because of an arrival mounts first and
+ * pulses on the rise its strip records a moment later. Each later rise re-keys the span, which
+ * remounts it so the animation plays again.
+ */
+function FoldedRailCount({ group, pulses }: { group: FoldedRailGroup; pulses: number }): React.JSX.Element {
+  const since = useRef(pulses);
+  const rises = pulses - since.current;
+  return (
+    <span
+      key={rises}
+      className={`board-col-n session-rail-strip-n tone-${group.tone}${rises > 0 ? " is-pulsing" : ""}`}
+      aria-hidden
+    >
+      {group.count}
+    </span>
+  );
+}
+
+/**
+ * How many times `count` has gone UP while `enabled`, for a folded surface's count to pulse on.
+ *
+ * Keyed into a `key` by the caller, so each rise remounts the pill and the animation replays.
+ * Shared by a folded Board column and the folded session rail, which make the same promise: a
+ * session that starts waiting on you is not hidden by a fold you made an hour ago.
+ */
+function useRisePulse(count: number, enabled: boolean): number {
+  const previous = useRef(count);
+  const [pulses, setPulses] = useState(0);
+  useEffect(() => {
+    if (enabled && count > previous.current) setPulses((n) => n + 1);
+    previous.current = count;
+  }, [enabled, count]);
+  return pulses;
+}
+
 /**
  * A collapsed Board column: a thin strip that still says what the column is and how much it
  * holds, and is itself the button that restores it.
@@ -2689,30 +2796,31 @@ export function ColumnWidthControl({
  * session that starts waiting on you is not hidden by a fold you made an hour ago. It pulses
  * rather than reopening the column: the operator chose to fold it, and a board that undid that
  * choice on every arrival would be one you could not keep folded at all.
+ *
+ * `blockedCount` is the In Needs you Blocked lane folded with its column: a second, red count
+ * under the first, so a fold hides neither how many need you nor how many are blocked.
  */
 export function CollapsedColumnStrip({
   label,
   count,
+  blockedCount,
   announce = false,
   onRestore,
 }: {
   label: string;
   count: number;
+  blockedCount?: number;
   announce?: boolean;
   onRestore: () => void;
 }): React.JSX.Element {
-  const previous = useRef(count);
-  const [pulses, setPulses] = useState(0);
-  useEffect(() => {
-    if (announce && count > previous.current) setPulses((n) => n + 1);
-    previous.current = count;
-  }, [announce, count]);
+  const pulses = useRisePulse(count, announce);
   return (
     <Tooltip label={`Restore ${label} to normal width`}>
       <button
         type="button"
         className="board-col-strip"
-        aria-label={`Restore ${label}, ${count} ${count === 1 ? "card" : "cards"}`}
+        aria-label={`Restore ${label}, ${count} ${count === 1 ? "card" : "cards"}${
+          blockedCount ? `, ${blockedCount} blocked` : ""}`}
         onClick={onRestore}
       >
         <span className="board-swatch" aria-hidden />
@@ -2724,6 +2832,11 @@ export function CollapsedColumnStrip({
         >
           {count}
         </span>
+        {blockedCount ? (
+          <span className="board-col-n board-col-strip-blocked" aria-hidden>
+            {blockedCount}
+          </span>
+        ) : null}
         <span className="board-col-strip-name" aria-hidden>
           {label}
         </span>

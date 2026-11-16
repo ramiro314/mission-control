@@ -79,7 +79,7 @@ export interface WorktreeGit {
   reset(path: string, commit: string): Promise<GitResult<void>>;
   observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
-  mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>>;
+  mergedInto(path: string, targetSha: string, commitSha?: string): Promise<GitResult<boolean>>;
   /** `"locked"` also removes a registration whose lock would stop a plain `--force`. */
   remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean | "locked"): Promise<GitResult<void>>;
   unlock(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<void>>;
@@ -463,10 +463,10 @@ export class NativeWorktreeGit implements WorktreeGit {
     return freshRemoteDefaultSha(identity.mainCheckoutRoot, this.execute);
   }
 
-  async mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>> {
+  async mergedInto(path: string, targetSha: string, commitSha = "HEAD"): Promise<GitResult<boolean>> {
     const result = await this.execute(
       "git",
-      ["-C", path, ...OBSERVATION_GIT_OPTIONS, "merge-base", "--is-ancestor", "HEAD", targetSha],
+      ["-C", path, ...OBSERVATION_GIT_OPTIONS, "merge-base", "--is-ancestor", commitSha, targetSha],
       { timeoutMs: 15_000 },
     );
     if (result.outcomeUnknown || result.overflowed) {

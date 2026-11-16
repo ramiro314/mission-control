@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-// Seed a database whose slot table predates `quarantined_at`, holding slot 5 from the audit
-// (quarantined by a stale index.lock) and an available slot, before db.ts opens it.
+// Seed a schema 28 database whose slot table predates quarantine categories and times, holding
+// the quarantines the field database had, before importing db.ts and letting the production
+// open path migrate it.
 const home = process.env.HARNESS_HOME;
 assert.ok(home, "test/setup-state.mjs must provide an isolated HARNESS_HOME");
 mkdirSync(home, { recursive: true });
@@ -30,39 +31,71 @@ legacy.exec(`
     last_used_at              INTEGER,
     quarantine_reason         TEXT,
     last_error                TEXT,
+    deps_state                TEXT,
+    deps_fingerprint          TEXT,
+    deps_fingerprint_sha      TEXT,
+    deps_claimed_at           INTEGER,
+    deps_last_error           TEXT,
     created_at                INTEGER NOT NULL,
     updated_at                INTEGER NOT NULL
   );
-  INSERT INTO worktree_slots (id, pool_id, ordinal, path, state, version, quarantine_reason, last_error, created_at, updated_at)
-    VALUES ('slot-5', 'pool-old', 5, '/pool/5/repo', 'quarantined', 9, 'return reset failed',
-      'git checkout failed: fatal: Unable to create ''/repo/.git/worktrees/repo4/index.lock'': File exists.', 1, 1);
-  INSERT INTO worktree_slots (id, pool_id, ordinal, path, state, version, created_at, updated_at)
-    VALUES ('slot-1', 'pool-old', 1, '/pool/1/repo', 'available', 3, 1, 1);
+  PRAGMA user_version = 28;
 `);
+const ROWS: Array<[id: string, state: string, reason: string | null]> = [
+  ["occupancy", "quarantined", "slot process occupancy is unknown"],
+  ["before-reset", "quarantined", "slot occupancy became unknown before reset"],
+  ["before-seed", "quarantined", "slot occupancy became unknown before it was seeded from"],
+  ["git-unknown", "quarantined", "slot Git state is unknown"],
+  ["git-inspect", "quarantined", "slot Git state could not be inspected"],
+  ["registrations", "quarantined", "Git registrations could not be read"],
+  ["registrations-pool", "quarantined", "Git worktree registrations are unknown: git worktree list timed out"],
+  ["owner-read", "quarantined", "last-released domain ownership could not be read"],
+  ["owner-unknown", "quarantined", "last-released domain ownership is unknown"],
+  ["leased-owner", "quarantined", "leased domain ownership is unknown"],
+  // Positively bad facts and unproven transitions are not observations.
+  ["moved", "quarantined", "available slot HEAD moved outside an allocator transition"],
+  ["setup", "quarantined", "operator-authored setup command failed"],
+  ["dirty", "quarantined", "available slot has dirty or untracked work"],
+  // Exact, never a pattern: neither a near miss nor a LIKE wildcard classifies a row.
+  ["near-miss", "quarantined", "slot process occupancy is unknown, then a process entered"],
+  ["wildcard", "quarantined", "slot occupancy became unknown%"],
+  ["no-reason", "quarantined", null],
+  // Only quarantined rows are classified: a stale reason on an available row is history.
+  ["available", "available", "slot process occupancy is unknown"],
+];
+const insert = legacy.prepare(
+  `INSERT INTO worktree_slots (id, pool_id, ordinal, path, state, version, quarantine_reason, created_at, updated_at)
+   VALUES (?, 'pool-old', ?, ?, ?, 3, ?, 1, 99)`,
+);
+ROWS.forEach(([id, state, reason], index) => insert.run(id, index + 1, `/pool/${index + 1}/repo`, state, reason));
 legacy.close();
 
-const { closeDb, openDb } = await import("../src/server/db.ts");
-const { WorktreeStore } = await import("../src/server/worktrees/store.ts");
-const { quarantinedSlotProblems } = await import("../src/server/worktrees/storage-problems.ts");
+const { openDb, upgradeDatabaseToCurrentSchema, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
+const { WorktreeStore, quarantineRecoverable } = await import("../src/server/worktrees/store.ts");
+const db = openDb();
+const store = new WorktreeStore(db);
 
-function problemIds(): string[] {
-  return quarantinedSlotProblems(new WorktreeStore(openDb()).slots()).map((problem) => problem.id);
-}
+test("legacy quarantines from an observer that did not answer become recoverable observations", () => {
+  const observation = new Set(["occupancy", "before-reset", "before-seed", "git-unknown", "git-inspect",
+    "registrations", "registrations-pool", "owner-read", "owner-unknown", "leased-owner"]);
+  for (const [id] of ROWS) {
+    const slot = store.slot(id)!;
+    assert.equal(slot.quarantineCategory, observation.has(id) ? "observation" : null, id);
+    assert.equal(quarantineRecoverable(slot.quarantineCategory), observation.has(id), id);
+    assert.equal(slot.quarantinedAt, null, `${id}: the time it entered was never recorded`);
+    assert.equal(slot.version, 3, `${id}: the upgrade is not a slot transition`);
+    assert.equal(slot.updatedAt, 99);
+  }
+  assert.equal(
+    (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
+    CURRENT_DATABASE_SCHEMA_VERSION,
+  );
+});
 
-test("an existing quarantined slot is stamped once, so its problem id survives a restart", () => {
-  const before = Date.now();
-  const store = new WorktreeStore(openDb());
-  const quarantined = store.slot("slot-5")!;
-  assert.ok(quarantined.quarantinedAt !== null, "stamped by the first open that found it");
-  assert.ok(quarantined.quarantinedAt >= before && quarantined.quarantinedAt <= Date.now());
-  assert.equal(store.slot("slot-1")?.quarantinedAt, null, "only a quarantined row is stamped");
-  assert.equal(quarantined.version, 9, "the stamp is not a slot transition");
-  const ids = problemIds();
-  assert.deepEqual(ids, [`quarantined-slot:slot-5:${quarantined.quarantinedAt}`]);
-
-  // A restart runs the migration again; the stamp, and so the id, stays where it was.
-  closeDb();
-  assert.deepEqual(problemIds(), ids);
-  closeDb();
-  assert.deepEqual(problemIds(), ids);
+test("the backfill runs once, with the column, and a later upgrade never reclassifies", () => {
+  // A quarantine written after the upgrade carries its own category, and an operator-visible
+  // NULL must stay NULL: re-running the upgrade path is how every later open looks.
+  db.prepare(`UPDATE worktree_slots SET quarantine_category = NULL WHERE id = 'occupancy'`).run();
+  upgradeDatabaseToCurrentSchema(db);
+  assert.equal(store.slot("occupancy")?.quarantineCategory, null);
 });
