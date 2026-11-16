@@ -668,7 +668,7 @@ test("a quarantined slot under a warm lease offers no Return, and the preview na
   assert.equal(listed.actions.includes("return"), false, "the seed returns its own lease when its copy ends");
   const preview = await seeded.preview({ action: "return", slotId: acquired.lease.slotId });
   assert.equal(preview.allowed, false);
-  assert.ok(preview.blockers.includes("A dependency seed holds this slot and returns it when its copy ends."), preview.blockers.join("; "));
+  assert.ok(preview.blockers.some((blocker) => /^A dependency seed holds slot \d+ and returns it when its copy ends\.$/.test(blocker)), preview.blockers.join("; "));
   assert.equal(preview.consequences.some((line) => line.includes("manual lease")), false);
 
   // A restart ends the seed, so nothing is coming back for the slot: the preview must not say
@@ -893,30 +893,3 @@ test("a setup-failed reservation is quarantined without an owner and Destroy rem
   assert.equal(existsSync(slot.path), false);
 });
 
-test("Reconcile withdraws a stale owner from an existing orphaned quarantine so Destroy works", async () => {
-  const { orphanManager, orphanOperations } = orphanHarness();
-  const slot = await quarantinedBySetup(orphanManager, "mission-worktree-orphan-legacy-", "task-orphan-legacy:0");
-  // The state an earlier build left behind: quarantined but still stamped with the owner.
-  db.prepare(
-    `UPDATE worktree_slots SET active_lease_id = 'lease-never-granted', active_owner_kind = 'task',
-       active_owner_key = 'task-orphan-legacy:0', leased_at = 1 WHERE id = ?`,
-  ).run(slot.id);
-
-  const blocked = await orphanOperations.preview({ action: "destroy", target: { kind: "slot", slotId: slot.id } });
-  assert.equal(blocked.allowed, false);
-  assert.match(blocked.blockers.join(" "), /durable resource set/);
-  assert.deepEqual(await orphanManager.removeSlot({ slotId: slot.id, allowDirty: false, allowUnmerged: false }), {
-    outcome: "refused",
-    reason: "slot still carries active lease identity",
-  });
-
-  await orphanManager.reconcile();
-  const recovered = orphanManager.store.slot(slot.id)!;
-  assert.equal(recovered.state, "quarantined", "withdrawing the owner never makes the slot available");
-  assert.equal(recovered.activeLeaseId, null);
-
-  const preview = await orphanOperations.preview({ action: "destroy", target: { kind: "slot", slotId: slot.id } });
-  assert.deepEqual(preview.blockers, []);
-  await orphanOperations.execute(preview.token, []);
-  assert.equal(orphanManager.store.slot(slot.id), null);
-});

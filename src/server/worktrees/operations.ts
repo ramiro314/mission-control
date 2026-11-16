@@ -451,7 +451,10 @@ function ownerUnknownBlocker(status: NativeSlotStatus): string {
  * quarantined with the dead owner still on it, which Recover clears.
  */
 function warmOwnerBlocker(status: NativeSlotStatus): string {
-  if (status.ownerReferenced === true) return "A dependency seed holds this slot and returns it when its copy ends.";
+  if (status.ownerReferenced === true) {
+    // Upstream's wording for a live seed, which names the slot.
+    return `A dependency seed holds slot ${status.slot.ordinal} and returns it when its copy ends.`;
+  }
   if (status.ownerReferenced === null) return ownerUnknownBlocker(status);
   return status.slot.state === "quarantined"
     ? ownerGoneBlocker(status)

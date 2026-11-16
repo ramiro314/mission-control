@@ -111,6 +111,18 @@ function noRowFrom(write: () => unknown): void {
   assert.equal(rowCount(), before, "no history row");
 }
 
+/**
+ * Quarantine a slot, or, when it is already quarantined, relabel it as an operator action does:
+ * a slot already in quarantine refuses a second quarantine, so a fixture that moves its version
+ * goes through `requarantine`.
+ */
+function quarantineOrRelabel(m: WorktreeManager, slotId: string, reason: string) {
+  const slot = m.store.slot(slotId)!;
+  return slot.state === "quarantined"
+    ? m.store.requarantine(slotId, reason, null, Date.now(), slot.version)
+    : m.store.quarantine(slotId, "transition", reason, null, Date.now(), slot.version);
+}
+
 test("the kind and actor vocabularies are the plan's, in the plan's order", () => {
   assert.deepEqual(WORKTREE_HISTORY_KINDS, ["transition", "operation", "observation", "claim", "seed", "provisioning"]);
   assert.deepEqual(WORKTREE_HISTORY_ACTORS, ["automatic", "operator", "owner"]);
@@ -196,14 +208,14 @@ test("every slot transition writes exactly one row with the states either side o
   const { row: gone } = oneRowFrom(() => store.removePruned(pruning.id, pruning.version, 610, "operator"));
   assert.deepEqual([gone.fromState, gone.toState, gone.actor], ["pruning", null, "operator"]);
   assert.equal(store.slot(pruning.id), null);
-  assert.equal(historyOf(pruning.id).length, 10, "the row went and its history stayed");
+  assert.equal(historyOf(pruning.id).length, 9, "the row went and its history stayed");
 });
 
 test("Forget names the operator on its intent and its removal, and the row goes while its history stays", () => {
   const slot = leased();
   const quarantined = store.quarantine(slot.id, "transition", "slot path or Git registration is missing", null, 300)!;
-  const { result: intent, row: began } = oneRowFrom(() => store.quarantine(
-    quarantined.id, "transition", "a Forget was cut off before its folder was gone", "the slot's folder is gone", 310, quarantined.version, false, "operator",
+  const { result: intent, row: began } = oneRowFrom(() => store.requarantine(
+    quarantined.id, "a Forget was cut off before its folder was gone", "the slot's folder is gone", 310, quarantined.version, "operator",
   )!);
   assert.deepEqual([began.fromState, began.toState, began.actor], ["quarantined", "quarantined", "operator"]);
   assert.equal(began.reason, "a Forget was cut off before its folder was gone");
@@ -368,7 +380,7 @@ test("reason, detail and meta are bounded in bytes without splitting a character
 
   db.prepare(`UPDATE worktree_slots SET current_head_sha = ? WHERE id = ?`).run("h".repeat(5000), slot.id);
   const current = store.slot(slot.id)!;
-  const { row: oversized } = oneRowFrom(() => store.quarantine(slot.id, "transition", "again", null, 310, current.version));
+  const { row: oversized } = oneRowFrom(() => store.requarantine(slot.id, "again", null, 310, current.version));
   assert.deepEqual(oversized.meta, { truncated: true }, "an oversized meta is replaced, never cut into bad JSON");
 });
 
@@ -697,46 +709,6 @@ test("a card's Repair names the operator, and its automatic recovery stays autom
   assert.deepEqual(trail(passed).slice(-2), [
     "quarantined -> returning (automatic)",
     "returning -> available (automatic)",
-  ]);
-});
-
-test("a reservation an operator's action hands back names the operator", async () => {
-  const { clone, sha } = repository("mission-history-handback-");
-  const claim: WorktreeClaim = {
-    steps: [{ argv: [process.execPath, "-e", ""], env: [] }], timeoutMinutes: 1, fingerprintPaths: [],
-  };
-  // A process walks in during the reservation: idle at the screening, occupied once reserved.
-  let m: WorktreeManager | null = null;
-  m = realManager({
-    resolvePolicy: () => ({ enabled: true, maxSlots: 4, setupArgv: null, claim }),
-    claimEnvironment: async (names) => claimEnvironment(names),
-    occupancy: (paths) => Promise.resolve(new Map(paths.map((path) => [path, {
-      status: "known" as const,
-      occupants: m?.store.slotByPath(path)?.state === "provisioning" && m.store.slotByPath(path)?.activeOwnerKey !== "m1"
-        ? [{ pid: 4242, ppid: 1, startRaw: "x", startMs: 1, command: "node", cwd: path, knownOwner: null }]
-        : [],
-    }]))),
-  });
-  const acquired = await m.acquire({ repositoryPath: clone, baseSha: sha, owner: { kind: "manual", key: "m1" } });
-  assert.equal(acquired.outcome, "acquired");
-  if (acquired.outcome !== "acquired") return;
-  assert.equal((await m.release(acquired.lease, { ownerAuthorized: true })).outcome, "released");
-  const { slotId } = acquired.lease;
-
-  const opened = await m.leaseAsIs(slotId, { kind: "manual", key: "terminal-entered" });
-  assert.equal(opened.outcome, "refused", JSON.stringify(opened));
-  assert.deepEqual(trail(slotId).slice(-2), [
-    "available -> provisioning (operator)",
-    "provisioning -> available (operator)",
-  ]);
-
-  const warmed = await m.warmSlot({
-    slotId, operationId: "op-entered", signal: new AbortController().signal, output: () => {}, log: null,
-  });
-  assert.equal(warmed.outcome, "skipped", JSON.stringify(warmed));
-  assert.deepEqual(trail(slotId).slice(-2), [
-    "available -> provisioning (operator)",
-    "provisioning -> available (operator)",
   ]);
 });
 
@@ -1366,7 +1338,7 @@ test("an operator's Recover left unknown reads as the automatic one does: refuse
   const operations = operationsFor(m);
   const [slotId] = await idleSlots(m, clone, sha, 1);
   const quarantine = () => assert.ok(
-    m.store.quarantine(slotId!, "transition", "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+    quarantineOrRelabel(m, slotId!, "slot Git state is unknown"),
   );
   const recover = async () => {
     const preview = await operations.preview({ action: "recover", slotId: slotId! });
@@ -1393,7 +1365,7 @@ test("a Recover records done for the operator, and an entry that cannot be writt
   const operations = operationsFor(m);
   const [slotId] = await idleSlots(m, clone, sha, 1);
   const quarantine = () => assert.ok(
-    m.store.quarantine(slotId!, "transition", "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+    quarantineOrRelabel(m, slotId!, "slot Git state is unknown"),
   );
 
   quarantine();
@@ -1456,7 +1428,7 @@ test("an automatic outcome left unknown records failed once per reason, and one 
   const m = realManager();
   const [slotId] = await idleSlots(m, clone, sha, 1);
   const quarantine = () => assert.ok(
-    m.store.quarantine(slotId!, "transition", "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+    quarantineOrRelabel(m, slotId!, "slot Git state is unknown"),
   );
   quarantine();
   let reason = "git checkout timed out after 60 s";
@@ -1497,7 +1469,7 @@ test("a different outcome between two passes makes the same failure a new entry"
   const m = realManager();
   const [slotId] = await idleSlots(m, clone, sha, 1);
   const quarantine = () => assert.ok(
-    m.store.quarantine(slotId!, "transition", "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+    quarantineOrRelabel(m, slotId!, "slot Git state is unknown"),
   );
   quarantine();
   const failure = "git checkout timed out after 60 s";
@@ -1529,7 +1501,7 @@ test("a slot that left its quarantine forgets its failure, so the same reason la
   const m = realManager();
   const [slotId] = await idleSlots(m, clone, sha, 1);
   const quarantine = () => assert.ok(
-    m.store.quarantine(slotId!, "transition", "slot Git state is unknown", null, Date.now(), m.store.slot(slotId!)!.version),
+    quarantineOrRelabel(m, slotId!, "slot Git state is unknown"),
   );
   const reason = "git checkout timed out after 60 s";
   const recover = m.recoverSlot.bind(m);
@@ -1561,7 +1533,7 @@ test("a history row lost during an automatic pass changes no recovery, and the p
   const m = realManager();
   const slotIds = await idleSlots(m, clone, sha, 2);
   for (const slotId of slotIds) {
-    assert.ok(m.store.quarantine(slotId, "transition", "slot Git state is unknown", null, Date.now(), m.store.slot(slotId)!.version));
+    assert.ok(quarantineOrRelabel(m, slotId, "slot Git state is unknown"));
   }
   const record = m.store.recordOperation.bind(m.store);
   let lost = 0;
@@ -1591,7 +1563,7 @@ test("an automatic Repair left unknown names Repair", async () => {
   assert.ok(m.store.quarantine(slot.id, "transition", REGISTRATION_OR_IDENTITY.missingRegistration, null, Date.now(), slot.version));
   m.repairSlot = async () => {
     const current = m.store.slot(slot.id)!;
-    m.store.quarantine(slot.id, "transition", REGISTRATION_OR_IDENTITY.missingRegistration, null, Date.now(), current.version);
+    m.store.requarantine(slot.id, REGISTRATION_OR_IDENTITY.missingRegistration, null, Date.now(), current.version);
     return { outcome: "outcomeUnknown", reason: "git worktree repair timed out after 60 s" };
   };
   const warned = mock.method(console, "warn", () => {});
@@ -1615,7 +1587,7 @@ test("automatic Repair names itself, and a repair that kept work records partly 
   assert.ok(m.store.quarantine(slot.id, "transition", REGISTRATION_OR_IDENTITY.missingRegistration, null, Date.now(), slot.version));
   m.repairSlot = async () => {
     const current = m.store.slot(slot.id)!;
-    m.store.quarantine(slot.id, "transition", REGISTRATION_OR_IDENTITY.repairedHoldsWork, null, Date.now(), current.version);
+    m.store.requarantine(slot.id, REGISTRATION_OR_IDENTITY.repairedHoldsWork, null, Date.now(), current.version);
     return { outcome: "heldWork", reason: "uncommitted change: a.txt" };
   };
   await m.recoverQuarantines();
@@ -2008,14 +1980,14 @@ function timedManager(
     resolvePolicy: () => ({ enabled: true, maxSlots: 4, setupArgv: null, claim }),
     claimEnvironment: async (names) => claimEnvironment(names),
     ...(options.git ? { git: options.git } : {}),
-    occupancy: (paths) => Promise.resolve(new Map(paths.map((path) => {
-      if (path !== state.occupied) return [path, { status: "known", occupants: [] }];
+    // `state.occupied` names a slot the next screening passes over once, without a fault: its
+    // last owner still references it. A process in an available slot is a fault since upstream
+    // #1475 and would quarantine it, so that is not how a fixture keeps a sibling out of reach.
+    ownerReferenced: async (reference) => {
+      if (state.occupied === null || m.store.slot(reference.slotId)?.path !== state.occupied) return false;
       state.occupied = null;
-      return [path, {
-        status: "known",
-        occupants: [{ pid: 4242, ppid: 1, startMs: 1, startRaw: "1", command: "editor", cwd: path, knownOwner: null, session: null }],
-      }];
-    }))),
+      return true;
+    },
     runClaimStep: async (request): Promise<ClaimStepResult> => {
       state.steps += 1;
       state.now += options.install ?? 0;

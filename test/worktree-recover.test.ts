@@ -14,7 +14,7 @@ import {
   lockCausedQuarantine,
   slotGitDirectory,
 } from "../src/server/worktrees/index-lock.ts";
-import type { WorktreeOccupancy, WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
+import { describeWorktreeOccupants, type WorktreeOccupancy, type WorktreeOccupant } from "../src/server/worktrees/occupancy.ts";
 import { REGISTRATION_OR_IDENTITY_REASONS, registrationRepairQuarantine } from "../src/server/worktrees/quarantine-reasons.ts";
 import { quarantinedSlotProblems } from "../src/server/worktrees/storage-problems.ts";
 import { describeWorktreeWork } from "../src/server/git/worktree-return-safety.ts";
@@ -431,7 +431,8 @@ test("the inventory lists at most 16 occupants per slot, clips each command to 5
   assert.equal(WORKTREE_INVENTORY_LIMITS.occupantsPerSlot, 16);
   assert.equal(WORKTREE_INVENTORY_LIMITS.occupantCommandBytes, 512);
   assert.equal(view.occupants.length, 16, "the 17th occupant is counted, not listed");
-  assert.deepEqual(view.processes, { state: "known", count: 17, reason: null });
+  // Upstream names the occupants in the reason too (#1475); the list below carries each one.
+  assert.deepEqual(view.processes, { state: "known", count: 17, reason: describeWorktreeOccupants(occupants) });
   assert.deepEqual(view.occupants.map((each) => each.pid), Array.from({ length: 16 }, (_, index) => 6000 + index));
   assert.deepEqual(view.occupants[2], { pid: 6002, command: "node worker-2.js", startedAt: 1_002, knownOwner: null, session: null });
   assert.equal(view.occupants[0]!.command, "a".repeat(511), "the straddling character is dropped whole");
@@ -465,7 +466,7 @@ test("a recorded refusal is shown only for the quarantine it judged", async () =
 
   // Still quarantined, but quarantined again: the version moved, so the old refusal no longer
   // describes it, and neither the manager nor the inventory shows it.
-  const requarantined = m.store.quarantine(slot.id, "transition", "slot Git registration is bare, locked, or prunable", null, Date.now(), judged.version);
+  const requarantined = m.store.requarantine(slot.id, "slot Git registration is bare, locked, or prunable", null, Date.now(), judged.version);
   assert.ok(requarantined);
   assert.equal(requarantined.state, "quarantined");
   assert.equal(m.recoveryRefusal(requarantined), null);
@@ -506,32 +507,44 @@ test("each quarantine, recovery and automatic-recovery refusal logs one line, an
   const m = manager({ now: () => now });
   const warned = t.mock.method(console, "warn", () => {});
   const logged = t.mock.method(console, "log", () => {});
+  const informed = t.mock.method(console, "info", () => {});
+  // A quarantine logs upstream's one JSON record (#1475) through `console.info`; a recovery and
+  // its refusals log the fork's own sentence.
+  const records = () => informed.mock.calls
+    .map((call) => String(call.arguments[0]))
+    .filter((line) => line.startsWith("[worktrees] {"))
+    .map((line) => JSON.parse(line.slice("[worktrees] ".length)) as Record<string, unknown>);
   const lines = () => [...warned.mock.calls, ...logged.mock.calls]
     .map((call) => String(call.arguments[0]))
     .filter((line) => line.startsWith("[worktrees] "));
 
   const { slot, lock } = await lockQuarantined(m, clone, sha, "task-log");
-  assert.equal(lines().length, 1);
-  assert.match(lines()[0]!, /^\[worktrees\] quarantined clone slot 1: return reset failed \(git checkout --force --detach failed: fatal: Unable to create .*index\.lock.: File exists\. Another git process .*\)$/);
+  const quarantined = records().filter((record) => record.event === "quarantined");
+  assert.equal(quarantined.length, 1);
+  assert.equal(quarantined[0]!.slotOrdinal, 1);
+  assert.equal(quarantined[0]!.reason, "return reset failed");
+  assert.match(String(quarantined[0]!.detail), /^git checkout --force --detach failed: fatal: Unable to create .*index\.lock.: File exists\.\s+Another git process /);
+  assert.equal(lines().length, 0);
 
   await m.recoverQuarantines();
-  assert.equal(lines().length, 2);
+  assert.equal(lines().length, 1);
   assert.equal(
-    lines()[1],
+    lines()[0],
     `[worktrees] automatic recovery of clone slot 1 refused: index.lock is younger than 10 minutes (blocked by ${lock})`,
   );
   await m.recoverQuarantines();
   await m.recoverQuarantines();
-  assert.equal(lines().length, 2, "the same refusal on later passes is not logged again");
+  assert.equal(lines().length, 1, "the same refusal on later passes is not logged again");
 
   now += INDEX_LOCK_STALE_MS + 1_000;
   await m.recoverQuarantines();
   assert.equal(m.store.slot(slot.id)?.state, "available");
-  assert.equal(lines().length, 3);
+  assert.equal(lines().length, 2);
   assert.equal(
-    lines()[2],
+    lines()[1],
     `[worktrees] recovered clone slot 1 automatically from its quarantine (return reset failed), removing a stale ${lock}`,
   );
+  assert.equal(records().filter((record) => record.event === "quarantined").length, 1, "one record per quarantine");
 });
 
 /** A slot that went back to the pool, then quarantined for `reason`, its owner gone. */
@@ -706,7 +719,7 @@ test("a quarantine outside the candidates is never judged, even once every read 
   const m = manager();
   const { slotId } = await quarantinedSlot(m, clone, sha, "task-never", "slot Git state is unknown");
   for (const reason of [...REGISTRATION_OR_IDENTITY_REASONS, ...OTHER_FAULTS]) {
-    assert.ok(m.store.quarantine(slotId, "transition", reason, null, Date.now()));
+    assert.ok(m.store.requarantine(slotId, reason, null, Date.now(), m.store.slot(slotId)!.version));
     const row = m.store.slot(slotId)!;
     // Repair answers these in the pass; `test/worktree-repair.test.ts` holds what it does.
     if (!registrationRepairQuarantine(reason)) await m.recoverQuarantines();
@@ -726,7 +739,7 @@ test("a registration or identity quarantine carrying Git's lock text is still ne
   const { path, slotId } = await quarantinedSlot(m, clone, sha, "task-never-lock", "slot Git state is unknown");
   const lockText = `git checkout failed: fatal: Unable to create '${await lockPath(path)}': File exists.`;
   for (const reason of [...REGISTRATION_OR_IDENTITY_REASONS, "slot path or Git registration is missing: cause"]) {
-    assert.ok(m.store.quarantine(slotId, "transition", reason, lockText, Date.now()));
+    assert.ok(m.store.requarantine(slotId, reason, lockText, Date.now(), m.store.slot(slotId)!.version));
     const row = m.store.slot(slotId)!;
     assert.equal(lockCausedQuarantine(row.lastError), true, "the error alone reads as lock-caused");
     if (!registrationRepairQuarantine(reason)) await m.recoverQuarantines();

@@ -644,10 +644,7 @@ test("seed-source selection with a failed read quarantines no sibling, and the s
   assert.equal(after.state, "available", "the sibling is not quarantined");
   assert.equal(after.quarantineReason, null);
   assert.equal(after.version, sibling.version);
-  assert.equal(
-    after.lastError,
-    "Last observation failed: slot Git state is unknown (git status timed out after 15 s, and after 30 s on retry)",
-  );
+  assert.equal(after.lastError, sibling.lastError, "an unanswered read is not recorded against the slot");
   await m.release(result.lease);
 });
 
@@ -1660,7 +1657,7 @@ test("an occupied idle sibling falls through to a quarantined one", async () => 
   await m.release(target.lease);
 });
 
-test("an idle sibling whose lease fails after it was screened falls through to a quarantined one", async () => {
+test("an idle sibling a process enters after it was screened is quarantined, and the seed falls through to a quarantined one", async () => {
   const fixture = repository("mission-seed-quarantined-lease-fails-");
   const sources: string[] = [];
   const entered = new Set<string>();
@@ -1688,7 +1685,11 @@ test("an idle sibling whose lease fails after it was screened falls through to a
   assert.deepEqual(sources, [join(quarantined.path, "deps"), join(quarantined.path, "more")]);
   const seed = m.store.slotTimings(target.lease.slotId).seed!;
   assert.deepEqual([seed.outcome, seed.sourceOrdinal, seed.sourceQuarantined], ["placed", quarantined.ordinal, true]);
-  assert.equal(slotAt(m, 2).state, "available", "the idle sibling went back to the pool");
+  // A process in the reserved sibling is a positive fact, so since upstream #1475 it is
+  // quarantined rather than handed back.
+  assert.equal(slotAt(m, 2).state, "quarantined");
+  assert.equal(slotAt(m, 2).quarantineCategory, "state");
+  assert.equal(slotAt(m, 2).quarantineReason, "a process entered the available slot before it was seeded from");
   await m.release(target.lease);
 });
 
@@ -1883,8 +1884,8 @@ test("a removal that left part of a slot behind clears its install, so it never 
   assert.deepEqual([left.state, left.quarantineReason], ["quarantined", "worktree removal could not be verified"]);
   assert.deepEqual([left.depsState, left.depsFingerprint, left.depsFingerprintSha], [null, null, null]);
 
-  // A later failure can rewrite the reason, and the install stays untrusted: only the row says so.
-  assert.ok(m.store.quarantine(slot.id, "transition", QUARANTINE, null, Date.now(), left.version));
+  // A later relabel can rewrite the reason, and the install stays untrusted: only the row says so.
+  assert.ok(m.store.requarantine(slot.id, QUARANTINE, null, Date.now(), left.version));
   const target = leased(await acquire(m, fixture.clone, fixture.sha, "partial:target"));
   assert.deepEqual(sources, [], "the partial tree was not cloned");
   assert.equal(m.store.slotTimings(target.lease.slotId).seed!.reason, "no idle sibling holds a current install");

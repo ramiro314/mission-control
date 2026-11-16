@@ -165,7 +165,7 @@ test("a live lease quiet past staleLeaseDays shows a stale chip and a Storage-on
   await expect(problems).toContainText(`${lease.path} is still leased but has had no Git-visible change since ${
     new Date(quietSince).toISOString().slice(0, 10)
   }`);
-  await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toHaveCount(0);
+  await expect(dashboard.getByRole("status", { name: "Storage warning" })).toHaveCount(0);
   const storage = await (await dashboard.request.get(`${daemon.baseURL}/api/storage`)).json() as StorageView;
   expect(storage.health.problems).toEqual([{
     id: `stale-lease:${slotId}:${lease.leaseId}`,
@@ -271,7 +271,7 @@ test("a settled task kept for its uncommitted work is listed, and its Return sta
   const row = problems.getByRole("listitem").filter({ hasText: "Dirty settled tree" });
   await expect(row).toContainText(`settled with work left in ${worktree}`);
   await expect(row).toContainText("kept for the 30-day retention window");
-  await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toHaveCount(0);
+  await expect(dashboard.getByRole("status", { name: "Storage warning" })).toHaveCount(0);
   await shoot(dashboard, "04-dirty-settled-tree");
 
   // Its link lands on the slot card, whose Return preview says what it discards.
@@ -358,7 +358,7 @@ test("a Storage problem link opens the quarantined slot, whose Recover previews 
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
   // The dashboard banner raised by this problem, read from the `storage_health` stream.
-  const banner = dashboard.getByRole("status", { name: "Storage needs attention" })
+  const banner = dashboard.getByRole("status", { name: "Storage warning" })
     .filter({ hasText: "is quarantined: a stale index.lock blocked its reset" });
   await expect(banner).toBeVisible();
   const problems = dashboard.getByRole("list", { name: "Storage problems" });
@@ -937,7 +937,7 @@ test("a maintenance pass returns a slot quarantined only by a failed read to its
     const card = dashboard.getByRole("article", { name: `Slot ${ordinal}` });
     await expect(card.getByText("quarantined", { exact: true })).toBeVisible();
     await expect(card).toContainText("slot occupancy is unknown");
-    const banner = dashboard.getByRole("status", { name: "Storage needs attention" });
+    const banner = dashboard.getByRole("status", { name: "Storage warning" });
     await expect(banner).toBeVisible();
     await shoot(dashboard, "13-failed-read-quarantine");
 
@@ -1090,7 +1090,7 @@ test("a slot a dead seed left quarantined refuses Destroy, points at Recover, an
   await card.getByRole("button", { name: "Destroy", exact: true }).click();
   const destroy = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
   await expect(destroy.getByText(`Slot ${ordinal}'s owner no longer references it; Recover it instead.`)).toBeVisible();
-  await expect(destroy.getByText("A dependency seed holds this slot")).toHaveCount(0);
+  await expect(destroy.getByText(/A dependency seed holds slot/)).toHaveCount(0);
   await expect(destroy.getByRole("button", { name: "Execute" })).toBeDisabled();
   await expectContentClearsBorder(destroy);
   await card.scrollIntoViewIfNeeded();
@@ -1676,7 +1676,7 @@ test("an unowned tree: Kill its process from its row, then Discard and remove it
     await dashboard.getByRole("tab", { name: "Storage" }).click();
     const keptProblem = problems.getByRole("listitem").filter({ hasText: "Dirty unowned tree" });
     await expect(keptProblem).toContainText(tree);
-    await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toBeVisible();
+    await expect(dashboard.getByRole("status", { name: "Storage warning" })).toBeVisible();
     await shoot(dashboard, "09-dirty-unowned-tree-problem");
     await keptProblem.getByRole("button", { name: "Open tree" }).click();
     await expect(row).toBeInViewport();
@@ -1709,7 +1709,7 @@ test("an unowned tree: Kill its process from its row, then Discard and remove it
     await shoot(dashboard, "12-unowned-tree-removed");
     await dashboard.getByRole("tab", { name: "Storage" }).click();
     await expect(dashboard.getByText("No storage problems.")).toBeVisible();
-    await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toHaveCount(0);
+    await expect(dashboard.getByRole("status", { name: "Storage warning" })).toHaveCount(0);
   } finally {
     holder?.kill("SIGKILL");
   }

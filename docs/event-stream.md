@@ -117,8 +117,7 @@ computed it once, and `GET /api/storage` returns it with the backup config. Sett
 shows whichever of the two arrived last, so its re-read after a write is not hidden by an older
 stream value while the stream is down. Each problem's id names one occurrence and is built only from durable
 state, so a daemon restart never changes it. The dashboard's storage banner keys its dismissals
-by that id: each aggregate, snapshot or event, refreshes the dismissals it still lists before
-dropping any unseen for over an hour (`src/web/lib/storageBannerDismissals.ts`). See [Backup and restore](sqlite-database.html#backup).
+by that id, so a dismissed occurrence stays hidden and a recurrence shows again. See [Backup and restore](sqlite-database.html#backup).
 
 Saving the indexed directories through `PUT /api/repo-index` emits `repo_index_changed`,
 carrying only the new index identity: a 16-character hash of the effective directories and
