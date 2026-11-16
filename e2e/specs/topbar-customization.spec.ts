@@ -190,14 +190,15 @@ test("the top bar hides and minimizes what Display says, previews it, and keeps 
   await shoot(bar, "03-bar-customized");
 
   // A customized bar still keeps to one row when the window narrows - the ladder still runs.
-  // 1000px rather than 900px: the fork's History page segment adds about 100px.
-  await dashboard.setViewportSize({ width: 1000, height: 800 });
+  // 1100px rather than upstream's 900px: the fork's History page segment adds about 100px, and
+  // on CI's Linux font metrics the Pause all glyph left 1000px a few pixels short.
+  await dashboard.setViewportSize({ width: 1100, height: 800 });
   await expect
     .poll(() => bar.evaluate((el) => el.getBoundingClientRect().height), {
-      message: "the customized bar stays on one row at 1000px",
+      message: "the customized bar stays on one row at 1100px",
     })
     .toBeLessThan(80);
-  // With five items gone the bar fits at 1000px without shedding anything - which is the point
+  // With five items gone the bar fits at 1100px without shedding anything - which is the point
   // of hiding them. Narrower still, the ladder takes Library's word too: "expanded" means
   // expanded while there is room, exactly as the shipped bar behaves.
   await expectDrawn(libraryWord, true, "Library keeps its word while the slimmer bar fits");
