@@ -104,7 +104,7 @@ test("the chat rail folds to an edge strip, remembers it, and reopens from the s
   await expect(reloaded.getByRole("tab", { name: "Activity" })).toBeHidden();
 
   await dashboard.locator(".console-detail .detail-body").focus();
-  await dashboard.keyboard.press("Meta+f");
+  await dashboard.keyboard.press("ControlOrMeta+f");
   await expect(dashboard.getByRole("complementary", { name: "Search results" })).toBeVisible();
   await expect(dashboard.getByRole("region", { name: "Conversation rail" })).toHaveCount(0);
   await dashboard.keyboard.press("Escape");

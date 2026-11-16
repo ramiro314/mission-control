@@ -867,7 +867,9 @@ test("a child merged into its finished parent's branch reads Stack broken, keeps
       && m.text.includes("create a new branch from `origin/main`")
       && m.text.includes(`gh pr diff ${childPr.url} | git apply --3way`)
       && m.text.includes(`merge commit \`${STRAY}\``)
-      && m.text.includes("gh pr create --base main")
+      // The fork opens pull requests through REST on origin (fork:sso-free-github-calls).
+      && m.text.includes('gh api "repos/$repo/pulls"') && m.text.includes("-f base=main ")
+      && !m.text.includes("gh pr create")
       && m.text.includes("Do NOT force-push, rebase, reset or otherwise rewrite `feat/stack-child` or `feat/stack-parent`"));
   }, { timeout: 30_000, message: "the recovery prompt reached the child's session" }).toBe(true);
   await expect(queued).toContainText(`${broken} - recovering`, { timeout: 15_000 });

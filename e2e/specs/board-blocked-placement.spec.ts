@@ -4,6 +4,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { platformKeycap } from "../fixtures/keycaps.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -230,9 +231,9 @@ test("idle blocked sessions follow Settings → Display → Blocked sessions on 
   await shoot(dashboard, "01-in-needs-you-lanes");
 
   const keycap = (tile: Locator) => tile.locator(".tile-head .kb-hint");
-  await expect(keycap(upper.locator(".tile").nth(3))).toHaveText("⌘4");
-  await expect(keycap(laneBody.locator(".tile").first())).toHaveText("⌘5");
-  await dashboard.keyboard.press("Meta+5");
+  await expect(keycap(upper.locator(".tile").nth(3))).toHaveText(platformKeycap("⌘4"));
+  await expect(keycap(laneBody.locator(".tile").first())).toHaveText(platformKeycap("⌘5"));
+  await dashboard.keyboard.press("ControlOrMeta+5");
   await expect(dashboard.locator(".cdetail").getByRole("heading", { name: BLOCKED_ORDER[0] })).toBeVisible();
   await expect(board.locator("section.board-col.is-rail.tone-attention")).toHaveCount(1);
   await expect(lane.locator(".rail-row")).toHaveCount(BLOCKED.length);
@@ -279,7 +280,7 @@ test("idle blocked sessions follow Settings → Display → Blocked sessions on 
     await expect(selected).toContainText(WORKING);
     await dashboard.keyboard.press("ArrowRight");
   };
-  await expect(keycap(idleTile)).toHaveText("⌘6");
+  await expect(keycap(idleTile)).toHaveText(platformKeycap("⌘6"));
   await fromFirstAsking();
   await expect(frame.locator(".tile")).toHaveCount(0);
   await expect(selected).toHaveCount(1);
@@ -287,8 +288,8 @@ test("idle blocked sessions follow Settings → Display → Blocked sessions on 
 
   await frame.getByRole("button", { name: /^Expand Blocked/ }).click();
   await expect(frame.locator(".tile")).toHaveCount(BLOCKED.length);
-  await expect(keycap(frame.locator(".tile").first())).toHaveText("⌘6");
-  await expect(keycap(idleTile)).toHaveText("⌘9");
+  await expect(keycap(frame.locator(".tile").first())).toHaveText(platformKeycap("⌘6"));
+  await expect(keycap(idleTile)).toHaveText(platformKeycap("⌘9"));
   await fromFirstAsking();
   await expect(selected).toHaveCount(1);
   await expect(selected).toContainText(BLOCKED_ORDER[0]!);

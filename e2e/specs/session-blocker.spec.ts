@@ -262,7 +262,9 @@ test("a long blocker reason in a narrow pane keeps both controls reachable and e
     + "and a named owner for the export job before the migration can move any of the history at all";
   expect(reason.length, "the reason sits at the schema's limit").toBeLessThanOrEqual(200);
   expect(reason.length).toBeGreaterThan(180);
-  await dashboard.setViewportSize({ width: 900, height: 640 });
+  // 720 tall, not upstream's 640: at 900px the fork's History page segment plus the Pause all
+  // glyph wrap the top bar to a second row, and 640 then leaves the collapsed band too short.
+  await dashboard.setViewportSize({ width: 900, height: 720 });
   const session = await dispatchIdleAgent(dashboard, daemon, "wait on the platform team");
   await useBoardLayout(dashboard, daemon);
   await reportBlocker(daemon, session.id, { reason });

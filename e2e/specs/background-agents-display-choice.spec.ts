@@ -406,7 +406,7 @@ test("a resident visitor card carries the chip under Chip and popover, and its s
 
 test("searching for the Agents tab lands on the Board card entry that holds the picker", async ({ dashboard, daemon }) => {
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   const palette = dashboard.getByRole("dialog", { name: "Search everything" });
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox", { name: "Search everything" }).fill("agents tab");

@@ -129,7 +129,7 @@ const owedAnnouncements = (page: Page) => page.evaluate(() => Object.keys(
 const PREFERENCE_ERROR = "Could not save your tour preference";
 
 async function startFromPalette(page: Page): Promise<void> {
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByRole("dialog", { name: "Search everything" });
   await palette.getByRole("combobox").fill("Meet your residents");
   await palette.getByRole("option", { name: TOUR_COMMAND }).click();
@@ -365,7 +365,7 @@ test("a profile that opted out before the tour shipped is shown it once in the p
   await expect(picker).toBeHidden();
 
   // Browse tours still offers it, now as an ordinary row.
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByRole("dialog", { name: "Search everything" });
   await palette.getByRole("combobox").fill("Browse tours");
   await palette.getByRole("option", { name: /Browse tours, command/ }).click();
@@ -527,7 +527,7 @@ test("a midway dismissal in one window cannot undo another window's announcement
   // reads the shared debt afresh, so the settled tour is an ordinary row: not featured, not
   // tagged New, and not recorded a second time.
   await page.bringToFront();
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByRole("dialog", { name: "Search everything" });
   await palette.getByRole("combobox").fill("Browse tours");
   await palette.getByRole("option", { name: /Browse tours, command/ }).click();
@@ -624,7 +624,7 @@ test("a startup opening that waited behind a dialog honors a debt another window
   });
   await page.reload();
   await expectDashboardReady(page);
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByRole("dialog", { name: "Search everything" });
   await expect(palette).toBeVisible();
   release();
@@ -648,7 +648,7 @@ test("a startup opening that waited behind a dialog honors a debt another window
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
   await expect(picker).toBeHidden();
   // Settled for the document: a later dialog closing does not open it either.
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   await expect(palette).toBeVisible();
   await page.keyboard.press("Escape");
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
@@ -682,7 +682,7 @@ test("a startup opening that waited behind a dialog re-reads an announcement ano
   const writes = recordAnnouncementWrites(page);
   await page.goto(`${daemon.baseURL}/#/fleet`);
   await expectDashboardReady(page);
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByRole("dialog", { name: "Search everything" });
   await expect(palette).toBeVisible();
   release();
@@ -794,7 +794,7 @@ test("a re-check that was out while a dialog came and went is read again before 
 
   // While that answer is out, a dialog opens in A, window B announces the tour and records it,
   // and A's dialog closes again.
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByRole("dialog", { name: "Search everything" });
   await expect(palette).toBeVisible();
   const second = await context.newPage();
