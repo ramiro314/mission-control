@@ -30,6 +30,7 @@ import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
+import { missionMcpDescriptor } from "./mission-mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
 import { parseBody } from "./http-body.ts";
 import {
@@ -4388,7 +4389,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   // Resume: a new unmanaged terminal running the agent's own resume command in the session's
   // original directory or a worktree slot, with no task context and no Mission Control tools,
-  // or an embedded Agent SDK session continuing it there, whose card joins the Fleet.
+  // or an embedded Agent SDK session continuing it there, whose card joins the Fleet and which,
+  // like every Claude SDK session, asks its decisions through Mission Control's MCP server.
   // The directory is the catalog's, resolved by the daemon, and a slot is one the daemon
   // offered; the body names only a backend and a target.
   const resumeLauncher: HistoryResumeLauncher = historyResumeLauncher ?? {
@@ -4399,7 +4401,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     ...(sdkSessions
       ? {
         sdkUnavailable: (agent: AgentType) => sdkFor(agent) ? null : `${AGENT_IDENTITY[agent].label} has no Agent SDK driver.`,
-        startSdk: (input: HistoryResumeSdkStart) => sdkSessions.start({
+        startSdk: async (input: HistoryResumeSdkStart) => sdkSessions.start({
           agent: input.agent,
           name: input.name,
           cwd: input.cwd,
@@ -4408,7 +4410,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           model: null,
           effort: null,
           permissionMode: input.permissionMode,
-          mcp: null,
+          // Upstream #1453: a Claude SDK session asks every decision through `request_input`,
+          // so its launch needs Mission Control's MCP server, as a restored session already
+          // gets. Still no task, so no task-bound tool has anything to act on.
+          mcp: await missionMcpDescriptor(input.cwd),
           taskId: null,
           resume: input.agentSessionId,
           gitBranch: input.branch,
