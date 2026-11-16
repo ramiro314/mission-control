@@ -212,7 +212,6 @@ function shellWord(value: string): string {
 export function writeConductorNodeRuntime(home: string, version: string): string {
   const bin = join(home, "bin", "node");
   const nextBin = join(home, "bin", ".node-next");
-  const sh = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   mkdirSync(join(home, "bin"), { recursive: true });
   writeFileSync(
     nextBin,
