@@ -3747,7 +3747,7 @@ test("a restored session with no task keeps the repository its checkout belongs 
     status: "suspended", turnInProgress: false,
   });
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   t.after(() => supervisor.stopAll());
   supervisor.prepareRestore();
   assert.equal(
@@ -3781,7 +3781,7 @@ test("a restored session with no task outside any git checkout has no repository
   const fake = withFakeDriver(async () => fakeHandle());
   t.after(fake.restore);
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   t.after(() => supervisor.stopAll());
   supervisor.prepareRestore();
   const restoring = registry.snapshot().restoringSessions;
@@ -3818,7 +3818,7 @@ test("a taskless session that cannot be resumed still names its repository on th
     }
   });
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const supervisor = new SdkSupervisor(registry);
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
   await supervisor.restore();
   assert.ok(announced.length > 0, "the unresumable session is registered before it is evicted");
   assert.ok(announced.every((root) => root === realpathSync(main)), `announced roots: ${announced.join(", ")}`);
