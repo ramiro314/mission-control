@@ -10523,6 +10523,10 @@ mark.find-hit.is-current {
   letter-spacing: 0;
   color: var(--working);
   font-variant-numeric: tabular-nums;
+  /* Top, not baseline: the fork's Linux mono face (DejaVu Sans Mono) has a taller ascent than
+     the tab's sans face, and on the baseline its box made the Agents tab 1px taller than its
+     neighbours. Both boxes are one 10px line, so the count sits where it did. */
+  vertical-align: top;
 }
 /* Three tabs share the head with the fold in 244px (the head drops its count for them), and
    give up a little padding and tracking too, so a wider system face still leaves them room

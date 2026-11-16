@@ -66,6 +66,8 @@ export const STATE_DENY_FILES = [
   "statusline-inner",
   // The dashboard skin's window background, read by the desktop shell.
   "window-background.json",
+  // The last repository scan, which lists the operator's local repository paths.
+  "repo-index-cache.json",
   "foreman-spend-outbox.*",
   "foreman-spend-quarantine.*",
 ] as const;

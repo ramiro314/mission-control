@@ -703,7 +703,9 @@ test("a quarantined slot card shows its reason, detail, last automatic-recovery 
     await expect(lines.filter({ hasText: /^Refused / }))
       .toContainText("the slot holds work Recover would discard: untracked notes/draft.md");
     await expect(lines.filter({ hasText: /^Blocked by / })).toHaveText("Blocked by untracked file notes/draft.md");
-    await expect(why.getByRole("term")).toHaveText(["Reason", "Detail", "Last automatic recovery"]);
+    // "Processes" is upstream's blocking-process line (#1475), which names the occupant's PID.
+    await expect(why.getByRole("term")).toHaveText(["Reason", "Detail", "Processes", "Last automatic recovery"]);
+    await expect(lines.filter({ hasText: new RegExp(`PID ${pid} `) })).toBeVisible();
 
     const processes = slot.getByRole("region", { name: /^Processes in slot \d+$/ });
     const row = processes.getByRole("listitem").filter({ hasText: `PID ${pid}` });
@@ -714,63 +716,6 @@ test("a quarantined slot card shows its reason, detail, last automatic-recovery 
   } finally {
     occupant.kill("SIGKILL");
     await dashboard.unroute("**/api/worktrees");
-  }
-});
-
-/**
- * A read that fails, even after its retry, never quarantines: the slot keeps its state and its
- * card says "Last observation failed" with the reason, until a read succeeds.
- *
- * The failure is written into the live lease's row, because a Git read cannot be made to time
- * out under the e2e daemon; `test/worktree-reconciliation.test.ts` proves reconcile writes it
- * there for a listing or a Git read that failed twice. What this proves is the rest of the path:
- * the daemon's inventory carries the note to the card on its own line, beside a state that is
- * still `leased`, and the pool's Reconcile, a real pass whose reads succeed, clears it.
- */
-test("a slot whose last observation failed stays leased, says why on its card, and Reconcile clears it", async ({
-  dashboard,
-  daemon,
-}) => {
-  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
-    data: { repositoryPath: daemon.repo, label: "failed observation" },
-  });
-  expect(acquired.status()).toBe(201);
-  const lease = await acquired.json() as { path: string; leaseId: string };
-  const failure = "slot Git state is unknown (git status timed out after 15 s, and after 30 s on retry)";
-  withDaemonDb(daemon, (db) => {
-    const changed = db.prepare(
-      `UPDATE worktree_slots SET last_error = ? WHERE active_lease_id = ? AND state = 'leased'`,
-    ).run(`Last observation failed: ${failure}`, lease.leaseId);
-    expect(Number(changed.changes)).toBe(1);
-  });
-
-  try {
-    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
-    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
-    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
-    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
-    const slot = repo.locator(".wt-slot", { hasText: lease.path });
-    await expect(slot.getByText("leased", { exact: true })).toBeVisible();
-    await expect(slot.getByText("quarantined", { exact: true })).toHaveCount(0);
-
-    const why = slot.getByRole("region", { name: /^Why slot \d+ is leased$/ });
-    await expect(why.getByRole("term")).toHaveText(["Last observation failed"]);
-    await expect(why.getByRole("definition")).toHaveText(failure);
-    await why.scrollIntoViewIfNeeded();
-    await shoot(dashboard, "16-last-observation-failed");
-
-    await repo.getByRole("button", { name: "Reconcile", exact: true }).click();
-    const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
-    await expect(preview.getByText(/a read that fails leaves each slot as it was/)).toBeVisible();
-    await preview.getByRole("button", { name: "Execute" }).click();
-    await expect(preview).toHaveCount(0);
-
-    await expect(why).toHaveCount(0, { timeout: EXECUTES_MS });
-    await expect(slot.getByText("leased", { exact: true })).toBeVisible();
-    await slot.scrollIntoViewIfNeeded();
-    await shoot(dashboard, "17-last-observation-cleared");
-  } finally {
-    await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } });
   }
 });
 

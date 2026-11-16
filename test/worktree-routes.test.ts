@@ -20,7 +20,7 @@ import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import { nativeWorktreeOwnerReferenced } from "../src/server/worktrees/owners.ts";
-import { OBSERVATION_FAILURE, RESERVATION_NOT_HANDED_BACK } from "../src/server/worktrees/quarantine-reasons.ts";
+import { OBSERVATION_FAILURE } from "../src/server/worktrees/quarantine-reasons.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import type { TerminalLaunchSpec } from "../src/server/terminal/targets.ts";
 import type { TerminalBackendId } from "../src/shared/terminal.ts";
@@ -270,15 +270,8 @@ test("Open terminal leases an idle available slot as it stands, and refuses one 
   assert.equal(row().state, "leased");
   await hand(row().activeLeaseId!);
 
-  // Occupied: refused with acquisition's reason, nothing opened, and still available.
-  occupied.add(path);
+  // An occupied slot is its own test below: it is quarantined now, and the steps here need it.
   const launchesBefore = launched.length;
-  const busy = await open();
-  occupied.delete(path);
-  assert.equal(busy.status, 409);
-  assert.deepEqual(await busy.json(), { error: "the slot is not idle: an available slot has process occupancy" });
-  assert.equal(row().state, "available");
-  assert.equal(row().activeLeaseId, null);
 
   // Mid-reservation: neither available nor held by an owner, so it is refused without a shell.
   const reserved = manager.store.reserveAvailable({
@@ -421,6 +414,21 @@ test("Open terminal answers at once while a running claim holds the slot lock", 
 type Slot = Awaited<ReturnType<typeof availableSlot>>;
 
 /** Each stages one way `leaseAsIs` ends with no lease, and what the route must then answer. */
+// Occupied: a process in an available slot is a proven `state` fault under upstream's
+// quarantine categories (#1475), so Open terminal quarantines it rather than leaving it available.
+test("Open terminal quarantines an available slot a process occupies, and opens nothing", async () => {
+  const { path, open, row } = await availableSlot();
+  occupied.add(path);
+  const launches = launched.length;
+  const busy = await open();
+  occupied.delete(path);
+  assert.equal(busy.status, 409);
+  assert.deepEqual(await busy.json(), { error: "the slot was quarantined: an available slot has process occupancy" });
+  assert.equal(launched.length, launches, "the launcher was never asked");
+  assert.equal(row().state, "quarantined");
+  assert.equal(row().activeLeaseId, null);
+});
+
 const NO_LEASE_CASES: Array<{
   name: string;
   stage: (t: TestContext, slot: Slot) => void;
@@ -430,11 +438,14 @@ const NO_LEASE_CASES: Array<{
   quarantineReason?: string;
 }> = [
   {
+    // Upstream's categories (#1475): a process found in the reservation is a `state` quarantine,
+    // never handed back to available.
     name: "a process enters after the screening",
     stage: (_t, slot) => occupancyReads.push(null, { status: "known", occupants: [occupant(slot.path)] }),
-    status: 409,
+    status: 503,
     error: "a process entered the available slot before it was leased",
-    state: "available",
+    state: "quarantined",
+    quarantineReason: "a process entered the available slot before it was leased",
   },
   {
     name: "occupancy goes unknown after the screening",
@@ -442,17 +453,6 @@ const NO_LEASE_CASES: Array<{
     status: 409,
     error: "ps timed out after 15 s",
     state: "available",
-  },
-  {
-    name: "a process enters and the reservation cannot be handed back",
-    stage: (t, slot) => {
-      occupancyReads.push(null, { status: "known", occupants: [occupant(slot.path)] });
-      t.mock.method(manager.store, "releaseReservation", () => null);
-    },
-    status: 503,
-    error: "a process entered the available slot before it was leased",
-    state: "quarantined",
-    quarantineReason: RESERVATION_NOT_HANDED_BACK,
   },
   {
     name: "something else reserves the slot first",
