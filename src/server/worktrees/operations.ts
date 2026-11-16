@@ -1365,7 +1365,7 @@ export class WorktreeOperationsService {
     if (!pool) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
 
     if (request.action === "reconcile") {
-      consequences.push("Re-observes durable rows, Git registration, ownership, and processes. A proven fault quarantines its slot; a read that fails leaves each slot as it was and says so on its card.");
+      consequences.push("Re-observes durable rows, Git registration, ownership, and processes. Uncertainty remains quarantined.");
       return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
     }
 
@@ -2675,7 +2675,7 @@ export class WorktreeOperationsService {
       case "forget": return "Slot forgotten: its folder, registration and row are gone.";
       case "removeUnowned": return "Unowned tree discarded and removed.";
       case "prune": return "Safe candidate set pruned.";
-      case "reconcile": return "Pool re-observed; a slot whose read failed was left as it was.";
+      case "reconcile": return "Pool re-observed; uncertainty remains quarantined.";
       case "destroy": return "Fixed worktree target destroyed.";
       case "legacyReturn": return "Exact legacy lease returned through its domain owner.";
       case "warm": return "Warm finished.";

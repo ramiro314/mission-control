@@ -424,6 +424,9 @@ test("a worktree fault raises the storage banner, its Problems row opens Worktre
     await expect(problems).toContainText(`Fixture pass ${step}.`);
   };
   await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
+  // A hash-only navigation keeps the page's live stream to the real daemon; a reload opens the
+  // stream again, through the fixture.
+  await dashboard.reload();
   await expect(problems).toContainText("Fixture pass 0.");
   await expect(problems).toContainText("Task fixture-task kept a dirty tree");
   await expect(banner).toHaveCount(0);

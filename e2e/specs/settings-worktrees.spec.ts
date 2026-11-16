@@ -168,17 +168,25 @@ for (const action of ["destroy", "prune"] as const) {
 }
 
 test("Open terminal refuses a slot that is not idle, leases an idle one as it stands, and offers Return", async ({ dashboard, daemon }) => {
-  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
-    data: { repositoryPath: daemon.repo, label: "open terminal target" },
-  });
-  expect(acquired.status()).toBe(201);
-  const lease = await acquired.json() as { path: string; leaseId: string; baseSha: string };
-  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
-    data: { leaseId: lease.leaseId },
-  });
-  expect(returned.ok()).toBe(true);
-  const observed = async () => (await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory)
-    .repositories.flatMap((pool) => pool.slots).find((slot) => slot.path === lease.path);
+  // Two idle slots: one a process walks into, and one Open terminal leases.
+  const leases: Array<{ path: string; leaseId: string; baseSha: string }> = [];
+  for (const label of ["open terminal target", "open terminal occupied"]) {
+    const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(acquired.status()).toBe(201);
+    leases.push(await acquired.json() as { path: string; leaseId: string; baseSha: string });
+  }
+  for (const each of leases) {
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: each.leaseId },
+    });
+    expect(returned.ok()).toBe(true);
+  }
+  const [lease, busy] = leases as [typeof leases[0], typeof leases[0]];
+  const observedAt = async (path: string) => (await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory)
+    .repositories.flatMap((pool) => pool.slots).find((slot) => slot.path === path);
+  const observed = async () => await observedAt(lease.path);
   const launches = () => readdirSync(daemon.recordDir).filter((name) => name.startsWith("cmux-")).length;
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
@@ -195,14 +203,18 @@ test("Open terminal refuses a slot that is not idle, leases an idle one as it st
   await openTerminal.hover();
   await expect(openTerminal).toHaveAccessibleDescription(LEASE_SENTENCE);
 
-  // An occupied slot is not idle. It is refused with acquisition's reason and nothing opens.
-  const occupant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: lease.path, stdio: "ignore" });
+  // An occupied slot is not idle. A process in an available slot is a positive fact, so since
+  // upstream #1475 the screening quarantines it; it is refused with that reason and nothing opens.
+  const busySlot = pool.getByRole("article", { name: "Slot 2" });
+  await busySlot.getByLabel("Terminal backend for slot 2").selectOption("cmux");
+  const occupant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: busy.path, stdio: "ignore" });
   try {
     await once(occupant, "spawn");
-    await expect.poll(async () => (await observed())?.processes.count).toBe(1);
-    await openTerminal.click();
-    await expect(slot.getByText("the slot is not idle: an available slot has process occupancy")).toBeVisible();
+    await expect.poll(async () => (await observedAt(busy.path))?.processes.count).toBe(1);
+    await busySlot.getByRole("button", { name: "Open terminal" }).click();
+    await expect(busySlot.getByText("the slot was quarantined: an available slot has process occupancy")).toBeVisible();
     expect(launches()).toBe(0);
+    await expect(busySlot.getByText("quarantined", { exact: true })).toBeVisible();
     await expect(slot.getByText("available", { exact: true })).toBeVisible();
     await shoot(dashboard, "16-open-terminal-refused");
   } finally {
@@ -210,7 +222,6 @@ test("Open terminal refuses a slot that is not idle, leases an idle one as it st
     occupant.kill("SIGKILL");
     await exited;
   }
-  await expect.poll(async () => (await observed())?.processes.count).toBe(0);
 
   await openTerminal.click();
   await expect(slot.getByText("leased", { exact: true })).toBeVisible();
@@ -218,7 +229,7 @@ test("Open terminal refuses a slot that is not idle, leases an idle one as it st
   await openTerminal.hover();
   await expect(openTerminal).toHaveAccessibleDescription(/\S/);
   await expect(openTerminal).not.toHaveAccessibleDescription(LEASE_SENTENCE);
-  await expect(slot.getByText("the slot is not idle: an available slot has process occupancy")).toHaveCount(0);
+  await expect(slot.getByText(/an available slot has process occupancy/)).toHaveCount(0);
   await expect.poll(launches).toBe(1);
   expect((await observed())?.head).toBe(lease.baseSha);
   await shoot(dashboard, "17-open-terminal-leased");
@@ -823,7 +834,7 @@ test("a slot card's History lists what happened to the slot, newest first, and p
   await expect(slot.getByText("quarantined", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
   await expect(entries).toHaveCount(6);
   await expect(entries.nth(0)).toContainText("available → quarantined");
-  await expect(entries.nth(0)).toContainText("available slot is dirty");
+  await expect(entries.nth(0)).toContainText("available slot is occupied or dirty");
   await expect(entries.nth(0)).toContainText("automatic");
   await history.scrollIntoViewIfNeeded();
   await shoot(dashboard, "25-slot-history");
@@ -847,56 +858,6 @@ test("a slot card's History lists what happened to the slot, newest first, and p
   await expect(entries).toHaveCount(66);
   await expect(entries.nth(65)).toContainText("new → provisioning");
   await expect(history.getByRole("button", { name: "Show older" })).toHaveCount(0);
-});
-
-/**
- * A failed read raises no version, so this is the only change an open list hears about through
- * the slot's failed-read note. The failure is real: a slot whose `.git` file no longer points at
- * a repository cannot be read, and Reconcile's Git inspection fails twice and keeps the lease.
- */
-test("an open History picks up a failed read as it starts and as it clears", async ({ dashboard, daemon }) => {
-  test.setTimeout(120_000);
-  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
-    data: { repositoryPath: daemon.repo, label: "history failed read" },
-  });
-  expect(acquired.status()).toBe(201);
-  const lease = await acquired.json() as { path: string; leaseId: string };
-  const dotGit = join(lease.path, ".git");
-  const original = readFileSync(dotGit, "utf8");
-
-  try {
-    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
-    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
-    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
-    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
-    const slot = repo.locator(".wt-slot", { hasText: lease.path });
-    const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
-    const entries = history.getByRole("listitem");
-    const reconcile = async () => {
-      await repo.getByRole("button", { name: "Reconcile", exact: true }).click();
-      const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
-      await preview.getByRole("button", { name: "Execute" }).click();
-      await expect(preview).toHaveCount(0);
-    };
-
-    await history.getByRole("button", { name: "History" }).click();
-    await expect(entries).toHaveCount(3);
-
-    writeFileSync(dotGit, "not a gitdir pointer\n");
-    await reconcile();
-    await expect(entries).toHaveCount(4, { timeout: EXECUTES_MS });
-    await expect(entries.nth(0)).toContainText("Failed read");
-    await expect(entries.nth(0)).toContainText("slot Git state is unknown");
-    await expect(slot.getByText("leased", { exact: true })).toBeVisible();
-
-    writeFileSync(dotGit, original);
-    await reconcile();
-    await expect(entries).toHaveCount(5, { timeout: EXECUTES_MS });
-    await expect(entries.nth(0)).toContainText("Failed read cleared");
-  } finally {
-    writeFileSync(dotGit, original);
-    await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } });
-  }
 });
 
 /**

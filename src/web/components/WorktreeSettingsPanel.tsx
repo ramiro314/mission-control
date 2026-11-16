@@ -1110,7 +1110,10 @@ function SlotDiagnosis({
   const inOrphanList = new Set(orphans.map((orphan) => orphan.pid));
   const occupants = slot.occupants.filter((occupant) => !inOrphanList.has(occupant.pid));
   const unlisted = Math.max(0, (slot.processes.count ?? 0) - slot.occupants.length);
-  const facts = Boolean(slot.quarantineReason || detail || slot.observationFailure || slot.processes.reason || refusal);
+  // A known occupancy's reason names the occupants, which "Processes inside" below lists one by
+  // one; only an unknown occupancy's reason says something that list cannot.
+  const processesReason = slot.processes.state === "unknown" ? slot.processes.reason : null;
+  const facts = Boolean(slot.quarantineReason || detail || slot.observationFailure || processesReason || refusal);
   if (!facts && occupants.length === 0 && unlisted === 0) return null;
   return (
     <>
@@ -1120,7 +1123,7 @@ function SlotDiagnosis({
             {slot.quarantineReason && <div><dt>Reason</dt><dd>{slot.quarantineReason}</dd></div>}
             {detail && <div><dt>Detail</dt><dd>{detail}</dd></div>}
             {slot.observationFailure && <div><dt>Last observation failed</dt><dd>{slot.observationFailure}</dd></div>}
-            {slot.processes.reason && <div><dt>Processes</dt><dd>{slot.processes.reason}</dd></div>}
+            {processesReason && <div><dt>Processes</dt><dd>{processesReason}</dd></div>}
             {refusal && (
               <div>
                 <dt>Last automatic recovery</dt>
