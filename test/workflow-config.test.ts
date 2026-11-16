@@ -133,6 +133,22 @@ test("a settings backup from before per-kind defaults restores its Ship choice",
   );
 });
 
+test("a write that still names defaultWorkflowId sets the Ship row rather than being dropped", () => {
+  const rows = (body: Record<string, unknown>) =>
+    WorkflowConfigSchema.parse({ repoAllowlist: [], ...body }).kindWorkflowDefaults;
+  assert.deepEqual(rows({ defaultWorkflowId: "workflow-review" }), { ship: "workflow-review" });
+  assert.deepEqual(rows({ defaultWorkflowId: null }), { ship: null }, "null is an explicit None");
+  assert.deepEqual(rows({ defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID }), {}, "the built-in reads as unset");
+  assert.deepEqual(
+    rows({ defaultWorkflowId: "workflow-review", kindWorkflowDefaults: { ship: "workflow-old", plan: "workflow-plan" } }),
+    { ship: "workflow-review", plan: "workflow-plan" },
+    "the alias names Ship and every other row stands",
+  );
+  const parsed = WorkflowConfigSchema.parse({ repoAllowlist: [], defaultWorkflowId: "workflow-review" });
+  assert.equal("defaultWorkflowId" in parsed, false, "only the map is written");
+  assert.equal(WorkflowConfigSchema.safeParse({ repoAllowlist: [], defaultWorkflowId: 42 }).success, false);
+});
+
 test("task creation owns Workflow inheritance and preserves explicit opt-outs", async () => {
   const { Registry } = await import("../src/server/registry.ts");
   const { TaskManager } = await import("../src/server/tasks.ts");
