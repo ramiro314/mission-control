@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { run } from "../src/server/util/exec.ts";
@@ -31,9 +32,18 @@ function afterDirectory(args: readonly string[]): string[] {
   return args.slice(2);
 }
 
+function withoutConfig(args: readonly string[]): string[] {
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "-c") i++;
+    else rest.push(args[i]!);
+  }
+  return rest;
+}
+
 /** A Git command that writes: the work tree, the index, a ref, or a registration. */
 function isMutation(args: readonly string[]): boolean {
-  const rest = afterDirectory(args).filter((arg) => arg !== FLAG);
+  const rest = withoutConfig(afterDirectory(args)).filter((arg) => arg !== FLAG);
   const [command, sub] = rest;
   if (command === "worktree") return sub === "add" || sub === "remove";
   // `symbolic-ref <name> <ref>` sets the symref; with one positional it only reads it.
@@ -52,7 +62,7 @@ function assertObservation(argvs: string[][], label: string): void {
 function assertMutationsUnflagged(argvs: string[][], label: string, expected: string): void {
   const mutations = argvs.filter(isMutation);
   assert.ok(
-    mutations.some((args) => afterDirectory(args).join(" ").startsWith(expected)),
+    mutations.some((args) => withoutConfig(afterDirectory(args)).join(" ").startsWith(expected)),
     `${label} ran ${expected}: ${argvs.map((args) => args.join(" ")).join("; ")}`,
   );
   for (const args of mutations) {
@@ -121,4 +131,24 @@ test("every observation argv puts --no-optional-locks before the subcommand, and
   const removed = await argvOf(async () => assert.equal((await git.remove(identity, slot, false)).ok, true));
   assertMutationsUnflagged(removed, "remove", "worktree remove");
   assertObservation(removed.filter((args) => !isMutation(args)), "remove's status read");
+});
+
+test("a failing post-checkout hook cannot fail a slot's add, reset or checkout", async () => {
+  const { root, clone } = mkOriginAndClone("mission-worktree-git-hooks-");
+  const base = gitIn(clone, "rev-parse", "HEAD");
+  const identity = worktreeRepositoryIdentity(clone);
+  assert.ok(identity, "the clone is a provable repository");
+  const hooks = join(root, "hooks");
+  mkdirSync(hooks);
+  writeFileSync(join(hooks, "post-checkout"), "#!/bin/sh\nexit 1\n");
+  chmodSync(join(hooks, "post-checkout"), 0o755);
+  gitIn(clone, "config", "core.hooksPath", hooks);
+  const slot = join(root, "pool", "1", "repo");
+
+  const added = await git.add(identity, slot, base);
+  assert.equal(added.ok, true, added.ok ? "" : added.reason);
+  const reset = await git.reset(slot, base);
+  assert.equal(reset.ok, true, reset.ok ? "" : reset.reason);
+  const attached = await git.checkoutBranch(slot, "main", "detach");
+  assert.equal(attached.ok, true, attached.ok ? "" : attached.reason);
 });
