@@ -104,7 +104,7 @@ export interface WorktreeGit {
  */
 export const OBSERVATION_GIT_OPTIONS = ["--no-optional-locks"] as const;
 
-/** A failing `post-checkout` hook (Overcommit without its gem) fails an otherwise good checkout, so slot mutations skip hooks. */
+/** A failing `post-checkout` hook (Overcommit without its gem) fails an otherwise good checkout, so a pool slot's checkouts skip hooks. */
 export const POOL_MUTATION_GIT_OPTIONS = ["-c", "core.hooksPath=/dev/null"] as const;
 
 /**
