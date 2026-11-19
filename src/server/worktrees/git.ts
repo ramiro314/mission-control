@@ -328,7 +328,7 @@ export class NativeWorktreeGit implements WorktreeGit {
       };
     }
     // Git translates the `initializing` it writes to `locked`, and Repair recognizes an
-    // interrupted add by that word. `LANGUAGE` reaches only messages, so hooks keep their locale.
+    // interrupted add by that word. `LANGUAGE` changes only the messages Git prints.
     const result = await this.execute(
       "git",
       ["-C", identity.mainCheckoutRoot, ...POOL_MUTATION_GIT_OPTIONS, "worktree", "add", "--detach", ...(options.checkout === false ? ["--no-checkout"] : []), path, commit],
