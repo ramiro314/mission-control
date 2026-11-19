@@ -966,7 +966,9 @@ The operations have deliberately narrow meanings:
   read the allocator observes with (`status`, `rev-parse`, `rev-list`, `symbolic-ref`, `worktree
   list`, `merge-base` and the remote-default reads) passes `--no-optional-locks` before its subcommand,
   so a read killed mid-way cannot leave `index.lock` behind. The mutations (`worktree add` and
-  `remove`, `checkout`, `reset`, `clean` and Return's `fetch`) take their locks as usual.
+  `remove`, `checkout`, `reset`, `clean` and Return's `fetch`) take their locks as usual. Pool checkouts (`worktree add`, the reset's `checkout`, and a History resume's `checkout`) also run with
+  `core.hooksPath=/dev/null`, so a repository's `post-checkout` hook, such as Overcommit's stub when the
+  daemon's Ruby lacks the gem, cannot fail a checkout that succeeded and quarantine the slot.
 
   Each maintenance pass also runs Recover's automatic half, with no operator, on every quarantine
   that a fresh read can disprove: one whose last error is that lock text, one whose reason is a
