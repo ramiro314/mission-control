@@ -974,7 +974,7 @@ test("a quarantined slot whose owner is referenced names it, and Return opens th
   await shoot(dashboard, "owned-04-returned");
 });
 
-test("a slot a dead seed left quarantined refuses Destroy, points at Recover, and Recover brings it back", async ({
+test("a slot a dead seed left quarantined offers a Destroy that clears its stale lease, and Recover brings it back", async ({
   dashboard,
   daemon,
 }) => {
@@ -1008,15 +1008,16 @@ test("a slot a dead seed left quarantined refuses Destroy, points at Recover, an
   await expect(card.getByText("quarantined", { exact: true })).toBeVisible();
   await expect(card.getByRole("button", { name: "Return", exact: true })).toHaveCount(0);
 
-  // Destroy says what works, rather than telling the operator to wait for a seed that is gone.
+  // Destroy no longer waits for a seed that is gone: upstream #1519 lets it clear a lease no
+  // owner references. This test only previews it, so Recover can still bring the slot back.
   await card.getByRole("button", { name: "Destroy", exact: true }).click();
   const destroy = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
-  await expect(destroy.getByText(`Slot ${ordinal}'s owner no longer references it; Recover it instead.`)).toBeVisible();
+  await expect(destroy.getByText(/Clears the stale lease/)).toBeVisible();
   await expect(destroy.getByText(/A dependency seed holds slot/)).toHaveCount(0);
-  await expect(destroy.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await expect(destroy.getByRole("button", { name: "Execute" })).toBeEnabled();
   await expectContentClearsBorder(destroy);
   await card.scrollIntoViewIfNeeded();
-  await shoot(dashboard, "dead-seed-01-destroy-points-at-recover");
+  await shoot(dashboard, "dead-seed-01-destroy-clears-stale-lease");
   await destroy.getByRole("button", { name: "Cancel" }).click();
   await expect(destroy).toHaveCount(0);
 

@@ -78,7 +78,7 @@ test("Settings > Task shaping follows its flag live and drives every shaping int
   await expect(rail(peer).getByRole("tab", { name: "Task shaping" })).toHaveCount(0);
   await expect(peer.getByRole("tab", { name: "Display", selected: true })).toBeVisible();
   await expect(panel(peer)).toHaveCount(0);
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   await page.getByRole("combobox", { name: "Search everything" }).fill("shaper");
   await expect(page.getByRole("option", { name: "Task shaping settings, panel" })).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -93,7 +93,7 @@ test("Settings > Task shaping follows its flag live and drives every shaping int
   await expect(rail(page).getByRole("tab", { name: "Task shaping" })).toBeVisible();
 
   // Search finds it now, and lands on it.
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("ControlOrMeta+k");
   await page.getByRole("combobox", { name: "Search everything" }).fill("shaper");
   await page.getByRole("option", { name: "Task shaping settings, panel" }).click();
   await expect(page.getByRole("tab", { name: "Task shaping", selected: true })).toBeVisible();

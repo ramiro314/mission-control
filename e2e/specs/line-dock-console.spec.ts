@@ -211,7 +211,7 @@ test("the See work tour borrows the strip, the dock stands down for it, and come
 
   // ---- the tour starts and borrows the strip; the dock stands down ----
   const palette = dashboard.getByRole("dialog", { name: "Search everything" });
-  await dashboard.keyboard.press("Meta+k");
+  await dashboard.keyboard.press("ControlOrMeta+k");
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox", { name: "Search everything" }).fill("See the work");
   await palette.getByRole("option", { name: /Start See the work tour, command/ }).click();
