@@ -1,4 +1,4 @@
-export type NativeAddon = "state-lock" | "keep-awake";
+export type NativeAddon = "state-lock" | "keep-awake" | "clone-tree";
 
 export const NATIVE_ADDON_SOURCES: Record<NativeAddon, Partial<Record<string, readonly string[]>>>;
 
