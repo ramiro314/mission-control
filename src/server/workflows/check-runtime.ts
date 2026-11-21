@@ -26,7 +26,7 @@ import {
 } from "./check-lease.ts";
 import type { CheckGroupEmptiness, CheckGroupTeardownOptions } from "./check-group.ts";
 import { checkRuntimeSupport, type CheckRuntimeSupport } from "./check-identity.ts";
-import { resolveCapturedCommit } from "./commit-id.ts";
+import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
 import type { TestSelectionDeps } from "../test-selection.ts";
 import type { StoredTestingLayer } from "@shared/testing-config.ts";
 import {
@@ -377,6 +377,10 @@ export class CheckRuntime {
       // that turns one into the other. See `resolveCapturedCommit`: without it every check on
       // every real submission failed here, before a tree was ever leased.
       headSha = await this.resolveCommit(request.repoRoot, request.headSha);
+      if (request.publicationTreeOid
+        && await resolveCommitTree(request.repoRoot, headSha) !== request.publicationTreeOid) {
+        return { kind: "infrastructure", reason: "Commit the required deliverables and resubmit: the check commit does not match the reviewed publication tree" };
+      }
       leasePath = await this.leases.acquireForAttempt({
         attemptId: attempt.attemptId,
         submissionId: attempt.submissionId,
@@ -409,6 +413,17 @@ export class CheckRuntime {
     // Taken again before anything else runs in the tree, so selection, the test lease and the
     // spawn all run under a check slot, exactly as they did before claims existed.
     if (slotReleased && slot) await slot.reacquire();
+    // The reacquire can wait behind other checks, and a run cancelled meanwhile must not start
+    // a Command whose result nobody will read.
+    if (attempt.signal?.aborted) {
+      await this.settle(attempt.attemptId, "empty");
+      return {
+        kind: "infrastructure",
+        started: false,
+        reason: `the ${request.slot} check was cancelled before its Command started`,
+        ranNothing: true,
+      };
+    }
 
     // The affected-tests slot selects its tests first, in the leased tree and BEFORE the test
     // lease: a change that selects nothing, or a repository with no testing settings, must not

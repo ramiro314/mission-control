@@ -71,7 +71,7 @@ function run(taskId: string, p: ResidentProfile): ResidentRunSummary {
     launchState: "launched",
     personaName: "Fleet Triage",
     compaction: { betweenIterations: true, nativeBackstop: false },
-    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
+    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null, runRequestedAt: null,
     settings: p.settings,
     createdAt: 1,
   };
@@ -143,12 +143,15 @@ const LONG_PROFILES = [PROFILES[0]!, PROFILES[1]!, profile("p3", LONG_NAME, "amb
  * is the one this file owns - the panel still opens inside the window.
  *
  * The fork's History page segment (fork:session-history) adds its glyph to the bar at these
- * rungs, about 35px in the DejaVu faces CI's Linux runners draw with: the default-rung bar
- * then needs about 1420px and the fully shed one about 1100px. `wide` and `narrow` are 40px
- * wider than upstream's 1400 and 1100 so each keeps the margin it had there.
+ * rungs, about 35px in the DejaVu faces CI's Linux runners draw with, so `wide` and `narrow`
+ * are 40px wider than upstream's 1400 and 1100 to keep the margin each had there. `wide` spends
+ * the last rung too since Pause all joined the bar: its glyph is about 44px, and on Linux font
+ * metrics rungs 1 to 4 no longer hold this fleet and the open dock on one row, so the fit steps
+ * on to rung 5 there - where the glyph gives way, so every width that spends the last rung fits
+ * exactly as it did before.
  */
 const VIEWPORTS = {
-  wide: { width: 1440, height: 900, rung: "1 2 3 4", oneRow: true },
+  wide: { width: 1440, height: 900, rung: "1 2 3 4 5", oneRow: true },
   narrow: { width: 1140, height: 560, rung: "1 2 3 4 5", oneRow: true },
   tight: { width: 900, height: 520, rung: "1 2 3 4 5", oneRow: false },
   // The narrowest window Settings > Worktrees is checked at. The dock's button made the

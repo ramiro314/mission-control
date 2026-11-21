@@ -76,7 +76,7 @@ async function quarantinedSlot(m: WorktreeManager, clone: string, sha: string, k
   const install = join(held.path, "node_modules", "dep", "index.js");
   mkdirSync(join(held.path, "node_modules", "dep"), { recursive: true });
   writeFileSync(install, "warm\n");
-  assert.ok(m.store.quarantine(held.slotId, reason, null, Date.now()));
+  assert.ok(m.store.quarantine(held.slotId, "transition", reason, null, Date.now()));
   const common = gitIn(held.path, "rev-parse", "--path-format=absolute", "--git-common-dir");
   const administrative = (await slotGitDirectory(held.path, common))!;
   assert.ok(administrative);
@@ -504,7 +504,7 @@ test("a repair blocked by index.lock keeps its fix and its reason, and a later p
   const lock = join(slot.administrative, "index.lock");
   writeFileSync(lock, "");
   const lockText = `git checkout failed: fatal: Unable to create '${lock}': File exists.`;
-  assert.ok(m.store.quarantine(slot.slotId, REGISTRATION_OR_IDENTITY.unsafeRegistration, lockText, Date.now()));
+  assert.ok(m.store.requarantine(slot.slotId, REGISTRATION_OR_IDENTITY.unsafeRegistration, lockText, Date.now(), m.store.slot(slot.slotId)!.version));
   rmSync(join(slot.path, ".git"));
   const row = m.store.slot(slot.slotId)!;
 
@@ -531,7 +531,7 @@ test("a repair removes a stale index.lock when the slot's quarantine was caused 
   const longAgo = new Date(Date.now() - 60 * 60_000);
   utimesSync(lock, longAgo, longAgo);
   const lockText = `git checkout failed: fatal: Unable to create '${lock}': File exists.`;
-  assert.ok(m.store.quarantine(slot.slotId, REGISTRATION_OR_IDENTITY.unsafeRegistration, lockText, Date.now()));
+  assert.ok(m.store.requarantine(slot.slotId, REGISTRATION_OR_IDENTITY.unsafeRegistration, lockText, Date.now(), m.store.slot(slot.slotId)!.version));
   lockInitializing(slot.administrative);
 
   await m.recoverQuarantines();
@@ -1174,8 +1174,16 @@ const FORGET_ACK = ["dirty"] as const;
 function assertForgetBegan(m: WorktreeManager, row: WorktreeSlotRow): void {
   const current = m.store.slot(row.id)!;
   assert.equal(current.quarantineReason, INTERRUPTED_FORGET);
+  // Forget's intent is an operator's relabel (`requarantine`), which is always a `state` quarantine.
+  assert.equal(current.quarantineCategory, "state");
   assert.deepEqual(
-    { ...current, quarantineReason: row.quarantineReason, lastError: row.lastError, updatedAt: row.updatedAt },
+    {
+      ...current,
+      quarantineReason: row.quarantineReason,
+      quarantineCategory: row.quarantineCategory,
+      lastError: row.lastError,
+      updatedAt: row.updatedAt,
+    },
     { ...row, version: row.version + 1 },
   );
 }
@@ -1554,7 +1562,7 @@ test("the store forgets only the quarantined row at the version it judged", asyn
   assert.equal(m.store.forget(slot.slotId, version + 1), false);
   assert.ok(m.store.markPruning(slot.slotId, version, Date.now()));
   assert.equal(m.store.forget(slot.slotId, version + 1), false, "a slot in another state is not forgotten");
-  assert.ok(m.store.quarantine(slot.slotId, REMOVAL_UNFINISHED.interrupted, null, Date.now()));
+  assert.ok(m.store.quarantine(slot.slotId, "transition", REMOVAL_UNFINISHED.interrupted, null, Date.now()));
   assert.equal(m.store.forget(slot.slotId, version + 2), true);
   assert.equal(m.store.slot(slot.slotId), null);
 });
@@ -2098,7 +2106,7 @@ test("Forget records its intent before it deletes anything, and clears a lock er
   });
   const slot = await quarantinedSlot(m, clone, sha, "task-forget-intent", REMOVAL_UNFINISHED.interrupted);
   slotId = slot.slotId;
-  assert.ok(m.store.quarantine(slot.slotId, REMOVAL_UNFINISHED.interrupted, "Unable to create '/x/index.lock': File exists", Date.now()));
+  assert.ok(m.store.requarantine(slot.slotId, REMOVAL_UNFINISHED.interrupted, "Unable to create '/x/index.lock': File exists", Date.now(), m.store.slot(slot.slotId)!.version));
 
   assert.equal((await m.forgetSlot({ slotId: slot.slotId })).outcome, "outcomeUnknown");
   assert.deepEqual(seen, { reason: INTERRUPTED_FORGET, lastError: "a prune was interrupted with files still present", files: true });
@@ -2110,7 +2118,8 @@ test("a Forget that lost its slot to a change refuses before it deletes anything
   const { clone, sha } = repository("mission-forget-intent-raced-");
   const m = managerWith();
   const slot = await quarantinedSlot(m, clone, sha, "task-forget-intent-raced", REMOVAL_UNFINISHED.interrupted);
-  m.store.quarantine = () => null;
+  // Forget records its intent as an operator's relabel of the quarantined slot.
+  m.store.requarantine = () => null;
 
   assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), { outcome: "refused", reason: "slot changed after it was observed" });
   assert.equal(readFileSync(slot.install, "utf8"), "warm\n");
@@ -2148,7 +2157,7 @@ test("a Forget cut off with .git intact is never recovered: a partly deleted ins
       outcome: "refused", reason: RECOVER_REFUSES_INTERRUPTED_FORGET,
     });
   }
-  assert.ok(m.store.quarantine(slot.slotId, INTERRUPTED_FORGET, "Unable to create '/x/index.lock': File exists", Date.now()));
+  assert.ok(m.store.requarantine(slot.slotId, INTERRUPTED_FORGET, "Unable to create '/x/index.lock': File exists", Date.now(), m.store.slot(slot.slotId)!.version));
   await m.recoverQuarantines();
   assert.equal(m.store.slot(slot.slotId)?.state, "quarantined", "a lock error does not bring it back either");
 
@@ -2223,17 +2232,17 @@ test("the store keeps a cut-off Forget's reason and records the arriving one as 
   const m = managerWith();
   const slot = await quarantinedSlot(m, clone, sha, "task-forget-sticky", INTERRUPTED_FORGET);
 
-  const kept = m.store.quarantine(slot.slotId, "worktree reset failed", "fatal: bad object", Date.now())!;
+  const kept = m.store.requarantine(slot.slotId, "worktree reset failed", "fatal: bad object", Date.now(), m.store.slot(slot.slotId)!.version)!;
   assert.equal(kept.quarantineReason, INTERRUPTED_FORGET);
   assert.equal(kept.lastError, "fatal: bad object", "an arriving detail is kept as it is");
   const newest = m.store.slotHistory(slot.slotId).entries[0]!;
   assert.deepEqual([newest.reason, newest.detail], [INTERRUPTED_FORGET, "fatal: bad object"]);
 
-  const named = m.store.quarantine(slot.slotId, "worktree reset failed", null, Date.now())!;
+  const named = m.store.requarantine(slot.slotId, "worktree reset failed", null, Date.now(), m.store.slot(slot.slotId)!.version)!;
   assert.equal(named.lastError, "worktree reset failed", "with no detail, the arriving reason takes its place");
 
   const other = await quarantinedSlot(m, clone, sha, "task-forget-sticky-other", REMOVAL_UNFINISHED.interrupted);
-  assert.equal(m.store.quarantine(other.slotId, "worktree reset failed", null, Date.now())?.quarantineReason, "worktree reset failed", "any other reason is replaced as before");
+  assert.equal(m.store.requarantine(other.slotId, "worktree reset failed", null, Date.now(), m.store.slot(other.slotId)!.version)?.quarantineReason, "worktree reset failed", "any other reason is replaced as before");
 });
 
 function operationRows(m: WorktreeManager, slotId: string) {

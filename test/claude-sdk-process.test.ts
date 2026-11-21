@@ -35,7 +35,8 @@ lines.on("close", () => { writeFileSync("drained", "stdin closed"); process.exit
 `);
   const handle = await claudeSdkSpec({ ...defaultClaudeSdkDeps, executable: async () => executable,
     env: () => ({ PATH: process.env.PATH }) }).launch({ sessionId: "sdk:process-proof", cwd: root, stateHome: root,
-    prompt: "fixture only", model: null, effort: null, permissionMode: null, mcp: null,
+    prompt: "fixture only", model: null, effort: null, permissionMode: null,
+    mcp: { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} },
     extraDirs: [], standingInstructions: "", standingInstructionsPrompt: "", resume: null });
   childPid = handle.recoveryProcessId ?? null;
   for await (const event of handle.events) {
@@ -95,7 +96,8 @@ lines.on("close", () => process.exit(0));
   const handle = await claudeSdkSpec({ ...defaultClaudeSdkDeps, query: createClaudeSdkQuery(scope),
     executable: async () => executable, env: () => ({ PATH: process.env.PATH }) }).launch({
     sessionId: "sdk:scope-session", cwd: root, stateHome: root, prompt: "fixture only", model: null,
-    effort: null, permissionMode: null, mcp: null, extraDirs: [], standingInstructions: "",
+    effort: null, permissionMode: null, extraDirs: [], standingInstructions: "",
+    mcp: { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} },
     standingInstructionsPrompt: "", resume: null });
   for await (const event of handle.events) if (event.kind === "bound") break;
   assert.equal(wraps.length, 1);
@@ -177,7 +179,8 @@ lines.on("close", () => process.exit(0));
   const handle = await claudeSdkSpec({ ...defaultClaudeSdkDeps, query: createClaudeSdkQuery(scope),
     executable: async () => executable, env: () => ({ PATH: process.env.PATH }) }).launch({
     sessionId: "sdk:oom-line", cwd: root, stateHome: root, prompt: "fixture only", model: null,
-    effort: null, permissionMode: null, mcp: null, extraDirs: [], standingInstructions: "",
+    effort: null, permissionMode: null, extraDirs: [], standingInstructions: "",
+    mcp: { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} },
     standingInstructionsPrompt: "", resume: null });
   for await (const event of handle.events) if (event.kind === "bound") break;
   await handle.stop();
@@ -254,7 +257,8 @@ lines.on("line", (line) => {
   const handle = await claudeSdkSpec({ ...defaultClaudeSdkDeps, query: createClaudeSdkQuery(scope),
     executable: async () => executable, env: () => ({ PATH: process.env.PATH }) }).launch({
     sessionId: "sdk:oom-cause", cwd: root, stateHome: root, prompt: "fixture only", model: null,
-    effort: null, permissionMode: null, mcp: null, extraDirs: [], standingInstructions: "",
+    effort: null, permissionMode: null, extraDirs: [], standingInstructions: "",
+    mcp: { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} },
     standingInstructionsPrompt: "", resume: null });
   for await (const event of handle.events) if (event.kind === "bound") break;
   process.kill(handle.recoveryProcessId!, "SIGKILL");

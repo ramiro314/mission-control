@@ -168,17 +168,25 @@ for (const action of ["destroy", "prune"] as const) {
 }
 
 test("Open terminal refuses a slot that is not idle, leases an idle one as it stands, and offers Return", async ({ dashboard, daemon }) => {
-  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
-    data: { repositoryPath: daemon.repo, label: "open terminal target" },
-  });
-  expect(acquired.status()).toBe(201);
-  const lease = await acquired.json() as { path: string; leaseId: string; baseSha: string };
-  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
-    data: { leaseId: lease.leaseId },
-  });
-  expect(returned.ok()).toBe(true);
-  const observed = async () => (await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory)
-    .repositories.flatMap((pool) => pool.slots).find((slot) => slot.path === lease.path);
+  // Two idle slots: one a process walks into, and one Open terminal leases.
+  const leases: Array<{ path: string; leaseId: string; baseSha: string }> = [];
+  for (const label of ["open terminal target", "open terminal occupied"]) {
+    const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(acquired.status()).toBe(201);
+    leases.push(await acquired.json() as { path: string; leaseId: string; baseSha: string });
+  }
+  for (const each of leases) {
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: each.leaseId },
+    });
+    expect(returned.ok()).toBe(true);
+  }
+  const [lease, busy] = leases as [typeof leases[0], typeof leases[0]];
+  const observedAt = async (path: string) => (await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory)
+    .repositories.flatMap((pool) => pool.slots).find((slot) => slot.path === path);
+  const observed = async () => await observedAt(lease.path);
   const launches = () => readdirSync(daemon.recordDir).filter((name) => name.startsWith("cmux-")).length;
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
@@ -195,14 +203,18 @@ test("Open terminal refuses a slot that is not idle, leases an idle one as it st
   await openTerminal.hover();
   await expect(openTerminal).toHaveAccessibleDescription(LEASE_SENTENCE);
 
-  // An occupied slot is not idle. It is refused with acquisition's reason and nothing opens.
-  const occupant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: lease.path, stdio: "ignore" });
+  // An occupied slot is not idle. A process in an available slot is a positive fact, so since
+  // upstream #1475 the screening quarantines it; it is refused with that reason and nothing opens.
+  const busySlot = pool.getByRole("article", { name: "Slot 2" });
+  await busySlot.getByLabel("Terminal backend for slot 2").selectOption("cmux");
+  const occupant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: busy.path, stdio: "ignore" });
   try {
     await once(occupant, "spawn");
-    await expect.poll(async () => (await observed())?.processes.count).toBe(1);
-    await openTerminal.click();
-    await expect(slot.getByText("the slot is not idle: an available slot has process occupancy")).toBeVisible();
+    await expect.poll(async () => (await observedAt(busy.path))?.processes.count).toBe(1);
+    await busySlot.getByRole("button", { name: "Open terminal" }).click();
+    await expect(busySlot.getByText("the slot was quarantined: an available slot has process occupancy")).toBeVisible();
     expect(launches()).toBe(0);
+    await expect(busySlot.getByText("quarantined", { exact: true })).toBeVisible();
     await expect(slot.getByText("available", { exact: true })).toBeVisible();
     await shoot(dashboard, "16-open-terminal-refused");
   } finally {
@@ -210,7 +222,6 @@ test("Open terminal refuses a slot that is not idle, leases an idle one as it st
     occupant.kill("SIGKILL");
     await exited;
   }
-  await expect.poll(async () => (await observed())?.processes.count).toBe(0);
 
   await openTerminal.click();
   await expect(slot.getByText("leased", { exact: true })).toBeVisible();
@@ -218,7 +229,7 @@ test("Open terminal refuses a slot that is not idle, leases an idle one as it st
   await openTerminal.hover();
   await expect(openTerminal).toHaveAccessibleDescription(/\S/);
   await expect(openTerminal).not.toHaveAccessibleDescription(LEASE_SENTENCE);
-  await expect(slot.getByText("the slot is not idle: an available slot has process occupancy")).toHaveCount(0);
+  await expect(slot.getByText(/an available slot has process occupancy/)).toHaveCount(0);
   await expect.poll(launches).toBe(1);
   expect((await observed())?.head).toBe(lease.baseSha);
   await shoot(dashboard, "17-open-terminal-leased");
@@ -556,9 +567,10 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
       `UPDATE worktree_slots
           SET state = 'quarantined', version = version + 1,
               quarantine_reason = 'slot process occupancy is unknown',
+              quarantine_category = 'observation', quarantined_at = ?,
               last_error = 'cwd listing failed: exit 1'
         WHERE active_lease_id = ? AND state = 'leased'`,
-    ).run(lease.leaseId);
+    ).run(Date.now(), lease.leaseId);
     expect(Number(changed.changes)).toBe(1);
   });
 
@@ -568,6 +580,10 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
   if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
   const slot = repo.locator(".wt-slot", { hasText: lease.path });
   await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
+  // A recoverable category, but the slot still holds its lease, which recovery never releases:
+  // Settings must not promise that Reconcile will bring it back.
+  await expect(slot.getByText("Needs operator action", { exact: true })).toBeVisible();
+  await expect(slot.getByText("Reconcile returns it once re-proven", { exact: true })).toHaveCount(0);
   await expect(slot.getByText("size unknown", { exact: true })).toBeVisible();
   await slot.getByRole("button", { name: "Destroy", exact: true }).click();
 
@@ -687,7 +703,9 @@ test("a quarantined slot card shows its reason, detail, last automatic-recovery 
     await expect(lines.filter({ hasText: /^Refused / }))
       .toContainText("the slot holds work Recover would discard: untracked notes/draft.md");
     await expect(lines.filter({ hasText: /^Blocked by / })).toHaveText("Blocked by untracked file notes/draft.md");
-    await expect(why.getByRole("term")).toHaveText(["Reason", "Detail", "Last automatic recovery"]);
+    // "Processes" is upstream's blocking-process line (#1475), which names the occupant's PID.
+    await expect(why.getByRole("term")).toHaveText(["Reason", "Detail", "Processes", "Last automatic recovery"]);
+    await expect(lines.filter({ hasText: new RegExp(`PID ${pid} `) })).toBeVisible();
 
     const processes = slot.getByRole("region", { name: /^Processes in slot \d+$/ });
     const row = processes.getByRole("listitem").filter({ hasText: `PID ${pid}` });
@@ -698,63 +716,6 @@ test("a quarantined slot card shows its reason, detail, last automatic-recovery 
   } finally {
     occupant.kill("SIGKILL");
     await dashboard.unroute("**/api/worktrees");
-  }
-});
-
-/**
- * A read that fails, even after its retry, never quarantines: the slot keeps its state and its
- * card says "Last observation failed" with the reason, until a read succeeds.
- *
- * The failure is written into the live lease's row, because a Git read cannot be made to time
- * out under the e2e daemon; `test/worktree-reconciliation.test.ts` proves reconcile writes it
- * there for a listing or a Git read that failed twice. What this proves is the rest of the path:
- * the daemon's inventory carries the note to the card on its own line, beside a state that is
- * still `leased`, and the pool's Reconcile, a real pass whose reads succeed, clears it.
- */
-test("a slot whose last observation failed stays leased, says why on its card, and Reconcile clears it", async ({
-  dashboard,
-  daemon,
-}) => {
-  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
-    data: { repositoryPath: daemon.repo, label: "failed observation" },
-  });
-  expect(acquired.status()).toBe(201);
-  const lease = await acquired.json() as { path: string; leaseId: string };
-  const failure = "slot Git state is unknown (git status timed out after 15 s, and after 30 s on retry)";
-  withDaemonDb(daemon, (db) => {
-    const changed = db.prepare(
-      `UPDATE worktree_slots SET last_error = ? WHERE active_lease_id = ? AND state = 'leased'`,
-    ).run(`Last observation failed: ${failure}`, lease.leaseId);
-    expect(Number(changed.changes)).toBe(1);
-  });
-
-  try {
-    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
-    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
-    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
-    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
-    const slot = repo.locator(".wt-slot", { hasText: lease.path });
-    await expect(slot.getByText("leased", { exact: true })).toBeVisible();
-    await expect(slot.getByText("quarantined", { exact: true })).toHaveCount(0);
-
-    const why = slot.getByRole("region", { name: /^Why slot \d+ is leased$/ });
-    await expect(why.getByRole("term")).toHaveText(["Last observation failed"]);
-    await expect(why.getByRole("definition")).toHaveText(failure);
-    await why.scrollIntoViewIfNeeded();
-    await shoot(dashboard, "16-last-observation-failed");
-
-    await repo.getByRole("button", { name: "Reconcile", exact: true }).click();
-    const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
-    await expect(preview.getByText(/a read that fails leaves each slot as it was/)).toBeVisible();
-    await preview.getByRole("button", { name: "Execute" }).click();
-    await expect(preview).toHaveCount(0);
-
-    await expect(why).toHaveCount(0, { timeout: EXECUTES_MS });
-    await expect(slot.getByText("leased", { exact: true })).toBeVisible();
-    await slot.scrollIntoViewIfNeeded();
-    await shoot(dashboard, "17-last-observation-cleared");
-  } finally {
-    await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } });
   }
 });
 
@@ -818,7 +779,7 @@ test("a slot card's History lists what happened to the slot, newest first, and p
   await expect(slot.getByText("quarantined", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
   await expect(entries).toHaveCount(6);
   await expect(entries.nth(0)).toContainText("available → quarantined");
-  await expect(entries.nth(0)).toContainText("available slot is dirty");
+  await expect(entries.nth(0)).toContainText("available slot is occupied or dirty");
   await expect(entries.nth(0)).toContainText("automatic");
   await history.scrollIntoViewIfNeeded();
   await shoot(dashboard, "25-slot-history");
@@ -842,56 +803,6 @@ test("a slot card's History lists what happened to the slot, newest first, and p
   await expect(entries).toHaveCount(66);
   await expect(entries.nth(65)).toContainText("new → provisioning");
   await expect(history.getByRole("button", { name: "Show older" })).toHaveCount(0);
-});
-
-/**
- * A failed read raises no version, so this is the only change an open list hears about through
- * the slot's failed-read note. The failure is real: a slot whose `.git` file no longer points at
- * a repository cannot be read, and Reconcile's Git inspection fails twice and keeps the lease.
- */
-test("an open History picks up a failed read as it starts and as it clears", async ({ dashboard, daemon }) => {
-  test.setTimeout(120_000);
-  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
-    data: { repositoryPath: daemon.repo, label: "history failed read" },
-  });
-  expect(acquired.status()).toBe(201);
-  const lease = await acquired.json() as { path: string; leaseId: string };
-  const dotGit = join(lease.path, ".git");
-  const original = readFileSync(dotGit, "utf8");
-
-  try {
-    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
-    const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
-    const disclosure = repo.getByRole("button", { name: /demo-repo/ });
-    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
-    const slot = repo.locator(".wt-slot", { hasText: lease.path });
-    const history = slot.getByRole("region", { name: /^Slot \d+ history$/ });
-    const entries = history.getByRole("listitem");
-    const reconcile = async () => {
-      await repo.getByRole("button", { name: "Reconcile", exact: true }).click();
-      const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
-      await preview.getByRole("button", { name: "Execute" }).click();
-      await expect(preview).toHaveCount(0);
-    };
-
-    await history.getByRole("button", { name: "History" }).click();
-    await expect(entries).toHaveCount(3);
-
-    writeFileSync(dotGit, "not a gitdir pointer\n");
-    await reconcile();
-    await expect(entries).toHaveCount(4, { timeout: EXECUTES_MS });
-    await expect(entries.nth(0)).toContainText("Failed read");
-    await expect(entries.nth(0)).toContainText("slot Git state is unknown");
-    await expect(slot.getByText("leased", { exact: true })).toBeVisible();
-
-    writeFileSync(dotGit, original);
-    await reconcile();
-    await expect(entries).toHaveCount(5, { timeout: EXECUTES_MS });
-    await expect(entries.nth(0)).toContainText("Failed read cleared");
-  } finally {
-    writeFileSync(dotGit, original);
-    await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: lease.leaseId } });
-  }
 });
 
 /**
@@ -1917,4 +1828,291 @@ test("a slot held by a running claim shows busy and names the claim until it fin
   } finally {
     rmSync(gateDir, { recursive: true, force: true });
   }
+});
+
+test("Reconcile recovers a safe quarantine for prune and preserves dirty work", async ({ dashboard, daemon }) => {
+  const leases: Array<{ path: string; leaseId: string }> = [];
+  for (const label of ["recoverable quarantine", "dirty quarantine"]) {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    leases.push(await response.json());
+  }
+  for (const lease of leases) {
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: lease.leaseId },
+    });
+    expect(returned.ok()).toBe(true);
+    // Seed the historical failure; live process inspection itself is not reproduced here.
+    // It is a failed observation, the one category Reconcile may recover.
+    withDaemonDb(daemon, (db) => {
+      expect(Number(db.prepare(`UPDATE worktree_slots SET state = 'quarantined',
+        version = version + 1, quarantine_reason = 'slot process occupancy is unknown',
+        quarantine_category = 'observation', quarantined_at = ?,
+        last_error = 'process-list timeout' WHERE last_released_lease_id = ? AND state = 'available'`
+      ).run(Date.now(), lease.leaseId).changes)).toBe(1);
+    });
+  }
+  const [safe, dirty] = leases as [typeof leases[number], typeof leases[number]];
+  writeFileSync(join(dirty.path, "unfinished.txt"), "keep this work\n");
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const safeRow = pool.locator(".wt-slot", { hasText: safe.path });
+  const dirtyRow = pool.locator(".wt-slot", { hasText: dirty.path });
+  await expect(safeRow.getByText("quarantined", { exact: true })).toBeVisible();
+  await pool.getByRole("button", { name: "Preview safe prune" }).click();
+  const prune = dashboard.getByRole("dialog", { name: "prune worktree preview" });
+  await expect(prune.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await expectContentClearsBorder(prune);
+  await prune.getByRole("button", { name: "Cancel" }).click();
+
+  await pool.getByRole("button", { name: "Reconcile", exact: true }).click();
+  const reconcile = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
+  await expectContentClearsBorder(reconcile);
+  await reconcile.getByRole("button", { name: "Execute" }).click();
+  await expect(reconcile).toHaveCount(0);
+  await expect(safeRow.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(dirtyRow.getByText("quarantined", { exact: true })).toBeVisible();
+  expect(existsSync(safe.path)).toBe(true);
+  await shoot(dashboard, "15-quarantine-recovered-dirty-preserved");
+
+  const response = dashboard.waitForResponse((result) => result.url().endsWith("/api/worktrees/actions/preview"));
+  await pool.getByRole("button", { name: "Preview safe prune" }).click();
+  const preview = await (await response).json() as WorktreeActionPreview;
+  expect(preview.affected.map((item) => item.path)).toEqual([safe.path]);
+  expect(preview.requiredAcknowledgements).toEqual([]);
+  await expect(prune.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await shoot(dashboard, "16-recovered-safe-prune-preview");
+  await prune.getByRole("button", { name: "Execute" }).click();
+  await expect(safeRow).toHaveCount(0, { timeout: EXECUTES_MS });
+  expect(existsSync(safe.path)).toBe(false);
+  expect(existsSync(join(dirty.path, "unfinished.txt"))).toBe(true);
+  await expect(dirtyRow.getByText("quarantined", { exact: true })).toBeVisible();
+});
+
+
+test("Settings identifies the process blocking a native worktree return", async ({ dashboard, daemon }) => {
+  const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "blocked return diagnostic" },
+  });
+  expect(response.status()).toBe(201);
+  const lease = await response.json() as { path: string; leaseId: string };
+  const occupant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: lease.path, stdio: "ignore",
+  });
+  await once(occupant, "spawn");
+  try {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    await expect(pool.getByText(new RegExp(`PID ${occupant.pid} .*node`))).toBeVisible();
+    await pool.getByRole("button", { name: "Return", exact: true }).click();
+    const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+    await expectContentClearsBorder(preview);
+    await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+    await preview.getByRole("button", { name: "Cancel" }).click();
+    await pool.getByText(new RegExp(`PID ${occupant.pid} .*node`)).click();
+    await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
+    await shoot(dashboard, "16-blocking-process-identity");
+  } finally {
+    const exited = once(occupant, "exit");
+    occupant.kill("SIGKILL");
+    await exited;
+  }
+  const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: lease.leaseId },
+  });
+  expect(returned.ok()).toBe(true);
+});
+
+
+test("Reconcile survives a transient process scan failure through Settings", async ({ dashboard, daemon }) => {
+  // Fail the real daemon's subprocess boundary, not an inventory response or stored slot.
+  // The override belongs only to this fixture daemon and delegates to real ps when healthy.
+  const marker = join(daemon.home, "fail-process-scan");
+  const attempts = join(daemon.home, "failed-process-scans.jsonl");
+  const wrapper = join(daemon.home, "controlled-ps.cjs");
+  writeFileSync(wrapper, `#!${process.execPath}
+const { existsSync, appendFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+if (existsSync(${JSON.stringify(marker)})) {
+  appendFileSync(${JSON.stringify(attempts)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+  process.stderr.write("injected transient process scan failure\\n");
+  process.exit(1);
+}
+const result = spawnSync(${JSON.stringify(process.platform === "darwin" ? "/bin/ps" : "/usr/bin/ps")}, process.argv.slice(2), { stdio: "inherit" });
+process.exit(result.status ?? 1);
+`, { mode: 0o755 });
+  await daemon.shutdown();
+  await daemon.restart({ MISSION_PS_BIN: wrapper });
+  const leases: Array<{ path: string; leaseId: string }> = [];
+  for (const label of ["idle slot one", "idle slot two", "live manual lease"]) {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    leases.push(await response.json());
+  }
+  for (const lease of leases.slice(0, 2)) {
+    expect((await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: lease.leaseId },
+    })).ok()).toBe(true);
+  }
+  const inventory = async () => await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const observedPool = async () => (await inventory()).repositories.find((repo) => repo.slots.some((slot) => slot.path === leases[0]!.path))!;
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const rows = leases.map((lease) => pool.locator(".wt-slot", { hasText: lease.path }));
+  const reconcile = async () => {
+    const before = (await observedPool()).lastReconciledAt ?? 0;
+    await pool.getByRole("button", { name: "Reconcile", exact: true }).click();
+    const preview = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
+    await expectContentClearsBorder(preview);
+    await preview.getByRole("button", { name: "Execute" }).click();
+    await expect(preview).toHaveCount(0);
+    await expect.poll(async () => (await observedPool()).lastReconciledAt ?? 0, { timeout: EXECUTES_MS }).toBeGreaterThan(before);
+  };
+  writeFileSync(marker, "fail until removed");
+  try {
+    await reconcile();
+    await expect(pool.getByText(/slot 1: slot process occupancy is unknown/)).toBeVisible();
+    // Two ps commands per attempt, with the allocator's real retry before the verdict.
+    expect(readFileSync(attempts, "utf8").trim().split("\n").length).toBeGreaterThanOrEqual(4);
+    await dashboard.getByRole("heading", { name: "Worktrees", exact: true }).click();
+    await shoot(dashboard, "17-transient-scan-failed", true);
+    for (const row of rows.slice(0, 2)) {
+      await expect.soft(row.getByText("available", { exact: true })).toBeVisible({ timeout: 1_000 });
+    }
+    await expect.soft(rows[2]!.getByText("leased", { exact: true })).toBeVisible({ timeout: 1_000 });
+  } finally {
+    unlinkSync(marker);
+  }
+  await reconcile();
+  // Wait for the browser's SSE-driven inventory refresh, not only the API observation.
+  await expect(pool.getByText("processes unknown", { exact: true })).toHaveCount(0);
+  for (const row of rows.slice(0, 2)) await expect(row.getByText("available", { exact: true })).toBeVisible();
+  await expect.soft(rows[2]!.getByText("leased", { exact: true })).toBeVisible({ timeout: 1_000 });
+  await dashboard.getByRole("heading", { name: "Worktrees", exact: true }).click();
+  await shoot(dashboard, "18-transient-scan-recovered", true);
+  const reused = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "reuse after transient scan failure" },
+  });
+  expect(reused.status()).toBe(201);
+  expect(leases.slice(0, 2).map((lease) => lease.path)).toContain((await reused.json()).path);
+  expect((await observedPool()).slots).toHaveLength(3);
+});
+
+
+test("Settings shows when each slot was quarantined and which ones Reconcile can bring back", async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  const acquire = async (label: string) => {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    return await response.json() as { path: string; leaseId: string };
+  };
+  const transient = await acquire("transient quarantine");
+  const dirty = await acquire("dirty quarantine");
+  const legacy = await acquire("legacy quarantine");
+  for (const lease of [transient, dirty, legacy]) {
+    expect((await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: lease.leaseId },
+    })).ok()).toBe(true);
+  }
+
+  // The field failure, three hours ago: a killed process listing quarantined an idle slot. No
+  // fixture can kill the real listing at the right moment, so only this row is seeded.
+  const threeHoursAgo = Date.now() - 3 * 3_600_000;
+  withDaemonDb(daemon, (db) => {
+    expect(Number(db.prepare(`UPDATE worktree_slots SET state = 'quarantined', version = version + 1,
+      quarantine_reason = 'slot process occupancy is unknown', quarantine_category = 'observation',
+      quarantined_at = ?, last_error = 'cwd/process listing was killed before it answered'
+      WHERE last_released_lease_id = ? AND state = 'available'`).run(threeHoursAgo, transient.leaseId).changes)).toBe(1);
+    // A quarantine an older build wrote: its reason survived the upgrade, but no category was
+    // ever recorded for it and no time either. The upgrade cannot invent either one.
+    expect(Number(db.prepare(`UPDATE worktree_slots SET state = 'quarantined', version = version + 1,
+      quarantine_reason = 'available slot HEAD moved outside an allocator transition',
+      quarantine_category = NULL, quarantined_at = NULL
+      WHERE last_released_lease_id = ? AND state = 'available'`).run(legacy.leaseId).changes)).toBe(1);
+  });
+  // The other is real: the next acquire screens the dirty idle slot, quarantines it as a
+  // positively bad fact, and grants a fresh slot instead.
+  writeFileSync(join(dirty.path, "unfinished.txt"), "someone's work\n");
+  const quarantinedFrom = Date.now();
+  const fresh = await acquire("granted beside the quarantines");
+  expect([transient.path, dirty.path, legacy.path]).not.toContain(fresh.path);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const transientRow = pool.locator(".wt-slot", { hasText: transient.path });
+  const dirtyRow = pool.locator(".wt-slot", { hasText: dirty.path });
+  const legacyRow = pool.locator(".wt-slot", { hasText: legacy.path });
+
+  // The legacy row says the time was not recorded, beside its reason, rather than inventing one.
+  await expect(legacyRow.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(legacyRow.getByText("available slot HEAD moved outside an allocator transition")).toBeVisible();
+  await expect(legacyRow.getByText("Quarantine time not recorded", { exact: true })).toBeVisible();
+  await expect(legacyRow.locator("time")).toHaveCount(0);
+  await expect(legacyRow.getByText("Needs operator action", { exact: true })).toBeVisible();
+
+  await expect(transientRow.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(transientRow.getByText("slot process occupancy is unknown")).toBeVisible();
+  await expect(transientRow.getByText("Quarantined 3h ago", { exact: true })).toBeVisible();
+  await expect(transientRow.locator("time")).toHaveAttribute("datetime", new Date(threeHoursAgo).toISOString());
+  await expect(transientRow.getByText("Reconcile returns it once re-proven", { exact: true })).toBeVisible();
+
+  await expect(dirtyRow.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(dirtyRow.getByText("available slot has dirty or untracked work")).toBeVisible();
+  await expect(dirtyRow.getByText(/^Quarantined (just now|\d+s ago)$/)).toBeVisible();
+  await expect(dirtyRow.getByText("Needs operator action", { exact: true })).toBeVisible();
+  const dirtyAt = Date.parse(await dirtyRow.locator("time").getAttribute("datetime") ?? "");
+  expect(dirtyAt).toBeGreaterThanOrEqual(quarantinedFrom - 1_000);
+  expect(dirtyAt).toBeLessThanOrEqual(Date.now());
+  // The absolute time is one hover away, for a quarantine read days later.
+  const absolute = await dashboard.evaluate((at) => new Date(at).toLocaleString(), dirtyAt);
+  await expect(dirtyRow.locator("time")).toHaveAccessibleDescription(absolute);
+  await dirtyRow.locator("time").hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText(absolute);
+  await dashboard.mouse.move(0, 0);
+  await dashboard.getByRole("heading", { name: "Worktrees", exact: true }).click();
+  await dirtyRow.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "25-quarantine-time-and-recoverability", true);
+
+  await pool.getByRole("button", { name: "Reconcile", exact: true }).click();
+  const reconcile = dashboard.getByRole("dialog", { name: "reconcile worktree preview" });
+  await expectContentClearsBorder(reconcile);
+  await reconcile.getByRole("button", { name: "Execute" }).click();
+  await expect(reconcile).toHaveCount(0);
+
+  // The transient one is re-proven and back; its quarantine record goes with it.
+  await expect(transientRow.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(transientRow.locator(".wt-quarantine")).toHaveCount(0);
+  // The dirty one stays, and observing it again did not move the moment it entered.
+  await expect(dirtyRow.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(dirtyRow.locator("time")).toHaveAttribute("datetime", new Date(dirtyAt).toISOString());
+  await expect(dirtyRow.getByText("Needs operator action", { exact: true })).toBeVisible();
+  expect(existsSync(join(dirty.path, "unfinished.txt"))).toBe(true);
+  // An uncategorized legacy quarantine is never recovered, and Reconcile records no time for it.
+  await expect(legacyRow.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(legacyRow.getByText("Quarantine time not recorded", { exact: true })).toBeVisible();
+  // The pool's Reconcile diagnostic says why the two that stayed were left alone.
+  await expect(pool.getByText(/a state quarantine needs operator action; Reconcile does not recover it/)).toBeVisible();
+  await expect(pool.getByText(/an uncategorized legacy quarantine needs operator action; Reconcile does not recover it/))
+    .toBeVisible();
+  await dashboard.getByRole("heading", { name: "Worktrees", exact: true }).click();
+  await dirtyRow.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "26-transient-recovered-dirty-kept", true);
+
+  expect((await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+    data: { leaseId: fresh.leaseId },
+  })).ok()).toBe(true);
 });

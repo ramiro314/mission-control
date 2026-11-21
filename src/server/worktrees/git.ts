@@ -79,7 +79,7 @@ export interface WorktreeGit {
   reset(path: string, commit: string): Promise<GitResult<void>>;
   observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
-  mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>>;
+  mergedInto(path: string, targetSha: string, commitSha?: string): Promise<GitResult<boolean>>;
   /** `"locked"` also removes a registration whose lock would stop a plain `--force`. */
   remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean | "locked"): Promise<GitResult<void>>;
   unlock(identity: WorktreeRepositoryIdentity, path: string): Promise<GitResult<void>>;
@@ -103,6 +103,9 @@ export interface WorktreeGit {
  * `worktree remove`, `checkout`, `reset`, `clean`, `fetch`) never carry it.
  */
 export const OBSERVATION_GIT_OPTIONS = ["--no-optional-locks"] as const;
+
+/** A failing `post-checkout` hook (Overcommit without its gem) fails an otherwise good checkout, so a pool slot's checkouts skip hooks. */
+export const POOL_MUTATION_GIT_OPTIONS = ["-c", "core.hooksPath=/dev/null"] as const;
 
 /**
  * Whether a recorded branch name can be handed to Git as one. A transcript records whatever
@@ -325,10 +328,10 @@ export class NativeWorktreeGit implements WorktreeGit {
       };
     }
     // Git translates the `initializing` it writes to `locked`, and Repair recognizes an
-    // interrupted add by that word. `LANGUAGE` reaches only messages, so hooks keep their locale.
+    // interrupted add by that word. `LANGUAGE` changes only the messages Git prints.
     const result = await this.execute(
       "git",
-      ["-C", identity.mainCheckoutRoot, "worktree", "add", "--detach", ...(options.checkout === false ? ["--no-checkout"] : []), path, commit],
+      ["-C", identity.mainCheckoutRoot, ...POOL_MUTATION_GIT_OPTIONS, "worktree", "add", "--detach", ...(options.checkout === false ? ["--no-checkout"] : []), path, commit],
       { timeoutMs: 60_000, env: { ...process.env, LANGUAGE: "C" } },
     );
     if (commandFailed(result)) return failure("git worktree add", result);
@@ -389,7 +392,7 @@ export class NativeWorktreeGit implements WorktreeGit {
     // move the failure one line later. The branch REF is left exactly where it was: the
     // commits under it are somebody's finished work, and dropping the name here would be a
     // deletion nothing asked for and nothing recorded.
-    const detach = await this.execute("git", ["-C", path, "checkout", "--force", "--detach", commit], {
+    const detach = await this.execute("git", ["-C", path, ...POOL_MUTATION_GIT_OPTIONS, "checkout", "--force", "--detach", commit], {
       timeoutMs: 60_000,
     });
     if (commandFailed(detach)) {
@@ -463,10 +466,10 @@ export class NativeWorktreeGit implements WorktreeGit {
     return freshRemoteDefaultSha(identity.mainCheckoutRoot, this.execute);
   }
 
-  async mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>> {
+  async mergedInto(path: string, targetSha: string, commitSha = "HEAD"): Promise<GitResult<boolean>> {
     const result = await this.execute(
       "git",
-      ["-C", path, ...OBSERVATION_GIT_OPTIONS, "merge-base", "--is-ancestor", "HEAD", targetSha],
+      ["-C", path, ...OBSERVATION_GIT_OPTIONS, "merge-base", "--is-ancestor", commitSha, targetSha],
       { timeoutMs: 15_000 },
     );
     if (result.outcomeUnknown || result.overflowed) {
@@ -561,7 +564,7 @@ export class NativeWorktreeGit implements WorktreeGit {
       : mode === "track"
         ? ["checkout", "--quiet", "--track", "-b", branch, `refs/remotes/origin/${branch}`, "--"]
         : ["checkout", "--quiet", "--detach", `refs/heads/${branch}`, "--"];
-    const result = await this.execute("git", ["-C", path, ...args], { timeoutMs: 60_000 });
+    const result = await this.execute("git", ["-C", path, ...POOL_MUTATION_GIT_OPTIONS, ...args], { timeoutMs: 60_000 });
     if (commandFailed(result)) return failure(`git checkout (${mode})`, result);
     return { ok: true, value: undefined };
   }

@@ -97,6 +97,8 @@ test("every registration or identity reason this build writes is in the one set"
 const OTHER_QUARANTINE_REASONS = new Set([
   "Warm reset failed",
   "an interrupted warm lease could not be returned",
+  "an available slot has process occupancy",
+  "available slot is occupied or dirty",
   "available slot has dirty or untracked work",
   "dependency claim state could not be recorded",
   "interrupted return did not reach its requested exact HEAD",
@@ -117,8 +119,9 @@ test("Forget's write-ahead is a reason no pass may clear or repair", () => {
 test("no quarantine reason in the manager escapes classification", () => {
   const source = readFileSync(new URL("../src/server/worktrees/manager.ts", import.meta.url), "utf8");
   const written = [
-    ...source.matchAll(/\b(?:reject|refuse|failPool)\(\s*"([^"]+)"/g),
-    ...source.matchAll(/this\.quarantine\(\s*\w+,\s*"([^"]+)"/g),
+    ...source.matchAll(/\b(?:reject|refuse|failPool)\(\s*(?:"(?:state|observation|transition)",\s*)?"(?!(?:state|observation|transition)")([^"]+)"/g),
+    // Upstream's quarantine category comes before the reason (#1475).
+    ...source.matchAll(/this\.quarantine\(\s*\w+,\s*"(?:state|observation|transition)",\s*"([^"]+)"/g),
   ].map((match) => match[1]!);
   assert.ok(written.length >= OTHER_QUARANTINE_REASONS.size, "the patterns still find the writers");
   // A registration, identity or unfinished-removal reason goes through the constants, so a
@@ -126,7 +129,7 @@ test("no quarantine reason in the manager escapes classification", () => {
   for (const reason of written) assert.ok(OTHER_QUARANTINE_REASONS.has(reason), `unclassified: ${reason}`);
   for (const reason of OTHER_QUARANTINE_REASONS) assert.ok(written.includes(reason), `no longer written: ${reason}`);
   for (const [name, reason] of Object.entries(REMOVAL_UNFINISHED)) {
-    assert.match(source, new RegExp(`(?:reject\\(|this\\.quarantine\\(\\w+, )REMOVAL_UNFINISHED\\.${name}\\)`), `no longer written: ${name}`);
+    assert.match(source, new RegExp(`(?:reject\\("\\w+", |this\\.quarantine\\(\\w+, "\\w+", )REMOVAL_UNFINISHED\\.${name}\\)`), `no longer written: ${name}`);
     assert.equal(registrationOrIdentityQuarantine(reason), false, reason);
   }
 });

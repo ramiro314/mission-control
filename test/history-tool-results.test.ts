@@ -501,7 +501,7 @@ test("a gone transcript answers 410 for its results and runs, and lists no subag
   f.done();
 });
 
-test("History reads tool input past the live cap, with each call's id, and marks compaction; the live reading is unchanged", async () => {
+test("History reads tool input past the live cap, with each call's id, and marks compaction; the live reading keeps its cap", async () => {
   const f = await fixture();
   const id = sessionId();
   const long = "x".repeat(5_000);
@@ -527,9 +527,10 @@ test("History reads tool input past the live cap, with each call's id, and marks
   const summary = page.messages.find((m) => m.presentation?.kind === "compaction_summary");
   assert.equal(summary?.text, "Summary of the earlier work.");
 
-  // The live view reads the same records exactly as it did.
+  // The live view reads the same records as it did, but for the call id, which upstream's
+  // background-agent launch lookup now needs there too.
   const live = toMessage(records[0]);
-  assert.equal(live?.tools[0]?.id, undefined);
+  assert.equal(live?.tools[0]?.id, "toolu_long");
   assert.ok((live?.tools[0]?.input?.length ?? 0) <= 1_801);
   assert.equal(toMessage(records[1]), null, "no boundary in the live view");
   assert.equal(toMessage(records[2])?.presentation, undefined);

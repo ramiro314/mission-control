@@ -70,7 +70,10 @@ task's attached repositories still resolve their own remote defaults.
 Native pooling is enabled by default. The daemon lazily creates exact-commit, detached Git
 worktrees beneath `MISSION_HOME/worktree-pools`, keyed by Git's physical common directory rather
 than by the checkout path used to reach it. Released slot directories remain in place so ignored
-dependencies and build caches stay warm for the next lease. A repository-specific disable uses a
+dependencies and build caches stay warm for the next lease. Slot counts bound a pool, not its
+bytes; **Settings > Storage** measures them and offers an idle-cache budget whose removals run
+through the same previews and queue as this page (the `trimIdle` action). See
+[Storage](storage.md#pool-caches). A repository-specific disable uses a
 cold disposable Git worktree beneath `MISSION_HOME/worktrees` instead.
 
 The allocator serializes new Git worktree creation within each repository. Distinct slot
@@ -106,77 +109,55 @@ that fails twice records both attempts, for example "git status timed out after 
 30 s on retry". A command killed at its timeout is named as a timeout, and one killed by another
 signal names that signal, so neither reads as "exit 1".
 
-A read that still fails proves nothing about a slot, so it never quarantines one. Reconcile,
-including a pool whose `git worktree list` or pool marker cannot be read at all, and the idle
-screening that acquisition, Warm and seed-source selection share leave every slot they could not
-read in the state it was in: leased stays leased, available stays available, quarantined stays
-quarantined. The slot's last error records "Last observation failed: `<reason>`", its card shows
-that on its own line, and the next read that succeeds clears it. A quarantined slot keeps the
-detail of its quarantine under that line. Such a slot is never leased, reset or returned while it
-is unknown: acquisition does not lease a slot it could not prove idle in this pass, and Lease,
-Return, reset, Recover, Prune and Destroy still refuse on unknown, exactly as before. The reasons
-that count as a failed read, including the ones older builds quarantined with, are one exported
-set in `src/server/worktrees/quarantine-reasons.ts`, so rows already in the database qualify
-without a migration.
-
-Only a proven fault quarantines: an inexact path, a missing registration once listing succeeded,
-a bare, locked or prunable registration, a different common directory, an interrupted
-provisioning or prune (judged before any Git or process read, and even when the pool's listing
-or marker cannot be read, so a failed read never keeps one; only a prune whose folder is already
-gone waits for a listing to tell a finished removal from a fault), an interrupted return proven
-occupied, dirty or off its target commit (one whose read failed waits for the next pass to prove
-and complete it), a dirty available slot, an available slot whose HEAD moved or that carries an active lease identity, an incomplete identity, a leased slot whose owner is positively
-gone, a reset or verification that failed, and a pool identity or marker that is missing,
-malformed or belongs to another pool. A process inside an available slot is not a fault: the slot
-stays available, acquisition passes over it, and its card lists the process as an
-[orphan process](#orphan-processes) with **Kill**. A reservation that a
-read refused before anything in the slot changed - its occupancy became unknown, or a process
-entered it, before the reset - goes back to available as it was, and the acquisition reports it
-as not acquired, so a task falls back as it does for any refusal. One whose mutation outcome is
-unknown is still quarantined, and so is a reservation that could not be handed back, as "a
-refused reservation could not be handed back to available"; only those report an unknown
-outcome. That reason is deliberately outside the failed-read set, because whether the hand-back
-landed is unknown.
-
-Each quarantine, each recovery, each restore to `leased`, each automatic-recovery refusal and
-each slot left unchanged after a failed read writes one `[worktrees]` line to the daemon's output,
-naming the pool and slot. A refusal or failed read is logged only when the slot's reason changes, so a pass repeating
-the same one stays quiet.
-
 A reservation quarantined before its lease is granted - a failed or unproven reset, creation,
 setup command, or verification, or a lost lease commit - drops its active owner in the same
 transition, because that owner never received the lease ID and could never return it. The slot
-stays quarantined and Destroy removes it through the ordinary revalidation. Reconcile repairs the
-same state left by an earlier build: a quarantined slot whose owner is positively proven not to
-reference its active lease loses that identity and stays quarantined. Unknown ownership is left
-untouched.
+stays quarantined and Destroy removes it through the ordinary revalidation.
 
-A slot an earlier build quarantined only because a read failed, while its owner was alive, goes
-back to that owner. Reconcile returns a quarantined slot to `leased` when its reason is in the
-failed-read set, its active lease was granted, its active identity is complete, its owner is
-positively referenced, and this pass read it: registration exact, Git readable, path and common
-directory matching, occupancy known. Granted means `finalizeLease` ran, which the row shows as
-`last_used_at` no earlier than `leased_at`. The reason cannot prove that, because earlier builds
-took these reasons in any state, and a manual owner's row answers for itself. A reservation
-quarantined before its grant therefore stays quarantined, for its card's Return. An interrupted
-return leaves no such mark, so it resumes as a lease too, and its owner's ordinary return, which
-proves the tree again, finishes it. The compare-and-swap, `WorktreeStore.restoreLease`, changes the slot's state and clears its
-quarantine fields, and nothing on disk is touched: HEAD, the index and every file stay as they
-were, and a slot may be dirty and occupied, as any live lease may. A slot whose owner cannot be
-read stays quarantined and records that on its card. One whose owner is positively gone loses its
-identity as above and stays quarantined; it is not restored.
+Each quarantine, and each observation quarantine Reconcile recovers, writes one `[worktrees]`
+JSON record to the daemon's output naming the pool and slot. Each automatic Recover or Repair,
+and each refusal of one, writes one line too, and a refusal is logged only when the slot's reason
+changes, so a pass repeating the same one stays quiet.
 
-An observation read gets one retry before it counts as unknown. The process and cwd listings
-behind occupancy and an owner lookup that throws each try once more in the same pass, 2 seconds
-later and with double the timeout. A listing too large to buffer is not retried, because asking
-again cannot make it smaller. So do `git worktree list` and each Git read of a slot
-inspection when they timed out or were killed; a Git that exited with its own error is answered
-at once, because it would say the same again. A PID that an otherwise healthy cwd listing
-omitted is first re-read on its own, one at a time and stopping at the first re-read that does
-not answer, and only one that is still unresolved, and still alive with the same start time,
-leaves occupancy unknown. A read that fails twice records both attempts, for example "git status
-timed out after 15 s, and after 30 s on retry". A command killed at its timeout is named as a
-timeout, and one killed by another signal names that signal, so neither reads as "exit 1".
+**Quarantine** takes a slot out of rotation, and records why, as which kind of fact, and when.
+The kind is a persisted, append-only category that decides whether the slot can come back on its
+own; the reason text is only for people and is never read to decide anything:
+
+- **observation**: an observer did not answer - the process listing, a Git read, the
+  registration list, or a domain-ownership lookup. Nothing is known to be wrong with the slot,
+  so Reconcile returns it to available once it proves the slot idle again - provided it holds
+  no lease. Recovery never releases a lease, so an observation quarantine taken while the slot
+  was leased (its owner lookup did not answer) stays until its owner returns it or an operator
+  destroys it.
+- **state**: a positively observed fact makes the slot unsafe to hand out - dirty or untracked
+  work, an occupant, a wrong path or common directory, a moved HEAD, a missing or unsafe
+  registration, a pool marker that is absent, malformed or names another pool, or lease
+  identity that is stale or incomplete. A marker read that does not answer is none of these:
+  it defers the pass and quarantines nothing.
+- **transition**: an allocator or setup mutation failed or its outcome could not be proven - a
+  reset, a creation, the setup command, a dependency-claim record, a lease commit, a return, a
+  removal, or an intent startup found interrupted.
+
+State and transition quarantines stay until an operator acts on them, however healthy the slot
+later looks. `quarantined_at` is written only by the transition into quarantine and cleared by
+every transition out; observations never rewrite it, and a slot already quarantined is never
+quarantined again with a new reason, category or time.
+
+Acquisition quarantines only for positively bad facts: dirty or untracked work, an occupant, a
+wrong path or common directory, an unsafe registration, or lease identity an available slot must
+not carry. It screens every available slot, and a probe that does not answer for one of them
+makes only that slot ineligible for this acquire. When no observed idle slot remains, the acquire
+defers rather than adding a slot beside the unobserved ones or falling back to a disposable
+worktree. If the occupancy recheck taken just after a slot was reserved does not answer, the
+reservation is undone and the slot is available again exactly as it was screened, with its
+release history; a process that did enter it is still quarantined.
+
+Quarantines recorded before categories existed were classified once, when the database was
+upgraded: a quarantine whose recorded reason was one only an unanswered observer produced became
+an observation, and every other one has no category and is never recovered automatically. Neither
+kind has a recorded time. A legacy observation that still holds a lease - most often "slot
+occupancy became unknown before reset", whose reservation an older build never undid - is shown
+as **Needs operator action**: Destroy it, since recovery never releases a lease.
 
 `make session` is a loopback client for that daemon-owned inventory:
 
@@ -434,15 +415,17 @@ its own `env` names:
   The locator's login-shell read, the same one that reads `PATH`, captures the named variables
   alongside it. A value that is empty everywhere is missing, and so is one that carries the
   daemon's own token.
-- A credential reaches only the step that names it. Another step, the setup command and a check
-  never receive it by accident.
+- A credential reaches only the step that names it and the setup command, which receives every
+  name the claim lists, as described below. Another step and a check never receive it.
 - Stdin is closed, so a step that stops to ask a question fails at once.
 
 **The setup command's environment changed too.** Setup still runs once, when a slot is created,
 for every lease kind, with its 120-second limit. It now runs on the same scrubbed base, plus the
 union of every name the pool's claim lists. A setup command that relied on a credential-shaped
 variable from the daemon's environment, such as `NPM_TOKEN`, no longer receives it. List the name
-on a claim step to give it back.
+on a claim step to give it back. A failed setup's reason has every value it received replaced with
+`[NAME redacted]` before it is stored as the slot's quarantine reason and reported by the
+inventory, as a claim step's tail is.
 
 **Output, timeout and failure.**
 
@@ -554,7 +537,8 @@ finished. A manual lease's claim has only the slot card's Stop, and `make sessio
 the grant with the warning.
 
 Cancelling a task whose dispatch is waiting on a claim stops that claim too, once the task is
-recorded as cancelled. The stopped claim hands its slot over at once, the dispatch finds the
+recorded as cancelled. A cancel that finished while the dispatch was still on its way to the
+acquisition stops the claim as it registers, before its first step. The stopped claim hands its slot over at once, the dispatch finds the
 task settled, and it tears the tree down exactly as it does for any cancel it notices. A task
 with attached repositories provisions them one at a time, and stops provisioning further
 repositories once the task is no longer dispatching, so no later repository's claim starts in
@@ -633,8 +617,8 @@ button and the check each slot gets when its turn comes all apply acquisition's 
 slot that is leased, quarantined, mid-transition, occupied, not proven clean, still referenced by
 its last owner, or already covered by a queued operation is never a target: named directly it
 blocks the preview with the rule's own reason, and in a pool Warm it is left out and counted in
-the preview. A slot whose fresh screening fails to read it when its turn comes is skipped, not
-quarantined, and records the failed read. A pool with no claim, or with native
+the preview. A slot whose fresh screening fails to read it when its turn comes is skipped and
+not quarantined. A pool with no claim, or with native
 worktrees disabled, has nothing to warm. Nothing in a Warm discards work, so it asks for no
 acknowledgement.
 
@@ -732,7 +716,12 @@ this order:
   again. It runs on the scrubbed environment described under
   [Dependency claims](#dependency-claims). Each slot carries its exact manager path, observed HEAD, relationship to the remote
   default, cleanliness, process count, disk estimate, and owner, and in a pool with a claim, its
-  dependency state. **Copy path** stays in the browser.
+  dependency state. A quarantined slot also shows how long ago it entered quarantine (hover
+  for the exact time, or "Quarantine time not recorded" for one quarantined before the time was
+  kept), and either **Reconcile returns it once re-proven** for an observation quarantine that
+  holds no lease or **Needs operator action** for any other. The time is the moment of the
+  transition, so a slot observed many times since still shows when it was quarantined.
+  **Copy path** stays in the browser.
   A slot that an operation or a dependency claim holds when the page looks is marked **busy**,
   and its card names the holder: a running dependency claim and its step, or the lease
   acquisition, seed source lease, Warm, Return, Recover, Repair, Forget, Destroy or
@@ -775,8 +764,7 @@ this order:
   domain owns the lease), automatic (a decision the daemon made on its own, such as retention or
   reclaiming a leaked check lease), or the owner. The list is read only while open, and follows
   the slot while it stays open. Every state transition writes one
-  entry in the same transaction as the change, and a failed read adds an entry only when it starts
-  and when it clears. See [the database guide](database-and-migrations.md) for retention.
+  entry in the same transaction as the change. See [the database guide](database-and-migrations.md) for retention.
 
   Operation results go into the same list, beside the transitions they caused. Every operation
   this page accepts writes one entry per slot it targeted once it finishes: Return, Destroy,
@@ -903,9 +891,27 @@ The operations have deliberately narrow meanings:
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.
 - **Reconcile** re-observes durable state, Git registration, ownership, and processes. It repairs
-  only states whose result is positively proven and quarantines only a proven fault; a slot whose
-  read failed keeps its state and says so on its card, and a slot quarantined only by a failed
-  read goes back to its referenced owner (see [Native pools](#native-pools)).
+  only states whose result is positively proven. An unknown process scan, an unreadable Git
+  registration list, or a pool marker whose read did not answer (an I/O error or a denied open)
+  leaves slot states and lease versions intact and records a pool diagnostic; it authorizes no
+  recovery or return, and acquisition, return and removal each refuse a pool whose marker they
+  cannot verify. A marker that is positively absent, malformed, or names another pool is a
+  **state** fact instead, and quarantines every slot in the pool. Acquisition also defers without fallback when idle-slot
+  occupancy cannot be observed. Only an **observation** quarantine is recoverable. Such a slot
+  returns to available only when its pool identity, marker, exact path, safe Git registration,
+  common directory, cleanliness, detached HEAD at exactly the commit the allocator last recorded
+  for it, merge into the observed remote default, and empty process occupancy are proven again.
+  It must carry no active lease identity, and any last-released lease must be complete and no
+  longer referenced by its owner. The recovery is one compare-and-swap on the slot version that
+  itself refuses any other category, an active lease, or a moved HEAD. Startup and maintenance
+  use the same recovery. Recovery clears the old quarantine diagnostic and its time without
+  resetting or deleting files, preserves release history, and leaves active, dirty, moved,
+  attached, unmerged, missing, or unverifiable slots protected. A **state** or **transition**
+  quarantine, and an uncategorized legacy one, is never recovered: Destroy it, or Return it
+  through its owner. After **Reconcile**, use **Preview safe prune** to review recovered slots;
+  removal still checks safety again at execution. A new blocker appears in the pool's
+  reconciliation diagnostic while the slot retains its original quarantine reason, category and
+  time until recovery succeeds.
 - **Destroy** removes one exact manager-owned slot, the fixed slot set enumerated for one pool, or
   a bulk selection. Each destroyable slot has a checkbox, and a pool's **Select all slots** adds
   every destroyable slot in it; the selection may span pools. **Destroy selected** previews exactly
@@ -966,13 +972,15 @@ The operations have deliberately narrow meanings:
   read the allocator observes with (`status`, `rev-parse`, `rev-list`, `symbolic-ref`, `worktree
   list`, `merge-base` and the remote-default reads) passes `--no-optional-locks` before its subcommand,
   so a read killed mid-way cannot leave `index.lock` behind. The mutations (`worktree add` and
-  `remove`, `checkout`, `reset`, `clean` and Return's `fetch`) take their locks as usual.
+  `remove`, `checkout`, `reset`, `clean` and Return's `fetch`) take their locks as usual. Pool checkouts (`worktree add`, the reset's `checkout`, and a History resume's `checkout`) also run with
+  `core.hooksPath=/dev/null`, so a repository's `post-checkout` hook, such as Overcommit's stub when the
+  daemon's Ruby lacks the gem, cannot fail a checkout that succeeded and quarantine the slot.
 
   Each maintenance pass also runs Recover's automatic half, with no operator, on every quarantine
   that a fresh read can disprove: one whose last error is that lock text, one whose reason is a
   failed read (the set in `src/server/worktrees/quarantine-reasons.ts`, older builds' reasons
-  included), and "available slot is dirty" or the "available slot is occupied or dirty" that older
-  builds wrote. A slot quarantined for its identity is never cleared here, however healthy it
+  included), and "available slot is occupied or dirty", or the "available slot is dirty" that an
+  earlier fork build wrote. A slot quarantined for its identity is never cleared here, however healthy it
   reads and whatever its last error says, because a read that happens to succeed repairs nothing.
   A slot quarantined for its registration takes **Repair** instead, which tries Git's own fixes
   first and then applies the same safety line.
@@ -1292,10 +1300,15 @@ is unchanged: **Mission Control removes a terminal task's retained worktrees aut
 30 days without a Git-visible change.** The best-effort safe-Kill intent is in memory; a daemon
 restart before it runs falls back to that retention policy. New final completions record an
 explicit return obligation atomically with completion and any session closure. Those durable
-obligations resume after discovery, with refused returns retried at a bounded cadence. Tasks
+obligations resume after discovery. Refused completion returns wait 30 seconds after the attempt
+finishes, then double the delay on each refusal up to 30 minutes. Partial progress or changed
+ownership restarts the delay; daemon restart also starts fresh from the durable obligation. Tasks
 completed before this policy keep their existing retained checkouts and 30-day activity window;
 upgrade never infers return permission from an old done status or session-closure record.
-Another live session or process always blocks automatic return.
+Another live session or process always blocks automatic return. Settings > Worktrees shows up to
+four blocking PIDs and bounded commands in each native slot. Return logs carry the same detail
+and the next retry time; quarantine, recovery and release logs identify the pool and slot ordinal.
+These observations never terminate an operator shell or an orphaned program automatically.
 
 A cancelled or failed task can leave that window early. When a session ends inside a tree such a
 task holds, Mission Control reclaims all of the task's trees at once if they hold no work and no
@@ -1586,13 +1599,14 @@ after it are unchanged.
 never counts against it. A slow install ends under the claim's own `timeoutMinutes`, as a
 dependency failure, never as a timed-out check.
 
-**Cancel.** Cancelling a run stops the claims of its running attempts, in a pool slot or a
-fallback tree alike. That includes an attempt that has not reached its claim yet, for example
+**Cancel.** Cancelling a run, including through archiving or replacing its binding, stops the
+claims of its running attempts, in a pool slot or a fallback tree alike. That includes an attempt that has not reached its claim yet, for example
 one still resolving its commit or resetting its slot: its claim stops before its first step the
 moment it registers, and an attempt cancelled before it reaches its lease takes no worktree at
 all. A stopped claim settles as a failed one: the slot records `failed` and goes back to the
-pool, and the attempt is recorded as cancelled with the run. A check command that already
-spawned is not signalled by a run cancel; its result is recorded as audit-only.
+pool, and the attempt is recorded as cancelled with the run. An attempt cancelled while it waits
+to take its check slot back after its claim returns its tree and spawns nothing. A check command
+that already spawned is not signalled by a run cancel; its result is recorded as audit-only.
 
 #### Historical Treehouse check rows
 

@@ -274,6 +274,18 @@ export interface NativeWorktreeSlotView {
    */
   busy: string | null;
   quarantineReason: string | null;
+  /**
+   * When the slot entered quarantine. Null when it is not quarantined, or when it was
+   * quarantined by a build that did not record the time.
+   */
+  quarantinedAt: number | null;
+  /**
+   * Whether Reconcile returns this quarantined slot to available once every safety fact is
+   * proven again (a failed observation, holding no lease), or it stays until an operator acts:
+   * a positively bad fact, an unproven mutation, or any quarantine that still holds a lease,
+   * which recovery never releases. Null when the slot is not quarantined.
+   */
+  quarantineRecoverable: boolean | null;
   diagnostic: string | null;
   /**
    * Why the last observation of this slot failed, even after its retry, until a read
@@ -418,7 +430,13 @@ export type WorktreeActionRequest =
        */
       action: "warm";
       target: { kind: "slot"; slotId: string } | { kind: "pool"; poolId: string };
-    };
+    }
+  /**
+   * Remove exactly these idle slots, the set Settings > Storage's idle-cache budget chose.
+   * Every one must still be a safe prune candidate when the preview is built and again when
+   * it runs; one that is not blocks the preview rather than being dropped from it.
+   */
+  | { action: "trimIdle"; slotIds: string[] };
 
 export interface WorktreeActionRisk {
   key: WorktreeRiskKey;
@@ -551,8 +569,12 @@ export function worktreeOperationPending(operation: Pick<WorktreeOperationView, 
  */
 export function worktreeRetryRequest(operation: WorktreeOperationView): WorktreeActionRequest | null {
   const request = operation.request;
-  if (request.action !== "destroy") return request;
   const removed = new Set(operation.completed.map((target) => target.id));
+  if (request.action === "trimIdle") {
+    const remaining = request.slotIds.filter((id) => !removed.has(id));
+    return remaining.length === 0 ? null : { action: "trimIdle", slotIds: remaining };
+  }
+  if (request.action !== "destroy") return request;
   if (request.target.kind === "slot") return removed.has(request.target.slotId) ? null : request;
   const original = request.target.kind === "slots"
     ? request.target.slotIds

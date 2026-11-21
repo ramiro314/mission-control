@@ -192,28 +192,35 @@ export function writeConductorProjects(
 /** The version the fake installation reports, through its `VERSION` file. */
 export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
 
+/** Quote one word for a POSIX shell: inside single quotes nothing is special but `'` itself. */
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 /**
  * Put a controllable `node --version` on the daemon's PATH without changing the runtime that
- * actually executes fixture scripts. Every invocation other than the read-only version probe
- * delegates to the real Node binary, so fake CLIs with `#!/usr/bin/env node` keep working.
+ * actually executes fixture scripts. Every invocation other than the installer's two
+ * read-only probes is `exec`ed into the real Node binary, so fake CLIs with
+ * `#!/usr/bin/env node` keep working.
  *
- * Delegation is an `exec`, not a child, so the real Node keeps the pid its caller spawned.
- * A wrapping child is what a caller's timeout SIGTERMs, and the real process underneath it
- * was orphaned: `fake-cmux` in its hanging mode then outlived the test for good, in the
- * worktree that ran the suite.
+ * A shell script, not a Node one. The installer's runtime check gives each of its two probes
+ * five seconds, and a shim that was itself a Node process paid a cold Node start per probe:
+ * under the full unit suite's concurrency that ran out the budget, and the route reported no
+ * runtime at all. The shell answers both probes without starting Node, and `exec` hands every
+ * other call to the real binary with no second process in between.
  */
 export function writeConductorNodeRuntime(home: string, version: string): string {
   const bin = join(home, "bin", "node");
   const nextBin = join(home, "bin", ".node-next");
-  const sh = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   mkdirSync(join(home, "bin"), { recursive: true });
   writeFileSync(
     nextBin,
     [
       "#!/bin/sh",
-      `if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then printf 'v%s\\n' ${sh(version)}; exit 0; fi`,
+      `if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then printf 'v%s\\n' ${shellWord(version)}; exit 0; fi`,
+      // `$0` is this shim's own path: what `process.execPath` names for the runtime probed.
       `if [ "$#" -eq 2 ] && [ "$1" = "-p" ] && [ "$2" = "process.execPath" ]; then printf '%s\\n' "$0"; exit 0; fi`,
-      `exec ${sh(process.execPath)} "$@"`,
+      `exec ${shellWord(process.execPath)} "$@"`,
       "",
     ].join("\n"),
   );

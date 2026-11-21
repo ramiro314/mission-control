@@ -26,6 +26,7 @@ import type {
 import { worktreeOperationPending, worktreeRetryRequest } from "@shared/worktrees.ts";
 import type { WorktreesConfigUpdate, WorktreesState } from "../useWorktrees.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
+import { relativeTime } from "../lib/format.ts";
 import { api, fetchWorktreeSlotHistory, openWorktreeTerminal, worktreeWarmLogUrl } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
@@ -49,7 +50,7 @@ import { ClaimStopButton, formatElapsed, useNow } from "./ClaimProgress.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
-function bytes(value: number | null): string {
+export function bytes(value: number | null): string {
   if (value === null) return "size unknown";
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KiB`;
   if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MiB`;
@@ -124,6 +125,7 @@ const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
   legacyReturn: "Legacy return",
   warm: "Warm",
   removeUnowned: "Discard and remove",
+  trimIdle: "Remove idle",
 };
 
 /**
@@ -698,6 +700,35 @@ function UnownedTreeRow({
   );
 }
 
+/**
+ * When a slot entered quarantine, and whether Reconcile can bring it back (its reason is the
+ * card's Why section). The time
+ * is the moment of the transition, never of a later observation, so an operator can tell a
+ * quarantine from this morning's process-listing outage apart from one that is days old.
+ */
+function QuarantineDetail({ slot }: { slot: NativeWorktreeSlotView }): React.JSX.Element {
+  const at = slot.quarantinedAt;
+  return (
+    <div className="wt-quarantine">
+      <p className="wt-quarantine-meta">
+        {at !== null
+          ? (
+            <span>
+              Quarantined{" "}
+              <Tooltip label={new Date(at).toLocaleString()}>
+                <time dateTime={new Date(at).toISOString()}>{relativeTime(at)}</time>
+              </Tooltip>
+            </span>
+          )
+          : <span>Quarantine time not recorded</span>}
+        {slot.quarantineRecoverable !== null && (
+          <span>{slot.quarantineRecoverable ? "Reconcile returns it once re-proven" : "Needs operator action"}</span>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function SlotCard({
   slot,
   pending,
@@ -814,6 +845,7 @@ function SlotCard({
       {slot.state === "quarantined" && slot.owner && slot.actions.includes("return") && (
         <p className="wt-owner">Its owner's return brings this slot back.</p>
       )}
+      {slot.quarantineReason && <QuarantineDetail slot={slot} />}
       {stuckReturn && <p className="wt-diagnostic wt-stuck-return">{stuckReturn.message}</p>}
       {slot.busy && (
         <p className="wt-busy">
@@ -1688,6 +1720,10 @@ function dialogTitle(request: WorktreeActionRequest): string {
   if (request.action === "legacyReturn") return "Return legacy worktree";
   if (request.action === "warm") return request.target.kind === "pool" ? "Warm idle slots" : "Warm worktree";
   if (request.action === "removeUnowned") return "Discard and remove unowned tree";
+  if (request.action === "trimIdle") {
+    const count = request.slotIds.length;
+    return `Remove ${count} idle ${count === 1 ? "slot" : "slots"}`;
+  }
   if (request.action === "destroy" && request.target.kind === "slots") {
     const count = request.target.slotIds.length;
     return `Destroy ${count} selected ${count === 1 ? "worktree" : "worktrees"}`;
@@ -1695,7 +1731,7 @@ function dialogTitle(request: WorktreeActionRequest): string {
   return `${ACTION_VERBS[request.action]} worktree`;
 }
 
-function ActionDialog({
+export function ActionDialog({
   preview,
   error,
   changed,

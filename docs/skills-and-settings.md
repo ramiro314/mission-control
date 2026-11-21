@@ -209,15 +209,12 @@ that is not installed points at nothing, and an agent left to improvise a plan l
 like one that followed a procedure.
 
 The **Grill** row carries the interview a [shape task](dispatch-and-backlog.md) opens with, and
-that any task dispatched with [Grill me first](dispatch-and-backlog.md#grill-me-first) runs
-through the Library's Grill session action before its work. It
-maps the work as a design tree and asks every question whose prerequisites are settled as one
-`request_plan_decisions` form per round, each question with its recommended option first and a
-free-text Other. Facts go to the agent and its subagents; only decisions go to you. It always
-asks at least one round, stops the session when a round is dismissed, and ends when nothing is
-left to ask. It adapts Matt Pocock's `grilling` skill (MIT, credited in the skill and in
-`NOTICE`) and is bundled here, so it does not depend on the mattpocock-skills plugin. The
-procedure lives in [`skills/grill/SKILL.md`](../skills/grill/SKILL.md).
+is the skill that [Grill me first](dispatch-and-backlog.md#grill-me-first) needs: a task
+dispatched with it runs the Library's Grill session action, which invokes this skill, before its
+work. That section owns how the interview behaves. While this row is off, a task that grills
+first is refused at dispatch. The skill adapts Matt Pocock's `grilling` skill (MIT, credited in
+the skill and in `NOTICE`) and is bundled here, so it does not depend on the mattpocock-skills
+plugin. The procedure lives in [`skills/grill/SKILL.md`](../skills/grill/SKILL.md).
 
 The **Tickets** row carries what a shape task's tickets follow-up runs once the plan has merged,
 whether the plan review chose **Create tickets after the plan merges** or you clicked **Create
@@ -398,7 +395,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Tasks**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Harnesses**, **Tasks**, **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -467,12 +464,30 @@ Settings: the card's for **Board card**, and a console header for **Conversation
 preview sits beside its group's controls, or under the group's heading when Settings is too
 narrow to hold it beside them.
 
+**Board card** also holds **Background sub-agents**, after its Task type picker: **Nested
+sub-cards** (the default) or **Chip and popover**, and nothing else. It decides how a session
+shows the sub-agents it launched in the background on its card and in its conversation
+together: sub-cards under the card and a tray above the reply box, or one chip in the card's
+flags that opens the list and an **Agents** tab on the conversation rail. The preview card
+carries sample agents, so it draws whichever you pick. Searching Settings for "sub-agents",
+"background agents", "agents tab" or "popover" lands on this panel. See
+[Chip and popover](ui.md#chip-and-popover).
+
+**Pause controls**, after the Session display panel, chooses where you pause and resume a
+session. It has three card controls (**Corner buttons**, **Run chip** and **Card menu**) and
+three console controls (**Toolbar button**, **Message box button** and **State badge and
+band**). Each is a checkbox, any number can be on at once, and each has its own preview that
+draws that control alone on a running session and on a paused one. The run chip, the toolbar
+button and the state badge ship on. A paused session looks paused whichever controls are on.
+Searching Settings for "pause", "resume", "priority" or "bandwidth" lands on this panel. See
+[Pause and resume a session](sessions.md#pause-and-resume-a-session).
+
 Display's last panel is **Top bar**, which chooses what the bar across the top of every page
 draws. A live preview of the real bar sits above its two lists and redraws as you change them.
 
 - **Show or hide** covers the bar's optional readouts and tools: the **Session count**,
   **Need you** and **Working** counts in the fleet pulse, **Search** (the fleet filter),
-  **Cost estimate**, **Report product feedback** and **Alerts and away mode**. Hiding Search
+  **Cost estimate**, **Report product feedback**, **Alerts and away mode** and **Pause all**. Hiding Search
   also clears any filter term, so the fleet is never filtered by a box you cannot see. The
   feedback form stays in the palette (<kbd>⌘</kbd><kbd>K</kbd>), cost settings stay in
   Settings → Cost, and the pulse's **to answer** count is not on the list: it is the only way
@@ -580,17 +595,19 @@ could not: the preference is now in ⌘K by name, flippable from a search result
 leaving the page you are on, and `#/settings/dispatch` is a link you can keep.
 
 **Tasks** (`#/settings/tasks`) sits beside Harnesses and holds what each kind of task starts
-with when nothing names its own choice, as one section per kind - ship, scout, plan, chat,
-bugfix, document and shape - holding every setting this page keeps for it. **After work** is the
-kind's after-work Workflow (see [Dispatch an agent](dispatch-and-backlog.md), under **After
-work**). These used to be a card under **Settings → Workflows**, and they are no longer there:
-they describe a task kind rather than the Workflow subsystem's policy. **Grill me first** is
-whether a new task of that kind interviews you before it starts (see
+with when nothing names its own choice, for each kind it launches (ship, bugfix, document, plan,
+shape, scout and chat), as one card per setting. **Grill me first** is a row of kind chips, and
+**After work** is one row per kind. **After work** is the kind's after-work Workflow (see
+[Dispatch an agent](dispatch-and-backlog.md), under **After work**). These rows replace the
+single **Dispatch default** that **Settings → Workflows** used to hold, because they describe a
+task kind rather than the Workflow subsystem's policy. **Grill me first** is whether a new task
+of that kind interviews you before it starts (see
 [Grill me first](dispatch-and-backlog.md#grill-me-first)), off for every kind until chosen, with
-what it does on the `i` beside it; shape's section says it always grills. Both are
-daemon-backed, so they reach tasks from the API, task sources and recurring missions as well as
-the dispatch form, and both are pinned on each task when it is filed. The page warns when a kind
-grills first while the Grill skill is off, because such a task is refused at dispatch.
+what it does on the `i` in its card's head. Shape has no chip, because a shape task always grills
+on its own contract. Both are daemon-backed, so they reach tasks from the API, task sources and
+recurring missions as well as the dispatch form, and Grill me first is pinned on each task when
+it is filed. The page warns when a kind grills first while the Grill skill is off, because such
+a task is refused at dispatch.
 
 **GitHub Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the
@@ -664,7 +681,7 @@ is on screen when it changes.
 
 ### Trust (who may act in which repository)
 
-Repository candidates come from **Settings → Repositories**. Its indexed directories are
+Repository candidates come from the **Repositories** family in **Settings → Setup**. Its indexed directories are
 searched at every depth unless `MISSION_REPOS_MAX_DEPTH` limits the walk. Both ordinary and
 bare clones are recognized; discovery stops at a repository instead of searching its contents.
 Dependency directories, hidden folders other than bare `.bare` metadata, and descendant

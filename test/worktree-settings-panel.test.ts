@@ -50,6 +50,8 @@ const overCapacityPool: WorktreeRepositoryView = {
     diskBytes: 4096,
     busy: null,
     quarantineReason: null,
+    quarantinedAt: null,
+    quarantineRecoverable: null,
     diagnostic: null,
     observationFailure: null,
     recoveryRefusal: null,

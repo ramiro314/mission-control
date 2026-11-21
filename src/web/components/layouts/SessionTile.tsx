@@ -1,5 +1,15 @@
 import { ResidentLoopControls, ResidentLoopStatusLine } from "../../residents/ResidentLoopControls.tsx";
 import { SessionToolbarMenu } from "../SessionToolbarMenu.tsx";
+import {
+  PausedActivityLine,
+  PauseCardMenu,
+  PauseCornerButtons,
+  PauseResumePill,
+  PauseRunChip,
+  PauseTileFlag,
+} from "../PauseControls.tsx";
+import { usePauseCardControls } from "../../lib/pause-controls.ts";
+import { isPrioritySession, useFleetPause } from "../../lib/fleet-pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session, Task } from "@shared/types.ts";
@@ -7,7 +17,8 @@ import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity, sessionWorkspaceRoot } from "@shared/session.ts";
-import { repoLeaf, sessionTitleDetail } from "../../lib/format.ts";
+import { subagentActivityLine } from "@shared/subagents.ts";
+import { relativeTime, repoLeaf, sessionTitleDetail, uptime } from "../../lib/format.ts";
 import { LastSeen } from "../ClockText.tsx";
 import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
 import { ariaKeyshortcuts, formatChord } from "../../lib/keybindings.ts";
@@ -35,6 +46,7 @@ import { ModePicker } from "../ModePicker.tsx";
 import { ShapeTicketsMarker } from "../ShapeTicketsMarker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { TaskKindMark } from "../TaskKindMark.tsx";
+import { SubagentChip } from "./SubagentChip.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { StackLifecycle } from "../StackLifecycle.tsx";
 import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
@@ -160,7 +172,9 @@ export function SessionTile({
   // it is pressed.
   const runtimeState = useSessionRuntimeDisplay(session);
   const st = pipelineSessionDisplay(session, pipelineCommission, pipelineRun, runtimeState);
-  const ticker = liveActivity(session);
+  // An idle or waiting parent whose background agents are still at work says so, so a card
+  // whose own turn is over is not read as finished.
+  const ticker = liveActivity(session) ?? subagentActivityLine(session);
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule
   // above it and this tag have to agree about the same session, and one source is how they do.
@@ -299,9 +313,19 @@ export function SessionTile({
 
   // The task's kind, in the operator's chosen style, for every kind - `ship` included. A
   // session with no task, or the style set to `off`, draws none.
+  // The pause controls the operator chose for cards (Settings > Display > Pause controls).
+  // The paused LOOK - spine, flag, frozen activity line - is not a control and is always on.
+  const pauseControls = usePauseCardControls();
+  const fleetPause = useFleetPause();
+  const paused = session.pause != null;
+  const priority = isPrioritySession(fleetPause, session.id);
   const kindStyle = useDisplayChoice("taskKindCard");
   const taskKind = session.task?.kind ?? null;
   const kindMark = taskKind && kindStyle !== "off" ? kindStyle : null;
+  // The board half of the background sub-agent treatment the operator chose. Nested sub-cards
+  // hang beneath the tile (`SubagentTree`, drawn by the board beside this card), so only the
+  // chip is this tile's to draw.
+  const agentsChip = useDisplayChoice("backgroundAgentsStyle") === "chip";
   const agentDot = <AgentDot agent={session.agent} />;
 
   return (
@@ -317,7 +341,7 @@ export function SessionTile({
         isTourTask ? " mc-tour-task" : ""
       }${kindMark === "tab" ? " has-kind-tab" : ""}${kindMark === "band" ? " has-kind-band" : ""}${
         residentMark ? " is-resident" : ""
-      }`}
+      }${paused ? " is-paused" : ""}${priority ? " is-priority" : ""}`}
       style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
       onDragOver={(e) => {
         if (!droppable) return;
@@ -409,6 +433,8 @@ export function SessionTile({
             never pushes the title's ellipsis around. `Keycap` is the shared component every
             other printed chord in the app uses, so these switch off with the rest of them
             and cannot come to look like a different kind of thing. */}
+        {pauseControls.has("corner") && <PauseCornerButtons session={session} />}
+        {pauseControls.has("menu") && <PauseCardMenu session={session} />}
         {jump && <Keycap chord={jump} />}
       </span>
 
@@ -463,7 +489,10 @@ export function SessionTile({
           something happening for it to describe, which is also what the conversation's
           in-progress row asks. This tile established the rule; the shared predicate is what
           stops the two from drifting apart. */}
-      {shown("activity") && ticker && (
+      {/* Frozen: say when it stopped and what it was doing, instead of a ticker that would
+          go on naming work that is not happening. Always drawn, like the paused spine. */}
+      {session.pause?.phase === "frozen" && <PausedActivityLine session={session} />}
+      {shown("activity") && ticker && session.pause?.phase !== "frozen" && (
         <span className="tile-activity">
           <span className="ta-glyph" aria-hidden>
             ⟳
@@ -525,6 +554,12 @@ export function SessionTile({
       )}
 
       <span className="tile-marks">
+        {/* Paused or priority: an attention-class fact, so it leads the flags whatever
+            controls are on. Card menu adds its one-click way back beside it. */}
+        <PauseTileFlag session={session} />
+        {pauseControls.has("menu") && <PauseResumePill session={session} />}
+        {/* With the runtime row switched off, the run chip still needs somewhere to live. */}
+        {pauseControls.has("chip") && !runtimeLine && <PauseRunChip session={session} />}
         {/* Where this session lives, in the tile's flag vocabulary. Nothing renders for a
             pane-backed one, which is every session until an operator turns the runtime on.
             The DECISION and the tooltip are shared with the card chip and the rail glyph
@@ -548,6 +583,9 @@ export function SessionTile({
             through the console. The DECISION and the tooltip are shared (`PrTileFlag`);
             only the presentation differs, matching how the Inspector flag beside it works. */}
         <PrTileFlag session={session} />
+        {/* Background sub-agents, as one chip beside the PR when the operator chose Chip and
+            popover. Draws nothing for a session without background agents. */}
+        {agentsChip && <SubagentChip session={session} />}
         {/* The Inspector, in the tile's own flag vocabulary. The DECISION and the tooltip
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}
@@ -600,6 +638,9 @@ export function SessionTile({
           keeps one spelling of the number per surface rather than two. */}
       {runtimeLine && (
         <span className="tile-runtime-line">
+          {/* Leads the row: the same kind of thing as the mode chip beside it - what this
+              session may do right now, changeable from here. */}
+          {pauseControls.has("chip") && <PauseRunChip session={session} />}
           <RuntimeMetaRow meta={session.meta} session={session} omit={omitRuntime} />
           {shown("effort") && (session.meta?.thinkingLevel || session.meta?.nativeEffort) && <EffortPicker session={session} />}
           {/* On this row rather than in `.tile-foot`: a

@@ -22,6 +22,7 @@ import {
 } from "./api.ts";
 import { RESIDENT_EDITOR_SECTIONS } from "./editor-sections.tsx";
 import { WorkflowConfirmModal, type WorkflowConfirmRequest } from "../workflows/WorkflowConfirmModal.tsx";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 
 /**
  * A new profile's draft: no name and no Persona yet, and every other section at its schema
@@ -89,6 +90,10 @@ export function ResidentProfileEditor({
   const [dirty, setDirtyState] = useState(profile === null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The residents tour reads the open profile, then points at Duplicate and Launch.
+  const tourEditorRef = useTourTargetRef<HTMLElement>("residents:editor");
+  const tourDuplicateRef = useTourTargetRef<HTMLButtonElement>("residents:duplicate");
+  const tourLaunchRef = useTourTargetRef<HTMLButtonElement>("residents:launch");
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const setDirty = (next: boolean): void => {
     setDirtyState(next);
@@ -211,7 +216,7 @@ export function ResidentProfileEditor({
 
   const title = draft.identity.name.trim() || (profile ? profile.name : "New resident");
   return (
-    <section className="resident-editor" aria-label={profile ? `Resident profile ${profile.name}` : "New resident profile"}>
+    <section ref={tourEditorRef} className="resident-editor resident-profile-editor" aria-label={profile ? `Resident profile ${profile.name}` : "New resident profile"}>
       <header className="resident-editor-head">
         <div>
           <h3>{title}</h3>
@@ -233,6 +238,7 @@ export function ResidentProfileEditor({
                 : "Start a new profile from a copy of this one"}
             >
               <button
+                ref={tourDuplicateRef}
                 type="button"
                 className={readOnly ? "btn" : "btn btn-ghost"}
                 disabled={busy || dirty || archivedElsewhere}
@@ -273,6 +279,7 @@ export function ResidentProfileEditor({
                 : "Launch this resident from Dispatch"}
           >
             <button
+              ref={tourLaunchRef}
               type="button"
               className="btn btn-primary"
               disabled={!profile || dirty || busy || archivedElsewhere}
@@ -332,14 +339,16 @@ export function ResidentProfileEditor({
       )}
       {error && <p className="resident-error" role="alert">{error}</p>}
       {!error && dirty && problem && <p className="field-hint resident-problem">{problem}</p>}
-      {RESIDENT_EDITOR_SECTIONS.map(({ id, title: heading, blurb, Body }) => (
-        <section key={id} className="resident-section" aria-labelledby={`resident-section-${id}`}>
-          <h4 id={`resident-section-${id}`}>{heading}</h4>
-          <p className="resident-section-blurb">{blurb}</p>
-          <Body draft={draft} update={update} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
-        </section>
-      ))}
-      {profile && <ResidentState key={profile.id} profileId={profile.id} />}
+      <div className="resident-cards">
+        {RESIDENT_EDITOR_SECTIONS.map(({ id, title: heading, blurb, Body }) => (
+          <section key={id} className={`resident-section resident-editor-card resident-editor-card-${id}`} aria-labelledby={`resident-section-${id}`}>
+            <h4 id={`resident-section-${id}`}>{heading}</h4>
+            <p className="resident-section-blurb">{blurb}</p>
+            <Body draft={draft} update={update} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
+          </section>
+        ))}
+        {profile && <ResidentState key={profile.id} profileId={profile.id} />}
+      </div>
       {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}
     </section>
   );
