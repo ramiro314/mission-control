@@ -75,8 +75,12 @@ export const WORKFLOW_LIMITS = {
    *
    * Action deliveries have their own read bound so a long repository root does not consume
    * the existing 58,000-byte authored and published prompt allowance.
+   *
+   * Fork: 1,000 bytes more than upstream's, for the fork's Required-checks CI wording, its
+   * merge-conflict policy and its REST draft-PR line, which sit beside upstream's publication
+   * verification policy in the same packet.
    */
-  sessionActionEnvelopeBytes: 18_000,
+  sessionActionEnvelopeBytes: 19_000,
   /**
    * What may be STORED, which is looser than what may be authored or published.
    *
@@ -103,7 +107,7 @@ export const WORKFLOW_LIMITS = {
    * `eventPayloadBytes`. `sessionActionPromptBytes` is derived FROM this budget so the two
    * cannot drift apart.
    */
-  sessionActionPacketBytes: 76_000,
+  sessionActionPacketBytes: 77_000,
   workflowName: 120,
   graphNodes: 100,
   graphEdges: 300,

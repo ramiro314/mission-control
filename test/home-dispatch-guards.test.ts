@@ -39,10 +39,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // edited for task hibernation's two operator routes, `POST /api/sessions/:id/hibernate` and
   // `POST /api/tasks/:id/resume`, and for `GET /api/shipping/config` reporting
   // `codeRabbitAutoResolve: true`, CodeRabbit follow-up's new shipped default.
+  // Fork: the fork's oracle also holds its own 30 routes (History, Commands, PR conflicts,
+  // disk reclaim and the rest), so the count and digest are the fork's, re-pinned each sync.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 424);
+  assert.equal(others.length, 454);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "a96beb918b4e4dfae03f231662e0eba68bbd271483bc6268afcb3dc2ca5f8945");
+    "47ad5c44d069fe00b5a2ffd4617b9e8ab903b50b89c70b78681cc06c3149ab30");
 });
 
 function sourceFiles(dir: string): string[] {

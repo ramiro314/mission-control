@@ -172,12 +172,12 @@ test("only chat and resident are excluded from backlog-producing surfaces", () =
   );
 });
 
-test("recurring missions offer every backlog kind except shape", () => {
+test("recurring missions offer every backlog kind except shape, plus chat", () => {
   // A shape task opens with an interview, so a mission filing it on a schedule would ask the
-  // same questions of nobody in particular.
-  assert.deepEqual([...SCHEDULE_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix", "document"]);
+  // same questions of nobody in particular. A mission may file a chat (upstream #1533).
+  assert.deepEqual([...SCHEDULE_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"]);
   assert.equal(taskKindAllowsSchedule("shape"), false);
-  assert.equal(taskKindAllowsSchedule("chat"), false);
+  assert.equal(taskKindAllowsSchedule("chat"), true);
   assert.equal(taskKindAllowsSchedule("resident"), false);
 });
 

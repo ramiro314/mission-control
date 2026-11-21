@@ -11,7 +11,10 @@ const { scripts } = JSON.parse(readFileSync(new URL("../package.json", import.me
 
 test("Node test commands bound a hung test instead of waiting for the workflow deadline", (t) => {
   const commands = Object.entries(scripts).filter(([, command]) => command.startsWith("node --test "));
-  assert.ok(commands.some(([name]) => name === "test"));
+  // Fork (flake-aware testing): `npm test` delegates to `test:run`, the one JUnit-capable
+  // invocation, so the deadline it needs lives there.
+  assert.match(scripts.test!, /^npm run --silent test:run -- /);
+  assert.ok(commands.some(([name]) => name === "test:run"));
   for (const [name, command] of commands) {
     const timeout = command.match(/--test-timeout=(\d+)/)?.[0];
     assert.equal(timeout, "--test-timeout=120000", `${name} needs the two-minute default`);
