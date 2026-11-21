@@ -17,9 +17,9 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_REPOS_MAX_DEPTH` | unset | optional non-negative integer limit below each indexed directory; the indexed root is depth 0. Unset, blank, or invalid values scan all depths. Discovery stops at repository boundaries, skips dependency directories and descendant symlinks, and recognizes bare repositories including `.bare` layouts |
 | `MISSION_REPOS_CACHE_MS` | `30000` | age at which a repository-index read starts a rescan behind the answer it gives. Ordinary reads never wait on it. Settings → Repositories after a change or **Rescan now** waits for a scan inside it, and the Dispatch form's second read on each open waits for a scan started after the request whatever its value. `0` turns the cache off, so every read waits for a current scan. A value that is not a number, or is negative, falls back to the default |
 | `MISSION_REPOS_SCAN_TIMEOUT_MS` | `60000` | how long one repository-index walk may run. Walks of the same directories never overlap, so past this bound a stuck walk (a stalled network mount, a wedged FUSE directory under an indexed root) is abandoned and logged, and the queue moves on; every read then answers from the last completed scan of those directories, and only when there is none is it told the scan is unavailable - **Settings → Setup → Repositories** still opens, with the count marked unknown, so the stalled directory can be removed. Its blocked read cannot be cancelled, so no new walk of the same directories starts until it returns - a stalled mount pins one pool thread, not one per Dispatch open - and removing the stalled directory from the index recovers at once. A value that is not a number, or is negative or zero, falls back to the default |
-| `MISSION_POLL_MS` | `1500` | discovery interval |
+| `MISSION_POLL_MS` | `1500` | discovery interval. `0` turns terminal discovery off entirely, including the sweep that finds Mission Control's own terminal launches, so it is not a way to hide sessions started outside Mission Control: that is the **Show sessions started outside Mission Control** setting under **Settings > Setup > Terminals**, off by default |
 | `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](sessions.md#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
-| `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down. It does **not** govern [task worktree retention](worktrees-and-checks.md#task-worktree-retention): the 30-day rule runs on its own fixed internal cadence, so setting this to `0` quietens native pool maintenance and leaves retention exactly as it was |
+| `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down. It does **not** govern [task worktree retention](worktrees-and-checks.md#task-worktree-retention): the configurable retention window runs on its own fixed six-hour internal cadence, so setting this to `0` quietens native pool maintenance and leaves retention exactly as it was |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | terminal-runtime dispatch: how long a discovered pane with no usable hook readiness signal must remain live before dispatch continues. This starts immediately for Pi, whose positional launch message needs no pane injection, and after a hook wait times out for a still-live session. An observed exit fails instead. Agent SDK dispatch does not use a settle delay |
 | `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | terminal-runtime dispatch: how long to wait for the exact discovered session's first hook when that launch can produce one. Hook silence falls back to the settle above if the session is still live; an observed exit ends the wait immediately. The wait is skipped for hookless harnesses such as Pi and when a particular Codex launch could not install its [hook bridge](sessions.md#precise-status-for-codex-hooks-that-ride-on-the-dispatch) |
@@ -449,8 +449,12 @@ See [Binary installation and manual recovery](desktop-and-packaging.md#binary-in
 for installer options, recovery behavior, and qualification limits.
 
 
-Shipping stores `codeRabbitAutoResolve` as a default-false boolean in its existing config blob.
-Settings snapshots include it; restoring an older snapshot leaves it off. It authorizes only
+Shipping stores `codeRabbitAutoResolve` as a default-true boolean in its existing config blob.
+Upgrading an install to database schema 38 switches it on once, even if it had stored the old
+default-off value, and every other Shipping setting is kept. Turning it off afterwards is an
+ordinary stored choice that survives restarts and later upgrades. Settings snapshots include it;
+restoring a snapshot applies the value it recorded, and one taken before the setting existed
+restores it on. It authorizes only
 CodeRabbit follow-up observation and prompts through Foreman, independently of `autoMerge` and
 Inspector consent. See [CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).
 
@@ -460,7 +464,7 @@ pull request), and it has **no stored default**: an absent key means the shipped
 which is `stack`, so an install that never chose stacks eligible same-repository dependencies.
 An explicit `merge` is kept. Only an explicit choice on the
 Shipping card writes it, and saving another Shipping card leaves it absent. `maxStackDepth` is
-an integer from 1 to 5, default 3. Settings snapshots include both, and a snapshot taken before
+an integer from 1 to 10, default 3. Settings snapshots include both, and a snapshot taken before
 an explicit choice restores with `stacking` still absent. A dependency edge's own `mode`
 (`merge` or `stack`, absent meaning inherit) overrides `stacking` for that edge.
 
@@ -508,3 +512,13 @@ manually in the server table.
 
 The settings follow the upstream [Claude MCP permission syntax](https://code.claude.com/docs/en/permissions#mcp)
 and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+### Task worktree retention
+
+**Settings > Worktrees > Task worktree retention** stores `worktrees.taskRetentionDays` in the
+daemon-owned configuration. It defaults to **30 days** and accepts whole days from **7 to 90**,
+with no off switch. Invalid writes are rejected; out-of-range numeric stored values are clamped,
+and missing or nonnumeric stored values use 30. It is independent of `MISSION_WORKTREE_SWEEP_MS`.
+
+See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
+recomputation, grace periods, and the destructive cleanup boundary.

@@ -1,3 +1,4 @@
+import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
 import type { TaskManager } from "../tasks.ts";
@@ -100,6 +101,7 @@ import {
   workflowRunGaveUp,
   workflowRunResumesItself,
   evaluateWorkflowEvidenceReadiness,
+  workflowHasPendingPullRequestAction,
   selectWorkflowCoverageClaims,
   workflowEvidenceReadinessPolicyEnforces,
   sessionActionContinuationReachesOnlyEnd,
@@ -124,7 +126,7 @@ import {
   WorkflowCaptureExpectationSchema,
   WorkflowContextSnapshotSchema,
 } from "@shared/protocol.ts";
-import type { InspectionUpdated, InspectorComment } from "@shared/types.ts";
+import type { InspectionUpdated, InspectorComment, InspectorPr } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
 import { injectPrompt, type InjectResult } from "../actions.ts";
@@ -157,6 +159,7 @@ import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
   compactWorkflowContext,
+  classifyWorkflowCriterionFulfillment,
   reconcileWorkflowCoverage,
   type WorkflowCompactionDeps,
   probeMatchesEvidence,
@@ -223,7 +226,7 @@ import {
   getInspectorCiObservation,
   loadInspectorComments,
   loadAdoptedInspectorPrsSince,
-  loadInspectorInspections,
+  loadInspectorInspection,
   loadOpenInspectorPrs,
   primaryRepoPrForTask,
   taskReposFor,
@@ -403,8 +406,20 @@ export interface WorkflowManagerOptions {
   adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
   resolveCommitTree?: (repoRoot: string, commitOid: string) => Promise<string>;
+  /**
+   * Read one adopted pull request from GitHub now and signal what it said, the way a sweep
+   * observation is signalled. The daemon wires `reobserveInspectorPr`; a seam rather than an
+   * import because it shells out to `gh` and lives with the Inspector worker.
+   *
+   * Recovery rechecks and session return for prepared Inspector feedback call it so recovery
+   * can use current remote facts instead of relying on a cached ledger observation.
+   */
+  reobservePullRequest?: (
+    prKey: string,
+  ) => Promise<{ ok: true; state: "OPEN" | "CLOSED" | "MERGED" } | { ok: false; error: string }>;
   reconcileContext?: WorkflowCompactionDeps["reconcile"];
   compactContext?: typeof compactWorkflowContext;
+  classifyCriterionFulfillment?: NonNullable<Parameters<typeof classifyWorkflowCriterionFulfillment>[1]>["execute"];
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
   /** The authorship sink's older name, still honoured. See `confirmInjection`. */
@@ -520,8 +535,34 @@ const UNDELIVERED_DELIVERY_STATES = ["prepared", "sending", "uncertain"] as cons
  */
 const UNCHANGED_EVIDENCE_NUDGE_LIMIT = 2;
 
-function runIsTerminal(run: WorkflowRun): boolean {
+function runIsTerminal(run: Pick<WorkflowRun, "status">): boolean {
   return ["completed", "cancelled", "failed"].includes(run.status);
+}
+
+/**
+ * Whether a GitHub Inspector signal's PR state is positive evidence the pull request closed.
+ *
+ * Null is NOT that evidence. It is what every signal that observed nothing carries: a GitHub
+ * read that failed or was rate limited, an Inspector settings save, and an adoption, which
+ * all wake the gate without having read GitHub.
+ */
+function inspectorStateSaysClosed(observedState: InspectionUpdated["observedState"]): boolean {
+  return observedState === "CLOSED" || observedState === "MERGED";
+}
+
+/**
+ * Whether the pull request is positively seen open: a signal that read GitHub decides, and a
+ * signal that read nothing falls back to the ledger's last recorded read.
+ *
+ * The ledger must also still be open. The Inspector retires a row the moment it reads the
+ * pull request closed or merged, and stops polling it, so an open row means the last read
+ * GitHub actually answered did not say closed.
+ */
+function inspectorPrSeenOpen(
+  ledger: Pick<InspectorPr, "state" | "observedState">,
+  signalState: InspectionUpdated["observedState"],
+): boolean {
+  return ledger.state === "open" && (signalState ?? ledger.observedState) === "OPEN";
 }
 
 /**
@@ -594,6 +635,10 @@ export class WorkflowManager {
   private readonly transferWaiters = new Set<() => void>();
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
+  private readonly inspectorFeedbackRefreshes = new Map<string, {
+    pending: boolean;
+    observationAfter: number;
+  }>();
   /**
    * The run whose ONE canonical compaction is in flight, and what it will produce.
    *
@@ -739,7 +784,10 @@ export class WorkflowManager {
       this.options.commandArtifacts?.reconcile();
       reconcileWorkflowEvidenceFiles(this.store);
       this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
-      for (const id of removed.runIds) this.registry.removeWorkflowRun(id);
+      for (const id of removed.runIds) {
+        this.inspectorFeedbackRefreshes.delete(id);
+        this.registry.removeWorkflowRun(id);
+      }
       // The bindings too. A reset deletes them in the same transaction as the runs, and
       // retiring only the runs left the stream publishing a binding whose row was gone - so a
       // reset session's chip kept naming a workflow that no longer existed and could never
@@ -777,7 +825,8 @@ export class WorkflowManager {
             this.publishRun(delivery.runId);
           }
           for (const binding of this.store.listBindings()) {
-            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)) continue;
+            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)
+              || this.hibernationHoldsBinding(binding)) continue;
             const active = this.store.orphanBinding(binding.id, "session_disappeared");
             if (active) {
               this.publishBinding(active.id);
@@ -805,6 +854,10 @@ export class WorkflowManager {
         for (const binding of this.store.listBindings()) {
           if (binding.sessionId !== event.session.id || binding.state !== "active") continue;
           if (binding.noteKey === noteKeyFor(event.session)) continue;
+          // A hibernated task's binding waits for its own conversation: a woken driver that
+          // reported another one is refused and put back to sleep (`HibernationManager`), and
+          // delivery refuses a mismatched conversation anyway, so it is not paused for that.
+          if (this.hibernationHoldsBinding(binding)) continue;
           for (const delivery of this.store.markSendingUncertainForSession(
             event.session.id,
             "conversation_changed",
@@ -1234,7 +1287,7 @@ export class WorkflowManager {
     const state = this.gateState(detail.run);
     if (!state) return detail;
     const inspection = state.prKey
-      ? loadInspectorInspections().find((row) => row.key === state.prKey) ?? null
+      ? loadInspectorInspection(state.prKey)
       : null;
     const cfg = getInspectorConfig();
     return {
@@ -1629,7 +1682,7 @@ export class WorkflowManager {
   }
 
   /** Resume obligations include secondary repository bindings and exited projections. */
-  resumeNeedsEvidence(session: Session): boolean {
+  resumeNeedsEvidence(session: Pick<Session, "id" | "agentSessionId">): boolean {
     const noteKey = noteKeyFor(session);
     return this.store.listBindings().some((binding) => {
       if (binding.noteKey !== noteKey || binding.state !== "active") return false;
@@ -1765,13 +1818,17 @@ export class WorkflowManager {
    * The initial dashboard composer must inspect the same packet `createBinding` will attach
    * to this conversation. Resolving the note key from the live session here keeps that
    * ownership decision in the daemon and avoids making the browser invent a provisional
-   * binding solely to list or remove evidence.
+   * binding solely to list or remove evidence. Foreman's registered view also includes
+   * this conversation's reserved items without returning them to the editable tray.
    */
-  stagedEvidenceForSession(sessionId: string): WorkflowSessionEvidenceList | null {
+  stagedEvidenceForSession(
+    sessionId: string,
+    view: "staged" | "registered" = "staged",
+  ): WorkflowSessionEvidenceList | null {
     const session = this.registry.getSession(sessionId);
     return session && session.state !== "exited"
       ? {
-        ...this.store.listWorkflowEvidence(noteKeyFor(session)),
+        ...this.store.listWorkflowEvidence(noteKeyFor(session), view),
         registrationEligible: this.agentEvidenceBinding(sessionId) !== null,
       }
       : null;
@@ -2403,6 +2460,11 @@ export class WorkflowManager {
     if (!["evidence_reconciliation_error", "evidence_readiness", "preflight_refinement_exhausted", "persona_feedback", "round_limit", "infrastructure_error"].includes(run.currentPhase)) return null;
     const parsed = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!parsed.success) return null;
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    if (run.criteria?.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined)
+        && version && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId)) {
+      return { submissionId: submission.id, kind: "publication", label: "Classify publication criteria" };
+    }
     if (run.currentPhase === "evidence_reconciliation_error" || submission.readiness?.gapCodes.includes("missing_coverage")) {
       let cursor: WorkflowSubmission | null = submission;
       for (let depth = 0; cursor && depth < 128; depth++) {
@@ -3401,7 +3463,11 @@ export class WorkflowManager {
         message: "This GitHub Inspector gate is already terminal",
       };
     }
-    const canEvaluate = inspectorRecoveryCanRecheck({ status: run.status, phase: run.currentPhase });
+    const refreshPreparedFeedback = this.store.recoverableInspectorFeedback(run) !== null;
+    const canEvaluate = inspectorRecoveryCanRecheck({
+      status: run.status, phase: run.currentPhase,
+      recoverableInspectorFeedback: refreshPreparedFeedback,
+    });
     if (!canEvaluate) {
       return {
         ok: false,
@@ -3410,8 +3476,41 @@ export class WorkflowManager {
       };
     }
     this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
-    this.scheduleGateEvaluation(run.id, null);
+    this.scheduleGateEvaluation(run.id, null, refreshPreparedFeedback);
+    const prKey = this.gateState(run)?.prKey ?? null;
+    if (run.status === "blocked" && run.currentPhase === "inspector_pr_closed" && prKey) {
+      void this.reobserveGatePullRequest(run.id, prKey);
+    }
     return { ok: true, value: run };
+  }
+
+  /**
+   * Ask GitHub again about the pull request a recovery block is pinned to.
+   *
+   * The ledger alone cannot lift such a block once its row is retired: the sweep stops reading
+   * a row the moment it reads it closed, so a pull request open on GitHub - never closed, or
+   * reopened since - would stay blocked for good. The read signals what GitHub said, and the
+   * gate evaluation that signal starts lifts the block if it said open. A read that failed is
+   * recorded on the run, so a block that stayed put says why.
+   */
+  private reobserveGatePullRequest(runId: string, prKey: string): Promise<boolean> {
+    const reobserve = this.options.reobservePullRequest;
+    if (!reobserve) return Promise.resolve(false);
+    const task = Promise.resolve().then(() => reobserve(prKey))
+      .catch((error: unknown) => ({
+        ok: false as const,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+      .then((result) => {
+        if (result.ok) return true;
+        const run = this.store.getRun(runId);
+        if (!run || runIsTerminal(run)) return false;
+        this.store.appendEvent(runId, "inspector_pr_reobserve_failed", { prKey, error: result.error });
+        this.publishRun(runId);
+        return false;
+      });
+    this.trackBackgroundTask(task.then(() => {}));
+    return task;
   }
 
   async restartFull(
@@ -4335,12 +4434,55 @@ export class WorkflowManager {
     for (const binding of this.store.listBindings()) {
       if (binding.sessionId !== sessionId) continue;
       const run = this.store.activeRunForBinding(binding.id);
-      if (run && this.gateState(run)) this.scheduleGateEvaluation(run.id, null);
+      if (run && this.gateState(run)) {
+        const delivery = this.store.recoverableInspectorFeedback(run);
+        const canResume = delivery !== null && !this.deliveryBlock(delivery)
+          && !this.registry.getSession(delivery.sessionId)?.pause;
+        this.scheduleGateEvaluation(run.id, null, canResume);
+      }
     }
   }
 
-  private scheduleGateEvaluation(runId: string, event: InspectionUpdated | null): void {
-    const task = this.withGateLock(runId, () => this.evaluateInspectorGate(runId, event))
+  private scheduleGateEvaluation(
+    runId: string,
+    event: InspectionUpdated | null,
+    refreshPreparedFeedback = false,
+  ): void {
+    if (refreshPreparedFeedback) {
+      if (this.inspectorFeedbackRefreshes.get(runId)?.pending) return;
+      const run = this.store.getRun(runId);
+      const prKey = run ? this.gateState(run)?.prKey : null;
+      this.inspectorFeedbackRefreshes.set(runId, {
+        pending: true,
+        observationAfter: Math.max(Date.now(), prKey ? getInspectorPr(prKey)?.observedAt ?? 0 : 0),
+      });
+    }
+    const task = this.withGateLock(runId, async () => {
+      let keepRefreshHold = true;
+      try {
+        if (refreshPreparedFeedback) {
+          const run = this.store.getRun(runId);
+          const delivery = run ? this.store.recoverableInspectorFeedback(run) : null;
+          const prKey = run ? this.gateState(run)?.prKey : null;
+          if (delivery && prKey) {
+            // Inspector's read publishes an observation whose evaluation queues behind
+            // this lock. Revalidate delivery eligibility there after the read completes.
+            keepRefreshHold = !await this.reobserveGatePullRequest(runId, prKey);
+          } else keepRefreshHold = false;
+          return;
+        }
+        await this.evaluateInspectorGate(runId, event);
+      } finally {
+        if (refreshPreparedFeedback) {
+          const refresh = this.inspectorFeedbackRefreshes.get(runId);
+          // Failure releases the read slot, not the packet. A later successful read or
+          // positively newer poll may lift the hold; queued cached signals cannot.
+          // Success clears it before its queued observation runs, even in the same millisecond.
+          if (!keepRefreshHold) this.inspectorFeedbackRefreshes.delete(runId);
+          else if (refresh) refresh.pending = false;
+        }
+      }
+    })
       .catch((error) => {
         const run = this.store.getRun(runId);
         if (!run || runIsTerminal(run)) return;
@@ -4386,12 +4528,148 @@ export class WorkflowManager {
     return updated;
   }
 
+  /**
+   * Lift an `inspector_pr_closed` block once the pinned pull request is positively seen open.
+   *
+   * The block used to be a dead end: nothing re-evaluated it and Recheck refused it. That was
+   * survivable only while the block was always true, and it was not - a signal that observed
+   * nothing read as closed, which blocked open pull requests in the middle of a repair, with
+   * cancel and a full restart as the only ways out. Runs already blocked that way recover here
+   * on the next Inspector poll, or at once on a recheck, without spending a review round. A
+   * recheck also reads GitHub again (`reobserveGatePullRequest`), which is the only way a row
+   * the sweep retired as closed can be seen open.
+   *
+   * The block overwrote the wait it interrupted, so the wait is rebuilt from the gate. A run
+   * waiting on the session's repair push is the one the gate cannot re-derive by evaluating
+   * again, and it is exactly the one whose findings left `failedHeadSha` equal to the target
+   * head: the Inspector-only round that would follow moves the target. Every other wait
+   * resumes from a fresh observation, and the evaluation that follows re-derives its phase.
+   */
+  private reopenClosedInspectorGate(
+    run: WorkflowRun,
+    state: WorkflowInspectorGateState,
+    observation: InspectionUpdated | null,
+    now: number,
+  ): { run: WorkflowRun; state: WorkflowInspectorGateState } | null {
+    if (!state.prKey) return null;
+    const signalled = observation?.prKey === state.prKey;
+    const ledger = signalled ? observation.ledger : getInspectorPr(state.prKey);
+    if (!ledger || !inspectorPrSeenOpen(ledger, signalled ? observation.observedState : null)) {
+      return null;
+    }
+    const awaitingRepairPush = state.failedHeadSha !== null
+      && state.failedHeadSha === state.targetHeadSha;
+    const reopened: WorkflowInspectorGateState = {
+      ...state,
+      waitReason: awaitingRepairPush ? "findings" : "awaiting_fresh_observation",
+    };
+    const status = awaitingRepairPush ? "waiting_for_new_head" : "waiting_for_inspector";
+    const updated = this.transitionInspectorGate(
+      run,
+      state,
+      reopened,
+      status,
+      awaitingRepairPush ? "inspector_findings" : "inspector_awaiting_fresh_observation",
+      "inspector_pr_seen_open",
+      { prKey: state.prKey, status },
+      now,
+    );
+    return updated ? { run: updated, state: reopened } : null;
+  }
+
+  /** Reconcile only positively unsent packets, under the existing per-run gate lock. */
+  private async recoverBlockedInspectorFeedback(
+    run: WorkflowRun,
+    state: WorkflowInspectorGateState,
+    observation: InspectionUpdated | null,
+  ): Promise<boolean> {
+    // A recovery request must finish its fresh read before even an already-queued signal can send.
+    const refresh = this.inspectorFeedbackRefreshes.get(run.id);
+    if (refresh?.pending) return false;
+    if (run.status !== "blocked" || run.currentPhase !== "delivery_blocked"
+        || state.waitReason !== "findings" || !state.targetHeadSha
+        || state.targetHeadSha !== state.failedHeadSha || !state.prKey) return false;
+    const binding = this.store.getBinding(run.bindingId);
+    const delivery = this.store.recoverableInspectorFeedback(run);
+    if (binding?.deliveryMode !== "live" || !delivery || this.deliveryBlock(delivery)
+        || this.registry.getSession(delivery.sessionId)?.pause) return false;
+    const session = this.registry.getSession(delivery.sessionId)!;
+    const candidateUrl = this.gateCandidateUrl(binding, session);
+    const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
+    if (candidate && candidate.key !== state.prKey) return false;
+    const ledger = getInspectorPr(state.prKey);
+    const observed = observation?.prKey === state.prKey && observation.observedState !== null
+      ? observation : ledger;
+    // Review head alone is not evidence of the current remote head. Unknown or stale
+    // observations leave the packet held until Inspector supplies positive remote facts.
+    if (!ledger || ledger.state !== "open" || observed?.observedState !== "OPEN"
+        || !observed.observedHeadSha || observed.observedAt === null
+        || observed.observedAt < state.enteredAt) return false;
+    if (refresh && observed.observedAt <= refresh.observationAfter) return false;
+    const superseded = observed.observedHeadSha !== state.failedHeadSha;
+    const restored = this.store.recoverInspectorFeedback(delivery.id, state, {
+      ...state, lastObservedAt: observed.observedAt, observedHeadSha: observed.observedHeadSha,
+    }, superseded);
+    if (!restored) return false;
+    this.inspectorFeedbackRefreshes.delete(run.id);
+    this.publishRun(run.id);
+    if (!superseded) {
+      await this.deliverPrepared(delivery.id, false);
+      return true;
+    }
+    if (restored.status === "waiting_for_session") {
+      // A clean Inspector review never substitutes for the published full workflow policy.
+      // The existing capture path retains evidence readiness, round limits and graph review.
+      await this.resubmit(run.id, { requestId: `inspector-feedback-recovery:${delivery.id}` });
+      return true;
+    }
+    return false;
+  }
+
   private async evaluateInspectorGate(
     runId: string,
     observation: InspectionUpdated | null,
   ): Promise<void> {
     let run = this.store.getRun(runId);
     let state = run ? this.gateState(run) : null;
+    const tiedObservation = observation && state?.lastObservedAt != null
+      && observation.prKey === state.prKey && observation.observedAt === state.lastObservedAt;
+    if (state?.prKey && ((run?.status === "blocked" && run.currentPhase === "delivery_blocked")
+        || tiedObservation)) {
+      const prKey = state.prKey;
+      const ledger = loadInspectorInspection(prKey);
+      // A queued signal carries a historical ledger snapshot. Prefer the newer durable
+      // remote observation (including ties), even after packet recovery has lifted the
+      // block, so a queued signal cannot put the failed head or closed state back afterward.
+      if (ledger?.observedState != null && ledger.observedAt !== null
+          && ledger.observedAt >= state.enteredAt
+          && (observation?.prKey !== state.prKey || observation.observedState === null
+            || ledger.observedAt >= observation.observedAt)) {
+        observation = {
+          prKey: ledger.key, observedHeadSha: ledger.observedHeadSha,
+          observedState: ledger.observedState, observedAt: ledger.observedAt, ledger,
+        };
+      } else if (observation && tiedObservation) {
+        // Without current durable facts a conflicting tie cannot supersede the gate.
+        // Same-head review/publication updates still proceed at the accepted timestamp.
+        const signalledClosed = inspectorStateSaysClosed(observation.observedState)
+          || observation.ledger.state === "closed";
+        if ((observation.observedState !== null && observation.observedHeadSha !== state.observedHeadSha)
+            || signalledClosed !== (state.waitReason === "pr_closed")) return;
+      }
+    }
+    // Once a gate has observed a newer remote state, a queued older snapshot must not
+    // change its head, reopen/close the PR, or supply review facts for an obsolete head.
+    if (observation && state?.lastObservedAt != null
+        && observation.prKey === state.prKey
+        && observation.observedAt < state.lastObservedAt) return;
+    if (run && state) {
+      if (await this.recoverBlockedInspectorFeedback(run, state, observation)) return;
+      run = this.store.getRun(runId);
+      state = run ? this.gateState(run) : null;
+    }
+    // Recheck can ask about this block, but only the unsent-packet recovery above may lift it.
+    if (run?.status === "blocked" && run.currentPhase === "delivery_blocked") return;
     const waitingForPrHandoff = run?.status === "waiting_for_session"
       && run.currentPhase === "pr_handoff";
     const waitingForMatchingHead = run?.status === "waiting_for_session"
@@ -4402,7 +4680,12 @@ export class WorkflowManager {
       || runIsTerminal(run)
       || (run.status === "waiting_for_session" && !waitingForPrHandoff && !waitingForMatchingHead)
     ) return;
-    if (run.status === "blocked" && run.currentPhase !== "inspector_disabled") return;
+    // The gate re-evaluates exactly the blocks a recheck is offered for, from one predicate, so
+    // the dashboard cannot offer Recheck on a block this method would refuse to look at.
+    if (
+      run.status === "blocked"
+      && !inspectorRecoveryCanRecheck({ status: run.status, phase: run.currentPhase })
+    ) return;
     // A legacy record decodes as non-executable, and the gate is an execution path, so it
     // stops here rather than at each transition inside. Guarding once at the entry is the
     // point: this method advances the run through a dozen branches, and a per-branch fallback
@@ -4414,6 +4697,13 @@ export class WorkflowManager {
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     if (!binding || transferForNote(binding.noteKey) || version?.completionPolicy.kind !== "inspector") return;
     const now = Date.now();
+    // A closed-PR block moves on one thing only: the pull request seen open again. Until then
+    // nothing else may rewrite it, so this runs before every other branch below.
+    if (run.status === "blocked" && run.currentPhase === "inspector_pr_closed") {
+      const reopened = this.reopenClosedInspectorGate(run, state, observation, now);
+      if (!reopened) return;
+      ({ run, state } = reopened);
+    }
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
     const durableCandidate = observation
       && this.matchesUnpinnedGate(binding, state, observation.ledger)
@@ -4554,6 +4844,11 @@ export class WorkflowManager {
       state = observed;
     }
     if (state.lastObservedAt === null || state.lastObservedAt < state.enteredAt || !state.observedHeadSha) {
+      // A run waiting on the session's repair push keeps waiting for it in its own status.
+      // Restart recovery deliberately leaves it in `waiting_for_new_head` with no observation;
+      // demoting it here on a signal that observed nothing would route the repair push it is
+      // waiting for through the full-workflow head check, which refuses it as a mismatch.
+      if (run.status === "waiting_for_new_head") return;
       this.transitionInspectorGate(
         run,
         state,
@@ -4566,9 +4861,13 @@ export class WorkflowManager {
       );
       return;
     }
+    // Closed means GitHub SAID closed or merged: the ledger retired the row on such a read, or
+    // this signal carries one. A null state is a signal that observed nothing - a failed or
+    // rate-limited read, a settings save, an adoption - and it used to land here as closed,
+    // because `null !== "OPEN"`. That blocked open pull requests with no way back.
     if (
       ledger.state === "closed"
-      || (observation?.prKey === state.prKey && observation.observedState !== "OPEN")
+      || (observation?.prKey === state.prKey && inspectorStateSaysClosed(observation.observedState))
     ) {
       this.transitionInspectorGate(
         run,
@@ -5318,6 +5617,10 @@ export class WorkflowManager {
         || binding?.deliveryMode !== "live"
         || latestSubmission?.id !== delivery.submissionId
       ) continue;
+      if (delivery.kind === "inspector_feedback" && run.currentPhase === "delivery_blocked") {
+        this.scheduleGateEvaluation(run.id, null, this.store.recoverableInspectorFeedback(run) !== null);
+        continue;
+      }
       if (delivery.kind === "evidence_capture_repair") {
         // A temporary delivery block may replace the capture phase. Its durable failure
         // receipt still owns this packet; confirmed delivery restores that phase and detail.
@@ -5339,7 +5642,6 @@ export class WorkflowManager {
         continue;
       }
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
-      const gate = this.gateState(run);
       const inspectorOnly =
         version?.completionPolicy.kind === "inspector"
         && version.completionPolicy.onFindings === "inspector_only";
@@ -5347,9 +5649,7 @@ export class WorkflowManager {
         delivery.kind !== "inspector_feedback"
         || run.status !== (inspectorOnly ? "waiting_for_new_head" : "waiting_for_session")
         || run.currentPhase !== "inspector_findings"
-        || gate?.waitReason !== "findings"
-        || !gate.targetHeadSha
-        || gate.targetHeadSha !== gate.failedHeadSha
+        || !this.inspectorFeedbackIsCurrent(delivery, run)
       ) continue;
       this.schedulePreparedDelivery(delivery.id);
     }
@@ -6541,10 +6841,25 @@ export class WorkflowManager {
     }
   }
 
+  private inspectorFeedbackIsCurrent(delivery: WorkflowDelivery, run = this.store.getRun(delivery.runId)): boolean {
+    const gate = run ? this.gateState(run) : null;
+    return Boolean(run && this.store.latestSubmission(run.id)?.id === delivery.submissionId
+      && gate?.waitReason === "findings" && gate.targetHeadSha
+      && gate.targetHeadSha === gate.failedHeadSha
+      && (gate.observedHeadSha === null || gate.observedHeadSha === gate.failedHeadSha));
+  }
+
   private async deliverPrepared(deliveryId: string, explicitRetry: boolean): Promise<void> {
     const delivery = this.store.getDelivery(deliveryId);
     if (!delivery || transferForNote(delivery.noteKey)) return;
     if (delivery.state !== "prepared" && !(explicitRetry && delivery.state === "refused")) return;
+    // As on restart, retain obsolete Inspector packets unsent. A sibling hold or pause can
+    // outlive the failed head; releasing it must not inject old feedback or block the new review.
+    if (delivery.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(delivery)) {
+      this.queuedDeliveries.delete(delivery.id);
+      this.pausedDeliveries.delete(delivery.id);
+      return;
+    }
     // The operator paused this session. Not a refusal: the packet stays `prepared`, the run is
     // left as it is, and the same bytes are offered again the moment the pause lifts (the
     // `session_upsert` arm of the subscription). A restart re-offers prepared packets anyway,
@@ -6616,7 +6931,9 @@ export class WorkflowManager {
         session,
         sending.payload,
         undefined,
-        () => this.deliveryBlock(sending, expectedPane),
+        () => this.deliveryBlock(sending, expectedPane)
+          ?? (sending.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(sending)
+            ? "inspector_feedback_superseded" : null),
       );
     } catch (error) {
       this.markDeliveryUncertain(sending, error instanceof Error ? error.message : String(error));
@@ -6629,6 +6946,13 @@ export class WorkflowManager {
         // outcome here is ambiguous and keeps it: an echo that may still arrive must find
         // authorship on file, and the cost of being wrong that way is one suppressed retype.
         releaseInjection(session.id, sending.payload);
+        if (result.error === "inspector_feedback_superseded") {
+          if (this.store.getDelivery(sending.id)?.state === "sending") {
+            this.store.setDeliveryState(sending.id, "prepared", null);
+          }
+          this.publishRun(sending.runId);
+          return;
+        }
         // The operator paused the session while this packet was on its way: the guard refused
         // for the pause, not for anything wrong with the packet. Held exactly as the check at
         // the top holds one - back to `prepared`, the run left as it is, offered again when the
@@ -7243,6 +7567,32 @@ export class WorkflowManager {
           }
         }
       }
+      // Old runs already have their criterion identities. Classify only missing timing metadata,
+      // against that frozen intent, rather than recompacting or reusing a broad override.
+      const fulfillmentSource = this.store.getRun(run.id)?.criteria;
+      if (context.compaction.status === "model" && fulfillmentSource && version
+          && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId)) {
+        let classified = fulfillmentSource;
+        if (fulfillmentSource.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined)) {
+          const classificationContext = { ...context, canonicalCriteria: fulfillmentSource.canonicalCriteria };
+          const classifications = await this.schedule(() => classifyWorkflowCriterionFulfillment(classificationContext, {
+            execute: this.options.classifyCriterionFulfillment
+              ?? (this.options.compactContext ? async () => ({ kind: "failed" as const,
+                cause: "transport" as const, reason: "No injected criterion fulfillment classifier" }) : undefined),
+            observer: observerFor("criterion_fulfillment"),
+            onExecution: (execution) => contextExecutions.set("criterion_fulfillment", execution),
+          }), "capture");
+          if (classifications && this.captureIsActive(run.id, submission.id)) {
+            classified = this.store.freezeRunCriterionFulfillment({ runId: run.id, source: fulfillmentSource,
+              classifications, submissionId: submission.id, now: Date.now() }) ?? fulfillmentSource;
+          }
+        }
+        // A recovery child's context may predate the successful classification. Copy only
+        // timing from the durable result; every other field and all historical contexts stay put.
+        const timing = new Map(classified.canonicalCriteria.map((criterion) => [criterion.id, criterion.fulfilledByAction]));
+        context = { ...context, canonicalCriteria: context.canonicalCriteria?.map((criterion) =>
+          timing.get(criterion.id) === undefined ? criterion : { ...criterion, fulfilledByAction: timing.get(criterion.id) }) };
+      }
       if (context.compaction.status === "model") {
         const parent = previousEvidenceSubmission(this.store, submission);
         const source = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
@@ -7327,6 +7677,8 @@ export class WorkflowManager {
               ? context.compaction.error ?? "Workflow context compaction was unavailable"
               : null,
             enforceCoverage: enforcingReadiness,
+            pendingPullRequestAction: version != null
+              && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId),
             });
       const runnable = this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(context),
@@ -7576,7 +7928,8 @@ export class WorkflowManager {
 
   private reconcileBindingsAfterDiscovery(): void {
     for (const binding of this.store.listBindings()) {
-      if (binding.state !== "active" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)) continue;
+      if (binding.state !== "active" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)
+        || this.hibernationHoldsBinding(binding)) continue;
       const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
       const updated = !session || session.state === "exited"
         ? this.store.orphanBinding(binding.id, "session_disappeared")
@@ -7588,6 +7941,76 @@ export class WorkflowManager {
       const run = this.store.activeRunForBinding(updated.id);
       if (run) this.publishRun(run.id);
     }
+  }
+
+  /**
+   * A hibernated terminal task resumed as a new process on its conversation: the bindings armed
+   * on the stopped session for THAT conversation (`noteKey`, the hibernation's) follow the new
+   * one. A binding the stopped session held for any other conversation stays where it is: it
+   * belongs to a conversation this Resume did not reopen. Only an armed binding moves -
+   * hibernation is refused while a run is open, so none has a delivery in flight - and only to
+   * the same agent.
+   *
+   * The conversation's own binding (no `repoRoot`) moves only into the same checkout, the
+   * compatibility `reattach` asks for. Each secondary repository's binding (`ensureRepoBinding`)
+   * reviews its own worktree rather than the session's, so it moves with the session and keeps
+   * that worktree: its `sessionCwd` never equals the session's, and requiring it to would leave
+   * it on the stopped session where no review could find a live one.
+   *
+   * A conversation armed in another checkout than the one it reopened in (the session changed
+   * directory after its workflow was armed) carries none of them into a checkout they were not
+   * armed for. Nor are they left active on the stopped session: they are orphaned, as any
+   * binding whose session leaves is, so the workflow reads as detached and the operator can
+   * reattach it.
+   *
+   * Writes only, and answers the bindings it moved or orphaned: Resume makes these moves in the same
+   * transaction as the task's own row, and publishes them with `announceBindings` once it has
+   * committed.
+   */
+  followResumedConversation(priorSessionId: string, noteKey: string, session: Session, now = Date.now()): string[] {
+    const held = this.store.listBindings().filter((binding) =>
+      binding.sessionId === priorSessionId && binding.state === "active" && binding.noteKey === noteKey
+      && !(binding.sessionAgent && binding.sessionAgent !== session.agent));
+    const own = held.filter((binding) => !binding.repoRoot);
+    if (own.some((binding) => binding.sessionCwd !== session.cwd)) {
+      return held.flatMap((binding) => {
+        const orphaned = this.store.orphanBinding(binding.id, "session_disappeared", now);
+        return orphaned ? [orphaned.id] : [];
+      });
+    }
+    const moved: string[] = [];
+    for (const binding of held) {
+      const secondary = Boolean(binding.repoRoot);
+      const updated = this.store.reattachBinding(binding.id, {
+        noteKey: noteKeyFor(session),
+        sessionId: session.id,
+        sessionAgent: session.agent,
+        sessionName: session.name,
+        sessionCwd: secondary ? binding.sessionCwd : session.cwd,
+        sessionRepoRoot: secondary ? binding.sessionRepoRoot : session.repoRoot,
+      }, now);
+      if (updated) moved.push(updated.id);
+    }
+    return moved;
+  }
+
+  /**
+   * Publish bindings a caller moved inside its own transaction (`followResumedConversation`),
+   * once that has committed, so no dashboard is shown a move that was then rolled back.
+   */
+  announceBindings(ids: readonly string[]): void {
+    for (const id of ids) this.publishBinding(id);
+  }
+
+  /**
+   * A hibernated task's binding is not orphaned by its session leaving: Resume reopens the same
+   * conversation (`@shared/hibernation.ts`) - under the same session id for an Agent SDK session,
+   * and through `followResumedConversation` for a terminal one - so the armed workflow is still
+   * the one that will judge its work. Only the binding for THAT conversation is held: one the
+   * session held for another conversation is orphaned as usual, since no Resume carries it.
+   */
+  private hibernationHoldsBinding(binding: WorkflowBinding): boolean {
+    return hibernationHoldsConversation(this.registry.listTasks(), binding.sessionId, binding.noteKey);
   }
 
   private localPlanOwnsBinding(binding: WorkflowBinding): boolean {
@@ -8511,6 +8934,7 @@ export class WorkflowManager {
 
   private publishRun(runId: string): void {
     const summary = this.store.runSummary(runId);
+    if (!summary || runIsTerminal(summary)) this.inspectorFeedbackRefreshes.delete(runId);
     if (summary) this.registry.upsertWorkflowRun(summary);
   }
 

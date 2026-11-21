@@ -1,7 +1,13 @@
+import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
+import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
+import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
+import { registerShapingRoutes } from "./shaping/routes.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
 import type { PauseManager } from "./pause/manager.ts";
 import { registerPauseRoutes } from "./pause/routes.ts";
+import { HibernationManager } from "./hibernation/manager.ts";
+import { registerHibernationRoutes } from "./hibernation/routes.ts";
 import { getResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
@@ -70,7 +76,7 @@ import {
   TASK_KIND_BEHAVIOR,
   TASK_KIND_INFO,
   taskHasRepository,
-  taskKindAllowsBacklog,
+  taskAllowsBacklog,
   taskKindCreator,
 } from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
@@ -161,6 +167,7 @@ import {
   McpPushTaskSchema,
   McpUpdateTaskSchema,
   McpDeleteTaskSchema,
+  McpCancelTaskSchema,
   McpListTasksSchema,
   McpGetTaskSchema,
   type UpdateTask,
@@ -192,6 +199,7 @@ import {
   ReorderQueueSchema,
   ResetSchema,
   ResolveReviewSchema,
+  SnoozeReviewSchema,
   ArchiveScheduleSchema,
   CreateScheduleSchema,
   CreateResidentProfileSchema,
@@ -306,7 +314,8 @@ import {
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import { DAEMON_PROTOCOL_CAPABILITIES } from "@shared/daemon-protocol.ts";
+import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
+import { HEADLESS_MODE_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -335,7 +344,8 @@ import type {
   Task,
   WorkItem,
 } from "@shared/types.ts";
-import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
+import { ReviewResolutionError, SnoozeActorRefusal, type ReviewManager } from "./reviews.ts";
+import { reviewSnoozeDelay } from "@shared/review-snooze.ts";
 import {
   MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
@@ -524,6 +534,8 @@ import {
   type PipelinesView,
 } from "@shared/pipeline.ts";
 import { schedulePipelineRefresh } from "./pipelines/index.ts";
+import { conductorIntegrationEnabled } from "./pipelines/availability.ts";
+import { CONDUCTOR_UNAVAILABLE_DETAIL } from "@shared/conductor-integration.ts";
 import {
   pipelineEpisodeKey,
   pipelineEpisodeWrite,
@@ -713,6 +725,8 @@ import {
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
 import { agentHostUnavailable, terminalTargetViews, launchManagedAgentTerminal, launchNotAttempted, launchTerminal } from "./terminal/targets.ts";
+import { systemDefaultEmulator } from "./terminal/system-default.ts";
+import type { EmulatorId } from "@shared/terminal.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -1515,6 +1529,11 @@ export interface RouteDeps {
    * answers 503 without them; the daemon passes the same instance the poller runs.
    */
   prConflicts?: PrConflictTracker;
+  /**
+   * The emulator macOS hands a shell to, which terminal pickers start on. Injected so a route
+   * test does not read the machine's own LaunchServices preferences.
+   */
+  systemDefaultTerminal?: () => Promise<EmulatorId | null>;
 }
 
 /**
@@ -1570,6 +1589,7 @@ export const ROUTE_DEP_NAMES = [
   "setupInstallDeps",
   "focusTerminals",
   "prConflicts",
+  "systemDefaultTerminal",
 ] as const satisfies readonly (keyof RouteDeps)[];
 
 export type RouteDepName = (typeof ROUTE_DEP_NAMES)[number];
@@ -1912,6 +1932,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     setupInstallDeps,
     focusTerminals,
     prConflicts,
+    systemDefaultTerminal,
   } = resolveRouteDeps(deps);
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
@@ -1988,8 +2009,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.use("/api/*", requireLoopback);
   app.use("/events", requireLoopback);
 
+  // Headless mode (FR-05): every `/dispatch/*` route, gated by the `headless-mode` flag.
+  registerHomeDispatchRoutes(app, deps, requireLoopback);
+
   app.use("/api/*", primaryActionTelemetry());
   app.use("/mcp/*", primaryActionTelemetry());
+
+  // The ai-conductor integration is hidden (`shared/conductor-integration.ts`). While it is,
+  // nothing here may reach the engine: no probe, registration, installer, control verb,
+  // console, run-detail read, plugin push, or Engineer host callback. The two reads a live
+  // surface polls answer "nothing is observed" instead of an error - the Dispatch form and the
+  // Runs page ask for the observed repositories, and the Foreman worker asks for halts - so
+  // neither logs a failure every cycle for a feature nobody can see.
+  const conductorHidden: MiddlewareHandler = async (c, next) => {
+    if (conductorIntegrationEnabled()) return next();
+    if (c.req.method === "GET" && c.req.path === "/api/pipelines/repos") {
+      return c.json({ repos: [], launchRuntime: getPipelinesConfig().launchRuntime });
+    }
+    if (c.req.method === "GET" && c.req.path === "/api/pipelines/foreman") {
+      return c.json({ enabled: false, items: [] } satisfies PipelineForemanView);
+    }
+    return c.json({ error: CONDUCTOR_UNAVAILABLE_DETAIL }, 404);
+  };
+  app.use("/api/pipelines/*", conductorHidden);
+  app.use("/ingest/conductor", conductorHidden);
+  app.use("/mcp/pipelines/*", conductorHidden);
 
   app.get("/api/health", (c) =>
     c.json({
@@ -1997,7 +2041,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       service: "mission-control",
       version: SERVICE_VERSION,
       pid: process.pid,
-      capabilities: Object.values(DAEMON_PROTOCOL_CAPABILITIES),
+      capabilities: advertisedDaemonCapabilities({ headlessMode: featureEnabled(HEADLESS_MODE_FLAG_ID) }),
     }),
   );
 
@@ -2385,6 +2429,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // --- Pausing sessions: one session, Pause all, and the priority session ---
   registerPauseRoutes(app, pauses);
+
+  // --- Hibernating a task's Agent SDK session, and resuming its conversation ---
+  registerHibernationRoutes(
+    app,
+    new HibernationManager(registry, sdkSessions ?? null, {
+      workflows,
+      pause: pauses,
+      ensembleMember: (taskId) => Boolean(ensembles?.store.memberForTask(taskId)),
+    }),
+  );
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
   //
@@ -3396,7 +3450,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/workflow-evidence", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const staged = manager.stagedEvidenceForSession(c.req.param("id"));
+    const staged = manager.stagedEvidenceForSession(
+      c.req.param("id"), c.req.query("view") === "registered" ? "registered" : "staged",
+    );
     return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
   });
   app.post(
@@ -4599,8 +4655,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // it is a question about the daemon's machine, not about the one the dashboard is being
   // viewed from, and unavailable backends are RETURNED with their sentence rather than
   // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
-  app.get("/api/terminal-targets", (c) =>
-    c.json({ targets: terminalTargetViews(configuredTerminalTargetDeps) }));
+  const readSystemDefaultTerminal = systemDefaultTerminal ?? (() => systemDefaultEmulator({
+    platform: process.platform,
+    home: process.env.HOME || homedir(),
+    run: (bin, args, opts) => runCommand(bin, args, opts),
+    emulators: configuredTerminalTargetDeps.emulators,
+  }));
+  app.get("/api/terminal-targets", async (c) => {
+    // try/await, not `.catch`: a reader that throws before returning a promise must still
+    // leave the catalog answering, just without a default marked.
+    let systemDefault: EmulatorId | null = null;
+    try {
+      systemDefault = await readSystemDefaultTerminal();
+    } catch {
+      systemDefault = null;
+    }
+    const targets = terminalTargetViews(configuredTerminalTargetDeps).map((view) =>
+      view.id === systemDefault ? { ...view, systemDefault: true } : view);
+    return c.json({ targets });
+  });
   // Non-spawning recheck. Resource ownership is independent of task/workflow continuity.
   app.get("/api/sessions/:id/launch", (c) => {
     const session = registry.getSession(c.req.param("id"));
@@ -5588,7 +5661,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CreateReviewSchema);
     if (!parsed.ok) return parsed.res;
-    const { env, sessionId, cwd, kind, title, body, decisions } = parsed.data;
+    const { env, sessionId, cwd, kind, title, body, decisions, snoozable } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
     try {
@@ -5640,7 +5713,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (!carried && authority.taskId && !review.standingApprovalEligible) registry.upsertReview({ ...review, standingApprovalEligible: true });
         return c.json({ id: review.id, sessionId: session.id });
       }
-      const review = reviews.create(session.id, kind, title, body, decisions ?? null);
+      const review = reviews.create(session.id, kind, title, body, decisions ?? null, { snoozable });
       return c.json({ id: review.id, sessionId: session.id });
     } catch (error) { return planFailure(c, error); }
   }
@@ -6089,6 +6162,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const validated = UpdateTaskSchema.safeParse(update);
     if (!validated.success) return c.json({ error: validated.error.message }, 400);
     return updateTask(c, id, validated.data, true);
+  });
+
+  app.post("/mcp/tasks/cancel", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCancelTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.cancel(parsed.data.taskId);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
   app.post("/mcp/tasks/delete", async (c) => {
@@ -6811,6 +6892,53 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (error instanceof PlanStoreError) return planFailure(c, error);
       throw error;
     }
+  });
+
+  // Who is asking to snooze or wake a question: the operator, a session acting through session
+  // control, or null for a caller that is neither. "Human" is never the default. It is granted
+  // only when the request carries none of the marks of an agent - the machine token, a signed
+  // agent credential, an agent-labelled operation, a page from another origin - which is the
+  // same test that guards the operator's session-control grant (`sessionControlCallerRefusal`).
+  const reviewOperatorActor = (c: Context): ReviewActor | null =>
+    sessionControlActor(c.req.raw) ?? (sessionControlCallerRefusal(c) === null ? "human" : null);
+  const ONLY_THE_OPERATOR = "Only the operator can choose Remind me later";
+
+  // "Remind me later" on a request_input question. The operator's alone: a session driving
+  // another through session control may answer its questions, but parking one tells its agent
+  // to carry on without a person, which is not a call one agent makes for another. Session
+  // control offers no snooze command today; the manager refuses any other actor regardless.
+  app.post("/api/reviews/:id/snooze", async (c) => {
+    const parsed = await parseBody(c, SnoozeReviewSchema);
+    if (!parsed.ok) return parsed.res;
+    const by = reviewOperatorActor(c);
+    if (!by) return c.json({ error: ONLY_THE_OPERATOR }, 403);
+    try {
+      const updated = reviews.snooze(
+        c.req.param("id"),
+        reviewSnoozeDelay(parsed.data.delay).ms,
+        parsed.data.meanwhile,
+        Date.now(),
+        by,
+      );
+      if (!updated) return c.json({ error: "no such review" }, 404);
+      return c.json(updated);
+    } catch (error) {
+      if (error instanceof SnoozeActorRefusal) return c.json({ error: error.message }, 403);
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
+  });
+
+  // Answer now: bring a snoozed question back to the operator before its time. The operator's
+  // too, by the same test: it reopens a question the operator chose to set aside.
+  app.post("/api/reviews/:id/wake", (c) => {
+    if (reviewOperatorActor(c) !== "human") return c.json({ error: "Only the operator can bring back a snoozed question" }, 403);
+    const current = registry.getReview(c.req.param("id"));
+    if (!current) return c.json({ error: "no such review" }, 404);
+    if (current.status !== "snoozed") return c.json({ error: "This question is not snoozed" }, 409);
+    const updated = reviews.wake(current.id);
+    if (!updated) return c.json({ error: "This question is not snoozed" }, 409);
+    return c.json(updated);
   });
 
   // --- session actions (localhost only) ---
@@ -9632,6 +9760,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(saved);
   });
 
+  app.get("/api/feature-flags", (c) => c.json({ config: getFeatureFlagsConfig() }));
+  app.put("/api/feature-flags", async (c) => {
+    const parsed = await parseBody(c, FeatureFlagIntentSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      const result = applyFeatureFlagIntent(parsed.data);
+      if (!result.ok) return c.json({ error: result.error }, 400);
+      return c.json({ config: result.config });
+    } catch (error) {
+      return c.json({ error: "save_failed", message: error instanceof Error ? error.message : String(error) }, 500);
+    }
+  });
+
+  // Task shaping, behind its preview flag. See docs/task-shaping.md.
+  registerShapingRoutes(app);
+
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.
   app.put("/api/storage/limits", async (c) => {
@@ -9772,6 +9916,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       result = await executeSetupInstall(parsed.data, {
         catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
         platform: setupInstallDeps?.platform,
+        // `homedir()` reads this process's HOME, the same effective home the daemon's own
+        // probes run under, so a sign-in pinned to it stores credentials where they are read.
         homeDir: setupInstallDeps?.homeDir ?? homedir(),
         // `fresh`: this picks the one verified installer checkout and launches it, so it acts on
         // the catalog rather than offering it.
@@ -9782,6 +9928,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
         resolveExecutable:
           setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
+        ...(setupInstallDeps?.conductorIntegration
+          ? { conductorIntegration: setupInstallDeps.conductorIntegration }
+          : {}),
         launchTerminal: terminalLauncher,
       });
     } catch (error) {
@@ -10022,7 +10171,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (taskKindCreator(task.kind) === "resident-launch") {
       return c.json({ error: "launch this resident again from its profile" }, 409);
     }
-    if (taskKindAllowsBacklog(task.kind)) {
+    if (taskAllowsBacklog(task)) {
       const refused = taskWorkflowDispatchRefusal(task);
       if (refused) return c.json(refused.body, refused.status);
       // A failure that kept a worktree cannot be dispatched over it; re-file it first, which

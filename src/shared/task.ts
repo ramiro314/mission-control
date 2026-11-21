@@ -20,6 +20,16 @@ import { TASK_KINDS } from "./types.ts";
 import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
 
 /**
+ * How many SECONDARY repositories one request may attach.
+ *
+ * A sanity bound on a request body rather than a product limit on how many repositories a
+ * task may coordinate - nothing downstream reads it as a maximum. Named because several
+ * request surfaces - task dispatch, MCP task creation and resident launch - bound the same
+ * launch manifest and must not carry private copies.
+ */
+export const MAX_TASK_EXTRA_REPOS = 8;
+
+/**
  * How each kind PRESENTS itself. Where a surface offers the choice, its copy comes from
  * here - every one of them, now that `TaskSourcesPanel` and `ScheduleEditor` render from
  * this record too. They used to spell their own `<option>`s, each differently, and were
@@ -201,50 +211,65 @@ export interface TaskKindBehavior {
   launch: "harness" | "pipeline" | "resident";
   /** Whether Foreman's backlog loop may pick this kind unattended. */
   autopilot: boolean;
+  /**
+   * Whether a session Mission Control launches for this kind invites Foreman by
+   * construction - the implicit `"sdk"` grant of an embedded session and the `"dispatch"`
+   * row a confirmed terminal spawn writes. `false` launches the session uninvited, exactly
+   * like a merely discovered one: Foreman stays out until the operator invites it from the
+   * session's Foreman rail. A resident holds a standing role with its own instructions, so
+   * Foreman triage, wrap-up and follow-through there would compete with the profile.
+   */
+  foremanInvite: boolean;
   /** A short, operator-facing explanation of non-default launch constraints. */
   constraint: string | null;
 }
 
 /**
  * Behaviour stays registry-driven so every picker and autonomous path gains a new kind only
- * after answering the same three questions: where it is available, who launches it, and
- * whether Foreman may schedule it.
+ * after answering the same questions: where it is available, who launches it, whether
+ * Foreman may schedule it, and whether Foreman is invited into the sessions it launches.
  */
 export const TASK_KIND_BEHAVIOR = {
   document: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
     constraint: null,
   },
   ship: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
     constraint: null,
   },
   bugfix: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
     constraint: null,
   },
   scout: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
     constraint: null,
   },
   plan: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
+    foremanInvite: true,
     constraint: null,
   },
   pipeline: {
     repoAvailability: "pipeline-enabled",
     launch: "pipeline",
     autopilot: false,
+    foremanInvite: true,
     constraint:
       "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   },
@@ -252,6 +277,7 @@ export const TASK_KIND_BEHAVIOR = {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: false,
+    foremanInvite: true,
     constraint: null,
   },
   // Never unattended: the work opens with an interview only a human can answer, so Foreman
@@ -260,18 +286,20 @@ export const TASK_KIND_BEHAVIOR = {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: false,
+    foremanInvite: true,
     constraint: null,
   },
   resident: {
     repoAvailability: "optional",
     launch: "resident",
     autopilot: false,
+    foremanInvite: false,
     constraint:
       "Resident tasks launch only from a resident profile, in the Agent SDK, with the profile's harness, model and effort.",
   },
   // `as const satisfies` rather than a plain annotation: `satisfies` keeps the
   // exhaustiveness gate exactly as it was - a new kind still does not compile until it has
-  // answered all four questions - while `as const` keeps each answer's LITERAL type, which
+  // answered every question - while `as const` keeps each answer's LITERAL type, which
   // is what lets `HarnessLaunchedTaskKind` below be derived from this record instead of
   // being a second, hand-maintained list that can silently disagree with it.
 } as const satisfies Record<TaskKind, TaskKindBehavior>;
@@ -425,6 +453,79 @@ export function taskKindBacklogRefusal(kind: TaskKind): string {
 }
 
 /**
+ * How a Recurring Mission may file this kind.
+ *
+ * - `backlog`: as ordinary backlog work. The kind's own backlog and autopilot answers apply
+ *   unchanged, so a scheduled Pipeline still waits for a manual start.
+ * - `scheduled-only`: a kind with no backlog of its own (`chat`) that a mission may still
+ *   file. Only a task the mission filed may sit in the backlog, and Foreman launches it like
+ *   any other run - otherwise every occurrence would wait for a click, which is not a
+ *   recurring mission. A chat dispatched by hand stays Dispatch-only.
+ * - `never`: no mission may file it.
+ */
+type KindScheduleFiling = "backlog" | "scheduled-only" | "never";
+
+const KIND_SCHEDULE_FILING: Record<TaskKind, KindScheduleFiling> = {
+  document: "backlog",
+  ship: "backlog",
+  bugfix: "backlog",
+  scout: "backlog",
+  plan: "backlog",
+  pipeline: "backlog",
+  chat: "scheduled-only",
+  // A shape task opens with an interview, and a mission that files the same interview every
+  // week asks the same questions of nobody in particular.
+  shape: "never",
+  resident: "never",
+};
+
+/** Whether a Recurring Mission's template may name this kind. */
+export function taskKindAllowsSchedule(kind: TaskKind): boolean {
+  return KIND_SCHEDULE_FILING[kind] !== "never";
+}
+
+/**
+ * Why a chat a Recurring Mission filed still cannot carry dependencies: the backlog row is only
+ * how its run reaches Foreman, and a conversation does not wait on other work.
+ */
+export const CHAT_DEPENDENCY_REFUSAL = "A chat cannot wait on other tasks. Remove its dependencies first.";
+
+/**
+ * Why a chat a Recurring Mission filed takes no after-work Workflow. A chat dispatched by hand
+ * may still opt into one in Dispatch; a mission's chat is the run the operator scheduled so
+ * that nothing reviews it afterwards.
+ */
+export const CHAT_WORKFLOW_REFUSAL = "A chat a recurring mission files runs no after-work Workflow.";
+
+/** Task kinds the Recurring Mission editor offers, in `TASK_KINDS` order. */
+export const SCHEDULE_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsSchedule);
+
+/** The fields the task-level backlog answers read, so a draft answers as well as a `Task`. */
+export type BacklogCandidate = Pick<Task, "kind"> & { scheduleId?: string | null };
+
+/** A task of a `scheduled-only` kind that a Recurring Mission filed. */
+function scheduledOnlyTask(task: BacklogCandidate): boolean {
+  return KIND_SCHEDULE_FILING[task.kind] === "scheduled-only" && (task.scheduleId ?? null) !== null;
+}
+
+/**
+ * Whether this TASK may sit in the backlog and be launched from it.
+ *
+ * The kind's answer, plus a mission-filed task of a `scheduled-only` kind. Every gate that
+ * asks about an existing backlog row asks this rather than `taskKindAllowsBacklog`, so a
+ * scheduled chat can be edited, dispatched, retried and returned to its card on a failed
+ * launch exactly like the backlog work around it.
+ */
+export function taskAllowsBacklog(task: BacklogCandidate): boolean {
+  return taskKindAllowsBacklog(task.kind) || scheduledOnlyTask(task);
+}
+
+/** Whether Foreman's unattended backlog loop may launch this TASK. See `taskAllowsBacklog`. */
+export function taskAllowsBacklogAutopilot(task: BacklogCandidate): boolean {
+  return allowsBacklogAutopilot(task.kind) || scheduledOnlyTask(task);
+}
+
+/**
  * Which creation surface may file a task of this kind.
  *
  * - `any`: every creator, durable producers included.
@@ -509,33 +610,14 @@ export function taskRequeueRefusal(task: RequeueCandidate): string | null {
       return "task is already in the backlog";
     case "done":
       return "task is done; its result is recorded, not re-run";
+    case "hibernated":
+      return "task is hibernated; resume it to continue its conversation";
   }
 }
 
-/**
- * Whether a Recurring Mission may file this kind on a schedule.
- *
- * Narrower than the backlog: a shape task opens with an interview, and a mission that files
- * the same interview every week asks the same questions of nobody in particular.
- */
-const KIND_ALLOWS_SCHEDULE: Record<TaskKind, boolean> = {
-  document: true,
-  ship: true,
-  bugfix: true,
-  scout: true,
-  plan: true,
-  pipeline: true,
-  chat: false,
-  shape: false,
-  resident: false,
-};
-
+/** Why a Recurring Mission's template may not name the shape kind. */
 export const TASK_KIND_SCHEDULE_REFUSAL =
   "Shape tasks open with an interview, so a Recurring Mission cannot file them.";
-
-export function taskKindAllowsSchedule(kind: TaskKind): boolean {
-  return KIND_ALLOWS_SCHEDULE[kind];
-}
 
 /**
  * Kinds that deliver a reviewed plan rather than a change: they share the plan completion
@@ -609,8 +691,6 @@ export function taskHasNoProvisionedResources(task: Task): boolean {
 /** Task kinds offered by surfaces that can only create or edit backlog work. */
 export const BACKLOG_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsBacklog);
 
-/** Task kinds a Recurring Mission may file. */
-export const SCHEDULE_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsSchedule);
 
 /**
  * The priorities, in ascending urgency. Array order is picker order and the order the

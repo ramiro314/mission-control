@@ -1,3 +1,5 @@
+import { FeatureFlagsConfigSchema } from "./feature-flags.ts";
+import { ShapingConfigSchema } from "./shaping.ts";
 import { z } from "zod";
 import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
 import { ResidentMcpServersDocumentSchema } from "./resident-mcp.ts";
@@ -60,6 +62,7 @@ export type AppConfigCaptureKind =
   | "away"
   | "harnesses"
   | "foreman"
+  | "inspector"
   | "ui"
   | "standing";
 
@@ -154,9 +157,11 @@ const harnessesFields = {
 
 const terminalsFields = {
   multiplexerTerminal: "setting",
+  externalSessions: "setting",
 } satisfies Record<keyof TerminalsConfig, AppConfigValueClass>;
 
 const worktreesFields = {
+  taskRetentionDays: "setting",
   enabled: "setting",
   maxSlots: "setting",
   staleLeaseDays: "setting",
@@ -356,6 +361,13 @@ const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number
  * service enumerates the same object, so there is no second inclusion list to forget.
  */
 export const APP_CONFIG_ENTRIES = {
+  featureFlags: { ...wholeEntry("featureFlags", FeatureFlagsConfigSchema, "setting", "feature-flags"), optionalInSnapshot: true },
+  // Task shaping: registered shapers, stored choices, order, caller identity and budgets.
+  // Backed up whole because it holds no secret text. A credential-bearing header holds only a
+  // reference such as `{env:NAME}`, a URL carries no userinfo or credential query parameter, and
+  // an argument never hands over a credential: `credentialsAreReferences` in `shaping.ts`
+  // refuses each on write, so the value stays in the daemon's environment and out of snapshots.
+  shaping: { ...wholeEntry("shaping", ShapingConfigSchema, "setting", "shaping"), optionalInSnapshot: true },
   residentSkillSources: { ...fieldsEntry("residents.skillSources", ResidentSkillSourcesSchema, "resident-skill-sources", { directories: "setting" }), optionalInSnapshot: true },
   // Custom MCP server DEFINITIONS only. A field marked secret stores its name here and its
   // value in the write-only `resident_mcp_secrets` table, so a snapshot never carries one.
@@ -390,7 +402,7 @@ export const APP_CONFIG_ENTRIES = {
     standingFields,
     "standing",
   ),
-  inspector: fieldsEntry("inspector", InspectorConfigSchema, "inspector", inspectorFields),
+  inspector: fieldsEntry("inspector", InspectorConfigSchema, "inspector", inspectorFields, "inspector"),
   shipping: fieldsEntry("shipping", ShippingConfigSchema, "shipping", shippingFields),
   pipelines: fieldsEntry("pipelines", PipelinesConfigSchema, "pipelines", pipelinesFields),
   ui: fieldsEntry("ui", UiConfigSchema, "ui", uiFields, "ui"),
@@ -398,6 +410,12 @@ export const APP_CONFIG_ENTRIES = {
   // This records what one operator has already seen about this machine. Restoring it from
   // another installation could suppress a new break or resurrect a reminder already handled.
   setupBanner: wholeEntry("setup.banner", SetupBannerDismissalSchema, "operational", null),
+  /**
+   * Headless mode's `dispatch.launcher.prompt` (spec 7.4): whether a new Claude session is offered
+   * the launcher. Absent means on. `operational` with no backup domain, so the settings backup
+   * contract is unchanged; `GET /dispatch/config` is its only reader.
+   */
+  dispatchLauncherPrompt: wholeEntry("dispatch.launcher.prompt", z.boolean(), "operational", null),
   backlogPlan: wholeEntry("backlog.plan", StoredBacklogPlanSchema, "derived", null),
   /**
    * Paused sessions, Pause all and the priority session (`src/server/pause/`). `operational`

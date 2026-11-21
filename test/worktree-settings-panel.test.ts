@@ -55,6 +55,7 @@ const overCapacityPool: WorktreeRepositoryView = {
     diagnostic: null,
     observationFailure: null,
     recoveryRefusal: null,
+    orphaned: false,
     actions: ["return", "destroy"],
     dependencies: null,
     warmLog: null,
@@ -82,7 +83,7 @@ const roomToGrowPool: WorktreeRepositoryView = {
 };
 
 const inventory: WorktreeInventory = {
-  config: { enabled: true, maxSlots: 16, staleLeaseDays: 7, repositories: { "/repo/mission-control/.git": { maxSlots: 16, setupArgv: ["npm", "install"] } } },
+  config: { taskRetentionDays: 30, enabled: true, maxSlots: 16, staleLeaseDays: 7, repositories: { "/repo/mission-control/.git": { maxSlots: 16, setupArgv: ["npm", "install"] } } },
   observedAt: 1,
   revision: "a".repeat(64),
   repositories: [overCapacityPool, roomToGrowPool],

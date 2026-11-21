@@ -31,7 +31,7 @@ import {
 } from "../src/server/worktrees/seed.ts";
 import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
-import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { cachedGitTree, gitIn, originAndCloneAt } from "./helpers/git-fixture.ts";
 
 // Seeding through the real manager, real Git and real files. Only the clone itself is faked:
 // the test copies a tree where production asks `cp` for copy-on-write, so the suite behaves the
@@ -79,16 +79,18 @@ const SEED = { paths: ["deps", "more"], exclude: ["deps/cache", "**/*.tmp"] };
 
 /** A repository whose `deps/`, `more/` and `logs/` are ignored, with a tracked `tracked/`. */
 function repository(prefix: string): { origin: string; clone: string; sha: string } {
-  const { origin, clone } = mkOriginAndClone(prefix);
-  writeFileSync(join(origin, ".gitignore"), "deps/\nmore/\nlogs/\n");
-  writeFileSync(join(origin, "lock.txt"), "v1\n");
-  mkdirSync(join(origin, "tracked"));
-  writeFileSync(join(origin, "tracked", "file"), "tracked\n");
-  gitIn(origin, "add", "-A");
-  gitIn(origin, "commit", "-qm", "lockfile");
-  gitIn(clone, "fetch", "-q", "origin");
-  gitIn(clone, "reset", "-q", "--hard", "origin/main");
-  return { origin, clone, sha: gitIn(clone, "rev-parse", "HEAD") };
+  return cachedGitTree("seed-repository", mkdtempSync(join(tmpdir(), prefix)), (root) => {
+    const { origin, clone } = originAndCloneAt(root);
+    writeFileSync(join(origin, ".gitignore"), "deps/\nmore/\nlogs/\n");
+    writeFileSync(join(origin, "lock.txt"), "v1\n");
+    mkdirSync(join(origin, "tracked"));
+    writeFileSync(join(origin, "tracked", "file"), "tracked\n");
+    gitIn(origin, "add", "-A");
+    gitIn(origin, "commit", "-qm", "lockfile");
+    gitIn(clone, "fetch", "-q", "origin");
+    gitIn(clone, "reset", "-q", "--hard", "origin/main");
+    return { origin, clone, sha: gitIn(clone, "rev-parse", "HEAD") };
+  });
 }
 
 function advance(fixture: { origin: string; clone: string }, file: string, content: string): string {
@@ -1898,7 +1900,7 @@ test("an interrupted removal clears the install before reconcile quarantines it"
   const m = manager(claimWith(SEED), {}, 2);
   await warmPool(m, fixture.clone, fixture.sha, 1, "interrupted");
   const slot = slotAt(m, 1);
-  assert.ok(m.store.markPruning(slot.id, slot.version, Date.now()));
+  assert.ok(m.store.markPruning(slot.id, slot.version, Date.now(), []));
   await m.reconcile();
   const left = m.store.slot(slot.id)!;
   assert.deepEqual(

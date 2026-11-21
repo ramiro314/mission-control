@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import {
   ENSEMBLE_PLAN_VERSION,
   type CompiledEnsemblePlan,
@@ -45,17 +45,14 @@ export function fakeSha(seed: string): string {
 /** A real, one-commit Git repository, for the tests that capture and diff for real. */
 export function gitRepo(): { path: string; baseSha: string } {
   const path = mkdtempSync(join(tmpdir(), "mission-ensemble-repo-"));
-  const git = (...args: string[]) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8" });
-  git("init", "-q");
-  git("config", "user.email", "test@localhost");
-  git("config", "user.name", "Test");
-  // Pinned so a restore writes back the LF bytes the tests compare against, whatever the
-  // operator's global `core.autocrlf` says.
-  git("config", "core.autocrlf", "false");
-  writeFileSync(join(path, "README.md"), "base\n");
-  git("add", "-A");
-  git("commit", "-q", "-m", "base");
-  const baseSha = git("rev-parse", "HEAD").trim();
+  // `core.autocrlf` is pinned so a restore writes back the LF bytes the tests compare against,
+  // whatever the operator's global `core.autocrlf` says.
+  const baseSha = seedGitRepo(path, {
+    files: { "README.md": "base\n" },
+    email: "test@localhost",
+    name: "Test",
+    config: { "core.autocrlf": "false" },
+  });
   return { path, baseSha };
 }
 

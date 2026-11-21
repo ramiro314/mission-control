@@ -1,10 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { Task } from "../src/shared/types.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -45,13 +46,7 @@ function failure(over: Partial<NonNullable<Task["launchFailure"]>> = {}): NonNul
 
 function mkRepo(name: string): string {
   const repo = join(home, name);
-  mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
-  writeFileSync(join(repo, "f.txt"), "x\n");
-  execFileSync("git", ["-C", repo, "add", "-A"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "first"]);
+  seedGitRepo(repo, { branch: "main", files: { "f.txt": "x\n" }, message: "first" });
   // The spelling the dispatch route stores, so a task filed here and one filed through the
   // route name the same repository the same way.
   return realpathSync(repo);
@@ -137,7 +132,7 @@ test("a backlog kind that fails while provisioning returns to the Backlog carryi
 for (const scenario of [
   { name: "origin probe timeout", step: "remote", secondary: false, script: "setInterval(() => {}, 1000)", timeoutMs: 80, exitCode: null, signal: "SIGTERM", timedOut: true },
   { name: "fetch timeout", step: "fetch", secondary: false, script: "setInterval(() => {}, 1000)", timeoutMs: 80, exitCode: null, signal: "SIGTERM", timedOut: true },
-  { name: "attached repository fetch refusal", step: "fetch", secondary: true, script: 'process.stderr.write("remote refused\\nsecond line\\n"); process.exit(128)', timeoutMs: 5000, exitCode: 128, signal: null, timedOut: false },
+  { name: "attached repository fetch refusal", step: "fetch", secondary: true, script: 'process.stderr.write("remote refused\\nsecond line\\n"); process.exit(128)', timeoutMs: 15_000, exitCode: 128, signal: null, timedOut: false },
   { name: "remote HEAD probe killed externally", step: "ls-remote", secondary: false, script: 'process.kill(process.pid, "SIGTERM")', timeoutMs: 5000, exitCode: null, signal: "SIGTERM", timedOut: false },
 ]) {
   test(`prepare logs process facts for ${scenario.name} before returning to Backlog`, async (t) => {
@@ -162,7 +157,8 @@ for (const scenario of [
         assert.equal(opts?.timeoutMs, scenario.step === "remote" ? 15_000 : 30_000,
           "the production local-probe and network budgets stay bounded");
         // Exercise the real executor's timeout, signal and exit handling with a local child.
-        // The shorter fixture budget avoids a 30-second wait or any network/agent access.
+        // The timeout fixtures finish quickly. A refusal fixture allows for cold Node startup
+        // under suite load so the executor can observe its actual exit status.
         return run(process.execPath, ["-e", scenario.script], { timeoutMs: scenario.timeoutMs });
       }
       if (args.includes("remote")) return stubRun({ code: 0, stdout: "origin\n", stderr: "" });
@@ -386,6 +382,57 @@ test("Retry dispatches a backlog kind as the same task, files a chat again, and 
   const resident = await post("/api/launch-failures/retry", { taskId: "w1" });
   assert.equal(resident.status, 409);
   assert.match(String(resident.body.error), /from its profile/);
+});
+
+test("a mission-filed chat that fails before provisioning returns to the Backlog and relaunches as the same task", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const { registry, dispatched, post } = setup();
+  const scheduled = { scheduleId: "mission-1", scheduleOccurrenceId: "occurrence-1", scheduledFor: 1_700_000_000_000 };
+  registry.upsertTask(mkTask({
+    id: "mission-chat",
+    kind: "chat",
+    status: "dispatching",
+    repoRoot: mkRepo("mission-chat-repo"),
+    title: "Talk through today",
+    intent: "What is on your mind this morning?",
+    ...scheduled,
+  }));
+
+  // The real dispatcher, failing before anything is provisioned.
+  await new Dispatcher(registry, undefined, { resolveBases: failingBases }).dispatch("mission-chat");
+  const failed = registry.getTask("mission-chat")!;
+  assert.equal(failed.status, "backlog", "a mission-filed chat returns to its card, unlike a hand-dispatched one");
+  assert.match(failed.error ?? "", /git fetch origin failed/);
+  assert.equal(failed.dispatchedAt, null);
+  assert.equal(lf.launchFailureOutcome(failed), "returned");
+
+  // A returned failure is retried from its Backlog card, which dispatches the saved task.
+  const relaunched = await post("/api/tasks/mission-chat/dispatch", {});
+  assert.equal(relaunched.status, 200, JSON.stringify(relaunched.body));
+  assert.deepEqual(dispatched, ["mission-chat"], "the same task id, never a replacement chat");
+  const missionTasks = () => registry.listTasks().filter((task) => task.scheduleId === "mission-1").map((task) => task.id).sort();
+  assert.deepEqual(missionTasks(), ["mission-chat"]);
+  assert.equal(registry.getTask("mission-chat")!.scheduleId, "mission-1", "the mission provenance survives");
+
+  // A later launch failure that left it `failed` with no session takes Retry, which treats a
+  // mission-filed chat as the backlog task it is: the same id again, not a new chat.
+  registry.upsertTask(mkTask({
+    id: "mission-chat-launch",
+    kind: "chat",
+    status: "failed",
+    repoRoot: mkRepo("mission-chat-launch-repo"),
+    title: "Talk through today",
+    intent: "What is on your mind this morning?",
+    error: "boom",
+    launchFailure: failure({ phase: "launch" }),
+    ...scheduled,
+  }));
+  assert.equal(lf.launchFailureOutcome(registry.getTask("mission-chat-launch")!), "not-started");
+  const retried = await post("/api/launch-failures/retry", { taskId: "mission-chat-launch" });
+  assert.equal(retried.status, 200, JSON.stringify(retried.body));
+  assert.equal((retried.body.task as Task).id, "mission-chat-launch", "retried as the same task, never filed again");
+  assert.deepEqual(dispatched, ["mission-chat", "mission-chat-launch"]);
+  assert.deepEqual(missionTasks(), ["mission-chat", "mission-chat-launch"], "no replacement chat");
 });
 
 test("Retry files a chat again with its own Grill me first pin, not the kind's current default", async () => {

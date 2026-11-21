@@ -665,6 +665,8 @@ test("the Inspector summary carries a compact CI projection and never the check 
   // Fork (ci-strictness): what Foreman's "Which failures count" reads. Derived from the stored
   // snapshot beside `codeRabbit`, with whether the Inspector is on read when it is resolved.
   const f = fixture("live-inspector-ci");
+  // A fresh database records the Inspector enabled; start from off so switching it on is seen.
+  setInspectorConfig({ enabled: false });
   f.registry.reconcileRepoPrs(new Map([repoMatch(f, "/other")]), new Set());
   adoptPr(PR_B, { sessionId: f.id, cwd: "/wt/live-inspector-ci-1", repoRoot: "/other" }, "hook", 1);
   f.registry.refreshInspections();
@@ -741,7 +743,7 @@ test("the session card's Inspector summary is the shared projection, CI and Code
     ci: { headSha: "head-10", required: "failing", inspectorEnabled: false },
     prKey: key,
     url: PR_A,
-    mode: "dry-run",
+    mode: "live",
     open: 1,
     postedOpen: 0,
     round: 0,
@@ -753,7 +755,7 @@ test("the session card's Inspector summary is the shared projection, CI and Code
   });
   assert.equal(codeRabbit?.unresolved, 1);
   assert.deepEqual(
-    inspectorSummaryOf(getInspectorInspection(key)!, { mode: "dry-run", enabled: false }, codeRabbit),
+    inspectorSummaryOf(getInspectorInspection(key)!, { mode: "live", enabled: false }, codeRabbit),
     { ...summary, codeRabbit },
     "the worker's projection of the same row matches the card",
   );

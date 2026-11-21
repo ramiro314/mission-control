@@ -12,11 +12,19 @@ import {
   decisionLead,
   formatResponse,
   isConversationResolvedReview,
+  isHomeDispatchResolvedReview,
   isHumanResolvedReview,
   reviewToolResult,
 } from "@shared/review-item.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
 import { verifyDraftProvenance } from "./foreman/decision-draft.ts";
+import { restoreRequestInputText } from "@shared/request-input.ts";
+import {
+  snoozeMeanwhileProblem,
+  snoozedContinuationLead,
+  snoozedInstructionText,
+  type ReviewSnoozeMeanwhile,
+} from "@shared/review-snooze.ts";
 import type { Registry } from "./registry.ts";
 import { recordShapeTicketsChoice, shapeFollowUpChoice } from "./shape-tickets.ts";
 import {
@@ -24,17 +32,53 @@ import {
   insertReview,
   transferPendingReviews,
   loadReviewContinuationCandidates,
+  loadSnoozeInstructionCandidates,
   markReviewWaitDetached,
+  snoozeReviewRow,
   updateReviewStatus,
+  wakeReviewRow,
 } from "./db.ts";
 import { unref } from "./util/timers.ts";
+import { isRewordedRetry } from "./review-retry.ts";
+
+/**
+ * How often the daemon looks for snoozed questions that are due. A sweep rather than one timer
+ * per question, because a timer measures elapsed process time and a laptop that slept through a
+ * reminder would otherwise hold it for as long as it slept. Fifteen seconds is well inside the
+ * shortest delay anyone can pick.
+ */
+export const SNOOZE_SWEEP_MS = 15_000;
+
+/**
+ * How close together two `request_input` asks from one session must arrive to be parallel calls
+ * rather than a retry (`ReviewManager.retriesReplacedBy`).
+ *
+ * The call is blocking, so an agent still waiting on one question can only ask another in the
+ * same batch of parallel tool calls, which reach the daemon within milliseconds of each other.
+ * A retry comes after the MCP client has given up, which takes minutes: five, in every
+ * duplicate the live database recorded. Thirty seconds sits far from both.
+ */
+export const PARALLEL_ASK_WINDOW_MS = 30_000;
 
 export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
 
 type Waiter = (r: ReviewItem) => void;
-type ContinuationDelivery = (review: ReviewItem, text: string) => boolean;
+/**
+ * Which review message is being handed to the outbox: a human resolution that arrived after the
+ * agent's wait ended, or a snoozed question's "carry on" instruction that the agent never got
+ * as a tool result.
+ */
+export type ReviewContinuationKind = "answer" | "snooze-instruction";
+type ContinuationDelivery = (review: ReviewItem, text: string, kind: ReviewContinuationKind) => boolean;
 
 export class ReviewResolutionError extends Error {}
+
+/**
+ * "Remind me later" asked for by anyone but the operator. Parking a question tells its agent to
+ * carry on without a person, which a session driving another through session control, or
+ * Foreman, does not get to decide for them.
+ */
+export class SnoozeActorRefusal extends ReviewResolutionError {}
 
 /**
  * Owns the review lifecycle and the long-poll waiters that let an agent block on
@@ -109,6 +153,7 @@ export class ReviewManager {
     this.continuationDelivery = deliver;
     const now = Date.now();
     for (const review of this.registry.pendingReviews()) markReviewWaitDetached(review.id, now);
+    for (const review of loadSnoozeInstructionCandidates()) this.deliverSnoozeInstruction(review);
     for (const review of loadReviewContinuationCandidates()) this.deliverContinuation(review);
   }
 
@@ -144,14 +189,29 @@ export class ReviewManager {
         return [];
       }
     });
-    return (
-      `Mission Control review ${review.id} was ${review.status === "dismissed" ? "dismissed" : "answered"} after its MCP wait ended. ` +
-      `Treat this as the result of your earlier review tool call:\n\n${result.text}` +
-      addenda.map((text) => `\n\n${text}`).join("")
-    );
+    // A snoozed question's agent stopped waiting because the operator told it to, so its answer
+    // is news about work already done, not the late result of a call.
+    const lead = review.snooze
+      ? snoozedContinuationLead(review)
+      : `Mission Control review ${review.id} was ${review.status === "dismissed" ? "dismissed" : "answered"} after its MCP wait ended. ` +
+        "Treat this as the result of your earlier review tool call:";
+    return `${lead}\n\n${result.text}` + addenda.map((text) => `\n\n${text}`).join("");
   }
 
   private deliverContinuation(review: ReviewItem): void {
+    this.deliverToOutbox(review, this.continuationText(review), "answer");
+  }
+
+  /**
+   * A snoozed question's "carry on" instruction, for an agent whose wait had already ended when
+   * the operator snoozed it. Without this the agent is told nothing until the answer, and goes
+   * on without the operator's choice - including "hold the work that depends on this".
+   */
+  private deliverSnoozeInstruction(review: ReviewItem): void {
+    this.deliverToOutbox(review, snoozedInstructionText(review), "snooze-instruction");
+  }
+
+  private deliverToOutbox(review: ReviewItem, text: string, kind: ReviewContinuationKind): void {
     if (transferForSource(review.sessionId)) { this.owedContinuationSessions.add(review.sessionId); return; }
     if (!this.continuationDelivery) {
       this.owedContinuationSessions.add(review.sessionId);
@@ -160,31 +220,38 @@ export class ReviewManager {
 
     let delivered = false;
     try {
-      delivered = this.continuationDelivery({ ...review, sessionId: runtimeTransferSuccessor(review.sessionId) }, this.continuationText(review));
+      delivered = this.continuationDelivery({ ...review, sessionId: runtimeTransferSuccessor(review.sessionId) }, text, kind);
     } catch (error) {
-      console.error(`Failed to queue review continuation ${review.id}:`, error);
+      console.error(`Failed to queue review ${kind === "answer" ? "continuation" : "snooze instruction"} ${review.id}:`, error);
     }
     if (!delivered) {
       this.owedContinuationSessions.add(review.sessionId);
       return;
     }
 
-    const stillOwed = loadReviewContinuationCandidates().some(
-      (candidate) => candidate.sessionId === review.sessionId,
-    );
-    if (stillOwed) this.owedContinuationSessions.add(review.sessionId);
+    if (this.owedFor(review.sessionId).length > 0) this.owedContinuationSessions.add(review.sessionId);
     else this.owedContinuationSessions.delete(review.sessionId);
   }
 
+  /** Everything still owed to one session's agent, instructions before answers. */
+  private owedFor(sessionId: string): Array<{ review: ReviewItem; kind: ReviewContinuationKind }> {
+    const mine = (review: ReviewItem) => review.sessionId === sessionId;
+    return [
+      ...loadSnoozeInstructionCandidates().filter(mine).map((review) => ({ review, kind: "snooze-instruction" as const })),
+      ...loadReviewContinuationCandidates().filter(mine).map((review) => ({ review, kind: "answer" as const })),
+    ];
+  }
+
   private retryContinuations(sessionId: string): void {
-    const candidates = loadReviewContinuationCandidates().filter(
-      (review) => review.sessionId === sessionId,
-    );
-    if (candidates.length === 0) {
+    const owed = this.owedFor(sessionId);
+    if (owed.length === 0) {
       this.owedContinuationSessions.delete(sessionId);
       return;
     }
-    for (const review of candidates) this.deliverContinuation(review);
+    for (const { review, kind } of owed) {
+      if (kind === "snooze-instruction") this.deliverSnoozeInstruction(review);
+      else this.deliverContinuation(review);
+    }
   }
 
   /**
@@ -217,16 +284,25 @@ export class ReviewManager {
    * This is one floor, not the fix for the timeout itself. The MCP side reports progress to
    * clients that ask for it and persists detachment when a client's maximum still expires.
    * A retry remains harmless, while a later answer no longer depends on a retry occurring.
+   *
+   * A retry that is NOT byte-identical is the second floor (`retriesReplacedBy`).
    */
   create(
     sessionId: string,
     kind: ReviewKind,
     title: string,
     body: string,
-    decisions: PlanDecision[] | null = null,
+    incomingDecisions: PlanDecision[] | null = null,
+    options: { snoozable?: boolean; now?: number } = {},
   ): ReviewItem {
+    // An MCP process may still be running a previous build. Compare retries using the form
+    // the operator will see, regardless of which version produced the request.
+    const decisions = restoreRequestInputText(kind, incomingDecisions);
+    // A SNOOZED twin is the same question too. Its agent was told not to ask again, and one that
+    // does anyway is handed the parked row back, whose wait returns at once with the same
+    // "carry on" it already got, rather than putting a second card in front of the operator.
     const existing = this.registry
-      .pendingReviews(sessionId)
+      .outstandingReviews(sessionId)
       .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions));
     if (existing) return existing;
 
@@ -241,12 +317,151 @@ export class ReviewManager {
       decisions,
       selections: null,
       resolvedBy: null,
-      createdAt: Date.now(),
+      ...(options.snoozable === true && kind === "input" ? { snoozable: true } : {}),
+      createdAt: options.now ?? Date.now(),
       resolvedAt: null,
     };
-    insertReview(review);
+    // Decided before anything is written, then committed with the new card in one transaction:
+    // a failure part way leaves neither the new card nor a withdrawal, rather than both cards
+    // pending with the withdrawal lost. Only after the commit is anything published or woken.
+    const replaced = this.retriesReplacedBy(review);
+    const resolvedAt = Date.now();
+    inTransaction(() => {
+      insertReview(review);
+      for (const older of replaced) updateReviewStatus(older.id, "superseded", null, resolvedAt, null, null);
+    });
     this.registry.upsertReview(review);
+    for (const older of replaced) {
+      this.publishSettled({ ...older, status: "superseded", response: null, resolvedAt, resolvedBy: null, selections: null });
+    }
     return review;
+  }
+
+  /**
+   * The questions a new `request_input` ask replaces, which `create` withdraws with it.
+   *
+   * The exact-match re-attach in `create` covers a retry sent byte for byte. Agents rarely
+   * retry that way. When an MCP client gives up on a blocking call, the model reads a timeout
+   * error and reissues the decision in new words: "The previous prompt timed out. May I
+   * proceed...". Codex does exactly this, and its client sends no cancellation, so the daemon
+   * never records the first wait as detached. Both cards stayed in the queue, and the operator
+   * answered the same decision twice.
+   *
+   * So when a session's new `request_input` ask is a reworded retry of an older one from the
+   * same session that is still pending (`isRewordedRetry`: the same decision, by its wording and
+   * by any phase, PR or other number it names), the older card is settled and the newer one
+   * stays. Any
+   * other older question stays exactly where it is, because a later, different ask is no
+   * evidence that the operator no longer needs to answer it. Parallel calls are never retries:
+   * `request_input` blocks, so an agent still waiting on one question can only ask another in
+   * the same batch, and those arrive less than `PARALLEL_ASK_WINDOW_MS` apart.
+   *
+   * Only `request_input`'s own asks (`snoozable`), on both sides: plan approvals, diff reviews,
+   * and the confirmations other tools raise are not retried this way and are never withdrawn
+   * by it. A question the operator snoozed is excluded even after it comes back to `pending`,
+   * because they chose to park it and its agent was told to carry on, so a later, different
+   * question from that agent is expected rather than a retry.
+   */
+  private retriesReplacedBy(newer: ReviewItem): ReviewItem[] {
+    if (newer.snoozable !== true) return [];
+    const cutoff = newer.createdAt - PARALLEL_ASK_WINDOW_MS;
+    return this.registry.outstandingReviews(newer.sessionId).filter((older) =>
+      older.id !== newer.id && older.status === "pending" && older.snoozable === true &&
+      !older.snooze && older.createdAt <= cutoff && isRewordedRetry(older, newer));
+  }
+
+  /**
+   * "Remind me later": park a pending `request_input` question and release the agent.
+   *
+   * Persist, publish, then wake the waiters, the order `settle` keeps and for the same reasons.
+   * Waking them is the point: the MCP call long-polling this review returns with the snoozed
+   * row, and `reviewToolResult` turns that into the instruction to carry on. A wait that had
+   * already detached has no waiter to wake, so on the first snooze the same instruction is
+   * queued through the continuation outbox as a message (`deliverSnoozeInstruction`); the later
+   * answer then follows by the ordinary continuation, under its own marker.
+   *
+   * "Nobody is listening" is read at this instant. An MCP child between two long polls of a
+   * wait that is recorded as detached (every pending wait is, after a daemon restart) can be
+   * told twice - once as the result of its next poll, once as a message. That duplicate is the
+   * accepted cost: the alternative failure is an agent never told at all.
+   *
+   * `meanwhile` is checked against the question even on a later snooze, where it is not stored,
+   * so a request naming an option the question never offered is refused rather than ignored.
+   */
+  snooze(
+    id: string,
+    delayMs: number,
+    meanwhile: ReviewSnoozeMeanwhile = { mode: "judgment" },
+    now = Date.now(),
+    by: ReviewActor = "human",
+  ): ReviewItem | null {
+    const cur = this.registry.getReview(id);
+    if (!cur) return null;
+    if (by !== "human") throw new SnoozeActorRefusal("Only the operator can choose Remind me later");
+    if (cur.snoozable !== true) {
+      throw new ReviewResolutionError("Only a question asked through request_input can be snoozed");
+    }
+    if (cur.status !== "pending") {
+      throw new ReviewResolutionError(
+        cur.status === "snoozed" ? "This question is already snoozed" : "This question is already settled",
+      );
+    }
+    const problem = snoozeMeanwhileProblem(cur, meanwhile);
+    if (problem) throw new ReviewResolutionError(`Cannot snooze: ${problem}`);
+    const snoozed = snoozeReviewRow(id, {
+      at: now,
+      until: now + delayMs,
+      mode: meanwhile.mode,
+      optionId: meanwhile.mode === "option" ? meanwhile.optionId : null,
+      listening: (this.waiters.get(id)?.size ?? 0) > 0,
+    });
+    if (!snoozed) throw new ReviewResolutionError("This question is no longer open");
+    const updated = snoozed.review;
+    this.registry.upsertReview(updated);
+    this.releaseWaiters(updated);
+    // Nobody was listening and the wait had ended: the instruction goes as a message instead.
+    if (snoozed.instructionOwed) this.deliverSnoozeInstruction(updated);
+    return updated;
+  }
+
+  /**
+   * Bring a snoozed question back to the operator now: its time came, or they chose Answer now.
+   * Null when it is not snoozed (already back, answered, or unknown), which a sweep that raced
+   * an answer reads as nothing to do.
+   */
+  wake(id: string, now = Date.now()): ReviewItem | null {
+    const cur = this.registry.getReview(id);
+    if (!cur || cur.status !== "snoozed") return null;
+    const updated = wakeReviewRow(id, now);
+    if (!updated) return null;
+    this.registry.upsertReview(updated);
+    return updated;
+  }
+
+  /** Wake every snoozed question that is due. Returns the ones it brought back. */
+  sweepSnoozed(now = Date.now()): ReviewItem[] {
+    const woken: ReviewItem[] = [];
+    for (const review of this.registry.snoozedReviews()) {
+      if ((review.snooze?.until ?? 0) > now) continue;
+      try {
+        const updated = this.wake(review.id, now);
+        if (updated) woken.push(updated);
+      } catch (error) {
+        console.error(`Failed to bring back snoozed review ${review.id}:`, error);
+      }
+    }
+    return woken;
+  }
+
+  /**
+   * Start bringing snoozed questions back on time. Sweeps once at once, so a reminder that fell
+   * due while the daemon was down is not held for another interval, then every `intervalMs`.
+   * Returns the stop.
+   */
+  startSnoozeClock(intervalMs = SNOOZE_SWEEP_MS): () => void {
+    this.sweepSnoozed();
+    const timer = unref(setInterval(() => this.sweepSnoozed(), intervalMs));
+    return () => clearInterval(timer);
   }
 
   /**
@@ -444,7 +659,9 @@ export class ReviewManager {
   ): ReviewItem | null {
     const cur = this.registry.getReview(id);
     if (!cur) return null;
-    if (cur.status !== "pending") return cur;
+    // A snoozed question is still unanswered, and answering it before it comes back is allowed:
+    // the answer leaves through the continuation outbox, since the agent's wait already ended.
+    if (cur.status !== "pending" && cur.status !== "snoozed") return cur;
     // Foreman may DRAFT a plan-decisions answer onto the form (its note's `draft`), never
     // send one: the plan's decisions are the human's. Refused here rather than trusted to the
     // worker, so no Foreman-marked caller can settle one by any action.
@@ -528,7 +745,7 @@ export class ReviewManager {
    */
   private orphanReviewsFor(sessionId: string): void {
     if (transferForSource(sessionId)) return;
-    for (const r of this.registry.pendingReviews(sessionId)) this.settle(r, "orphaned", null);
+    for (const r of this.registry.outstandingReviews(sessionId)) this.settle(r, "orphaned", null);
   }
 
   persistRuntimeTransfer(sourceId: string, successorId: string): ReviewItem[] {
@@ -543,7 +760,7 @@ export class ReviewManager {
 
   /** The restart half: pending reviews bound to a session the first sweep never found. */
   private orphanReviewsWithNoLiveSession(): void {
-    for (const r of this.registry.pendingReviews()) {
+    for (const r of this.registry.outstandingReviews()) {
       if (this.registry.getSession(r.sessionId) || transferForSource(r.sessionId)) continue;
       this.settle(r, "orphaned", null);
     }
@@ -565,7 +782,8 @@ export class ReviewManager {
     response: string | null,
     /**
      * Null for the two orphan paths below, which are the daemon tidying up after a session
-     * that went away - not a decision anyone made, and so not a voice in the conversation.
+     * that went away, and for `retriesReplacedBy` - not a decision anyone made, and so
+     * not a voice in the conversation.
      */
     resolvedBy: ReviewActor | null = null,
     selections: PlanDecisionAnswer[] | null = null,
@@ -575,7 +793,16 @@ export class ReviewManager {
     const write = () => updateReviewStatus(cur.id, status, response, resolvedAt, selections, resolvedBy);
     if (persistWith) inTransaction(() => { write(); persistWith(); });
     else write();
-    const updated: ReviewItem = { ...cur, status, response, resolvedAt, resolvedBy, selections };
+    return this.publishSettled({ ...cur, status, response, resolvedAt, resolvedBy, selections });
+  }
+
+  /**
+   * Everything a settle does after its status is durably written: publish it, credit or retire
+   * what the actor's decision affects, and release the waiters. Split from `settle` so `create`
+   * can commit a withdrawal in the same transaction as the card that replaced it.
+   */
+  private publishSettled(updated: ReviewItem): ReviewItem {
+    const { resolvedBy } = updated;
     this.registry.upsertReview(updated);
 
     // You decided this yourself, so Foreman's pinned note about the same review is spent.
@@ -587,19 +814,25 @@ export class ReviewManager {
     // away: no decision was made, so there is no answer of yours to credit, and the note
     // rightly stays until the session's own teardown clears it.
     if (resolvedBy === "human") {
-      this.registry.retireNoteAnsweredByYou(cur.sessionId, `review:${cur.id}`);
+      this.registry.retireNoteAnsweredByYou(updated.sessionId, `review:${updated.id}`);
     }
     this.markSteered(updated);
-    if (isConversationResolvedReview(updated)) {
+    // A late answer from a home session or mctl must also reach a detached wait. Only the delivery
+    // gate is widened: the conversation and timeline still read `isConversationResolvedReview`.
+    if (isConversationResolvedReview(updated) || isHomeDispatchResolvedReview(updated)) {
       const candidate = loadReviewContinuationCandidates(updated.id)[0];
       if (candidate) this.deliverContinuation(candidate);
     }
 
-    const set = this.waiters.get(cur.id);
-    if (set) {
-      for (const w of [...set]) w(updated);
-      this.waiters.delete(cur.id);
-    }
+    this.releaseWaiters(updated);
     return updated;
+  }
+
+  private releaseWaiters(review: ReviewItem): void {
+    const set = this.waiters.get(review.id);
+    if (set) {
+      for (const w of [...set]) w(review);
+      this.waiters.delete(review.id);
+    }
   }
 }

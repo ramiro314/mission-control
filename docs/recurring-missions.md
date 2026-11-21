@@ -145,7 +145,7 @@ policy**:
 | **Skip** | no task; every crossed instant is recorded as skipped |
 
 Then the **overlap policy** asks whether this mission's previous work is still in flight -
-a task in `backlog`, `dispatching` or `running`. **Skip if active** (the default) records
+a task in `backlog`, `dispatching`, `running` or `hibernated`. **Skip if active** (the default) records
 `skipped_overlap` and names the task in the way; **Allow** files regardless. A run that
 `failed` never blocks: a mission whose last run went wrong still runs tomorrow.
 
@@ -174,6 +174,21 @@ Three consequences worth knowing:
 - **An archived Workflow is kept, not erased.** A mission naming a Workflow the library no
   longer publishes still shows it in the editor and on its detail, so the next save cannot
   silently convert it into "no handoff". A run that fires meanwhile finishes without one.
+
+### Chat missions
+
+Choose **chat** as the task kind when each run should open a conversation rather than deliver
+a change, so nothing reviews it afterwards. A chat has no diff, so the After work control stands
+down and the template saves no Workflow. Each run files a chat into the backlog, and Foreman
+launches it in a fresh session with the mission's intent as the opening message. It is never
+handed to an agent that is already running, because the opener starts a new conversation.
+
+Foreman never ships a chat, so the [completion policy](#when-a-run-finishes-but-its-task-does-not)
+decides when a run ends. Under **Leave it open**, the chat stays open for you to continue, and with the
+default `skip-active` overlap policy the next run is skipped until you choose **Complete**. Under
+**Complete the task automatically**, the run completes once Foreman sees the agent has answered.
+Only a mission files a chat into the backlog. A chat you dispatch yourself still launches immediately,
+and a mission-filed chat cannot be returned to the backlog from its session.
 
 ### When a run finishes but its task does not
 

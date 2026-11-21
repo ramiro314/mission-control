@@ -31,6 +31,7 @@ import { dependencyInputOf, dependencyKey } from "@shared/task-dependency.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import {
   BACKLOG_TASK_KINDS,
+  SCHEDULE_TASK_KINDS,
   DISPATCH_TASK_KINDS,
   MAX_LABELS,
   PRIORITY_LABELS,
@@ -41,10 +42,12 @@ import {
   isGrillFirstTaskKind,
   isPlanningTaskKind,
   taskDefaultWorkflowId,
+  taskAllowsBacklog,
   taskKindAllowsBacklog,
+  CHAT_WORKFLOW_REFUSAL,
   type GrillFirstTaskKind,
 } from "@shared/task.ts";
-import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
+import type { EnvironmentCheckId, EnvironmentCheckView } from "@shared/environment-checks.ts";
 import {
   TASK_SOURCE_KIND_INFO,
   pushSourcesFor,
@@ -86,6 +89,7 @@ import {
   type ResolveHarnessModelCatalog,
   useHarnessModelCatalogs,
 } from "../model-catalog.tsx";
+import { AttachedRepoChips } from "./AttachedRepoChips.tsx";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import {
@@ -157,6 +161,7 @@ import {
 import { StandingInstructionsNote } from "./StandingInstructionsNote.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { supportsManagedPipelineHost, type PipelineLaunchRuntime } from "@shared/pipeline.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 
 /** The runtime-specific provider contract shown where a pipeline launch is chosen. */
 export function pipelineDispatchConstraint(runtime: PipelineLaunchRuntime | null): string {
@@ -637,6 +642,7 @@ export function DispatchLayer({
   onClose,
   onOpenSchedule,
   onOpenLaunchFix,
+  onOpenEnvironmentFix,
   onEnsembleLaunched,
   residentProfiles = [],
   onEditResidentProfile,
@@ -687,6 +693,11 @@ export function DispatchLayer({
    * form left standing over the screen the operator was just sent to is not an offer.
    */
   onOpenLaunchFix?: (fix: WorkflowLaunchFix) => void;
+  /**
+   * Open the Setup row that repairs what an environment warning reports. Closes the form
+   * first, for `onOpenLaunchFix`'s reason.
+   */
+  onOpenEnvironmentFix?: (check: EnvironmentCheckId) => void;
   /** Navigate to a freshly launched Ensemble run's detail. */
   onEnsembleLaunched?: (runId: string) => void;
   /** Live resident profiles, for the Resident mode's profile cards. */
@@ -1118,6 +1129,7 @@ export function DispatchLayer({
         onClose={onClose}
         onSubmitted={onEditSubmitted}
         onOpenLaunchFix={onOpenLaunchFix}
+        onOpenEnvironmentFix={onOpenEnvironmentFix}
         workflowSummaries={workflowSummaries}
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
@@ -1151,6 +1163,7 @@ export function DispatchLayer({
         onClose={onClose}
         onSubmitted={onTourSubmitted}
         onOpenLaunchFix={onOpenLaunchFix}
+        onOpenEnvironmentFix={onOpenEnvironmentFix}
         workflowSummaries={workflowSummaries}
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
@@ -1173,6 +1186,7 @@ export function DispatchLayer({
       onClose={onClose}
       onSubmitted={onSubmitted}
       onOpenLaunchFix={onOpenLaunchFix}
+      onOpenEnvironmentFix={onOpenEnvironmentFix}
       workflowSummaries={workflowSummaries}
       foremanEnabled={foremanEnabled}
       harnessesRevision={harnessesRevision}
@@ -1210,6 +1224,7 @@ function DispatchModal({
   onClose,
   onSubmitted,
   onOpenLaunchFix,
+  onOpenEnvironmentFix,
   workflowSummaries = [],
   foremanEnabled = false,
   harnessesRevision = 0,
@@ -1240,6 +1255,8 @@ function DispatchModal({
   onSubmitted: (submitted: DispatchDraft) => void;
   /** Open the settings screen that grants what a refused launch named as missing. */
   onOpenLaunchFix?: (fix: WorkflowLaunchFix) => void;
+  /** Open the Setup row that repairs what an environment warning reports. */
+  onOpenEnvironmentFix?: (check: EnvironmentCheckId) => void;
   workflowSummaries?: WorkflowSummary[];
   foremanEnabled?: boolean;
   /**
@@ -1299,9 +1316,26 @@ function DispatchModal({
   // Every kind Dispatch launches, for the two modes that launch something new - `resident` is
   // launched from a profile in Resident mode, never picked as a kind. An edit is confined to
   // the kinds a backlog row can hold, and Ensemble to the kinds its members can be.
+  //
+  // A backlog row a Recurring Mission filed may also hold a chat, so its edit offers the
+  // mission's kinds - see `taskAllowsBacklog`.
+  const editedScheduleId = mode.kind === "edit" ? mode.task.scheduleId : null;
   const availableTaskKinds: readonly TaskKind[] =
-    mode.kind === "single" || mode.kind === "tour" ? DISPATCH_TASK_KINDS : BACKLOG_TASK_KINDS;
-  const backlogCompatible = taskKindAllowsBacklog(draft.kind);
+    mode.kind === "single" || mode.kind === "tour"
+      ? DISPATCH_TASK_KINDS
+      : editedScheduleId !== null
+        ? SCHEDULE_TASK_KINDS
+        : BACKLOG_TASK_KINDS;
+  const allowsBacklog = (kind: TaskKind): boolean =>
+    taskAllowsBacklog({ kind, scheduleId: editedScheduleId });
+  const backlogCompatible = allowsBacklog(draft.kind);
+  // A separate question from the one above, and asked of the KIND: a chat a mission filed may
+  // sit in the backlog, but a conversation never waits on other work. See
+  // `CHAT_DEPENDENCY_REFUSAL`.
+  const dependenciesAllowed = taskKindAllowsBacklog(draft.kind);
+  // An edit can only reach a chat on a row a mission filed, and that chat runs no after-work:
+  // the daemon refuses a Workflow on it (`CHAT_WORKFLOW_REFUSAL`), so the control stands down.
+  const afterWorkLocked = editing !== null && !dependenciesAllowed;
   // Opens on the last list this window received, so a rescan behind the daemon never leaves
   // the picker empty. "Loading" means there is no list at all yet, never "a newer one is due".
   const [repos, setRepos] = useState<string[]>(() => cachedRepos() ?? []);
@@ -1316,8 +1350,6 @@ function DispatchModal({
   // is always mounted: an empty repo picker sitting under the primary on every dispatch
   // would read as a second required field. Local rather than drafted - a half-typed path
   // in a picker that has not been confirmed is not part of the task.
-  const [addingRepo, setAddingRepo] = useState(false);
-  const [addRepoValue, setAddRepoValue] = useState("");
   // The configured per-harness defaults, so both pickers can name what "Default"
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
@@ -1634,7 +1666,10 @@ function DispatchModal({
     : AGENT_TYPES;
   const kindAvailable = (kind: TaskKind): boolean => {
     const behavior = TASK_KIND_BEHAVIOR[kind];
-    return behavior.repoAvailability === "workspace" || pipelineRepos.has(draft.repoRoot.trim());
+    if (behavior.repoAvailability === "workspace") return true;
+    // Pipeline is never offered while the ai-conductor integration is hidden, whatever
+    // repository consent is still stored for it.
+    return CONDUCTOR_INTEGRATION_ENABLED && pipelineRepos.has(draft.repoRoot.trim());
   };
   const kindUnavailable =
     !availableTaskKinds.includes(draft.kind) || !kindAvailable(draft.kind);
@@ -1747,6 +1782,9 @@ function DispatchModal({
     if (!workflowConfig || !guess || busy) return;
     provisionalWorkflow.current = null;
     if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
+    // An edit into a mission chat is locked at None (`afterWorkLocked`): a chat row configured
+    // in Settings must not land on it late, where the daemon would refuse the save.
+    if (editing !== null && !taskKindAllowsBacklog(guess.kind)) return;
     const resolved = taskDefaultWorkflowId(guess.kind, workflowConfig.kindWorkflowDefaults, effectivePlanStorage);
     if (resolved !== guess.workflowId) update({ workflowId: resolved });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the rows arrive, or once a save settles
@@ -1780,10 +1818,6 @@ function DispatchModal({
    * form changes shape instead of leaving Dispatch enabled for a request the daemon refuses.
    */
   function selectKind(kind: TaskKind): void {
-    if (kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline") {
-      setAddingRepo(false);
-      setAddRepoValue("");
-    }
     const normalizedPipelineAgent = pipelineAgentForKindTransition(
       kind,
       pipelineLaunchRuntime,
@@ -1792,6 +1826,10 @@ function DispatchModal({
     update({
       kind,
       ...afterWorkForKind(kind),
+      // A row edited into a mission chat takes None, whatever the kind's Settings row arms.
+      ...(editing !== null && kind !== draft.kind && !taskKindAllowsBacklog(kind)
+        ? { workflowId: null }
+        : {}),
       ...dependenciesForKind(kind),
       ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline"
         ? { extraRepoRoots: [] }
@@ -2639,6 +2677,7 @@ function DispatchModal({
       kindUnavailable ||
       (launchesNow && selectedWorkflowBlocked) ||
       Boolean(editing && dispatchNow && selectedDependenciesUnmet) ||
+      (!dependenciesAllowed && draft.dependencies.length > 0) ||
       (!backlogCompatible &&
         (!dispatchNow || editing !== null || ensembleMode || draft.dependencies.length > 0))
     ) return;
@@ -2817,76 +2856,14 @@ function DispatchModal({
         // combobox the pass cannot see, where ↵ answers nothing and the operator is stuck in a
         // question they cannot finish. They come back the moment the pass hands over. The other
         // three steps need no rule here - the whole field is dim for them.
-        <div className={`repo-chips${guidedStep?.id === "repo" ? " dispatch-guided-dim" : ""}`}>
-          {draft.extraRepoRoots.map((root, index) => (
-            <span key={`${root}-${index}`} className="repo-chip">
-              {/* The full path through the app's own tooltip, never a native `title` -
-                  `tooltip-coverage.test.ts` enforces that, and it is what makes the
-                  shortened chip readable without a browser-styled box. */}
-              <RepositoryName path={root} className="repo-chip-name" />
-              <Tooltip label="Detach this repo">
-                <button
-                  type="button"
-                  className="dep-chip-x"
-                  aria-label={`Detach repo: ${root}`}
-                  onClick={() =>
-                    update({
-                      extraRepoRoots: draft.extraRepoRoots.filter((_, i) => i !== index),
-                    })
-                  }
-                >
-                  ✕
-                </button>
-              </Tooltip>
-            </span>
-          ))}
-          {!multiRepoOffered ? null : addingRepo ? (
-            <div className="repo-chip-add">
-              <RepoCombobox
-                repos={repos}
-                value={addRepoValue}
-                placeholder="repo to attach…"
-                onChange={setAddRepoValue}
-              />
-              <Tooltip label="Attach this repo to the task">
-                <button
-                  type="button"
-                  className="dep-add"
-                  aria-label="Attach repo"
-                  // Refuses the obviously redundant entry - the same path as the primary, or
-                  // one already attached. Deliberately STRING equality and nothing cleverer:
-                  // only the daemon resolves a path to a repo's main checkout, so it stays
-                  // the one authority on whether two spellings are one repo, and a second
-                  // half-implementation of that rule here would be a source of truth that
-                  // could disagree with it.
-                  disabled={
-                    !addRepoValue.trim()
-                    || addRepoValue.trim() === draft.repoRoot.trim()
-                    || draft.extraRepoRoots.includes(addRepoValue.trim())
-                  }
-                  onClick={() => {
-                    update({ extraRepoRoots: [...draft.extraRepoRoots, addRepoValue.trim()] });
-                    setAddRepoValue("");
-                    setAddingRepo(false);
-                  }}
-                >
-                  Attach
-                </button>
-              </Tooltip>
-            </div>
-          ) : (
-            <Tooltip label="Work across several repos in one session - each changed repo gets its own PR">
-              <button
-                type="button"
-                className="dep-add"
-                aria-label="Add another repo"
-                onClick={() => setAddingRepo(true)}
-              >
-                + Add another repo
-              </button>
-            </Tooltip>
-          )}
-        </div>
+        <AttachedRepoChips
+          className={guidedStep?.id === "repo" ? "dispatch-guided-dim" : ""}
+          primary={draft.repoRoot}
+          attached={draft.extraRepoRoots}
+          repos={repos}
+          canAttach={multiRepoOffered}
+          onChange={(extraRepoRoots) => update({ extraRepoRoots })}
+        />
       )}
       {draft.extraRepoRoots.length > 0 && multiRepoOffered && (
         <span className="field-hint">
@@ -2981,9 +2958,11 @@ function DispatchModal({
     ...(backlogCompatible
       ? [
           draft.enabled ? "autopilot on" : "autopilot off",
-          dependencyCount > 0
-            ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
-            : "no dependencies",
+          ...(dependenciesAllowed
+            ? [dependencyCount > 0
+              ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
+              : "no dependencies"]
+            : []),
         ]
       : []),
   ].join(" · ");
@@ -3433,7 +3412,7 @@ function DispatchModal({
             <Tooltip label={AFTER_WORK_FIELD_TIP}>
               <select
                 className="field-input"
-                disabled={!usesHarness}
+                disabled={!usesHarness || afterWorkLocked}
                 value={
                   draft.workflowId === undefined
                     ? "__default"
@@ -3504,6 +3483,9 @@ function DispatchModal({
             place: "above",
           })}
         </div>
+        {afterWorkLocked && (
+          <span className={`field-hint${guidedDim}`}>{CHAT_WORKFLOW_REFUSAL}</span>
+        )}
         {selectedWorkflowBlocked && (
           <span className={`dispatch-workflow-warning${guidedDim}`}>
             {!foremanEnabled
@@ -3634,7 +3616,7 @@ function DispatchModal({
                   </div>
                 )}
 
-                {backlogCompatible && <div className="field">
+                {dependenciesAllowed && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
                     <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR unless set to Stack"}</span>
@@ -3775,13 +3757,38 @@ function DispatchModal({
             Last in the body, so it is the final thing read before the buttons - and a note,
             never a gate: the footer below is untouched by it, because a stalled agent is a
             cost the operator may knowingly accept while a blocked Workflow is a task the
-            daemon would have to refuse. Absent entirely on a machine no check recognises. */}
+            daemon would have to refuse. Absent entirely on a machine no check recognises.
+            Every check that warns has a Setup row carrying its remedy, so the note ends in a
+            door to that row rather than a sentence naming a settings path the operator then
+            has to find; it closes the form first, and the draft survives the close. */}
         {envWarnings.map((check) => (
           <p className="dispatch-wait-note dispatch-env-note" key={check.id}>
             <span aria-hidden>⚠</span>
             <span>
               <strong>{check.label}:</strong> {check.warning}
               {check.detail && <span className="dispatch-env-detail">{check.detail}</span>}
+              {onOpenEnvironmentFix && (
+                <>
+                {" "}
+                <Tooltip label={`Open Settings, Setup, at the ${check.label} row`}>
+                  <button
+                    type="button"
+                    className="settings-link dispatch-env-fix"
+                    aria-label={`Fix ${check.label} in Setup`}
+                    // Leaving mid-dispatch or mid-Ensemble-launch would unmount the form
+                    // before it can report the outcome, so the link waits for either.
+                    disabled={busy || ensembleLaunch.launching}
+                    onClick={() => {
+                      if (busy || ensembleLaunch.launching) return;
+                      onClose();
+                      onOpenEnvironmentFix(check.id);
+                    }}
+                  >
+                    Fix in Setup
+                  </button>
+                </Tooltip>
+                </>
+              )}
             </span>
           </p>
         ))}

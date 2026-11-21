@@ -1,3 +1,8 @@
+import { prCheckSummary } from "@shared/pr-check-details.ts";
+import { PrChecksStatus } from "./PrChecksStatus.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { canMessage } from "@shared/pane.ts";
+import { branchUpdateLabel, branchConflictPrompt } from "@shared/pr-branch-update.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentType,
@@ -1666,7 +1671,7 @@ export function prChipView(session: Session): PrChipView | null {
         : state === "closed"
           ? `Pull request ${label} closed - open on GitHub`
           : `Open pull request ${label} - open on GitHub`,
-    failingTitle: "A CI check failed on this pull request - open on GitHub",
+    failingTitle: prCheckSummary(session.prCheckDetails),
     conflictTitle: conflict?.title ?? null,
     conflictUrl: conflict?.url ?? null,
   };
@@ -1684,9 +1689,58 @@ function PrConflictMark({ title }: { title: string }): React.JSX.Element {
   );
 }
 
+/** Shared by every PR presentation, including each attached repository. */
+export function PrBranchUpdateStatus(props: { session: Session; url: string; detailed?: boolean }): React.JSX.Element {
+  // A replacement URL gets fresh state; a prior request can only finish on its unmounted instance.
+  return <BranchUpdateStatus key={props.url} {...props} />;
+}
+
+function BranchUpdateStatus({ session, url, detailed = false }: { session: Session; url: string; detailed?: boolean }): React.JSX.Element | null {
+  const enabled = useFeatureFlag("automatic-pr-branch-update");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const update = session.prBranchUpdates?.[url];
+  useEffect(() => { setSent(false); setError(null); }, [url, update?.status, update?.reason]);
+  if (!enabled || !update) return null;
+  return <span className="pr-branch-update" role="status" onClick={e => e.stopPropagation()}>
+    <Tooltip label={update.reason ?? branchUpdateLabel(update)}>
+      <span>{branchUpdateLabel(update)}</span>
+    </Tooltip>
+    {detailed && update.reason && <span className="pr-branch-update-reason">{update.reason}</span>}
+    {detailed && update.status === "conflict" && canMessage(session) && <Tooltip label="Ask the owning session to resolve conflicts and push without merging the PR">
+      <button className="btn" type="button" disabled={sent || busy}
+      onClick={async () => {
+        setBusy(true); setError(null);
+        try {
+          const result = await api.injectPrompt(session.id, branchConflictPrompt(url));
+          if (result.ok) setSent(true);
+          else setError(result.error || "Could not send the conflict resolution prompt. Try again.");
+        }
+        catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+        finally { setBusy(false); }
+      }}>{sent ? "Sent to session" : busy ? "Sending…" : "Send to session to resolve"}</button>
+    </Tooltip>}
+    {error && <span role="alert">{error}</span>}
+  </span>;
+}
+
+/** Refusals need room that the compact header cannot provide. */
+export function PrBranchUpdateDetails({ session }: { session: Session }): React.JSX.Element | null {
+  const enabled = useFeatureFlag("automatic-pr-branch-update");
+  const url = session.prUrl;
+  if (!enabled || !url || !session.prBranchUpdates?.[url]?.reason) return null;
+  return <div className="detail-pr-update">
+    <Tooltip label="Open this pull request on GitHub">
+      <a href={url} target="_blank" rel="noreferrer">PR {session.prNumber ? `#${session.prNumber}` : "on GitHub"}</a>
+    </Tooltip>
+    <PrBranchUpdateStatus session={session} url={url} detailed />
+  </div>;
+}
+
 /**
- * The PR chip, plus the "a CI check failed" alert beside it when checks are failing and the
- * "conflicts with its base" alert when GitHub reports a merge conflict.
+ * The PR chip, plus a separate results button when CI needs attention and the "conflicts
+ * with its base" alert when GitHub reports a merge conflict.
  */
 export function PrChip({ session }: { session: Session }): React.JSX.Element | null {
   const view = prChipView(session);
@@ -1705,20 +1759,8 @@ export function PrChip({ session }: { session: Session }): React.JSX.Element | n
           <span className="pr-num">{view.label}</span>
         </a>
       </Tooltip>
-      {view.failing && (
-        <Tooltip label={view.failingTitle}>
-          <a
-            className="pr-checks-alert"
-            href={view.url}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={view.failingTitle}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <ChecksFailedIcon />
-          </a>
-        </Tooltip>
-      )}
+      <PrBranchUpdateStatus session={session} url={view.url} />
+      {view.failing && <PrChecksStatus key={view.url} details={session.prCheckDetails} url={view.url} />}
       {view.conflictTitle && (
         <Tooltip label={view.conflictTitle}>
           <a
@@ -1752,6 +1794,7 @@ export function PrRailMark({ session }: { session: Session }): React.JSX.Element
   if (!view) return null;
   const title = view.conflictTitle ?? (view.failing ? view.failingTitle : view.title);
   return (
+    <>
     <Tooltip label={title}>
       <span className={`rail-pr ${view.tone}`}>
         {view.label}
@@ -1759,22 +1802,18 @@ export function PrRailMark({ session }: { session: Session }): React.JSX.Element
         {view.conflictTitle && <PrConflictMark title={view.conflictTitle} />}
       </span>
     </Tooltip>
+    <PrBranchUpdateStatus session={session} url={view.url} />
+    </>
   );
 }
 
-/**
- * The board tile's own vocabulary for the PR - a `.tile-flag` link, folding the failing-
- * checks state into the same chip with a `⚠` suffix rather than `PrChip`'s separate alert
- * icon, since the tile has no room for a second element. Given the same instant `Tooltip`
- * as `InspectorTileFlag` rather than a native `title`, so two adjacent flags on the same
- * tile don't behave differently on hover. Same shared `prChipView` gate as the other three
- * drawings - see its comment for the `prNumber` gate this replaced.
- */
+/** The board's PR link and separate CI results affordance share the console's decision. */
 export function PrTileFlag({ session }: { session: Session }): React.JSX.Element | null {
   const view = prChipView(session);
   if (!view) return null;
-  const title = view.conflictTitle ?? (view.failing ? view.failingTitle : view.title);
+  const title = view.conflictTitle ?? view.title;
   return (
+    <>
     <Tooltip label={title}>
       <a
         className={`tile-flag tile-flag-link ${view.tone}`}
@@ -1786,10 +1825,12 @@ export function PrTileFlag({ session }: { session: Session }): React.JSX.Element
         onClick={(e) => e.stopPropagation()}
       >
         {view.label}
-        {view.failing && " ⚠"}
         {view.conflictTitle && <PrConflictMark title={view.conflictTitle} />}
       </a>
     </Tooltip>
+    {view.failing && <PrChecksStatus key={view.url} details={session.prCheckDetails} url={view.url} />}
+    <PrBranchUpdateStatus session={session} url={view.url} />
+    </>
   );
 }
 
@@ -2147,9 +2188,10 @@ export function TaskClaimWarnings({
  * on. It is also what the completion quorum is waiting for, said out loud.
  */
 export function TaskRepoPrs({
-  repoPrs,
+  repoPrs, session,
 }: {
   repoPrs: readonly TaskRepoPrSummary[];
+  session: Session;
 }): React.JSX.Element | null {
   if (repoPrs.length === 0) return null;
   return (
@@ -2175,8 +2217,8 @@ export function TaskRepoPrs({
           );
         }
         return (
+          <span key={entry.repoRoot}>
           <Tooltip
-            key={entry.repoRoot}
             label={`${entry.repoRoot} (${role}) - pull request ${label} ${state} - open on GitHub`}
           >
             <a
@@ -2191,6 +2233,9 @@ export function TaskRepoPrs({
               <span className="pr-num">{label}</span>
             </a>
           </Tooltip>
+          {entry.feedback?.prChecks === "failing" && <PrChecksStatus key={entry.prUrl} details={entry.feedback.prCheckDetails} url={entry.prUrl} />}
+          <PrBranchUpdateStatus session={session} url={entry.prUrl} detailed />
+          </span>
         );
       })}
     </span>

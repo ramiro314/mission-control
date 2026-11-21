@@ -22,6 +22,10 @@ import {
 import { Tooltip } from "./Tooltip.tsx";
 import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 import { clearReviewDraft, useReviewDraft } from "../lib/review-drafts.ts";
+import { canSnoozeReview } from "@shared/review-snooze.ts";
+import { ReminderBanner, RemindLaterButton, SnoozeSheet } from "./ReviewSnooze.tsx";
+import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
+import { CheckoutPathText } from "./CheckoutPathText.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -41,6 +45,8 @@ export function ReviewModal({
   dialog = null,
   onClose,
   onMovedToChat,
+  files,
+  onOpenPath,
 }: {
   session: Session;
   reviews: ReviewItem[];
@@ -52,7 +58,22 @@ export function ReviewModal({
   onClose: () => void;
   /** A question was moved to the conversation; the caller takes the operator there. */
   onMovedToChat?: (sessionId: string) => void;
+  /**
+   * The session files store, for the checkout listing that decides which paths a question's
+   * text names. The question is often a choice between files the agent just wrote - mock-ups
+   * above all - and this card is where the operator makes it.
+   */
+  files?: SessionFilesController;
+  /** Open one checkout file in the session's Files tab. */
+  onOpenPath?: (sessionId: string, path: string) => void;
 }): React.JSX.Element {
+  const checkoutPaths = useWorkspacePaths(files, session.id, Boolean(session.cwd && onOpenPath));
+  const openPath = onOpenPath
+    ? (path: string) => {
+        onClose();
+        onOpenPath(session.id, path);
+      }
+    : undefined;
   const tourTargetRef = useTourTaskTargetRef<HTMLElement>("see-work:review-modal", session.task?.id);
   const pending = reviews.length + (dialog ? 1 : 0);
   // Close automatically once the session has nothing left pending: no review and no menu.
@@ -84,7 +105,14 @@ export function ReviewModal({
       <div className="modal-body">
         {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
         {reviews.map((r) => (
-          <ReviewCard key={r.id} review={r} note={session.note} onMovedToChat={onMovedToChat} />
+          <ReviewCard
+            key={r.id}
+            review={r}
+            note={session.note}
+            onMovedToChat={onMovedToChat}
+            checkoutPaths={checkoutPaths}
+            onOpenPath={openPath}
+          />
         ))}
       </div>
     </Overlay>
@@ -103,9 +131,14 @@ export function ReviewCard({
   review,
   note: sessionNote,
   onMovedToChat,
+  checkoutPaths = null,
+  onOpenPath,
 }: {
   review: ReviewItem;
   note?: SessionNoteSummary | null;
+  /** Paths in the session's checkout; a question naming one links it to Files. */
+  checkoutPaths?: ReadonlySet<string> | null;
+  onOpenPath?: (path: string) => void;
   /**
    * Called once an answer that moved at least one question to chat has been delivered, so the
    * surface can close and focus the session's message box: the conversation is where the
@@ -123,6 +156,10 @@ export function ReviewCard({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [foremanOpen, setForemanOpen] = useState(false);
+  // "Remind me later" opens a sheet in place of the answer form. Local to this mount on
+  // purpose: closing the modal mid-choice drops the half-made snooze, never the draft answer.
+  const [snoozing, setSnoozing] = useState(false);
+  const snoozable = canSnoozeReview(review);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
@@ -192,6 +229,10 @@ export function ReviewCard({
     void resolve("answer", formatResponse(asked, selections, decisionLead(review.kind)), selections);
   }
 
+  const laterButton = snoozable ? (
+    <RemindLaterButton disabled={busy} onClick={() => setSnoozing(true)} />
+  ) : null;
+
   const dismissButton = (
     <Tooltip label="Dismiss this review without sending an answer">
       <button
@@ -210,6 +251,7 @@ export function ReviewCard({
         <span className={`kind-tag kind-${review.kind}`}>
           {review.kind === "plan-decisions" ? "decisions" : review.kind}
         </span>
+        {review.snooze?.remindedAt != null && <span className="kind-tag kind-reminder">reminder</span>}
         <h3>{review.title}</h3>
         {foremanAvailable && (
           <ForemanRecommendationButton
@@ -235,13 +277,19 @@ export function ReviewCard({
         skipped when there is nothing to put in it, because `.review-content` is a bordered,
         margined box and an empty one is an artifact.
       */}
+      <ReminderBanner review={review} />
+
       {showsBody(review) && (
         <div className="review-content">
           {review.kind === "diff" && <DiffView diff={review.body} />}
           {(review.kind === "plan" || review.kind === "plan-decisions") && (
             <PlanView markdown={review.body} />
           )}
-          {review.kind === "input" && <p className="question">{inputBody(review)}</p>}
+          {review.kind === "input" && (
+            <p className="question">
+              <CheckoutPathText text={inputBody(review)} paths={checkoutPaths} onOpen={onOpenPath} />
+            </p>
+          )}
         </div>
       )}
 
@@ -253,7 +301,9 @@ export function ReviewCard({
         `plan-decisions` with no decisions cannot be created (the schema forbids it); an
         `input` with none is the open-ended ask, and still gets the textarea.
       */}
-      {decisions ? (
+      {snoozing && snoozable ? (
+        <SnoozeSheet review={review} onBack={() => setSnoozing(false)} />
+      ) : decisions ? (
         <DecisionForm
           decisions={decisions}
           busy={busy}
@@ -278,7 +328,9 @@ export function ReviewCard({
             updateDraft((d) => ({ ...d, decisions: change(d.decisions) }))
           }
           besideSubmit={
-            finalBundle && (
+            // A snoozable question is a `request_input` ask, never a plan bundle, so at
+            // most one of the two ever fills this slot.
+            laterButton ?? (finalBundle && (
               <label className="decisions-standing-approval">
                 <Tooltip label="When you approve this bundle, also approve every later bundle for this task without asking; each is logged in this session">
                   <input
@@ -290,7 +342,7 @@ export function ReviewCard({
                 </Tooltip>
                 <span>Approve all future bundles for this task</span>
               </label>
-            )
+            ))
           }
           onDismiss={() => void resolve("dismiss", null)}
           onSubmit={(response, selections) => void resolve("answer", response, selections)}
@@ -311,6 +363,7 @@ export function ReviewCard({
               {CHAT_ABOUT_IT}
             </button>
           </Tooltip>
+          {laterButton}
           <Tooltip
             label={answer.trim() ? "Send this answer back to the agent" : "Write an answer first"}
           >

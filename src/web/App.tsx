@@ -1,3 +1,7 @@
+import { hibernatedTasks } from "@shared/hibernation.ts";
+import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
+import { useShapingSettings } from "./useShapingSettings.ts";
+import { FeatureFlagsContext } from "./useFeatureFlag.ts";
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
@@ -16,6 +20,7 @@ import {
   backlogTasks,
   canCycleMode,
   canInterruptSession,
+  lostTasks,
   provisioningTasks,
   sessionWorkspaceRoot,
 } from "@shared/session.ts";
@@ -69,10 +74,12 @@ import {
 import { settingsGearDot } from "./lib/settings-dots.ts";
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
 import type { WorkflowLaunchFix } from "@shared/workflow.ts";
+import type { EnvironmentCheckId } from "@shared/environment-checks.ts";
+import { setupRowAnchor } from "@shared/setup-catalog.ts";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { HistoryPage } from "./components/history/HistoryPage.tsx";
-import { LineStrip } from "./components/LineStrip.tsx";
+import { LineStageDock, LineStrip, type LineDockProps } from "./components/LineStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "./components/line/IntakeDrawer.tsx";
@@ -122,8 +129,9 @@ import {
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
-import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
+import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention, type AttentionFold } from "./lib/attention.ts";
+import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
   useKeybindings,
   chordFromEvent,
@@ -161,6 +169,7 @@ import type { LibrarySurface, MissionRoute } from "./workflows/useWorkflowRoute.
 import { PipelineRuns } from "./pipelines/PipelineRuns.tsx";
 import { RunsKindTabs, type RunsKind } from "./pipelines/RunsKindTabs.tsx";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
@@ -371,6 +380,10 @@ export function App(): React.JSX.Element {
     fileCommentReviews,
     fleetCost,
     lineSummary,
+    featureFlags,
+    subscribeFeatureFlags,
+    shaping,
+    subscribeShaping,
     settingsStatus,
     keepAwakeStatus,
     pauseState,
@@ -703,6 +716,22 @@ export function App(): React.JSX.Element {
       openSettingsAnchor(door.category, door.anchor);
     },
     [openSettingsAnchor],
+  );
+  /**
+   * The door an environment warning in the dispatch form offers, opened: that check's own
+   * Setup row, which carries the remedy (the Install button, or the command to run).
+   *
+   * Re-reads the setup snapshot too. The dispatch form asked the machine a moment ago, but
+   * the Setup panel shows what was read at startup, and a row the operator was just sent to
+   * must not be missing because the warning is newer than the snapshot.
+   */
+  const refreshSetup = setup.refresh;
+  const openEnvironmentFix = useCallback(
+    (check: EnvironmentCheckId): void => {
+      void refreshSetup();
+      openSettingsAnchor("setup", setupRowAnchor({ source: "environment-check", id: check }));
+    },
+    [openSettingsAnchor, refreshSetup],
   );
   const [scoutsTabRequest, setScoutsTabRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
@@ -1143,18 +1172,22 @@ export function App(): React.JSX.Element {
    * and cost telemetry is already App-owned, so all three are honestly bindable wherever the
    * palette opens.
    */
+  const featureFlagsSettings = useFeatureFlagsSettings(featureFlags, hasSnapshot && connected, subscribeFeatureFlags);
+  // Owned here beside the flags' settings: its confirmed state is the event stream's, which App holds.
+  const shapingSettings = useShapingSettings(shaping, hasSnapshot && connected, subscribeShaping);
   const paletteBindings = useMemo(
     () =>
       buildSettingsBindings({
         formatMessages: { value: richText, set: setRichText },
         guidedDispatch: { value: guidedDispatch, set: setGuidedDispatch },
+        featureFlags: featureFlagsSettings,
         autoMode: null,
         skillsEnabled: null,
         costTrack: cost.status
           ? { value: cost.status.config.enabled, set: (v) => void cost.update({ enabled: v }) }
           : null,
       }),
-    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update],
+    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update, featureFlagsSettings],
   );
   /**
    * Session names, for the run rows that are bound to one.
@@ -1208,8 +1241,10 @@ export function App(): React.JSX.Element {
       sessionNames,
       residents: paletteResidents,
       settingsBindings: paletteBindings,
+      featureFlags,
     }),
     [
+      featureFlags,
       paletteResidents,
       workflowSummaries,
       workflowRuns,
@@ -2002,7 +2037,9 @@ export function App(): React.JSX.Element {
    * than to an empty page, which is the rule every unresolvable deep link in this router
    * already takes.
    */
-  const pipelinesObserving = settingsStatus?.pipelines.observing ?? 0;
+  // Zero while the ai-conductor integration is hidden, so the Pipelines tab cannot appear
+  // even against a daemon that still reports observed repositories.
+  const pipelinesObserving = CONDUCTOR_INTEGRATION_ENABLED ? settingsStatus?.pipelines.observing ?? 0 : 0;
   const runsKind: RunsKind =
     route.page === "runs" && route.kind === "pipelines" && pipelinesObserving > 0
       ? "pipelines"
@@ -2683,7 +2720,17 @@ export function App(): React.JSX.Element {
   // Which sessions an open workflow run owns, folded once here off the same map the tile reads.
   // It reaches `orderSessions` as an argument rather than being looked up inside it because
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
-  const heldIds = useMemo(() => heldSessionIds(workflowRunsBySession), [workflowRunsBySession]);
+  //
+  // Folded from EVERY run rather than from `workflowRunsBySession`, which keeps only the newest
+  // per repository for display: an older run of the same repository that is still open holds
+  // the session just as surely, and the Pause menu refuses Hibernate on exactly this set.
+  const heldIds = useMemo(() => {
+    const runsBySession = new Map<string, (typeof workflowRuns)[number][]>();
+    for (const run of workflowRuns) {
+      if (run.sessionId) runsBySession.set(run.sessionId, [...(runsBySession.get(run.sessionId) ?? []), run]);
+    }
+    return heldSessionIds(runsBySession);
+  }, [workflowRuns]);
   const pipelineRunByKey = useMemo(() => {
     const map = new Map<string, PipelineRun>();
     for (const run of pipelineRuns) map.set(pipelineRunKeyOf(run), run);
@@ -2844,6 +2891,13 @@ export function App(): React.JSX.Element {
     if (!q) return items;
     return items.filter((t) => matchesBacklogSearch(t, q));
   }, [tasks, filter]);
+  // The Backlog's Hibernated section, narrowed by the same filter box for the same reason.
+  const visibleHibernated = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const items = hibernatedTasks(tasks);
+    if (!q) return items;
+    return items.filter((t) => matchesBacklogSearch(t, q));
+  }, [tasks, filter]);
 
   // Dispatched, not yet standing on a session. Deliberately NOT narrowed by `filter`: this
   // is the answer to "did my dispatch land?", asked in the seconds after pressing Dispatch,
@@ -2852,6 +2906,12 @@ export function App(): React.JSX.Element {
   // Dispatches that never started and have not been dismissed: the failed tiles, the Backlog
   // and session-card notices, and the top bar's `did not start` count all read these groups.
   const launchFailureGroups = useMemo(() => openLaunchFailureGroups(tasks), [tasks]);
+  // Held at zero until the first snapshot: before it, every running task would look
+  // sessionless only because no session has arrived yet.
+  const lostTaskCount = useMemo(
+    () => (hasSnapshot ? lostTasks(tasks, sessions).length : 0),
+    [hasSnapshot, tasks, sessions],
+  );
   // Any open failure keeps the layout mounted: on the Console rail every one of them is a row,
   // and on the Board a returned one whose Backlog card is hidden becomes a tile.
   const failedLaunchTiles = launchFailureGroups.length;
@@ -2876,6 +2936,9 @@ export function App(): React.JSX.Element {
     const live = new Set(sessions.map((s) => s.id));
     return pendingReviews.filter((r) => live.has(r.sessionId));
   }, [pendingReviews, sessions]);
+  // Questions parked with "Remind me later", for the inbox's Snoozed section and the topbar's
+  // `snoozed` segment - one list, so the figure and what opens under it cannot disagree.
+  const snoozed = useMemo(() => snoozedQuestions(reviews, sessions), [reviews, sessions]);
 
   // Live schedule names by id, so a generated task's provenance mark reads "Scheduled by
   // <name>" without every renderer re-deriving it. Archived schedules leave the live
@@ -3442,7 +3505,7 @@ export function App(): React.JSX.Element {
   // Everything a layout needs, and nothing it could decide for itself. App stays the
   // one owner of session state; a view only arranges what it's handed.
   // Whether the CURRENT layout has anything to draw. Both layouts render provisioning tasks;
-  // the board additionally renders backlog and restoring-session rows.
+  // the board additionally renders backlog, hibernated and restoring-session rows.
   const layoutHasContent =
     visible.length > 0 ||
     // An open resident's detail is drawn by the layout even though no fleet list holds it, and
@@ -3452,7 +3515,8 @@ export function App(): React.JSX.Element {
     (placement.excluded.size > 0 && !filter.trim()) ||
     dispatchingTasks.length > 0 ||
     failedLaunchTiles > 0 ||
-    (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
+    (layout === "board" &&
+      (visibleBacklog.length > 0 || visibleHibernated.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length - placement.excluded.size + (layout === "board" ? restoringSessions.length : 0);
   const filterableSessionNoun =
@@ -3462,11 +3526,24 @@ export function App(): React.JSX.Element {
         ? "session"
         : "sessions";
 
+  /**
+   * The Line's drawer stages for a Console whose Line is switched off, or undefined.
+   *
+   * Exactly while the strip is not drawn, so the fleet never has two doors to one drawer: the
+   * See work tour borrows the strip while the Line is off, and for that stretch the strip is
+   * the door. The same handler and the same button registry as the strip, which is what makes
+   * `closeLineDrawer` hand the keyboard back to whichever one opened the drawer.
+   */
+  const lineDock: LineDockProps | undefined = layout === "console" && lineHidden && !seeWorkRun
+    ? { summary: lineSummary, openStage: lineDrawer, stageRef: registerLineStage, onStage: onLineStage }
+    : undefined;
+
   const viewProps: SessionViewProps = {
     sessions: visible,
     restoringSessions: visibleRestoringSessions,
     tasks,
     backlog: visibleBacklog,
+    hibernated: visibleHibernated,
     backlogPlan: foreman.backlogPlan,
     backlogTrust,
     onManageForemanTrust: openForemanTrust,
@@ -3927,7 +4004,7 @@ export function App(): React.JSX.Element {
       }
 
       // Escape closes the Line's drawer, but only while the keyboard is INSIDE it or on the
-      // strip that opened it.
+      // strip (or, with the Line off, the Console's stage dock) that opened it.
       //
       // Scoped by focus rather than taken unconditionally, because Escape on this page is
       // already a ladder that peels one layer at a time - session detail, then reader, then
@@ -3941,7 +4018,7 @@ export function App(): React.JSX.Element {
       if (
         chord === "Escape" &&
         lineDrawerRef.current &&
-        (target?.closest(".line-drawer") || target?.closest(".line"))
+        (target?.closest(".line-drawer") || target?.closest(".line") || target?.closest(".line-dock"))
       ) {
         e.preventDefault();
         closeLineDrawer();
@@ -3963,6 +4040,12 @@ export function App(): React.JSX.Element {
       // `consoleZone` is still set so the console's rail dimming follows, but it no longer
       // gates anything. `!typing` keeps native Tab in the topbar filter and the reply
       // composer; Shift+Tab outside the reader falls through to the `mode` binding below.
+      // The Console's stage dock is a row of ordinary buttons, so Tab and Shift+Tab move along
+      // it natively. Without this they would act as they do on a rail row: Tab dives into the
+      // reader and Shift+Tab cycles the selected session's permission mode, so a keyboard could
+      // never get from Intake to Backlog.
+      if ((chord === "Tab" || chord === "shift+Tab") && target?.closest(".line-dock")) return;
+
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
         if (chord === "Tab") {
@@ -4593,7 +4676,9 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <FeatureFlagsContext.Provider value={featureFlags}>
       <FleetPauseContext.Provider value={fleetPause}>
+      <HeldSessionsContext.Provider value={heldIds}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
@@ -4617,12 +4702,19 @@ export function App(): React.JSX.Element {
           attention={counts.attention}
           working={counts.working}
           inbox={attention.total}
+          snoozed={snoozed.length}
           inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
           onOpenInbox={() => setInboxOpen(true)}
           didNotStart={launchFailureGroups.length}
           onShowDidNotStart={() => {
             const first = launchFailureGroups[0];
             if (first) showLaunchFailure(first.tasks[0]!.id);
+          }}
+          lostTasks={lostTaskCount}
+          onOpenLostTasks={() => {
+            // Sitrep is a modal over the fleet, so it opens from any page without leaving it.
+            closeLineDrawer();
+            setReportOpen(true);
           }}
           launcherFocusError={launcherFocusError}
           fleetCost={fleetCost}
@@ -4887,6 +4979,8 @@ export function App(): React.JSX.Element {
           }
           settings={(
             <SettingsPage
+              featureFlagsSettings={featureFlagsSettings}
+              shapingSettings={shapingSettings}
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
               // The return leg of the Workflows page's own "Workflow settings →" button:
@@ -4946,6 +5040,15 @@ export function App(): React.JSX.Element {
           // a density, which the daemon reads as switching the Line back on.
           onDensity={lineHidden ? undefined : setLineDensity}
         />
+
+        {/* A Console with nothing to arrange has no rail, so the stages the rail would carry
+            sit where the strip would have been. An empty fleet still has a backlog, and a
+            filter that matches no session still leaves the queue worth opening. */}
+        {lineDock && !layoutHasContent && (
+          <div className="line-dock-loose">
+            <LineStageDock {...lineDock} />
+          </div>
+        )}
 
         {/* A dispatched task with no session now renders inside the fleet, at the top of the
             Working group where its real row will land. Both layouts own that placement through
@@ -5041,7 +5144,9 @@ export function App(): React.JSX.Element {
             emulator adapter" the moment you typed "ghostty". */}
         {(() => {
           const layoutView = layoutHasContent
-            ? layout === "console" ? <ConsoleView {...viewProps} /> : <BoardView {...viewProps} />
+            ? layout === "console"
+              ? <ConsoleView {...viewProps} lineDock={lineDock} />
+              : <BoardView {...viewProps} />
             : null;
           // Open, the drawer is a column beside the layout, so the Board or Console narrows
           // instead of being covered. Otherwise the layout is exactly as it always was.
@@ -5250,6 +5355,7 @@ export function App(): React.JSX.Element {
               {inboxOpen && (
                 <AttentionInbox
                   fold={attention}
+                  snoozed={snoozed}
                   onDismiss={attentionDismissals.dismiss}
                   onClose={() => setInboxOpen(false)}
                   onOpenEnsemble={openEnsembleRun}
@@ -5276,6 +5382,9 @@ export function App(): React.JSX.Element {
                     focusSession(sessionId);
                     requestComposerFocus(sessionId);
                   }}
+                  files={files}
+                  // The review stays pending; "to review" brings the operator back to decide.
+                  onOpenPath={openSessionPath}
                 />
               )}
 
@@ -5299,6 +5408,7 @@ export function App(): React.JSX.Element {
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={openLaunchFix}
+                onOpenEnvironmentFix={openEnvironmentFix}
                 onEnsembleLaunched={openEnsembleRun}
                 residentProfiles={residentProfiles}
                 onEditResidentProfile={(profileId) =>
@@ -5446,7 +5556,9 @@ export function App(): React.JSX.Element {
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
+      </HeldSessionsContext.Provider>
       </FleetPauseContext.Provider>
+      </FeatureFlagsContext.Provider>
     </OverlayHost>
   );
 }

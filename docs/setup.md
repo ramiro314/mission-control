@@ -49,16 +49,20 @@ assets refuse installation. Existing source installs can be replaced in place by
 once assets are published, preserving their state and destination. Copied signed DMGs can enroll
 through **Settings > Setup > Application updates**. Reopen an enrolled app to enable automatic stable and exact-SHA alpha binary updates.
 
+Switching on Alpha updates also switches on **Enable all feature flags**, so every preview
+feature comes on while keeping any you switched off. Adjust them in **Settings > Feature flags**.
+
 The commands below concern source development. Electron includes Node for the desktop app,
-updates and Mission-owned helpers. Independent agent CLIs, user projects and optional Conductor
-keep their own prerequisites.
+updates and Mission-owned helpers. Independent agent CLIs and user projects keep their own
+prerequisites.
 
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
 agent CLIs, terminal backends, GitHub CLI authentication, the Atlassian CLI for Jira,
-agent extensions, ai-conductor, the system Node.js runtime, and the repositories Mission Control
-can find.
+agent extensions, the system Node.js runtime, and the repositories Mission Control can find.
+The ai-conductor row and its Pipelines family are temporarily unavailable while that integration
+is rebuilt; see [Pipelines](pipelines.md).
 
 The panel opens with a verdict for the whole machine - whether it can run sessions, how many
 checks are ready, and whether any gap is a required one - above a rail of dependency families.
@@ -72,7 +76,10 @@ project-local node_modules.
 Paths are written relative to your home directory, with the absolute path on hover. Missing rows explain what capability is
 unavailable and provide a documentation link or copyable command. A runnable package-manager remedy also offers **Run in a terminal**:
 choose an available backend and Mission Control opens a visible terminal running the catalog's
-fixed command. The daemon owns the argv, working directory, title, and hold-open shell; the
+fixed command. The terminal picker starts on your macOS default terminal - the app LaunchServices
+opens shell scripts with, such as iTerm2 after "Make iTerm2 Default Term" - when Mission Control
+can drive it, labels that row "(system default)", and otherwise starts on the first available
+backend. The daemon owns the argv, working directory, title, and hold-open shell; the
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
 
@@ -177,8 +184,10 @@ is not shown there.
 
 The Herdr row reports two separate facts, because installing the CLI does not make Herdr usable.
 With the `herdr` binary present but its default server stopped, the row is **Needs setup** and
-offers **Start the Herdr server** instead of the installation guide. That button opens no
-terminal: the daemon starts the server the same way a dispatch to Herdr would, waits for it to
+offers **Start the Herdr server** instead of the install command. With Herdr not installed, the
+row instead offers `brew install herdr` through **Run in a terminal**, which opens the installer in
+the selected visible terminal. **Start the Herdr server** opens no terminal: the daemon starts the
+server the same way a dispatch to Herdr would, waits for it to
 answer, and the panel re-reads the machine on its own, so a repaired row reports Ready without a
 manual **Re-check**. A Herdr older than the supported release is reported with its compatibility
 reason and is not offered a start, because starting it repairs nothing. While the server is down,
@@ -206,11 +215,11 @@ check as launch targeting. It never starts iTerm2 while reading Setup. The copya
 iTerm2 is controlled or when you explicitly launch through it. See
 [iTerm2 Automation and permission recovery](sessions.md#iterm2-automation-and-permission-recovery).
 
-Package installers never run inside the daemon. Provider installers such as
-ai-conductor additionally require the daemon to resolve exactly one checkout from its verified
-workspace candidates, then reverify that candidate when the button is pressed. If there is no
-verified checkout, or more than one, Setup links to **Settings → Conductor** instead of offering
-a button that must fail or guess.
+Package installers never run inside the daemon. Provider installers additionally require the
+daemon to resolve exactly one checkout from its verified workspace candidates, then reverify that
+candidate when the button is pressed. If there is no verified checkout, or more than one, Setup
+links to the provider's own Settings instead of offering a button that must fail or guess. The
+only provider installer, ai-conductor's, is temporarily unavailable along with its row.
 
 Mission Control also puts a dismissible reminder above the dashboard on first launch, or when
 a required Setup row becomes missing or needs setup. **Open Setup** links directly to this panel.
@@ -328,9 +337,12 @@ The installer writes the events it knows at the time and never runs again on its
 later build listens for an event your installed hooks do not cover, such as `SubagentStart`
 for a terminal session's background sub-agents, Settings -> Setup shows an optional
 **Claude Code hook events** row, and the dispatch form a note, naming the missing events.
-Nothing fails in the meantime; those sessions report less. Re-run `npm run install-hooks`
-from a durable clone, or press **Install Claude integrations** in the desktop app, to install
-the current list.
+The note's **Fix in Setup** link closes the form and opens that row, and the same link
+appears under every machine warning the dispatch form shows.
+Nothing fails in the meantime; those sessions report less. In the desktop app, press the
+row's **Install** button to install the current list; no checkout is needed. A dashboard
+opened in a browser has no installer to press, so the row offers `npm run install-hooks` to
+run from a durable clone instead.
 
 ## Verify the checkout
 
@@ -373,10 +385,21 @@ the new layout. See [migration and compatibility](app-name-migration.md).
 
 ## Optional CodeRabbit workflow reviews
 
-Settings > Setup reports the optional CodeRabbit CLI path/source, minimum version 0.9.1 and
-stored authentication readiness without installing, signing in or reviewing. Follow the
-[official installation guide](https://docs.coderabbit.ai/cli), then run `coderabbit auth login`
-under the same effective HOME as the daemon and press Re-check. Managed invocations disable
+Settings > Setup reports the optional CodeRabbit CLI in two rows, the way it reports the
+Atlassian CLI, without installing, signing in or reviewing on its own. **CodeRabbit CLI** reports
+the path/source and minimum version 0.9.1 and offers `brew install --cask coderabbit` through
+**Run in a terminal**. **CodeRabbit CLI sign-in** reads the same `coderabbit auth status --agent`
+a workflow review reads, and while the CLI is not signed in its **Run in a terminal** opens
+`coderabbit auth login` for the same coderabbit binary the daemon runs, offered only once the CLI
+is installed and at least 0.9.1 (before that the row says which step comes first and links the
+CodeRabbit CLI guide), with `HOME` set to the
+daemon's effective home so the credentials land where the daemon reads them. After signing in,
+press Re-check. If `coderabbit --version` or `coderabbit auth status` itself fails or answers
+unreadably, the row reports **Unknown** with what failed and links the CodeRabbit CLI guide
+instead of offering an install or a sign-in, because neither repairs a CLI that did not answer.
+A version that was read and is older than 0.9.1 names the selected binary, since the locator
+prefers a per-user install over Homebrew; upgrade it or point `MISSION_CODERABBIT_BIN` at a
+newer CLI. Managed invocations disable
 auto-update and never authorize usage credits. YAML must explicitly enable each repository;
 installation and login alone do not enable review. YAML-enabled blocks link directly back to
 Setup. See [workflow configuration and findings](workflows.md#local-coderabbit-command).

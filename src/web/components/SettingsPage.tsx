@@ -1,4 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { FeatureFlagsPanel } from "./FeatureFlagsPanel.tsx";
+import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
+import { FeatureFlagsContext } from "../useFeatureFlag.ts";
+import { TaskShapingPanel } from "./TaskShapingPanel.tsx";
+import type { ShapingSettings } from "../useShapingSettings.ts";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
@@ -52,10 +57,12 @@ import type { StorageHealth } from "@shared/storage-health.ts";
 import type { WorkflowSummary } from "@shared/workflow.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import {
-  SETTINGS_CATEGORIES,
+  visibleSettingsCategories,
   SETTINGS_GROUPS,
   SETTINGS_SCOPES,
+  DEFAULT_SETTINGS_CATEGORY,
   settingsCategoriesIn,
+  settingsCategoryAvailable,
   settingsCategory,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
@@ -221,8 +228,13 @@ export function SettingsPage({
   onStartTour,
   onBrowseTours,
   onOpenForemanProfile,
+  featureFlagsSettings,
+  shapingSettings,
   jump = null,
 }: {
+  featureFlagsSettings?: FeatureFlagsSettings;
+  /** Settings > Task shaping's state, App's because its confirmed config is the event stream's. */
+  shapingSettings?: ShapingSettings;
   /** Which category is showing, from the route. The page holds no copy of it. */
   category: SettingsCategoryId;
   /** Move to another category - a hash navigation, so back/forward walk the categories. */
@@ -319,7 +331,12 @@ export function SettingsPage({
    */
   jump?: { anchor: string; nonce: number } | null;
 }): React.JSX.Element {
-  const shown = category;
+  // A category this build does not offer (Conductor, while the ai-conductor integration is
+  // hidden), or one whose feature flag is off, renders the default panel, so no caller can
+  // mount it by naming it directly. The flags are the event stream's, so a category behind one
+  // appears and disappears here the moment it changes in any window.
+  const flags = useContext(FeatureFlagsContext);
+  const shown = settingsCategoryAvailable(category, flags) ? category : DEFAULT_SETTINGS_CATEGORY;
   // The Setup rail row, for the tour that teaches where Setup is. One row of the same
   // registry-driven loop below, so it is registered from that loop's ref callback rather
   // than by lifting Setup out of the list it belongs to.
@@ -534,7 +551,7 @@ export function SettingsPage({
   // order (see `SETTINGS_CATEGORIES`) - otherwise Down moves the selection somewhere the
   // eye is not. The stopPropagation keeps these keys inside the rail.
   function onTablistKey(e: React.KeyboardEvent<HTMLDivElement>): void {
-    const walk = SETTINGS_CATEGORIES;
+    const walk = visibleSettingsCategories(flags);
     const last = walk.length - 1;
     const idx = walk.findIndex((c) => c.id === shown);
     let next: number;
@@ -625,6 +642,10 @@ export function SettingsPage({
             />
           </>
         );
+      case "feature-flags":
+        return <FeatureFlagsPanel state={featureFlagsSettings} jumpAnchor={unhandledJump?.anchor} />;
+      case "task-shaping":
+        return <TaskShapingPanel state={shapingSettings} />;
       case "skills":
         return <SkillsPanel state={skills} />;
       case "harnesses":
@@ -785,7 +806,7 @@ export function SettingsPage({
                 {group.label}
                 <ScopeBadge scope={group.scope} />
               </p>
-              {settingsCategoriesIn(group.id).map((c) => (
+              {settingsCategoriesIn(group.id, flags).map((c) => (
                 <Tooltip key={c.id} label={c.blurb}>
                   <button
                     id={tabDomId(c.id)}

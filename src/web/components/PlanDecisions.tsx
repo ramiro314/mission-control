@@ -462,10 +462,10 @@ export function DecisionForm({
     edit((prev) => {
       const cur = prev[d.id] ?? EMPTY;
       let selected: string[];
-      if (d.multiSelect) {
-        selected = checked
-          ? [...cur.selected, optionId]
-          : cur.selected.filter((x) => x !== optionId);
+      if (!checked) {
+        selected = cur.selected.filter((x) => x !== optionId);
+      } else if (d.multiSelect) {
+        selected = [...cur.selected, optionId];
       } else {
         selected = [optionId]; // radio: single choice replaces
       }
@@ -482,6 +482,18 @@ export function DecisionForm({
       ...prev,
       [d.id]: { ...(prev[d.id] ?? EMPTY), selected: [], otherChosen: true, chat: false },
     }));
+  }
+
+  /**
+   * A click on a radio that was ALREADY checked clears it.
+   *
+   * A browser never fires `change` for that click, so a radio group on its own can only move a
+   * pick, never take it back - the human who picked by mistake had to pick something else or
+   * dismiss the whole ask. `wasChecked` is this render's state, read before the click lands.
+   * Checkboxes toggle natively and need nothing here.
+   */
+  function clearOnReclick(d: PlanDecision, wasChecked: boolean, clear: () => void): void {
+    if (!d.multiSelect && wasChecked) clear();
   }
 
   function moveToChat(id: string, chat: boolean): void {
@@ -564,6 +576,9 @@ export function DecisionForm({
                 name={`${namePrefix}-${d.id}`}
                 checked={get(d.id).selected.includes(o.id)}
                 onChange={(e) => choose(d, o.id, e.target.checked)}
+                onClick={() =>
+                  clearOnReclick(d, get(d.id).selected.includes(o.id), () => choose(d, o.id, false))
+                }
                 disabled={busy}
               />
               <span className="decision-option-body">
@@ -607,6 +622,7 @@ export function DecisionForm({
                   name={`${namePrefix}-${d.id}`}
                   checked={get(d.id).chat === true}
                   onChange={(e) => moveToChat(d.id, e.target.checked)}
+                  onClick={() => clearOnReclick(d, get(d.id).chat === true, () => moveToChat(d.id, false))}
                   disabled={busy}
                 />
               </Tooltip>

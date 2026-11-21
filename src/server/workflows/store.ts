@@ -6,6 +6,7 @@ import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { projectWorkflowRecovery } from "./recovery.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
@@ -5795,6 +5796,7 @@ export class WorkflowStore {
           gate: gateState,
           completionPolicy: recoveryPolicy,
           bindingHasOtherRun: Boolean(row.binding_has_other_run),
+          recoverableInspectorFeedback: this.recoverableInspectorFeedback(run) !== null,
         }),
         // `MAX(s.round)` and never a count of submissions: a repair round may now hold
         // several evidence segments, so counting rows would inflate the number the repair
@@ -6412,15 +6414,31 @@ export class WorkflowStore {
     });
   }
 
-  listWorkflowEvidence(noteKey: string): WorkflowStagedEvidenceList {
+  /** Registration survives capture; the default tray remains staged-only for editing.
+   * Reserved items require a surviving reservation in this conversation's own workflow.
+   * Episode admission remains the completion reader's responsibility.
+   */
+  listWorkflowEvidence(
+    noteKey: string,
+    view: "staged" | "registered" = "staged",
+  ): WorkflowStagedEvidenceList {
     const owner = this.db.prepare(
       `SELECT generation FROM workflow_evidence_owners WHERE note_key = ?`,
     ).get(noteKey) as { generation: number } | undefined;
     const rows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_staging
-        WHERE note_key = ? AND state = 'staged'
+        WHERE note_key = ? AND (
+          state = 'staged' OR (? = 'registered' AND state = 'reserved' AND EXISTS (
+            SELECT 1 FROM workflow_evidence_reservations reservation
+            JOIN workflow_submissions submission ON submission.id = reservation.submission_id
+            JOIN workflow_runs run ON run.id = submission.run_id
+            JOIN workflow_bindings binding ON binding.id = run.binding_id
+            WHERE reservation.staging_id = workflow_evidence_staging.id
+              AND binding.note_key = workflow_evidence_staging.note_key
+          ))
+        )
         ORDER BY created_at ASC, id ASC`,
-    ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
+    ).all(noteKey, view) as unknown[]).map(parseWorkflowEvidenceStagingRow);
     const coverageRows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_coverage_staging
         WHERE note_key = ? AND state = 'staged' AND is_current = 1
@@ -7865,6 +7883,45 @@ export class WorkflowStore {
           WHERE id = ? AND run_criteria_json IS NULL`,
       ).run(payload, id);
       return this.getRun(id)?.criteria ?? null;
+    });
+  }
+
+  /** Add timing metadata once; frozen wording, ids, intent and past submissions never change. */
+  freezeRunCriterionFulfillment(input: {
+    runId: string;
+    source: WorkflowRunCriteria;
+    classifications: Array<{ criterionId: string; fulfilledByAction: "pull_request" | null }>;
+    submissionId: string;
+    now: number;
+  }): WorkflowRunCriteria | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(input.runId);
+      if (!run?.criteria || run.intentState !== "frozen") return null;
+      const stable = (criteria: WorkflowRunCriteria) => ({ ...criteria,
+        canonicalCriteria: criteria.canonicalCriteria.map(({ fulfilledByAction: _timing, ...criterion }) => criterion),
+      });
+      if (!isDeepStrictEqual(stable(run.criteria), stable(input.source))) {
+        throw new Error("Criterion fulfillment source does not match this run's frozen criteria");
+      }
+      const missing = input.source.canonicalCriteria.filter((criterion) => criterion.fulfilledByAction === undefined);
+      const assignments = new Map(input.classifications.map((item) => [item.criterionId, item.fulfilledByAction]));
+      if (assignments.size !== missing.length || input.classifications.length !== missing.length
+          || missing.some((criterion) => !assignments.has(criterion.id))
+          || run.criteria.canonicalCriteria.some((criterion) => criterion.fulfilledByAction === undefined && !assignments.has(criterion.id))) {
+        throw new Error("Criterion fulfillment must classify exactly the unclassified frozen criteria");
+      }
+      if (run.criteria.canonicalCriteria.every((criterion) => criterion.fulfilledByAction !== undefined)) return run.criteria;
+      const criteria = WorkflowRunCriteriaSchema.parse({ ...run.criteria,
+        canonicalCriteria: run.criteria.canonicalCriteria.map((criterion) => criterion.fulfilledByAction !== undefined
+          ? criterion : { ...criterion, fulfilledByAction: assignments.get(criterion.id) }),
+      });
+      this.db.prepare("UPDATE workflow_runs SET run_criteria_json = ? WHERE id = ?")
+        .run(durableRunJson(run.id, "run_criteria_json", criteria), run.id);
+      this.appendEvent(run.id, "criterion_fulfillment_classified", {
+        submissionId: input.submissionId,
+        classifications: input.classifications,
+      }, input.now);
+      return criteria;
     });
   }
 
@@ -9641,6 +9698,58 @@ export class WorkflowStore {
       return Number(result.changes) === 1 ? this.getDelivery(id) : null;
 
     }, (result) => result ? { kind: "delivery", id, now } : null);
+  }
+
+  /** The packet the current delivery block can actually reconcile, shared by UI and runtime. */
+  recoverableInspectorFeedback(run: WorkflowRun): WorkflowDelivery | null {
+    if (run.status !== "blocked" || run.currentPhase !== "delivery_blocked") return null;
+    const gate = inspectorGateState(run);
+    if (gate?.waitReason !== "findings" || !gate.prKey || !gate.targetHeadSha
+        || gate.targetHeadSha !== gate.failedHeadSha) return null;
+    const version = this.getWorkflowVersionById(run.workflowVersionId);
+    const binding = this.getBinding(run.bindingId);
+    if (version?.completionPolicy.kind !== "inspector" || binding?.state !== "active"
+        || binding.deliveryMode !== "live" || !binding.sessionId) return null;
+    const latest = this.latestSubmission(run.id);
+    const delivery = this.listDeliveries(run.id)
+      .filter((item) => item.submissionId === latest?.id).at(-1);
+    if (delivery?.kind !== "inspector_feedback" || delivery.state !== "prepared"
+        || delivery.deliveredAt !== null || delivery.sessionId !== binding.sessionId
+        || delivery.noteKey !== binding.noteKey) return null;
+    return delivery;
+  }
+
+  /** Restore an unsent Inspector packet's wait and retire obsolete bytes atomically. */
+  recoverInspectorFeedback(
+    deliveryId: string,
+    expectedState: WorkflowInspectorGateState,
+    state: WorkflowInspectorGateState,
+    superseded: boolean,
+    now = Date.now(),
+  ): WorkflowRun | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(deliveryId);
+      const run = delivery ? this.getRun(delivery.runId) : null;
+      const version = run ? this.getWorkflowVersionById(run.workflowVersionId) : null;
+      if (!delivery || delivery.kind !== "inspector_feedback" || delivery.state !== "prepared"
+          || delivery.deliveredAt !== null || !run || run.status !== "blocked"
+          || run.currentPhase !== "delivery_blocked"
+          || this.latestSubmission(run.id)?.id !== delivery.submissionId
+          || version?.completionPolicy.kind !== "inspector") return null;
+      const updated = this.updateInspectorGate({
+        runId: run.id, expectedState, state,
+        status: version.completionPolicy.onFindings === "inspector_only"
+          ? "waiting_for_new_head" : "waiting_for_session",
+        phase: "inspector_findings", now,
+      });
+      if (!updated) return null;
+      if (superseded) this.setDeliveryState(deliveryId, "cancelled", "inspector_head_superseded", now);
+      this.appendEvent(run.id, "inspector_feedback_recovered", {
+        deliveryId, superseded, failedHeadSha: state.failedHeadSha,
+        observedHeadSha: state.observedHeadSha, policy: version.completionPolicy.onFindings,
+      }, now);
+      return updated;
+    });
   }
 
   refuseDeliveryBeforeSend(
