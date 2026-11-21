@@ -244,6 +244,12 @@ test("a legacy allowOther false still lets the operator submit a typed answer by
     const text = (result.content as { type: string; text: string }[]).map((item) => item.text).join("\n");
     expect(result.isError, text).toBeFalsy();
     expect(text).toBe(`Answered:\n\n• ${QUESTION}\n  Other: Use oxlint instead.`);
+    // The conversation replays the typed answer under the fork's Other label, not as context.
+    const answer = dashboard.locator(".console-detail .transcript-log .review-answer").last();
+    const replayed = answer.locator(".review-answer-other").filter({ hasText: "Use oxlint instead." });
+    await expect(replayed.locator(".review-answer-other-tag")).toHaveText("Other");
+    await expect(answer).not.toContainText("Context");
+    await evidence(answer, "typed-answer-replayed-as-other");
   } finally {
     await tools.close();
   }

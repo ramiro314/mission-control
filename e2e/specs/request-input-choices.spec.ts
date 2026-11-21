@@ -169,6 +169,7 @@ test("typing chooses Other, and text left beside a listed pick is kept but not s
   // Typing is answering with Other, which replaces the pick.
   await expect(other).toBeChecked();
   await expect(eslint).not.toBeChecked();
+  await evidence(modal, "other-chosen-by-typing");
   // Picking a listed option takes Other back out, and the text stays where it was.
   await biome.check();
   await expect(other).not.toBeChecked();
