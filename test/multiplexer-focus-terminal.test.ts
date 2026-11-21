@@ -234,6 +234,8 @@ const DOMAINS_APPENDED_SINCE: readonly string[] = [
   "resident-mcp-servers",
   "database-backups",
   "storage-limits",
+  "feature-flags",
+  "shaping",
 ];
 
 test("the terminals backup domain is appended, and every id that existed stays where it was", () => {
@@ -258,7 +260,7 @@ test("the terminals backup domain is appended, and every id that existed stays w
   assert.equal(APP_CONFIG_ENTRIES.terminals.backupDomain, "terminals");
   assert.deepEqual(APP_CONFIG_ENTRIES.terminals.classification, {
     kind: "fields",
-    fields: { multiplexerTerminal: "setting" },
+    fields: { multiplexerTerminal: "setting", externalSessions: "setting" },
   });
 });
 

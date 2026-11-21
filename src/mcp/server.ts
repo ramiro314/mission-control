@@ -6,7 +6,10 @@ import {
   type ResidentInstructionOutcome,
 } from "@shared/resident-instructions.ts";
 import { scheduleResidentIteration } from "./resident-pacing.ts";
-import { DispatchBacklogTaskSchema, PLAN_DECISION_LIMITS, SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
+import {
+  DispatchBacklogTaskSchema, PLAN_DECISION_LIMITS, SESSION_CONTROL_REQUEST_REASON_MAX, SessionControlReadSchema,
+  SessionControlRequestSchema, type SessionControlRequestResult,
+} from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -49,7 +52,7 @@ import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, McpListTasksSchema, McpGetTaskSchema, type McpTaskSnapshot, ProductIssueDraftSchema, SHAPE_TICKETS_OUTCOMES, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, McpCancelTaskSchema, McpListTasksSchema, McpGetTaskSchema, type McpTaskSnapshot, ProductIssueDraftSchema, SHAPE_TICKETS_OUTCOMES, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { isUnknownRoute } from "./unknown-route.ts";
@@ -113,6 +116,8 @@ async function createReview(
   body: string,
   decisions?: unknown,
   managedPlan?: unknown,
+  /** Offer "Remind me later": only `request_input`'s own asks, whose agent knows how to carry on. */
+  snoozable?: boolean,
 ): Promise<string> {
   const res = await http(managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
     env: ENV,
@@ -123,6 +128,7 @@ async function createReview(
     body,
     decisions,
     managedPlan,
+    ...(snoozable ? { snoozable: true } : {}),
   });
   if (!res.ok) throw new Error(`harness ${res.status}: ${await res.text()}`);
   return ((await res.json()) as { id: string }).id;
@@ -359,6 +365,102 @@ server.registerTool(
   async (args) => {
     const res = await http("/mcp/session-control/act", "POST", args, true);
     return { content: [{ type: "text" as const, text: await res.text() }], isError: !res.ok };
+  },
+);
+
+/**
+ * The caller's cancellation bounded by a deadline: aborts on whichever comes first. Hand-rolled
+ * rather than `AbortSignal.any`, which Node 18 before 18.17 lacks, and this server has run there.
+ */
+function untilCancelledOr(signal: AbortSignal, ms: number): AbortSignal {
+  const bounded = new AbortController();
+  const cancel = (): void => bounded.abort(signal.reason);
+  const timer = setTimeout(() => bounded.abort(new Error(`Mission Control did not answer within ${ms} ms`)), ms);
+  timer.unref?.();
+  bounded.signal.addEventListener("abort", () => {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", cancel);
+  }, { once: true });
+  if (signal.aborted) cancel();
+  else signal.addEventListener("abort", cancel, { once: true });
+  return bounded.signal;
+}
+
+/**
+ * What the agent reads once its ask settles. `granted` records the operator's decision when it
+ * was made, not current authority: a later revoke or reset ends the grant without changing it.
+ */
+function sessionControlRequestText(result: SessionControlRequestResult): { text: string; isError: boolean } {
+  switch (result.status) {
+    case "granted":
+      return { isError: false, text: "Granted: the operator allowed this session to control other sessions. Use read_sessions " +
+        "to inspect other live sessions and control_session to act on them. This records the operator's decision, not " +
+        "current authority: the grant ends when the operator revokes it, when this conversation is reset or replaced, or " +
+        "when Mission Control restarts, and read_sessions and control_session then refuse." };
+    case "declined":
+      return { isError: false, text: "Declined: the operator chose not to let this session control other sessions. Do not " +
+        "ask again unless the operator tells you to. Carry on without it, and say what you could not do." };
+    case "expired":
+      return { isError: true, text: `Not granted: the request ended without a decision because ${result.detail ?? "it expired"}. ` +
+        "Nothing was granted." };
+    case "pending":
+      return { isError: true, text: "The request is still waiting on the operator." };
+  }
+}
+
+server.registerTool(
+  "request_session_control",
+  {
+    title: "Ask the operator to let this session control other sessions",
+    description: "Ask your human operator to grant THIS session Control other sessions, which read_sessions and " +
+      "control_session require. Mission Control shows your reason on a card on this session and BLOCKS until the " +
+      "operator decides. Only the operator's own click on Accept in the Mission Control desktop app grants it: no " +
+      "tool, answer, Foreman or other session can. Ask only when your task needs to read or steer other sessions, " +
+      "and say which ones and why. Returns granted, declined, or why it ended without a decision. If this session " +
+      "already holds the grant, it returns at once. If declined, do not ask again unless the operator tells you to.",
+    inputSchema: {
+      reason: z.string().trim().min(1).max(SESSION_CONTROL_REQUEST_REASON_MAX)
+        .describe("Why this session needs to control other sessions: which sessions, and what you will do. Shown to the operator verbatim."),
+    },
+  },
+  async ({ reason }, extra) => {
+    const beat = heartbeat(extra);
+    try {
+      const raised = await http("/mcp/session-control/requests", "POST", { reason }, true, untilCancelledOr(extra.signal, 15_000));
+      if (raised.status === 404) {
+        return textResult("Not asked: session control requests are turned off in Mission Control (Settings > Feature " +
+          "flags). Nothing was shown to the operator. If you need this, ask them with request_input to turn on " +
+          "Control other sessions from this session's toolbar.", true);
+      }
+      if (!raised.ok) return textResult(`Not asked: ${await raised.text()}`, true);
+      let result = (await raised.json()) as SessionControlRequestResult;
+      // Best-effort: the session's status line says what it is waiting on.
+      if (result.status === "pending") {
+        await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity: "Waiting for you to allow control of other sessions" },
+          false, untilCancelledOr(extra.signal, 5_000)).catch(() => {});
+      }
+      while (result.status === "pending") {
+        if (extra.signal.aborted) throw new Error("the client cancelled this request");
+        const res = await http(`/mcp/session-control/requests/${encodeURIComponent(result.id)}/wait`, "GET", undefined, true, extra.signal);
+        // The daemon no longer recognises this conversation as the one that asked.
+        if (res.status === 403) {
+          result = { id: result.id, status: "expired", detail: "this conversation changed before the operator answered" };
+          break;
+        }
+        // The preview was switched off between rounds; that withdrew the card as well.
+        if (res.status === 404 && ((await res.clone().json().catch(() => null)) as { feature?: string } | null)?.feature) {
+          result = { id: result.id, status: "expired", detail: "session control requests were turned off in Settings > Feature flags" };
+          break;
+        }
+        if (!res.ok) return textResult(`Could not wait on the request: ${await res.text()}`, true);
+        result = (await res.json()) as SessionControlRequestResult;
+        beat();
+      }
+      const answer = sessionControlRequestText(result);
+      return textResult(answer.text, answer.isError);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
   },
 );
 
@@ -951,12 +1053,42 @@ server.registerTool(
 );
 
 server.registerTool(
+  "cancel_task",
+  {
+    title: "Cancel a task",
+    description:
+      "Cancel a Mission Control task by taskId, including a running task with no sessionId. " +
+      "Uses the dashboard's cancellation rules: stops agents launched for the task, preserves " +
+      "archives, and cleans up owned resources. Assigned tasks stop being tracked without " +
+      "killing the operator's existing session. Cleanup failures are returned and resources " +
+      "remain tracked for retry; use get_task to inspect the resulting status. " +
+      "Keeps the task record; use delete_task afterward to remove it. Uses the same daemon-token " +
+      "access as create_task and delete_task; no Control other sessions opt-in is required. " +
+      TASK_REFERENCE_RULE,
+    inputSchema: McpCancelTaskSchema,
+  },
+  async ({ taskId }) => {
+    const signal = AbortSignal.timeout(30_000);
+    try {
+      const res = await http("/mcp/tasks/cancel", "POST", { taskId }, false, signal);
+      if (!res.ok) {
+        return textResult(`Could not cancel task (${res.status}): ${await res.text()}`, true);
+      }
+      return textResult(JSON.stringify({ taskId, cancelled: true }));
+    } catch (err) {
+      const reason = signal.aborted ? "The cancellation request timed out." : `Could not reach Mission Control: ${String(err)}.`;
+      return textResult(`${reason} Cancellation outcome is unknown; the task may already have changed. Use get_task to inspect its status before retrying.`, true);
+    }
+  },
+);
+
+server.registerTool(
   "delete_task",
   {
     title: "Delete a task",
     description:
       "Delete one Mission Control task by taskId. Backlog and finished tasks can be deleted; " +
-      "running or dispatching tasks must be cancelled first. Uses the dashboard's deletion " +
+      "running or dispatching tasks must be cancelled with cancel_task first. Uses the dashboard's deletion " +
       "rules, including archive preservation and resource cleanup. If cleanup is refused, " +
       "the task record remains and the error is returned. Returns the deleted task id. " +
       TASK_REFERENCE_RULE,
@@ -998,11 +1130,20 @@ server.registerTool(
     title: "Ask the human a question",
     description:
       "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
-      "they resolve it. Without `options`, they answer in free text or dismiss without an " +
-      "answer. With `options`, they can submit clickable choices or dismiss without choosing; " +
-      "the tool returns their answer, selections, or an explicit dismissal. They may also " +
-      "choose to chat about it instead; the result then says so and how to proceed, and you " +
-      "must not decide or re-ask the question yourself. " +
+      "they resolve it. The operator can always type an answer. With `options`, they can also " +
+      "pick choices; a typed answer comes back as Other, instead of a single choice or alongside " +
+      "multiSelect picks. The tool returns their answer, selections, or an " +
+      "explicit dismissal. They may choose to chat about it, in which case the result tells you " +
+      "how to proceed. Do not decide or re-ask that question yourself. They may also choose Remind me later. " +
+      "the tool then returns at once WITHOUT an answer, saying how to carry on meanwhile (your " +
+      "best judgment, a provisional option, or holding the dependent work). Follow it, do not " +
+      "ask the question again, and expect the answer later as a message in this conversation. " +
+      "If an earlier request_input call ended before the human answered (for example it timed " +
+      "out) and you ask the same decision again, say so in the question (for example \"The " +
+      "earlier request timed out.\") and offer exactly the same options. Mission Control " +
+      "withdraws the earlier card only when it recognizes the new ask as the same decision with " +
+      "the same options; otherwise both cards stay and the human may answer both. A different " +
+      "question, or different options, never withdraws an earlier one. " +
       "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
       "`options` only for open-ended asks. " +
       DECISION_CONTEXT_RULE,
@@ -1037,10 +1178,10 @@ server.registerTool(
       allowOther: z
         .boolean()
         .optional()
-        .describe("Adds a free-text 'Other' field for an answer outside the options"),
+        .describe("Deprecated compatibility field. The text box is always available."),
     },
   },
-  async ({ question, context, options, multiSelect, allowOther }, extra) => {
+  async ({ question, context, options, multiSelect }, extra) => {
     // Refused before any review exists: a card the human cannot answer would leave this call,
     // and the session, waiting on something nobody can resolve. The daemon's schema enforces
     // the same rule; checking here first lets the agent read why instead of a transport error.
@@ -1058,8 +1199,8 @@ server.registerTool(
       // (`inputReviewBody`), and positional option ids, which the human's answer never shows the
       // agent - it comes back as LABELS. A resident's proposed instruction changes are asked
       // through the same builder.
-      const ask = requestInputReview({ question, context, options, multiSelect, allowOther });
-      const id = await createReview(ask.kind, ask.title, ask.body, ask.decisions);
+      const ask = requestInputReview({ question, context, options, multiSelect });
+      const id = await createReview(ask.kind, ask.title, ask.body, ask.decisions, undefined, true);
       const review = await waitForResolution(id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);

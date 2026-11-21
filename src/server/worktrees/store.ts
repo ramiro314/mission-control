@@ -15,6 +15,8 @@ import {
 } from "../../shared/worktrees.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { INTERRUPTED_FORGET, splitObservationFailure } from "./quarantine-reasons.ts";
+import type { WorktreeOwnerReference } from "./manager.ts";
+import { nativeWorktreeOwnerReferenced } from "./owners.ts";
 
 export const WORKTREE_SLOT_STATES = [
   "provisioning",
@@ -923,6 +925,16 @@ export class WorktreeStore {
    * kept, so a late return of the last lease still answers `alreadyReleased`.
    */
   recoverQuarantined(slotId: string, version: number, head: string, now: number): WorktreeSlotRow | null {
+    return this.completeQuarantineRecovery(slotId, version, head, now, false);
+  }
+
+  /** Only the token-authorized operator path may lift the category restriction. */
+  recoverQuarantinedForOperator(slotId: string, version: number, head: string, now: number): WorktreeSlotRow | null {
+    return this.completeQuarantineRecovery(slotId, version, head, now, true);
+  }
+
+  private completeQuarantineRecovery(slotId: string, version: number, head: string, now: number, operator: boolean): WorktreeSlotRow | null {
+    const categories = operator ? [] : RECOVERABLE_QUARANTINE_CATEGORIES;
     return this.transition(
       slotId,
       now,
@@ -931,14 +943,19 @@ export class WorktreeStore {
            quarantine_reason = NULL, quarantine_category = NULL, quarantined_at = NULL,
            last_error = NULL, updated_at = ?
          WHERE id = ? AND state = 'quarantined' AND version = ?
-           AND quarantine_category IN (${RECOVERABLE_QUARANTINE_CATEGORIES.map(() => "?").join(", ")})
+           ${operator ? "" : `AND quarantine_category IN (${categories.map(() => "?").join(", ")})`}
            AND current_head_sha = ?
            AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
-      ).run(now, slotId, version, ...RECOVERABLE_QUARANTINE_CATEGORIES, head),
-      (before) => ({
-        reason: `observation quarantine recovered: ${before.quarantineReason ?? "no recorded reason"}`,
-        actor: "automatic",
-      }),
+      ).run(now, slotId, version, ...categories, head),
+      (before) => operator
+        ? {
+          reason: `quarantine recovered by the operator: ${before.quarantineReason ?? "no recorded reason"}`,
+          actor: "operator",
+        }
+        : {
+          reason: `observation quarantine recovered: ${before.quarantineReason ?? "no recorded reason"}`,
+          actor: "automatic",
+        },
     );
   }
 
@@ -966,22 +983,70 @@ export class WorktreeStore {
     );
   }
 
-  /** Removal starts only from an operator's Destroy or prune. */
-  markPruning(slotId: string, version: number, now: number): WorktreeSlotRow | null {
+  /**
+   * Hand an exact lease back from a slot Git no longer recognizes, without touching its files.
+   * Nothing can reset such a slot, so its owner is released and the slot is held in a `state`
+   * quarantine for the operator to Destroy. That category is the point: the slot is positively
+   * unusable, and Reconcile must not promise to recover it. The time it first entered
+   * quarantine stands. One compare-and-swap names the slot version and the whole lease.
+   */
+  releaseOrphaned(
+    slotId: string,
+    version: number,
+    lease: { leaseId: string; ownerKind: string; ownerKey: string },
+    reason: string,
+    now: number,
+  ): WorktreeSlotRow | null {
     return this.transition(
       slotId,
       now,
-      () => this.db
-        .prepare(
-          // From here on files may be gone, so nothing may trust this tree's install again.
-          `UPDATE worktree_slots SET state = 'pruning', version = version + 1,
-             last_error = NULL, deps_state = NULL, deps_fingerprint = NULL, deps_fingerprint_sha = NULL,
-             updated_at = ?
-           WHERE id = ? AND state IN ('available', 'quarantined') AND version = ?
-             AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
-        )
-        .run(now, slotId, version),
-      () => ({ reason: "removal started", actor: "operator" }),
+      () => this.db.prepare(
+        `UPDATE worktree_slots SET state = 'quarantined', version = version + 1,
+           last_released_lease_id = active_lease_id,
+           last_released_owner_kind = active_owner_kind,
+           last_released_owner_key = active_owner_key,
+           active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL,
+           leased_at = NULL, last_used_at = ?,
+           quarantine_reason = ?, quarantine_category = 'state',
+           quarantined_at = CASE WHEN state = 'quarantined' AND quarantined_at IS NOT NULL THEN quarantined_at ELSE ? END,
+           updated_at = ?
+         WHERE id = ? AND version = ? AND state IN ('leased', 'quarantined')
+           AND active_lease_id = ? AND active_owner_kind = ? AND active_owner_key = ?`,
+      ).run(now, reason, now, now, slotId, version, lease.leaseId, lease.ownerKind, lease.ownerKey),
+      (before) => ({ reason, actor: leaseActor(before.activeOwnerKind) }),
+    );
+  }
+
+  /**
+   * Removal starts only from an operator's Destroy or prune. The version's active and
+   * last-released domain references are checked in the same write transaction as the prune
+   * intent, so no owner can record a lease between this read and the intent. The manager has
+   * already checked pending grants and live warm owners.
+   */
+  markPruning(slotId: string, version: number, now: number,
+    unreferenced: readonly WorktreeOwnerReference[],
+    staleLease?: { leaseId: string; ownerKind: string; ownerKey: string },
+  ): WorktreeSlotRow | null {
+    return this.transition(
+      slotId,
+      now,
+      () => {
+        if (unreferenced.some((reference) => nativeWorktreeOwnerReferenced(reference, this.db))) return { changes: 0 };
+        return this.db
+          .prepare(
+            // From here on files may be gone, so nothing may trust this tree's install again.
+            `UPDATE worktree_slots SET state = 'pruning', version = version + 1,
+               last_error = NULL, deps_state = NULL, deps_fingerprint = NULL, deps_fingerprint_sha = NULL,
+               active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL,
+               updated_at = ?
+             WHERE id = ? AND state IN ('available', 'quarantined') AND version = ?
+               AND ${staleLease
+                 ? "state = 'quarantined' AND active_lease_id = ? AND active_owner_kind = ? AND active_owner_key = ?"
+                 : "active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL"}`,
+          )
+          .run(now, slotId, version, ...(staleLease ? [staleLease.leaseId, staleLease.ownerKind, staleLease.ownerKey] : []));
+      },
+      () => ({ reason: staleLease ? "removal started; a stale lease no owner references was cleared" : "removal started", actor: "operator" }),
     );
   }
 
@@ -992,9 +1057,9 @@ export class WorktreeStore {
    * the moment it entered. An operator's own relabel of a quarantined slot (a Forget's
    * write-ahead, a Repair that found work) goes through `requarantine` instead.
    *
-   * `withdrawGrant` is for a reservation quarantined before its lease was ever handed to the
-   * owner: the owner cannot hold or release an identity it never received, so the slot keeps
-   * its quarantine but drops the active identity in the same compare-and-swap.
+   * A never-granted reservation may be cancelled in this same CAS, but only while still
+   * provisioning at its expected version under that exact lease (`reservationLeaseId`): the
+   * owner cannot hold or release an identity it never received.
    *
    * A slot a Forget was cut off in keeps that reason whatever quarantines it next, a cut-off Destroy
    * included, because it is what keeps Recover and Repair away from a partly deleted install. The
@@ -1007,29 +1072,33 @@ export class WorktreeStore {
     error: string | null,
     now: number,
     expectedVersion?: number,
-    withdrawGrant = false,
+    reservationLeaseId?: string,
     actor: WorktreeHistoryActor = "automatic",
   ): WorktreeSlotRow | null {
+    if (reservationLeaseId && expectedVersion === undefined) return null;
     const kept = this.slot(slotId)?.quarantineReason === INTERRUPTED_FORGET && reason !== INTERRUPTED_FORGET;
     const recordedReason = kept ? INTERRUPTED_FORGET : reason;
     const recordedError = kept ? error ?? reason : error;
     const recordedCategory: WorktreeQuarantineCategory = kept ? "state" : category;
     const where = expectedVersion === undefined ? "id = ?" : "id = ? AND version = ?";
-    const args = expectedVersion === undefined
-      ? [recordedReason, recordedCategory, now, recordedError, now, slotId]
-      : [recordedReason, recordedCategory, now, recordedError, now, slotId, expectedVersion];
-    const withdraw = withdrawGrant
-      ? "active_lease_id = NULL, active_owner_kind = NULL, active_owner_key = NULL, leased_at = NULL,"
+    const reservationClear = reservationLeaseId
+      ? ["active_lease_id", "active_owner_kind", "active_owner_key", "leased_at"]
+        .map((column) => `, ${column} = CASE WHEN active_lease_id = ? THEN NULL ELSE ${column} END`).join("")
       : "";
+    const args = [recordedReason, recordedCategory, now, recordedError, now,
+      ...(reservationLeaseId ? Array<string>(4).fill(reservationLeaseId) : []),
+      slotId, ...(expectedVersion === undefined ? [] : [expectedVersion])];
     return this.transition(
       slotId,
       now,
       () => this.db
         .prepare(
-          `UPDATE worktree_slots SET state = 'quarantined', version = version + 1, ${withdraw}
+          `UPDATE worktree_slots SET state = 'quarantined', version = version + 1,
              quarantine_reason = ?, quarantine_category = ?, quarantined_at = ?,
              last_error = ?, updated_at = ?
-           WHERE ${where} AND state <> 'quarantined'`,
+             ${reservationClear}
+           WHERE ${where} AND state <> 'quarantined'
+             ${reservationLeaseId ? "AND state = 'provisioning'" : ""}`,
         )
         .run(...args),
       () => ({ reason: recordedReason, detail: recordedError, actor }),

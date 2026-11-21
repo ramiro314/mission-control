@@ -1306,7 +1306,7 @@ test("a prune cut off after Git dropped its registration is quarantined for it, 
   gitIn(clone, "worktree", "remove", "--force", slot.path);
   mkdirSync(slot.path, { recursive: true });
   for (let index = 0; index < 12; index += 1) writeFileSync(join(slot.path, `left-${index}.txt`), "half deleted\n");
-  assert.ok(m.store.markPruning(slot.slotId, m.store.slot(slot.slotId)!.version, Date.now()));
+  assert.ok(m.store.markPruning(slot.slotId, m.store.slot(slot.slotId)!.version, Date.now(), []));
 
   await m.reconcile();
   assert.equal(m.store.slot(slot.slotId)?.quarantineReason, REMOVAL_UNFINISHED.interrupted);
@@ -1560,7 +1560,7 @@ test("the store forgets only the quarantined row at the version it judged", asyn
   const slot = await quarantinedSlot(m, clone, sha, "task-forget-store");
   const version = m.store.slot(slot.slotId)!.version;
   assert.equal(m.store.forget(slot.slotId, version + 1), false);
-  assert.ok(m.store.markPruning(slot.slotId, version, Date.now()));
+  assert.ok(m.store.markPruning(slot.slotId, version, Date.now(), []));
   assert.equal(m.store.forget(slot.slotId, version + 1), false, "a slot in another state is not forgotten");
   assert.ok(m.store.quarantine(slot.slotId, "transition", REMOVAL_UNFINISHED.interrupted, null, Date.now()));
   assert.equal(m.store.forget(slot.slotId, version + 2), true);
@@ -1572,7 +1572,7 @@ test("a prune cut off while Git still registers its folder is quarantined for it
   const m = managerWith();
   const service = operationsFor(m);
   const slot = await quarantinedSlot(m, clone, sha, "task-forget-prune-registered");
-  assert.ok(m.store.markPruning(slot.slotId, m.store.slot(slot.slotId)!.version, Date.now()));
+  assert.ok(m.store.markPruning(slot.slotId, m.store.slot(slot.slotId)!.version, Date.now(), []));
   assert.equal(registered(clone, slot.path), true);
 
   await m.reconcile();
@@ -1684,7 +1684,7 @@ test("Forget answers for the slot it was given: one that is gone, moved on, or c
   assert.deepEqual(m.store.slot(slot.slotId), row);
   assert.equal(existsSync(slot.path), true);
 
-  assert.ok(m.store.markPruning(slot.slotId, row.version, Date.now()));
+  assert.ok(m.store.markPruning(slot.slotId, row.version, Date.now(), []));
   assert.deepEqual(await m.forgetSlot({ slotId: slot.slotId }), { outcome: "refused", reason: "slot is pruning, not quarantined" });
   assert.equal(existsSync(slot.path), true);
   assert.equal(m.store.slot(slot.slotId)?.state, "pruning");
@@ -2196,7 +2196,7 @@ async function assertNeverRecovered(m: WorktreeManager, slotId: string) {
 
 test("a Destroy cut off on a Forget's slot keeps the Forget's reason when reconcile finds it, so Recover stays away", async () => {
   const { m, slot, clone } = await cutOffForget();
-  assert.ok(m.store.markPruning(slot.slotId, m.store.slot(slot.slotId)!.version, Date.now()));
+  assert.ok(m.store.markPruning(slot.slotId, m.store.slot(slot.slotId)!.version, Date.now(), []));
   assert.equal(registered(clone, slot.path), true);
 
   await m.reconcile();
@@ -2219,7 +2219,7 @@ test("a Destroy that cannot verify its removal keeps the Forget's reason too", a
 test("a Destroy cut off on a locked registration does not hand the slot back to automatic Repair", async () => {
   const { m, slot } = await cutOffForget();
   lockInitializing(slot.administrative);
-  assert.ok(m.store.markPruning(slot.slotId, m.store.slot(slot.slotId)!.version, Date.now()));
+  assert.ok(m.store.markPruning(slot.slotId, m.store.slot(slot.slotId)!.version, Date.now(), []));
 
   await m.reconcile();
   await m.recoverQuarantines();

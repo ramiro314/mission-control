@@ -599,6 +599,68 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
   await shoot(dashboard, "09-quarantined-destroy-complete");
 });
 
+test("Destroy empties a slot Git no longer recognizes after the main checkout was re-cloned", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "orphaned destroy" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+
+  // The field failure from 2026-11-17: a failed pool-wide Git read quarantined the slot while
+  // it still held its lease, then the main checkout was moved aside and re-cloned, so the
+  // slot's `.git` link names an administrative directory the repository no longer has.
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1,
+              quarantine_reason = 'Git worktree registrations are unknown: git worktree list failed',
+              quarantine_category = 'observation', quarantined_at = ?
+        WHERE active_lease_id = ? AND state = 'leased'`,
+    ).run(Date.now(), lease.leaseId);
+    expect(Number(changed.changes)).toBe(1);
+  });
+  const admin = readFileSync(join(lease.path, ".git"), "utf8").trim().replace(/^gitdir: /, "");
+  rmSync(admin, { recursive: true, force: true });
+  mkdirSync(join(lease.path, "docs/reports"), { recursive: true });
+  writeFileSync(join(lease.path, "docs/reports/never-committed.md"), "uncommitted report\n");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  await expect(slot.getByText("not a Git worktree", { exact: true })).toBeVisible();
+  await expect(slot.getByText(/Git no longer recognizes this slot/)).toBeVisible();
+  await expect(slot.getByText("Needs operator action", { exact: true })).toBeVisible();
+  // Recovery re-proves a slot through Git, which this one can never pass, so it is not offered.
+  await expect(slot.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  // Its manual lease is still live, so its owner can also let go while the files are kept.
+  await expect(slot.getByRole("button", { name: "Return", exact: true })).toBeVisible();
+  await slot.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "09-orphaned-slot-card");
+  await slot.getByRole("button", { name: "Destroy", exact: true }).click();
+
+  const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(preview.getByText(lease.path)).toBeVisible();
+  await expect(preview.getByText(/deleted from disk directly, because Git no longer recognizes it/)).toBeVisible();
+  const acknowledgement = preview.getByRole("checkbox", { name: /Git no longer recognizes a target slot/ });
+  await expect(acknowledgement).toBeVisible();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await acknowledgement.check();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await shoot(dashboard, "09a-orphaned-destroy-preview");
+  await preview.getByRole("button", { name: "Execute" }).click();
+
+  await expect(preview).toHaveCount(0);
+  await expect.poll(() => existsSync(lease.path), { timeout: EXECUTES_MS }).toBe(false);
+  await expect(repo.getByText("0 of 16 slots", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await shoot(dashboard, "09b-orphaned-destroy-complete");
+});
+
 /** The executable name is all that names an IDE helper, so `argv0` is the whole fixture. */
 test("a slot card names a known occupant and still counts it", async ({ dashboard, daemon }) => {
   const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
@@ -2115,4 +2177,112 @@ test("Settings shows when each slot was quarantined and which ones Reconcile can
   expect((await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
     data: { leaseId: fresh.leaseId },
   })).ok()).toBe(true);
+});
+
+
+// One Recover: it runs upstream's proof (#1507) first and brings a slot that passes back in place,
+// keeping its files. A slot whose proof fails only on work is offered the fork's reset instead,
+// which Execute runs only once its discard is acknowledged.
+test("Recover previews state quarantine checks, preserves warm files and resets dirty slots only once acknowledged", async ({ dashboard, daemon }) => {
+  const leases: Array<{ path: string; leaseId: string }> = [];
+  for (const label of ["safe operator recovery", "dirty operator recovery"]) {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    leases.push(await response.json());
+  }
+  for (const lease of leases) {
+    expect((await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: lease.leaseId },
+    })).ok()).toBe(true);
+    withDaemonDb(daemon, (db) => {
+      expect(Number(db.prepare(`UPDATE worktree_slots SET state = 'quarantined', version = version + 1,
+        quarantine_reason = 'allocator HEAD false positive', quarantine_category = 'state', quarantined_at = ?
+        WHERE last_released_lease_id = ? AND state = 'available'`).run(1_000, lease.leaseId).changes)).toBe(1);
+    });
+  }
+  const [safe, dirty] = leases as [typeof leases[number], typeof leases[number]];
+  writeFileSync(join(daemon.repo, ".git/info/exclude"), "node_modules/\n");
+  mkdirSync(join(safe.path, "node_modules"), { recursive: true });
+  writeFileSync(join(safe.path, "node_modules/warm"), "warm install");
+  writeFileSync(join(dirty.path, "unfinished.txt"), "keep this work");
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const safeRow = pool.locator(".wt-slot", { hasText: safe.path });
+  const dirtyRow = pool.locator(".wt-slot", { hasText: dirty.path });
+  await safeRow.getByRole("button", { name: "Recover", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "recover worktree preview" });
+  await expect(preview.getByText("allocator HEAD false positive", { exact: true })).toBeVisible();
+  await expect(preview.getByText(/Category: state/)).toBeVisible();
+  await expect(preview.getByText("Recorded HEAD: passed", { exact: true })).toBeVisible();
+  await expect(preview.getByRole("checkbox")).toHaveCount(0);
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "26-recover-safe-preview", true);
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(safeRow.getByText("available", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(safeRow.getByRole("button", { name: "Recover", exact: true })).toHaveCount(0);
+  expect(readFileSync(join(safe.path, "node_modules/warm"), "utf8")).toBe("warm install");
+  await shoot(dashboard, "27-recover-warm-capacity", true);
+  await dirtyRow.getByRole("button", { name: "Recover", exact: true }).click();
+  await expect(preview.getByText("Clean tree: failed", { exact: true })).toBeVisible();
+  // The proof failed on work, so the preview offers the reset, naming what it would discard.
+  await expect(preview.getByText(/^Cannot recover in place \(Clean tree.*\), so Recover resets the slot instead\.$/)).toBeVisible();
+  await expect(preview.getByText("Discards the slot's work: untracked unfinished.txt.", { exact: true })).toBeVisible();
+  const discard = preview.getByRole("checkbox", { name: /I understand: Uncommitted, untracked, unpushed or ignored work will be discarded/ });
+  await expect(discard).toHaveCount(1);
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await discard.check();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "28-recover-dirty-acknowledge", true);
+  await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(preview).toHaveCount(0);
+  expect(readFileSync(join(dirty.path, "unfinished.txt"), "utf8")).toBe("keep this work");
+  const reuse = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "reuse recovered slot" },
+  });
+  expect(reuse.status()).toBe(201);
+  expect((await reuse.json()).path).toBe(safe.path);
+  expect(readFileSync(join(safe.path, "node_modules/warm"), "utf8")).toBe("warm install");
+});
+
+
+test("Destroy removes a stale task lease from a quarantined slot", async ({ dashboard, daemon }) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "stale reservation" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  // Model a legacy failed reservation whose task no longer exists. The lease remains on
+  // the slot but the durable domain lookup positively proves that nobody refers to it.
+  withDaemonDb(daemon, (db) => {
+    expect(Number(db.prepare(`UPDATE worktree_slots SET state = 'quarantined',
+      version = version + 1, active_owner_kind = 'task', active_owner_key = 'deleted-task:0',
+      quarantine_reason = 'worktree reset failed', quarantine_category = NULL, quarantined_at = ?
+      WHERE active_lease_id = ?`).run(Date.now(), lease.leaseId).changes)).toBe(1);
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = pool.locator(".wt-slot", { hasText: lease.path });
+  await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
+  await slot.getByRole("button", { name: "Destroy", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(preview.getByText(/Clears the stale lease/)).toBeVisible();
+  await expect(preview.getByText(/Stops the task agent/)).toHaveCount(0);
+  await expectContentClearsBorder(preview);
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await shoot(dashboard, "29-stale-lease-destroy-preview", true);
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect.poll(() => existsSync(lease.path), { timeout: EXECUTES_MS }).toBe(false);
+  await expect(pool.getByText("0 of 16 slots", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await disclosure.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "30-stale-lease-destroy-complete", true);
 });

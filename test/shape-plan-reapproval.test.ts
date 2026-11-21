@@ -132,6 +132,11 @@ test("the human still answers a new question, a refusal, or a plan Foreman may n
   await refused.save(3);
   assert.equal((await refused.ask(3)).status, "pending", "the human's latest answer asked for revision");
 
+  const homeAnswered = await fixture();
+  homeAnswered.reviews.resolve((await homeAnswered.ask(1)).id, "answer", null, "mctl", approveWith("create-tickets"));
+  await homeAnswered.save(2);
+  assert.equal((await homeAnswered.ask(2)).status, "pending", "an mctl answer is not an approving actor, so it is never carried");
+
   const dismissed = await fixture();
   dismissed.reviews.resolve((await dismissed.ask(1)).id, "dismiss", null, "human");
   await dismissed.save(2);

@@ -11,6 +11,7 @@ import { socketExists, userManagerReachable } from "../src/server/graphical-sess
 import {
   SESSIONS_SLICE,
   createSessionScope,
+  escapePropertyValue,
   productionSessionScopeDeps,
   scopeInstance,
   type SessionScope,
@@ -55,14 +56,28 @@ const HOG = "head -c 536870912 /dev/zero | tail > /dev/null";
  */
 const LONE_HOG = `'${process.execPath}' -e 'const a = []; for (let i = 0; i < 64; i++) a.push(Buffer.alloc(8 << 20, 1));'`;
 
-function scopeFor(over: Partial<SessionScopeDeps> = {}) {
-  return createSessionScope({
+/**
+ * A real scope whose `wrap` fails at once when isolation is off, naming why. An unscoped wrap
+ * would run the bare command: a straggler that ignores SIGTERM then never stops, and the file
+ * hangs until the runner's deadline instead of failing.
+ */
+function scopeFor(over: Partial<SessionScopeDeps> = {}): SessionScope {
+  const logged: string[] = [];
+  const scope = createSessionScope({
     ...productionSessionScopeDeps,
     stateHome: home,
     extraProperties: ["MemoryMax=64M", "MemorySwapMax=0"],
-    log: () => {},
+    log: (line) => logged.push(line),
     ...over,
   });
+  return {
+    ...scope,
+    wrap(...args) {
+      const wrapped = scope.wrap(...args);
+      assert.ok(wrapped.unit, `the session scope is off on this machine, so ${args[3]} would run unscoped: ${logged.join(" | ") || "no reason logged"}`);
+      return wrapped;
+    },
+  };
 }
 
 function systemctlUser(...args: string[]): Promise<string> {
@@ -226,7 +241,9 @@ test("a daemon starting up stops the scope a previous run left, and only its own
 });
 
 test("BindsTo: stopping the daemon's unit stops the session scopes bound to it", { skip, timeout: 30_000 }, async () => {
-  const standIn = `mission-control-${instance}-standin-daemon`;
+  // Escaped like the daemon's own `app-mission\x2dcontrol-<pid>.scope`, which systemd 262.2's
+  // `-p` unescaping broke.
+  const standIn = `mission-control-${instance}-standin\\x2ddaemon`;
   const daemon = spawn(systemdRun!, [
     "--user", "--scope", "--quiet", "--collect", `--unit=${standIn}`, `--slice=${SESSIONS_SLICE}`, "--", "sleep", "60",
   ], { stdio: "ignore" });
@@ -237,7 +254,7 @@ test("BindsTo: stopping the daemon's unit stops the session scopes bound to it",
   });
   await scope.ready();
   const wrapped = scope.wrap("/bin/sleep", ["60"], process.env, "sdk:bound");
-  assert.ok(wrapped.args.includes(`BindsTo=${standIn}.scope`));
+  assert.ok(wrapped.args.some((arg) => arg === `BindsTo=${standIn}.scope` || arg === `BindsTo=${escapePropertyValue(standIn)}.scope`));
   const sleeper = spawn(wrapped.bin, wrapped.args, { stdio: "ignore" });
   await waitFor("the bound scope", async () => (await systemctlUser("is-active", wrapped.unit!)).trim() === "active", 10_000);
   const sleeperExit = exited(sleeper);

@@ -88,6 +88,15 @@ function leased(): WorktreeSlotRow {
   return store.finalizeLease(slot.id, slot.version, "a".repeat(40), 200)!;
 }
 
+/**
+ * Clears a quarantined slot's lease identity, as an owner's release would. Upstream #1519
+ * retired the fork's `withdrawGrant` quarantine flag, so the fixture clears it directly.
+ */
+function withdrawLease(slotId: string): void {
+  db.prepare(`UPDATE worktree_slots SET active_lease_id = NULL, active_owner_kind = NULL,
+    active_owner_key = NULL, leased_at = NULL WHERE id = ?`).run(slotId);
+}
+
 function historyOf(slotId: string) {
   return store.slotHistory(slotId).entries;
 }
@@ -202,7 +211,7 @@ test("every slot transition writes exactly one row with the states either side o
   assert.deepEqual([backRow.fromState, backRow.toState, backRow.actor], ["provisioning", "available", "automatic"]);
   assert.equal(backRow.detail, "slot process occupancy is unknown (ps timed out)", "the failed read that refused it");
 
-  const { result: pruning, row: removal } = oneRowFrom(() => store.markPruning(handedBack.id, handedBack.version, 600)!);
+  const { result: pruning, row: removal } = oneRowFrom(() => store.markPruning(handedBack.id, handedBack.version, 600, [])!);
   assert.deepEqual([removal.fromState, removal.toState, removal.actor], ["available", "pruning", "operator"]);
 
   const { row: gone } = oneRowFrom(() => store.removePruned(pruning.id, pruning.version, 610, "operator"));
@@ -270,7 +279,7 @@ test("a compare-and-swap that misses writes no row", () => {
   noRowFrom(() => assert.equal(store.finalizeLease(slot.id, slot.version, "x", 1), null));
   noRowFrom(() => assert.equal(store.markReturning(slot.id, stale, "x", 1), null));
   noRowFrom(() => assert.equal(store.completeRelease(slot.id, slot.version, "x", 1), null));
-  noRowFrom(() => assert.equal(store.markPruning(slot.id, slot.version, 1), null));
+  noRowFrom(() => assert.equal(store.markPruning(slot.id, slot.version, 1, []), null));
   noRowFrom(() => assert.equal(store.quarantine(slot.id, "transition", "reason", null, 1, stale), null));
   noRowFrom(() => assert.equal(store.requarantine(slot.id, "reason", null, 1, slot.version), null));
   noRowFrom(() => assert.equal(store.removePruned(slot.id, slot.version), false));
@@ -294,7 +303,7 @@ test("a transition whose history row cannot be written does not happen", () => {
   const granted = store.finalizeLease(spare.id, spare.version, "a".repeat(40), 200)!;
   const returning = store.markReturning(granted.id, granted.version, "b".repeat(40), 300)!;
   const free = store.completeRelease(returning.id, returning.version, "b".repeat(40), 400)!;
-  const pruning = store.markPruning(free.id, free.version, 500)!;
+  const pruning = store.markPruning(free.id, free.version, 500, [])!;
   const reservation = reserved(slot.poolId, "slot-forget");
   const forgotten = store.quarantine(reservation.id, "transition", "reason", null, 505)!;
   db.exec(`
@@ -387,8 +396,9 @@ test("reason, detail and meta are bounded in bytes without splitting a character
 test("retention drops rows older than 90 days, and a removed slot's rows go only then", () => {
   const now = 1_000 * DAY_MS;
   const slot = leased();
-  const quarantined = store.quarantine(slot.id, "transition", "r", null, now - 2 * DAY_MS, undefined, true)!;
-  const pruning = store.markPruning(quarantined.id, quarantined.version, now - DAY_MS)!;
+  const quarantined = store.quarantine(slot.id, "transition", "r", null, now - 2 * DAY_MS)!;
+  withdrawLease(slot.id);
+  const pruning = store.markPruning(quarantined.id, quarantined.version, now - DAY_MS, [])!;
   assert.ok(store.removePruned(pruning.id, pruning.version, now - DAY_MS, "operator"));
   assert.equal(store.slot(slot.id), null);
 
@@ -536,7 +546,8 @@ test("Recover records who ran it, and a quarantine records why", async () => {
     assert.equal(acquired.outcome, "acquired");
     if (acquired.outcome !== "acquired") throw new Error("not acquired");
     const { slotId, slotVersion } = acquired.lease;
-    assert.ok(m.store.quarantine(slotId, "transition", "slot Git state is unknown", null, Date.now(), slotVersion, true));
+    assert.ok(m.store.quarantine(slotId, "transition", "slot Git state is unknown", null, Date.now(), slotVersion));
+    withdrawLease(slotId);
     const recovered = await m.recoverSlot({ slotId, allowDirty: false, automatic });
     assert.equal(recovered.outcome, "recovered", JSON.stringify(recovered));
     return trail(slotId).slice(-3);
@@ -566,7 +577,7 @@ test("reconcile finishing an interrupted return or a removal is recorded as auto
   assert.ok(m.store.markReturning(interrupted.slotId, interrupted.slotVersion, sha, Date.now()));
   assert.equal((await m.release(removing, { ownerAuthorized: true })).outcome, "released");
   const free = m.store.slot(removing.slotId)!;
-  assert.ok(m.store.markPruning(free.id, free.version, Date.now()));
+  assert.ok(m.store.markPruning(free.id, free.version, Date.now(), []));
   gitIn(clone, "worktree", "remove", "--force", removing.path);
 
   await m.reconcile();
@@ -1337,6 +1348,8 @@ test("an operator's Recover left unknown reads as the automatic one does: refuse
   const m = realManager();
   const operations = operationsFor(m);
   const [slotId] = await idleSlots(m, clone, sha, 1);
+  // A HEAD on a branch fails the in-place proof, so Recover offers the reset this test stubs.
+  gitIn(m.store.slot(slotId!)!.path, "switch", "-q", "-c", "recover-unknown");
   const quarantine = () => assert.ok(
     quarantineOrRelabel(m, slotId!, "slot Git state is unknown"),
   );

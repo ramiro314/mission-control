@@ -1,3 +1,5 @@
+import type { FeatureFlagsConfig } from "./feature-flags.ts";
+import type { ShapingConfigView } from "./shaping.ts";
 import type { ManagedPlanPolicy, TaskPlanInput, PlanIdentity } from "./managed-plans.ts";
 // Shared contract between the daemon (src/server), the MCP bridge (src/mcp),
 // and the web UI (src/web). Keep this the single source of truth for anything
@@ -12,6 +14,7 @@ import type { MissionSchedule } from "./schedules.ts";
 import type { PauseState, SessionPause } from "./pause.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { TaskLaunchFailure } from "./launch-failure.ts";
+import type { TaskHibernation } from "./hibernation.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -608,6 +611,15 @@ export interface SessionBlocker {
   reply: SessionBlockerReply | null;
 }
 
+/** A session's pending ask for Control other sessions, as the dashboard card draws it. */
+export interface SessionControlRequestView {
+  id: string;
+  /** The agent's own words for why it needs the grant. Untrusted text, shown verbatim. */
+  reason: string;
+  /** Epoch ms. */
+  requestedAt: number;
+}
+
 export interface Session {
   /**
    * Stable identity and Registry map key for the life of this entry. Discovery mints
@@ -652,6 +664,14 @@ export interface Session {
   foremanInvite: ForemanInvite | null;
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
+  /**
+   * This session's own pending ask to be granted `sessionControlEnabled`, raised through the
+   * `request_session_control` MCP tool, or null/absent when it has none. RESOLVED by the
+   * registry from `SessionControlRequests`, like `sessionControlEnabled`. It grants nothing:
+   * only the operator's trusted desktop click on the card it draws does, through the same
+   * private authorization as the session control menu. Optional so an older snapshot parses.
+   */
+  sessionControlRequest?: SessionControlRequestView | null;
   /**
    * The operator's pause, or null/absent when the session runs freely - see `@shared/pause.ts`.
    *
@@ -906,13 +926,18 @@ export interface Session {
    * live card offering re-attach, never an automatic rebind. Null normally.
    */
   orphanedQueue: OrphanedQueueHint | null;
+  /** Latest branch-update feedback for this session’s owned pull requests. */
+  prBranchUpdates?: Record<string, import("./pr-branch-update.ts").PrBranchUpdate>;
   /**
    * Rolled-up state of the PR's CI checks (GitHub status-check rollup): `failing`
-   * if any check failed, else `pending` while any is still running, else
+   * if any check has a blocking conclusion (including cancellation), else `pending`
+   * while any is still running, else
    * `passing`. Null when the PR has no checks (or `gh` couldn't be asked). Only
    * `failing` is surfaced on the card - as an alert next to the PR chip.
    */
   prChecks: PrChecks | null;
+  /** Bounded display evidence from the same PR observation; independent of gate policy. */
+  prCheckDetails?: import("./pr-check-details.ts").PrCheckDetails | null;
   /**
    * Whether the PR conflicts with its base, bound to the head GitHub reported it for. Read it
    * through `currentMergeability` (`src/shared/pr-mergeable.ts`), never directly: a kept
@@ -2196,6 +2221,9 @@ export const TASK_STATUSES = [
   "done",
   "cancelled",
   "failed",
+  // The operator stopped the agent to free its memory and will resume the same conversation
+  // in the same worktree later (`@shared/hibernation.ts`). Neither active nor terminal.
+  "hibernated",
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
@@ -2369,15 +2397,8 @@ export interface TaskRepoEntry {
   mergedAt: number | null;
 }
 
-/**
- * How long a terminal task's checkouts survive without a Git-visible change.
- *
- * Fixed, and deliberately without a configuration key in this release - see
- * `docs/worktrees-and-checks.md`. Shared rather than server-only because the dashboard states
- * the policy in words next to the manual cleanup control, and a copy that drifted from the
- * server's window would be a promise the product does not keep.
- */
-export const TASK_WORKTREE_RETENTION_DAYS = 30;
+/** Shipped default; the daemon's worktrees.taskRetentionDays setting overrides it. */
+export { TASK_RETENTION_DEFAULT_DAYS as TASK_WORKTREE_RETENTION_DAYS } from "./worktree-retention.ts";
 
 /** Bytes of automatic-cleanup explanation that may reach a browser. One short sentence. */
 export const TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT = 200;
@@ -2809,6 +2830,12 @@ export interface Task {
    */
   launchFailure?: TaskLaunchFailure | null;
   /**
+   * Present exactly while the task is `hibernated`: the embedded session that resumes, the
+   * conversation it reopens, the blocker it carried, and why the last Resume failed, if it
+   * did. Absent or null on every other task. See `@shared/hibernation.ts`.
+   */
+  hibernation?: TaskHibernation | null;
+  /**
    * Set on a Report bug session: the failed task it was started to report. The session's own
    * identity, persisted on it, so a report session that itself fails to start never offers a
    * Report bug of its own - whatever has happened to the failure that started it since.
@@ -3042,6 +3069,8 @@ export interface RepoPrFeedback extends PrMergeability {
   prNumber: number;
   /** That pull request's CI rollup as of the last poll, or null when it reported none. */
   prChecks: PrChecks | null;
+  /** Bounded display evidence from the same PR observation; independent of gate policy. */
+  prCheckDetails?: import("./pr-check-details.ts").PrCheckDetails | null;
   /** The Inspector's state for it, or null when the Inspector never adopted it. */
   inspector: InspectorSummary | null;
   /** `Session.prConflictEscalated`, for this pull request. */
@@ -3052,12 +3081,24 @@ export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";
 /**
  * Persisted as text in `reviews.status`, so these spellings are append-only.
  *
- * `orphaned` is the only one the DAEMON writes; the other four terminal statuses are a
- * human's answer arriving through `/api/reviews/:id/resolve`. It means the session that
- * asked went away before anyone answered, which is why it is not `dismissed` - the
+ * `orphaned` and `superseded` are the ones the DAEMON writes; the other four terminal statuses
+ * are a human's answer arriving through `/api/reviews/:id/resolve`. `orphaned` means the session
+ * that asked went away before anyone answered, which is why it is not `dismissed` - the
  * operator declining to choose and the agent no longer being there to hear a choice are
  * different facts, and only the first is evidence of intent (see
  * `loadResolvedWorkflowReviews`, which reads none of it).
+ *
+ * `superseded` means the same session asked a new `request_input`
+ * question after the blocking call that asked this one had already given up, which is what an
+ * agent does when its MCP client times out: it asks the same decision again, often reworded.
+ * The newer card is the one its agent is waiting on, so this one leaves the queue rather than
+ * making the operator answer the same decision twice (`ReviewManager.create`).
+ *
+ * `snoozed` is the one status that is NOT terminal. The operator chose "Remind me later" on a
+ * `request_input` question: the agent's blocking call has returned and it is carrying on, and
+ * the question is parked off the queue until `ReviewItem.snooze.until`, when the daemon puts it
+ * back to `pending`. It is outstanding, never settled, so every reader that asks "is this
+ * waiting on a person right now" keeps reading `pending` and leaves it out by construction.
  */
 export type ReviewStatus =
   | "pending"
@@ -3065,7 +3106,43 @@ export type ReviewStatus =
   | "rejected"
   | "answered"
   | "dismissed"
-  | "orphaned";
+  | "orphaned"
+  | "snoozed"
+  | "superseded";
+
+/**
+ * What the operator told the agent to do while a snoozed question is parked. Persisted in
+ * `reviews.snooze_mode`, so append-only.
+ *
+ * - `judgment`: carry on with its best judgment, the recommended option where one was offered.
+ * - `option`: carry on with one offered option as a provisional answer (`ReviewSnooze.optionId`).
+ * - `hold`: do everything else first and leave the work that depends on the answer untouched.
+ */
+export const REVIEW_SNOOZE_MODES = ["judgment", "option", "hold"] as const;
+export type ReviewSnoozeMode = (typeof REVIEW_SNOOZE_MODES)[number];
+
+/**
+ * "Remind me later" on one `request_input` question.
+ *
+ * Kept after the question comes back, so the returned card can say it is a reminder and what
+ * the agent was told meanwhile, and so the answer reaches the agent as the answer to a question
+ * it carried on without.
+ */
+export interface ReviewSnooze {
+  /** When the operator last chose "Remind me later" on it (epoch ms). */
+  at: number;
+  /** When it comes back to the operator (epoch ms). */
+  until: number;
+  /**
+   * What the agent was told to do meanwhile. Fixed at the first snooze: that is the only time
+   * the agent is told anything, so a later snooze only moves `until`.
+   */
+  mode: ReviewSnoozeMode;
+  /** The offered option the agent carries on with, for `mode: "option"`. */
+  optionId: string | null;
+  /** When it last came back to the operator, or null while it has not yet. */
+  remindedAt: number | null;
+}
 
 /**
  * Who settled a review. Persisted as text in `reviews.resolved_by`, so these spellings
@@ -3080,8 +3157,20 @@ export type ReviewStatus =
  * `standing-approval` is the daemon settling a managed plan's final-bundle approval on the
  * operator's behalf, because they ticked "approve all future bundles for this task" on an
  * earlier one. It is logged in the conversation as what it is, never as the human's answer.
+ *
+ * The headless-mode actors (spec 7.8, 7.9) are set by the daemon, never read from a request
+ * body: `home:{sessionId}` is an answer given from a registered home session,
+ * `home-approval:{sessionId}` is an accepted plan or review approval from one (the only home
+ * actor that counts as human approval for plan publication), and `mctl` is the command line.
  */
-export type ReviewActor = "human" | "foreman" | "standing-approval" | `session:${string}`;
+export type ReviewActor =
+  | "human"
+  | "foreman"
+  | "standing-approval"
+  | `session:${string}`
+  | `home:${string}`
+  | `home-approval:${string}`
+  | "mctl";
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
@@ -3188,6 +3277,16 @@ export interface ReviewItem {
    * "approve all future bundles for this task". Derived by the daemon, never stored on the row.
    */
   standingApprovalEligible?: boolean;
+  /**
+   * The question offers "Remind me later": it was asked through the `request_input` tool, whose
+   * agent is told how to carry on without the answer. Other `input` reviews act on the
+   * selection itself (a product issue confirmation, a workflow Command, a resident's
+   * instruction change), so parking them would leave something waiting that nobody told to
+   * carry on. Persisted (`reviews.snoozable`); absent means no.
+   */
+  snoozable?: boolean;
+  /** The operator's "Remind me later", while snoozed and after it comes back. Absent if never. */
+  snooze?: ReviewSnooze | null;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
 }
@@ -3223,6 +3322,7 @@ export interface MissionReport {
   working: ReportItem[];
   idle: ReportItem[];
   backlog: Task[];
+  sessionless: Task[];
   recent: Task[];
   /** True when `recent` was capped, so the digest can say so instead of lying by omission. */
   recentTruncated: boolean;
@@ -3965,6 +4065,14 @@ export type ServerEvent =
        * never told.
        */
       lineSummary: LineSummary;
+      /** Bounded to 512 overrides with ids of at most 64 characters. */
+      featureFlags: FeatureFlagsConfig;
+      /**
+       * Task shaping's config view at connect time. Present only while the `task-shaping` flag
+       * is on, so a window never holds the shaping config while the feature is off. Bounded by
+       * `SHAPING_LIMITS`: at most 32 shapers of 16 KiB each, and 128 choices.
+       */
+      shaping?: ShapingConfigView;
       /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
@@ -4136,6 +4244,17 @@ export type ServerEvent =
    * source of these facts: the rail dots and the topbar gear read it, never a re-poll.
    */
   | { type: "settings_status"; status: SettingsStatus }
+  /** Content travels with the event so all windows resolve gates without a second fetch. */
+  | { type: "feature_flags"; config: FeatureFlagsConfig }
+  /**
+   * Task shaping's config view (`shapingConfigView`), sent only while the `task-shaping` flag is
+   * on: after every committed write or settings restore, and when the flag turns on. Turning the
+   * flag off sends `config: null`, which clears it in every window. An entry this build cannot
+   * run travels only as its id, label and reason, never as its raw stored envelope. Content
+   * travels with the event for `feature_flags`' reason: every window shows the change with no
+   * second fetch.
+   */
+  | { type: "shaping_config"; config: ShapingConfigView | null }
   /**
    * The per-harness dispatch defaults (model, effort, runtime) were rewritten. An
    * invalidation signal: whoever cares re-reads `GET /api/harnesses/config`.

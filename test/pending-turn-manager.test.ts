@@ -31,7 +31,9 @@ const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
   "../src/server/scouts/prompt-context.ts"
 );
-const { claimHumanEcho, HUMAN_ECHO_TTL_MS } = await import("../src/server/injections.ts");
+const { claimHumanEcho, HUMAN_ECHO_TTL_MS, observeInjections, originOf } = await import("../src/server/injections.ts");
+const { journalScoutPrompt } = await import("../src/server/scouts/prompt-journal.ts");
+const { SNOOZE_INSTRUCTION_TURN_PREFIX } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -2707,6 +2709,44 @@ test("with no turn end, a captured SDK follow-up stops absorbing echoes once it 
   f.manager.stop();
 });
 
+test("a woken session's queued message waits until its task is bound, then is delivered once", async () => {
+  // A hibernated task's woken driver has not yet shown it reopened the task's conversation
+  // (`SdkSupervisor.holdsDelivery`): rows stay queued without a single attempt, so nothing is
+  // retried in a loop, and the binding's `session_upsert` releases them.
+  let held = true;
+  const registry = new Registry();
+  const id = "sdk:held-wake";
+  registry.registerSdkSession({ id, agent: "claude", name: "held-wake", cwd: "/repo/held-wake", agentSessionId: "conversation:held-wake" });
+  const calls: string[] = [];
+  const manager = new PendingTurnManager(
+    registry,
+    {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn, beforeSend) => {
+        calls.push(turn.text);
+        const blocker = beforeSend?.();
+        if (blocker) throw new Error(blocker);
+        return "started";
+      },
+      holdsDelivery: () => held,
+    },
+    { idleSettleMs: 0, pickupTimeoutMs: 15 },
+  );
+  manager.start();
+  idle(registry, id);
+  manager.submit(id, "while it wakes");
+  await tick(60);
+  assert.deepEqual(calls, [], "nothing reaches a driver that has not reopened its conversation");
+  assert.equal(registry.getSession(id)?.pendingTurns.length, 1, "the row stays queued");
+
+  held = false;
+  registry.emit("event", { type: "session_upsert", session: registry.getSession(id)! });
+  await until(() => calls.length === 1, "delivery once the task is bound");
+  await tick(60);
+  assert.deepEqual(calls, ["while it wakes"], "delivered exactly once");
+  manager.stop();
+});
+
 /** The operator's pause, as `PauseManager` publishes it onto the session. */
 function pauseSession(registry: InstanceType<typeof Registry>, id: string, since: number): void {
   registry.setSessionPause(id, { reason: "operator", phase: "frozen", since, interrupted: null, stopped: true });
@@ -2804,4 +2844,27 @@ test("a daemon restart just after a resume keeps the held message's deadlines co
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(f.sends, ["queued before the pause, delivered after a restart"], "steered one minute after the resume");
   restarted.stop();
+});
+
+test("a snoozed question's carry-on instruction is delivered as the daemon's words, not the operator's", async (t) => {
+  const f = sdkFixture("snooze-instruction", async () => "started");
+  const episode = scoutEpisode(f.registry, f.id);
+  // Production wiring: daemon-typed text reaches the scout journal through this observer.
+  observeInjections((sessionId, text, origin) => journalScoutPrompt(f.registry, sessionId, text, origin));
+  t.after(() => observeInjections(null));
+  const text = 'Your earlier request_input question "Which linter?" ended before the operator chose.';
+  createPendingTurn({ id: `${SNOOZE_INSTRUCTION_TURN_PREFIX}review-1`, noteKey: f.key, text, now: 1 });
+  f.registry.refreshPendingTurns(f.key);
+
+  idle(f.registry, f.id);
+  await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+
+  assert.deepEqual(f.calls, [text], "delivered once");
+  assert.equal(f.registry.getGoal(f.id), null, "never captured as the operator's Goal");
+  assert.equal(originOf(f.id, text), "harness", "attributed to the daemon in the conversation");
+  const journaled = scoutPromptTurns(episode.taskId, episode.episodeId);
+  assert.deepEqual(journaled.map((turn) => turn.origin), ["harness"], "journaled once, never as human");
+  f.manager.stop();
+  clearPendingTurns(f.key);
+  clearScoutPromptContext(episode.taskId, episode.episodeId);
 });

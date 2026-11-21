@@ -1,3 +1,7 @@
+export { FeatureFlagIntentSchema } from "./feature-flags.ts";
+export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
+export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
+import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
@@ -14,16 +18,19 @@ import {
 } from "./wait-for-ci.ts";
 import { CI_STRICTNESS } from "./ci-checks.ts";
 import { WORKTREE_HISTORY_LIMITS, WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
+import { STACK_DEPTH_LIMITS } from "./stacking.ts";
 import { HOOK_BACKGROUND_TASKS_MAX, HOOK_SUBAGENT_TEXT_MAX } from "./hook-subagents.mjs";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
   GRILL_FIRST_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
+  MAX_TASK_EXTRA_REPOS,
   RESIDENT_TASK_REFUSAL,
   TASK_KIND_SCHEDULE_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
+  CHAT_WORKFLOW_REFUSAL,
   taskKindAllowsBacklog,
   taskKindAllowsSchedule,
   taskKindBacklogRefusal,
@@ -47,6 +54,7 @@ import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
+import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import {
   StoredTestingSettingsSchema,
   TESTING_SETTINGS_KEYS,
@@ -679,6 +687,15 @@ export const CreateReviewSchema = z
     body: z.string(),
     /** The questions the human answers: many for `plan-decisions`, exactly one for `input`. */
     decisions: z.array(PlanDecisionSchema).max(PLAN_DECISION_LIMITS.decisions).optional(),
+    /**
+     * Offer "Remind me later" on this question. Only the `request_input` tool sends it, because
+     * its agent is the one told how to carry on without an answer (`ReviewItem.snoozable`).
+     */
+    snoozable: z.boolean().optional(),
+  })
+  .refine((r) => r.kind === "input" || r.snoozable !== true, {
+    message: "only kind 'input' can offer Remind me later",
+    path: ["snoozable"],
   })
   .refine((r) => r.kind !== "plan-decisions" || r.managedPlan !== undefined || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",
@@ -903,14 +920,8 @@ export const ProductIssuePreflightSchema = z.object({
   ),
 });
 
-/**
- * How many SECONDARY repositories one request may attach.
- *
- * A sanity bound on a request body rather than a product limit on how many repositories a
- * task may coordinate - nothing downstream reads it as a maximum. Named because several
- * request surfaces bound the same launch manifest and must not carry private copies.
- */
-export const MAX_TASK_EXTRA_REPOS = 8;
+/** Defined beside the task kinds so resident launch schemas share it without a cycle. */
+export { MAX_TASK_EXTRA_REPOS };
 
 /**
  * A task's base branch: a plain branch name on `origin`, such as `release/2.0`.
@@ -1145,6 +1156,27 @@ export const ResolveReviewSchema = z.object({
   selections: resolution.action === "dismiss" ? null : resolution.selections,
 }));
 export type ResolveReview = z.infer<typeof ResolveReviewSchema>;
+
+/**
+ * "Remind me later" on a `request_input` question, from the dashboard.
+ *
+ * `delay` is an id, never a duration or a timestamp: the daemon owns the clock and adds the
+ * delay to its own time. `meanwhile` is what the agent is told to do until the question comes
+ * back, and defaults to its best judgment. It is honoured only on the first snooze of a
+ * question, because that is the only time the agent hears anything (`ReviewSnooze.mode`).
+ */
+export const SnoozeReviewSchema = z.object({
+  delay: z.enum(REVIEW_SNOOZE_DELAY_IDS),
+  meanwhile: z
+    .discriminatedUnion("mode", [
+      z.object({ mode: z.literal("judgment") }),
+      z.object({ mode: z.literal("hold") }),
+      z.object({ mode: z.literal("option"), optionId: z.string().min(1).max(64) }),
+    ])
+    .optional()
+    .default({ mode: "judgment" }),
+});
+export type SnoozeReview = z.infer<typeof SnoozeReviewSchema>;
 
 /** MCP `report_status`: update the session's activity line. */
 export const StatusSchema = z.object({
@@ -1822,6 +1854,23 @@ const UpdateTaskFieldsSchema = z
   });
 
 export const UpdateTaskSchema = UpdateTaskFieldsSchema
+  .extend({
+    /**
+     * Any kind a Recurring Mission may file, so the dashboard can edit a mission-filed row
+     * into a chat. Whether THIS row may hold the kind is the task's question, not the
+     * schema's: `TaskManager.update` asks `taskAllowsBacklog`, which admits a chat only on a
+     * row a mission filed. The MCP schemas keep the backlog kinds: an agent cannot file or
+     * edit a chat.
+     */
+    kind: z
+      .enum(TASK_KINDS)
+      // A backlog kind a mission may not file (shape) stays editable: a backlog row may be
+      // edited into it, which "Shape this" relies on.
+      .refine((kind) => taskKindAllowsBacklog(kind) || taskKindAllowsSchedule(kind), {
+        error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind),
+      })
+      .optional(),
+  })
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" })
   .refine(
     (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
@@ -1906,6 +1955,11 @@ export type McpListTasks = z.infer<typeof McpListTasksSchema>;
 
 export const McpGetTaskSchema = z.object({
   taskId: z.string().trim().min(1).describe("Id of a task in any status"),
+}).strict();
+
+/** MCP cancels one task through the existing lifecycle and cleanup owner. */
+export const McpCancelTaskSchema = z.object({
+  taskId: z.string().trim().min(1).describe("Id of the task to cancel, even when it has no session"),
 }).strict();
 
 /** MCP deletes one task through the existing lifecycle and cleanup owner. */
@@ -2903,11 +2957,9 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
 /**
  * The Inspector's consent model, in one object.
  *
- * Every default here is the OFF position, and that is not caution theatre: this is the
- * only subsystem that writes to a public place under the operator's GitHub identity.
- * `enabled: false` means it never runs; `mode: "dry-run"` means it computes findings
- * and posts none; an empty `repoAllowlist` means it acts nowhere. Turning it on is
- * three deliberate acts, and the first two are reversible without anyone else seeing.
+ * Field defaults preserve the posture of older saved configs and backups with missing keys.
+ * New databases record the enabled, Live posture when initialized.
+ * An empty `repoAllowlist` grants no permission to post under the operator's GitHub identity.
  */
 export const InspectorConfigSchema = z.object({
   /**
@@ -3126,8 +3178,14 @@ void inspectorInspectionSchemaMatchesType;
  * nothing is reviewed, so nothing qualifies and nothing merges.
  */
 export const ShippingConfigSchema = z.object({
-  /** Prompt the eligible owner about CodeRabbit threads, independently of merge consent. */
-  codeRabbitAutoResolve: z.boolean().default(false),
+  /**
+   * Prompt the eligible owner about CodeRabbit threads, independently of merge consent.
+   *
+   * On by default. An install that stored the old default-off value is switched on exactly
+   * once by the schema 38 upgrade (`migrateCodeRabbitFollowUp` in `src/server/db.ts`); a later
+   * opt-out is an ordinary stored `false` and is kept.
+   */
+  codeRabbitAutoResolve: z.boolean().default(true),
   /** The master switch. Off means the gate is never even evaluated as passable. */
   autoMerge: z.boolean().default(false),
   /**
@@ -3193,7 +3251,7 @@ export const ShippingConfigSchema = z.object({
    * that targets the default branch. A dependent whose parent is already this deep waits for
    * the bottom of its stack to merge.
    */
-  maxStackDepth: z.number().int().min(1).max(5).default(3),
+  maxStackDepth: z.number().int().min(STACK_DEPTH_LIMITS.min).max(STACK_DEPTH_LIMITS.max).default(STACK_DEPTH_LIMITS.default),
 });
 export type ShippingConfig = z.infer<typeof ShippingConfigSchema>;
 
@@ -3680,8 +3738,11 @@ const WorktreeRepositoryKeySchema = z
  * The only policy authority for native worktrees. Operational pool/slot rows deliberately
  * do not repeat any of these values.
  */
+const TaskRetentionDaysSchema = z.number().int().min(TASK_RETENTION_MIN_DAYS).max(TASK_RETENTION_MAX_DAYS);
+
 export const WorktreesConfigSchema = z
   .object({
+    taskRetentionDays: TaskRetentionDaysSchema.default(TASK_RETENTION_DEFAULT_DAYS),
     enabled: z.boolean().default(true),
     maxSlots: z
       .number()
@@ -3724,6 +3785,7 @@ const WorktreeRepositoryConfigPatchSchema = z
 /** Partial update. A null repository value removes that repository's whole override. */
 export const WorktreesConfigPatchSchema = z
   .object({
+    taskRetentionDays: TaskRetentionDaysSchema.optional(),
     enabled: z.boolean().optional(),
     maxSlots: z
       .number()
@@ -3772,6 +3834,7 @@ const WorktreeOwnerTargetSchema = z
 
 /** Closed, stable-id-only operation vocabulary for Settings > Worktrees. */
 export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("recover"), slotId: WorktreeStableIdSchema }).strict(),
   z.object({ action: z.literal("return"), slotId: WorktreeStableIdSchema }).strict(),
   z
     .object({
@@ -3781,7 +3844,6 @@ export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
     })
     .strict(),
   z.object({ action: z.literal("reconcile"), poolId: WorktreeStableIdSchema }).strict(),
-  z.object({ action: z.literal("recover"), slotId: WorktreeStableIdSchema }).strict(),
   z.object({ action: z.literal("repair"), slotId: WorktreeStableIdSchema }).strict(),
   z.object({ action: z.literal("forget"), slotId: WorktreeStableIdSchema }).strict(),
   z.object({ action: z.literal("removeUnowned"), path: z.string().min(1).max(4096) }).strict(),
@@ -3837,6 +3899,7 @@ export const WorktreeActionExecuteSchema = z
           "over-capacity",
           "legacy-unverifiable",
           "foreign",
+          "unverifiable",
         ]),
       )
       .max(16),
@@ -4021,7 +4084,9 @@ export const DEFAULT_MULTIPLEXER_TERMINALS = {
 } as const satisfies Record<MultiplexerId, EmulatorId | null>;
 
 /**
- * The "Terminals" settings blob: what a multiplexer's sessions open in.
+ * The "Terminals" settings blob: terminal settings. What a multiplexer's sessions open in,
+ * and whether discovery shows sessions Mission Control did not start (workers in an observed
+ * pipeline worktree are shown either way).
  *
  * Deliberately NOT part of `HarnessesConfig`, which answers a different question with a
  * different key. That object says which backend hosts a DISPATCHED session, keyed per agent
@@ -4041,6 +4106,12 @@ export const TerminalsConfigSchema = z.object({
     // build still cannot create one.
     .catchall(StoredEmulatorBackendSchema)
     .prefault(DEFAULT_MULTIPLEXER_TERMINALS),
+  /**
+   * Show Claude, Codex, and Pi sessions started outside Mission Control, which passive
+   * discovery would otherwise skip (`Registry.discoveryAdmission`). Off for every install,
+   * upgrades included: a stored blob or settings snapshot without the key parses as off.
+   */
+  externalSessions: z.boolean().default(false),
 });
 export type TerminalsConfig = z.infer<typeof TerminalsConfigSchema>;
 
@@ -4062,6 +4133,7 @@ export const TerminalsConfigPatchSchema = z
         message: "empty multiplexer terminal update",
       })
       .optional(),
+    externalSessions: z.boolean().optional(),
   })
   .strict()
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
@@ -6775,6 +6847,7 @@ export const WorkflowEvidenceCoverageClaimsSchema = z.array(WorkflowEvidenceCove
   );
 
 export const WorkflowCanonicalCriterionSchema = z.object({
+  fulfilledByAction: z.literal("pull_request").nullable().optional(),
   id: z.string().min(1).max(200),
   text: z.string().trim().min(1)
     .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes)
@@ -6817,6 +6890,7 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
     material: z.boolean(),
     matchedClientCriterionId: z.string().min(1)
       .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars).nullable(),
+    deferredToAction: z.literal("pull_request").optional(),
     // Absent on every readiness row written before the repair packet could name a contested
     // claim, so it defaults rather than failing those rows open.
     contestedClientCriterionIds: z.array(
@@ -7111,6 +7185,7 @@ export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewIn
   criteria: z.array(z.object({
     criterionId: z.string().min(1).max(200),
     material: z.boolean(),
+    deferredToAction: z.literal("pull_request").optional(),
     claimId: z.string().min(1).max(200).nullable(),
     evidenceIds: z.array(z.string().min(1).max(200)).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim),
     gaps: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES)).max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
@@ -8124,7 +8199,7 @@ export const CodeRabbitComparisonSchema = z.object({
 export const CodeRabbitReviewSummarySchema = z.object({
   comparison: CodeRabbitComparisonSchema, status: z.enum(["complete", "incomplete", "skipped"]),
   counts: z.object({critical: z.number(), major: z.number(), minor: z.number(), trivial: z.number(), info: z.number(), none: z.number()}),
-  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
+  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryableConnection: z.literal(true).optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
 });
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
@@ -9157,8 +9232,13 @@ const ScheduleTemplateSchema = z
     repoRoot: z.string().min(1),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
-      .refine(taskKindAllowsSchedule, TASK_KIND_SCHEDULE_REFUSAL)
+      // A kind the backlog admits but a mission may not file (shape) is told why in its own
+      // words; every other refused kind keeps its backlog refusal.
+      .refine(taskKindAllowsSchedule, {
+        error: (issue) => taskKindAllowsBacklog(issue.input as TaskKind)
+          ? TASK_KIND_SCHEDULE_REFUSAL
+          : taskKindBacklogRefusal(issue.input as TaskKind),
+      })
       .default("ship"),
     /**
      * `null` means INHERIT - the kind's row on Settings -> Models decides, at the moment
@@ -9200,6 +9280,12 @@ const ScheduleTemplateSchema = z
   .refine((t) => t.effort === null || t.agent === null || supportsEffort(t.agent, t.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
+  })
+  // A chat mission exists so nothing reviews its runs. The editor stands After work down for
+  // it; this keeps a direct API caller from storing one the editor would never offer.
+  .refine((t) => taskKindAllowsBacklog(t.kind) || t.workflowId === null, {
+    path: ["workflowId"],
+    message: CHAT_WORKFLOW_REFUSAL,
   });
 
 /**
@@ -9804,7 +9890,32 @@ export const StoredPauseStateSchema = z.object({
 export type StoredPauseState = z.output<typeof StoredPauseStateSchema>;
 
 /** A dashboard-only grant. No dispatch, task, schedule or global default accepts it. */
-export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().guid().optional() }).strict();
+export const SessionControlGrantSchema = z.object({
+  enabled: z.boolean(),
+  requestId: z.string().guid().optional(),
+  /**
+   * The session's own pending ask this click accepts, when the click came from its card. Bound
+   * only to which request is still on screen: the grant still needs the private click above,
+   * and a request the session no longer holds refuses the grant rather than applying it to a
+   * conversation that never asked.
+   */
+  controlRequestId: z.string().guid().optional(),
+}).strict();
+/** Longest reason a session may give for wanting Control other sessions. */
+export const SESSION_CONTROL_REQUEST_REASON_MAX = 2_000;
+/** `request_session_control`: the caller is the signed session credential, never a body id. */
+export const RequestSessionControlSchema = z.object({
+  reason: z.string().trim().min(1).max(SESSION_CONTROL_REQUEST_REASON_MAX),
+}).strict();
+/** Where one ask stands. Only `granted` means the session holds the grant. */
+export const SESSION_CONTROL_REQUEST_STATUSES = ["pending", "granted", "declined", "expired"] as const;
+export type SessionControlRequestStatus = (typeof SESSION_CONTROL_REQUEST_STATUSES)[number];
+export interface SessionControlRequestResult {
+  id: string;
+  status: SessionControlRequestStatus;
+  /** Why an ask ended without a decision; set only on `expired`. */
+  detail?: string;
+}
 const ControlIdSchema = z.string().min(1).max(256);
 export const SessionControlReadSchema = z.object({
   sessionId: ControlIdSchema.optional(),

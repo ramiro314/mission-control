@@ -172,6 +172,14 @@ export function daemonUnit(cgroup: string | null, uid: number | null): string | 
   return /\.(service|scope)$/.test(leaf) ? leaf : null;
 }
 
+/**
+ * A unit name as a `systemd-run -p` value for a systemd that C-unescapes it (262.2 and later):
+ * each backslash doubled, so `app-mission\x2dcontrol-1.scope` arrives as itself.
+ */
+export function escapePropertyValue(value: string): string {
+  return value.replaceAll("\\", "\\\\");
+}
+
 /** `KEY=VALUE` lines from `systemctl show`. */
 function parseShow(stdout: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -300,23 +308,32 @@ export function createSessionScope(deps: SessionScopeDeps, options: { inert?: bo
     if (!bound) {
       problems.push("the daemon is not in a unit of the user manager, so stopping it does not stop its session scopes");
     }
-    const base = [
+    // systemd 262.2 C-unescapes a `-p` value, so a bound unit's `\x2d` must reach it as `\\x2d`;
+    // older releases take the value literally. Each spelling is probed, escaped first.
+    const spellings = bound && bound.includes("\\") ? [escapePropertyValue(bound), bound] : [bound];
+    const baseFor = (unit: string | null) => [
       "TimeoutStopSec=10s",
-      ...(bound ? [`BindsTo=${bound}`, `After=${bound}`] : []),
+      ...(unit ? [`BindsTo=${unit}`, `After=${unit}`] : []),
       ...(deps.extraProperties ?? []),
     ];
     const deadline = deps.now() + PROBE_TIMEOUT_MS;
-    const full = ["OOMPolicy=stop", ...base];
-    const first = await probe(systemdRun, full, deadline);
-    if (first === "ok") return { decision: { systemdRun, properties: full, choom }, problems, off: null };
-    if (first === "timeout") return { decision: { systemdRun: null, properties: [], choom }, problems, off: "the systemd-run probe timed out" };
-    const second = await probe(systemdRun, base, deadline);
-    if (second === "ok") {
-      problems.unshift("this systemd refused OOMPolicy=stop, so an OOM kill may not stop a whole session");
-      return { decision: { systemdRun, properties: base, choom }, problems, off: null };
+    const timedOut = { decision: { systemdRun: null, properties: [], choom }, problems, off: "the systemd-run probe timed out" };
+    for (const unit of spellings) {
+      const full = ["OOMPolicy=stop", ...baseFor(unit)];
+      const first = await probe(systemdRun, full, deadline);
+      if (first === "ok") return { decision: { systemdRun, properties: full, choom }, problems, off: null };
+      if (first === "timeout") return timedOut;
     }
-    const off = second === "timeout" ? "the systemd-run probe timed out" : "this systemd refused the session scope's properties";
-    return { decision: { systemdRun: null, properties: [], choom }, problems, off };
+    for (const unit of spellings) {
+      const base = baseFor(unit);
+      const second = await probe(systemdRun, base, deadline);
+      if (second === "ok") {
+        problems.unshift("this systemd refused OOMPolicy=stop, so an OOM kill may not stop a whole session");
+        return { decision: { systemdRun, properties: base, choom }, problems, off: null };
+      }
+      if (second === "timeout") return timedOut;
+    }
+    return { decision: { systemdRun: null, properties: [], choom }, problems, off: "this systemd refused the session scope's properties" };
   }
 
   /** Reset this instance's failed scopes a previous run of this daemon left behind. Never another's. */

@@ -14,8 +14,9 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * first shows that "Chat about it", which keeps its tooltip, can still raise one.
  *
  * fork:decision-forms opens a form on its recommended options, and `check()` on an input that
- * is already checked does nothing, so it would neither pick nor focus. A recommended radio is
- * picked with a click instead, and a recommended checkbox is cleared before it is ticked.
+ * is already checked does nothing, so it would neither pick nor focus. A click on a checked radio
+ * clears it, so a recommended radio is picked by clicking another option and then clicking back,
+ * and a recommended checkbox is cleared before it is ticked.
  */
 
 const EVIDENCE = artifactsDir("review-option-no-tooltip");
@@ -133,6 +134,7 @@ test("choosing an option leaves no tooltip over the question", async ({ dashboar
   expect(await bubble.count(), "hovering an option row paints no bubble").toBe(0);
 
   await expect(rebase, "the form opens on the recommendation").toBeChecked();
+  await rollout.getByRole("radio", { name: /^Rebase but leave it pending/ }).click();
   await rebase.click();
   await expect(rebase).toBeChecked();
   await expect(rebase).toBeFocused();
@@ -207,6 +209,7 @@ test("a request_input question's options leave no tooltip over the question eith
   expect(await bubble.count(), "hovering an option row paints no bubble").toBe(0);
 
   await expect(biome, "the form opens on the recommendation").toBeChecked();
+  await eslint.click();
   await biome.click();
   await expect(biome).toBeChecked();
   await expect(biome).toBeFocused();
@@ -237,6 +240,8 @@ test("a multi-select request_input question's checkboxes leave no tooltip either
   const group = modal.getByRole("group", { name: LINTER });
   const biome = group.getByRole("checkbox", { name: /^biome/ });
   const eslint = group.getByRole("checkbox", { name: /^eslint/ });
+  // request_input always offers text entry; on a multi-select it is the additive Other box.
+  await expect(group.getByPlaceholder("Other…")).toBeVisible();
 
   await group.getByRole("checkbox", { name: "Chat about it" }).hover();
   await expect(bubble).toHaveText(/^Skip choosing for now/);

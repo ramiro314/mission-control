@@ -7,6 +7,8 @@ import "./migrate-state.ts";
 import { daemonLog } from "./daemon-log-start.ts";
 import { clearStoredDefaultBaseBranches } from "./base-branch-backfill.ts";
 import { startMergedBaseBranchMover } from "./base-branch-move.ts";
+import { onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
@@ -80,7 +82,7 @@ import { getWorkflowPolicy } from "./workflows/config.ts";
 import { WorkflowCommandArtifactService } from "./workflows/command-artifacts.ts";
 import { startPrPoller } from "./pr.ts";
 import { PrConflictTracker } from "./pr-conflicts.ts";
-import { startInspector } from "./inspector/worker.ts";
+import { reobserveInspectorPr, startInspector } from "./inspector/worker.ts";
 import { refreshRuntimeMeta, startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startRetroWorthinessPoller } from "./retro-worthiness.ts";
 import { startUsagePoller } from "./usage.ts";
@@ -270,6 +272,10 @@ const leaseActivity = new LeaseActivityObserver(
     if (staleChanged) registry.emitWorktreesChanged();
   },
 );
+// One bridge for every writer, including settings restore and daemon listeners.
+const stopFeatureFlags = onFeatureFlagsChanged((config) => registry.emitFeatureFlags(config));
+// Task shaping's config reaches open windows the same way, behind its flag.
+const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
 // A slot entering or leaving quarantine changes the storage aggregate. The aggregate is built
@@ -531,6 +537,9 @@ const workflows = new WorkflowManager(registry, personas.store, {
   unresolvedCheckLease: (submissionId, nodeId) =>
     checkRuntime.unresolvedLeaseForNode(submissionId, nodeId),
   inject: runtimePromptInjector(sdkSessions),
+  // A recheck of a closed-PR block asks GitHub again, because the Inspector sweep never reads
+  // a row it retired as closed.
+  reobservePullRequest: (prKey) => reobserveInspectorPr(registry, prKey),
   // How often the resumption observer and the session action sweep look, in ms.
   //
   // Overridable for the reason `INSPECTOR_POLL_MS` and `MISSION_POLL_MS` are: both loops ask
@@ -932,6 +941,7 @@ const schedules = new ScheduleManager({
   },
 });
 let stopSchedules = () => {};
+let stopSnoozeClock = () => {};
 
 // The transient Keep Awake owner. Constructed before the app so the routes never see a
 // daemon without it, and SEEDED into the registry before the server accepts traffic so
@@ -1085,9 +1095,13 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // own - are sent too, once the first completed sweep has put every live session back in the
   // map. Here, after `FileCommentManager`'s own sweep hook and after the port is won.
   adoptQueuedOnFirstSweep(registry, fileCommentWalkthrough);
-  reviews.startContinuationRecovery((review, text) =>
-    pendingTurns.submitReviewContinuation(review.id, review.sessionId, text).ok,
+  reviews.startContinuationRecovery((review, text, kind) =>
+    pendingTurns.submitReviewContinuation(review.id, review.sessionId, text, kind).ok,
   );
+  // Snoozed questions come back on time from here, including any that fell due while the
+  // daemon was down. After the port, like every other writer, and after continuation recovery,
+  // so a question woken now is one whose earlier answers have already been handed on.
+  stopSnoozeClock = reviews.startSnoozeClock();
   // Startup recovery treats every open claim as abandoned, so it may begin only after
   // this daemon has won the port that makes it the single writer.
   stopSchedules = startScheduleManager(schedules);
@@ -1235,6 +1249,8 @@ async function shutdown(): Promise<void> {
   // reason exists to label - leaving a clean exit indistinguishable from a crash in the one
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
+  stopFeatureFlags();
+  stopShapingConfig();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();
@@ -1302,6 +1318,7 @@ async function shutdown(): Promise<void> {
   await stopWriteback();
   stopPipelines();
   stopSchedules();
+  stopSnoozeClock();
   await stoppingResidentLoop;
   await residents.stop();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to

@@ -87,9 +87,8 @@ test("every observation argv puts --no-optional-locks before the subcommand, and
     assert.equal(inspected.ok, true, inspected.ok ? "" : inspected.reason);
   });
   assertObservation(inspect, "inspect");
-  for (const subcommand of ["rev-parse", "status", "symbolic-ref"]) {
-    assert.ok(inspect.some((args) => afterDirectory(args)[1] === subcommand), `inspect runs ${subcommand}`);
-  }
+  // Upstream #1591 answers HEAD, detachment and cleanliness from one `status --branch`.
+  assert.ok(inspect.some((args) => afterDirectory(args)[1] === "status"), "inspect runs status");
   assertObservation(
     await argvOf(async () => assert.equal((await git.observedDefaultSha(identity)).ok, true)),
     "observedDefaultSha",

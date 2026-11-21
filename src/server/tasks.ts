@@ -70,6 +70,8 @@ import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency } from "@shared/task-dependency.ts";
 import {
   baseBranchMoveRefusal,
+  CHAT_DEPENDENCY_REFUSAL,
+  CHAT_WORKFLOW_REFUSAL,
   taskHasRepository,
   dispatchHasNoProvisionedResources,
   isGrillFirstTaskKind,
@@ -78,6 +80,7 @@ import {
   isPlanningTaskKind,
   RESIDENT_TASK_REFUSAL,
   providerOwnsTaskCompletion,
+  taskAllowsBacklog,
   taskKindAllowsBacklog,
   taskKindBacklogRefusal,
   taskKindCreator,
@@ -187,6 +190,8 @@ import { residentRunForTask } from "./residents/store.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
 import { cancelPipelineCommission } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
+import { conductorIntegrationEnabled } from "./pipelines/availability.ts";
+import { CONDUCTOR_UNAVAILABLE_DETAIL } from "@shared/conductor-integration.ts";
 import {
   PIPELINE_RECOVERY_CONSENT_WITHDRAWN,
   pipelineRepoConsented,
@@ -1269,6 +1274,11 @@ export class TaskManager {
       // Late-bound for the same reason: a task naming a Persona is refused without a reader.
       persona: (id) => this.personaLookup?.(id) ?? null,
     });
+    // Only unchanged inherited rows are evidence of a lost binding. A task created,
+    // assigned, or displaced during restore belongs to this daemon's live lifecycle.
+    const sessionlessAtStartup = new Set(registry.listTasks().filter(
+      (task) => task.status === "running" && task.sessionId === null,
+    ));
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (emulator pane identity or mux name).
@@ -1412,7 +1422,7 @@ export class TaskManager {
     this.subscriptions.push(registry.onSessionsObserved(() => {
       this.completedInitialSessionSweep = true;
       this.reconcileMergedTasks();
-      this.reconcileTasksWithNoLiveSession();
+      this.reconcileTasksWithNoLiveSession(sessionlessAtStartup);
       // And the closures a previous daemon left owed. Nothing before this point may act on
       // one: until the process table has been read, a session missing from the registry has
       // not been observed to be gone. See `sweepMissionSessionClosures`.
@@ -1864,7 +1874,8 @@ export class TaskManager {
     // this session ever ran", which is what the bindings are for.
     const t = this.executingTaskOn(s.id);
     if (!t) return;
-    if (providerOwnsTaskCompletion(t.kind)) return;
+    // A chat's PR can land between conversational turns without ending the conversation.
+    if (t.kind === "chat" || providerOwnsTaskCompletion(t.kind)) return;
     const binding = taskWorkEpisodeForTask(t.id);
     if (!binding) return;
     // Rolled onto new work since the merge - not ours to conclude while the agent is still
@@ -2534,7 +2545,7 @@ export class TaskManager {
         // another row through that same re-entrancy, and can evict a terminal one entirely.
         const t = this.registry.getTask(id);
         if (!t || !completableByMerge(t.status)) continue;
-        if (providerOwnsTaskCompletion(t.kind)) continue;
+        if (t.kind === "chat" || providerOwnsTaskCompletion(t.kind)) continue;
         // A reschedule mid-teardown holds a cancelled/failed row it is about to re-file as
         // backlog. `complete` throws on that, and this runs inside event listeners and the
         // PR poller's reconciliation, where a throw abandons the rest of the sweep.
@@ -2685,9 +2696,19 @@ export class TaskManager {
   }
 
   /** The same reconciliation for a restart: whatever the first completed sweep did not find. */
-  private reconcileTasksWithNoLiveSession(): void {
+  private reconcileTasksWithNoLiveSession(sessionlessAtStartup: ReadonlySet<Task>): void {
     for (const t of this.registry.listTasks()) {
-      if (!t.sessionId || this.registry.getSession(t.sessionId)) continue;
+      if (!t.sessionId) {
+        // A running row can have lost its binding before the daemon stopped. Discovery
+        // has now had a chance to rebind by cwd. Preserve other positive owners: SDK
+        // restore, provider runs, and (inside agentWentAway) durable terminal transfers.
+        // Dispatching is provisional and remains owned by dispatch/startup recovery.
+        if (!sessionlessAtStartup.has(t) || t.status !== "running" || providerOwnsTaskCompletion(t.kind) ||
+          this.supervisor?.taskLiveness(t.id) === true) continue;
+        this.agentWentAway(t);
+        continue;
+      }
+      if (this.registry.getSession(t.sessionId)) continue;
       // A managed Pipeline reserves its SDK id before the driver starts so its first MCP
       // call can prove which task launched it. A discovery sweep can complete inside that
       // launch window, when the task already names the id but the supervisor has not yet
@@ -2783,7 +2804,9 @@ export class TaskManager {
     // says "ended with no outcome recorded", and a merged pull request IS the outcome -
     // reporting it as a failure would strand every task declared to wait on this one
     // behind a `stopped` blocker, for work that shipped.
-    const outcome = this.mergeOutcomeFor(t);
+    // Disappearance keeps the normal failure/retention path for chats. A past PR is
+    // dependency evidence, not permission to complete the chat and return its checkout.
+    const outcome = t.kind === "chat" ? null : this.mergeOutcomeFor(t);
     if (outcome) {
       // A scout can refuse this: its pull request merged but no verified report was archived,
       // and `done` would claim a durable answer that does not exist. The agent is gone, so
@@ -3320,6 +3343,24 @@ export class TaskManager {
   }
 
   /**
+   * Whether this is the scheduler filing backlog work that `taskAllowsBacklog` admits only
+   * because a Recurring Mission filed it. Plain backlog work, no source, no dependencies and
+   * no after-work Workflow: the provenance is the only thing that admits it, so nothing else
+   * may ride along. `workflowId` must be an explicit null - an absent one would resolve to
+   * the dispatch default.
+   */
+  private isScheduledBacklogCreate(input: CreateTaskInput, internal?: InternalCreateOptions): boolean {
+    return (
+      internal?.schedule !== undefined &&
+      input.backlog === true &&
+      input.source === undefined &&
+      (input.dependencies?.length ?? 0) === 0 &&
+      input.workflowId === null &&
+      taskAllowsBacklog({ kind: input.kind, scheduleId: internal.schedule.scheduleId })
+    );
+  }
+
+  /**
    * Create a task, and - when the operator left the title blank - name it with a model
    * before anything downstream reads that name.
    *
@@ -3358,10 +3399,17 @@ export class TaskManager {
       }
     } else if (internal?.resident) {
       throw new TaskKindBacklogError(`a ${input.kind} task cannot be reserved by a resident run`);
-    } else if (creator === "dispatch" && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
+    } else if (
+      creator === "dispatch" &&
+      manualDispatch !== MANUAL_DISPATCH_TASK_CREATE &&
+      // A Recurring Mission's scheduler is the one other creator of a `scheduled-only` kind,
+      // and only as backlog work with no source or dependencies - see `taskAllowsBacklog`.
+      !this.isScheduledBacklogCreate(input, internal)
+    ) {
       throw new TaskKindBacklogError(refusal);
     }
     if (
+      !this.isScheduledBacklogCreate(input, internal) &&
       !taskKindAllowsBacklog(input.kind) &&
       (input.backlog || (internal !== undefined && !internal.resident) ||
         input.source !== undefined || (input.dependencies?.length ?? 0) > 0)
@@ -3904,7 +3952,7 @@ export class TaskManager {
       // The operator's launch hold (Pause all, or a priority session), by the same inversion
       // and with its own claim: only a launch that claims `overridePauseHold` gets through it.
       // Asked after the kind and Disabled refusals, which outrank it, and before dependencies.
-      const outranked = !taskKindAllowsBacklog(t.kind) || refusedAsDisabled(t, options.overrideDisabled);
+      const outranked = !taskAllowsBacklog(t) || refusedAsDisabled(t, options.overrideDisabled);
       const held = outranked || options.overridePauseHold === true ? null : this.launchHold();
       if (held) return { ok: false, error: held, task: t, launchHeld: true };
       const refusal = this.backlogDispatchRefusal(t, options);
@@ -4037,7 +4085,7 @@ export class TaskManager {
    * without converting anything.
    */
   backlogDispatchRefusal(t: Task, options: Pick<DispatchOptions, "overrideDisabled"> = {}): string | null {
-    if (!taskKindAllowsBacklog(t.kind)) return taskKindBacklogRefusal(t.kind);
+    if (!taskAllowsBacklog(t)) return taskKindBacklogRefusal(t.kind);
     // Asked before dependencies, like the allowlist is in `decideBacklogTick`: it is
     // the coarser fact and the one the operator can act on immediately.
     if (refusedAsDisabled(t, options.overrideDisabled)) return DISABLED_REFUSAL;
@@ -4057,6 +4105,7 @@ export class TaskManager {
   async recheckPipelineReadiness(id: string): Promise<DispatchOutcome> {
     const task = this.registry.getTask(id);
     if (!task) return { ok: false, error: "no such task" };
+    if (!conductorIntegrationEnabled()) return { ok: false, error: CONDUCTOR_UNAVAILABLE_DETAIL, task };
     if (task.kind !== "pipeline" || !task.pipelineCommissionId) {
       return { ok: false, error: "task has no Pipeline commission", task };
     }
@@ -4088,6 +4137,7 @@ export class TaskManager {
   async startPipelineAfterReadiness(id: string): Promise<DispatchOutcome> {
     const task = this.registry.getTask(id);
     if (!task) return { ok: false, error: "no such task" };
+    if (!conductorIntegrationEnabled()) return { ok: false, error: CONDUCTOR_UNAVAILABLE_DETAIL, task };
     if (task.kind !== "pipeline" || !task.pipelineCommissionId) {
       return { ok: false, error: "task has no Pipeline commission", task };
     }
@@ -4120,6 +4170,9 @@ export class TaskManager {
   async retryPipelineAttempt(id: string, input: PipelineRetry): Promise<PipelineRecoveryOutcome> {
     const task = this.registry.getTask(id);
     if (!task) return { ok: false, code: "task_conflict", error: "no such task" };
+    if (!conductorIntegrationEnabled()) {
+      return { ok: false, code: "unsupported_provider", error: CONDUCTOR_UNAVAILABLE_DETAIL, task };
+    }
     if (task.kind !== "pipeline" || task.pipelineCommissionId !== input.guard.commissionId) {
       return { ok: false, code: "task_conflict", error: "task has no matching Pipeline commission", task };
     }
@@ -4294,6 +4347,9 @@ export class TaskManager {
   /** Refresh review evidence for one direct provider successor without adopting it. */
   async refreshPipelineSuccessor(id: string, input: PipelineRetry): Promise<PipelineRecoveryOutcome> {
     const task = this.registry.getTask(id);
+    if (task && !conductorIntegrationEnabled()) {
+      return { ok: false, code: "unsupported_provider", error: CONDUCTOR_UNAVAILABLE_DETAIL, task };
+    }
     const commission = task?.pipelineCommissionId
       ? this.registry.pipelineCommission(task.pipelineCommissionId)
       : null;
@@ -4323,6 +4379,9 @@ export class TaskManager {
   /** Adopt one revalidated external successor before replaying any of its journal. */
   async adoptPipelineSuccessor(id: string, input: PipelineAdoptSuccessor): Promise<PipelineRecoveryOutcome> {
     const task = this.registry.getTask(id);
+    if (task && !conductorIntegrationEnabled()) {
+      return { ok: false, code: "unsupported_provider", error: CONDUCTOR_UNAVAILABLE_DETAIL, task };
+    }
     const commission = task?.pipelineCommissionId
       ? this.registry.pipelineCommission(task.pipelineCommissionId)
       : null;
@@ -4558,7 +4617,7 @@ export class TaskManager {
     if (t.status !== "backlog" && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: `task is ${t.status}, not in the backlog` };
     }
-    if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind)) {
+    if (!isAnnotationOnlyUpdate(patch) && !taskAllowsBacklog({ kind: patch.kind ?? t.kind, scheduleId: t.scheduleId })) {
       return { ok: false, error: taskKindBacklogRefusal(patch.kind ?? t.kind) };
     }
     const intent = patch.intent?.trim() ?? t.intent;
@@ -4663,6 +4722,14 @@ export class TaskManager {
     const becomesPlan = isPlanningTaskKind(patch.kind) && !isPlanningTaskKind(t.kind);
     let planPolicy = t.planPolicy;
     let workflowId = patch.workflowId === undefined ? t.workflowId : patch.workflowId;
+    // A row edited into a kind with no backlog of its own - a chat a mission filed - takes
+    // that kind's None instead of inheriting the previous kind's review Workflow. Launch arms
+    // whatever the row names without asking its kind, so a kind-only patch must not carry it
+    // over; a Workflow the patch names is refused below with `CHAT_WORKFLOW_REFUSAL`.
+    if (patch.workflowId === undefined && patch.kind !== undefined && patch.kind !== t.kind
+      && !taskKindAllowsBacklog(patch.kind)) {
+      workflowId = null;
+    }
     try {
       if (patch.planStorage !== undefined && (patch.kind ?? t.kind) !== "plan") {
         throw new PlanStoreError("Plan storage is only available for plan tasks");
@@ -4705,6 +4772,21 @@ export class TaskManager {
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return { ok: false, error: error.message };
       throw error;
+    }
+    // A kind with no backlog of its own never waits on other work, even on the one row that
+    // may hold it - a chat a Recurring Mission filed. Checked on the RESULT, so an edit that
+    // turns a dependent task into a chat is refused as surely as one that adds an edge to a chat.
+    if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind) && dependencies.length > 0) {
+      return { ok: false, error: CHAT_DEPENDENCY_REFUSAL };
+    }
+    // Nor does it run after-work: the only chat a non-annotation edit can reach is one a
+    // Recurring Mission filed (the status guard above keeps every other edit to the backlog),
+    // and that run exists so nothing reviews it. Asked of the RESULT, so naming a Workflow on
+    // an existing chat and switching a row to chat with one are both refused. A priority or
+    // label edit is left alone: it also reaches a running hand-dispatched chat, which may
+    // hold the Workflow it opted into in Dispatch, and the edit does not touch it.
+    if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind) && workflowId !== null) {
+      return { ok: false, error: CHAT_WORKFLOW_REFUSAL };
     }
     const grillFirst = resolveGrillFirstPin(patch.kind ?? t.kind, patch.grillFirst, t);
     const next: Task = {
@@ -6628,7 +6710,7 @@ export class TaskManager {
     }
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
-    if (!taskKindAllowsBacklog(t.kind)) {
+    if (!taskAllowsBacklog(t)) {
       return { ok: false, error: taskKindBacklogRefusal(t.kind) };
     }
     if (t.status !== "cancelled" && t.status !== "failed") {
@@ -7399,8 +7481,8 @@ export class TaskManager {
       if (!current || !dispatchHasNoProvisionedResources(current)) return;
       this.registry.upsertTask({
         ...current,
-        status: taskKindAllowsBacklog(current.kind) ? "backlog" : "failed",
-        error: taskKindAllowsBacklog(current.kind)
+        status: taskAllowsBacklog(current) ? "backlog" : "failed",
+        error: taskAllowsBacklog(current)
           ? INTERRUPTED_BEFORE_PROVISION_ERROR
           : taskKindCreator(current.kind) === "resident-launch"
             ? INTERRUPTED_RESIDENT_BEFORE_PROVISION_ERROR

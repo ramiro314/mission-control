@@ -90,14 +90,25 @@ export function registrationOrIdentityQuarantine(reason: string | null): boolean
 }
 
 /**
+ * Why a slot whose lease was handed back without a reset is held in quarantine (upstream #1517).
+ * Shown on its card, so it says what happened and what the operator can do about it. It is
+ * written under the `state` category, which upstream's automatic recovery never clears.
+ */
+export const ORPHANED_SLOT_REASON =
+  "Git no longer recognizes this slot: its worktree registration is gone, as happens when the main checkout is re-cloned or moved. Destroy removes it.";
+
+/**
  * The reasons Repair answers: Git's registration of the slot is unsafe, or names another path.
  * That last one reads as "missing" here, because `git worktree list` shows the registration
- * under the path it names.
+ * under the path it names. An orphaned slot is the same fault reached through a release, so
+ * the operator's Repair registers its folder again in place. The automatic pass judges it like
+ * any other reason here: it runs Git's own fixes and never registers a folder again.
  */
 const REGISTRATION_REPAIR_REASONS: ReadonlySet<string> = new Set([
   REGISTRATION_OR_IDENTITY.unsafeRegistration,
   REGISTRATION_OR_IDENTITY.noSafeRegistration,
   REGISTRATION_OR_IDENTITY.missingRegistration,
+  ORPHANED_SLOT_REASON,
 ]);
 
 export function registrationRepairQuarantine(reason: string | null): boolean {

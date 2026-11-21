@@ -75,8 +75,12 @@ export const WORKFLOW_LIMITS = {
    *
    * Action deliveries have their own read bound so a long repository root does not consume
    * the existing 58,000-byte authored and published prompt allowance.
+   *
+   * Fork: 1,000 bytes more than upstream's, for the fork's Required-checks CI wording, its
+   * merge-conflict policy and its REST draft-PR line, which sit beside upstream's publication
+   * verification policy in the same packet.
    */
-  sessionActionEnvelopeBytes: 18_000,
+  sessionActionEnvelopeBytes: 19_000,
   /**
    * What may be STORED, which is looser than what may be authored or published.
    *
@@ -103,7 +107,7 @@ export const WORKFLOW_LIMITS = {
    * `eventPayloadBytes`. `sessionActionPromptBytes` is derived FROM this budget so the two
    * cannot drift apart.
    */
-  sessionActionPacketBytes: 76_000,
+  sessionActionPacketBytes: 77_000,
   workflowName: 120,
   graphNodes: 100,
   graphEdges: 300,
@@ -377,6 +381,8 @@ export type WorkflowEvidenceReadinessWarningCode =
   (typeof WORKFLOW_EVIDENCE_READINESS_WARNING_CODES)[number];
 
 export interface WorkflowCanonicalCriterion {
+  /** Absent on legacy criteria; null records a non-publication outcome. Graph ownership still gates deferral. */
+  fulfilledByAction?: "pull_request" | null;
   id: string;
   text: string;
   material: boolean;
@@ -456,6 +462,8 @@ export interface WorkflowEvidenceReadinessLink {
 }
 
 export interface WorkflowEvidenceReadinessCriterion {
+  /** Still owed by a later workflow action, never a claim of satisfaction. */
+  deferredToAction?: "pull_request";
   criterionId: string;
   criterion: string;
   material: boolean;
@@ -638,6 +646,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
   unavailableReason?: string | null;
   selection?: WorkflowCoverageSelection;
   enforceCoverage?: boolean;
+  pendingPullRequestAction?: boolean;
 }): WorkflowEvidenceReadinessResult {
   const unavailableReason = input.unavailableReason
     ?? (input.coverage.length > 0 && input.canonicalCriteria.length === 0
@@ -684,6 +693,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       ?? candidates[0] ?? null;
     const gaps: WorkflowEvidenceReadinessGapCode[] = [];
     const warnings: WorkflowEvidenceReadinessWarningCode[] = [];
+    const deferred = canonical.fulfilledByAction === "pull_request" && input.pendingPullRequestAction;
     if (canonical.material && !claim) gaps.push("missing_coverage");
     if (matchedIds.length > 1) warnings.push("ambiguous_mapping");
     const proof = claim ? resolveCoverageClaimProof(claim, evidence) : null;
@@ -695,6 +705,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       && canonical.suggestedProofClass !== claim.proofClass
     ) warnings.push("model_proof_class_disagreement");
     return {
+      ...(deferred ? { deferredToAction: "pull_request" as const } : {}),
       criterionId: canonical.id,
       criterion: canonical.text,
       material: canonical.material,
@@ -703,7 +714,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       authorProofClass: claim?.proofClass ?? null,
       suggestedProofClass: canonical.suggestedProofClass,
       links,
-      gaps: canonical.material ? [...new Set(gaps)].sort() : [],
+      gaps: canonical.material && !deferred ? [...new Set(gaps)].sort() : [],
       warnings,
     };
   });
@@ -2383,6 +2394,32 @@ export function waitForCiReachable(
   return false;
 }
 
+/** Only successful forward routes count; a repair edge cannot promise future publication. */
+export function workflowHasPendingPullRequestAction(
+  graph: PublishedWorkflowGraph,
+  continuationNodeId: string | null = null,
+): boolean {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const start = continuationNodeId ?? graph.nodes.find((node) => node.kind === "session")?.id;
+  if (!start) return false;
+  const pending = graph.edges.filter((edge) => edge.source === start
+    && edge.sourcePort === (continuationNodeId ? "complete" : "submitted"))
+    .map((edge) => edge.target);
+  const visited = new Set<string>([start]);
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const node = nodes.get(id);
+    if (!node || node.kind === "session" || node.kind === "end") continue;
+    if (node.kind === "session_action" && node.action.completion.kind === "pull_request") return true;
+    pending.push(...graph.edges.filter((edge) => edge.source === id
+      && (edge.sourcePort === "pass" || edge.sourcePort === "complete"))
+      .map((edge) => edge.target));
+  }
+  return false;
+}
+
 /**
  * The nodes a run is at right now, as `waitForCiReachable` walks from them.
  *
@@ -2983,6 +3020,7 @@ export const WORKFLOW_LLM_PURPOSES = [
   "context_compaction",
   "persona_review",
   "context_reconciliation",
+  "criterion_fulfillment",
 ] as const;
 export type WorkflowLlmPurpose = (typeof WORKFLOW_LLM_PURPOSES)[number];
 
@@ -3125,6 +3163,7 @@ export interface CodeRabbitReviewSummary {
   diagnostic: string;
   titles: string[];
   remainingRuns?: number;
+  retryableConnection?: true;
   retryAt?: number;
   expectedDuration?: string;
 }
@@ -4682,7 +4721,7 @@ export interface WorkflowRunIntentProvenance {
  * 6, 5, 5, 5, 5, 7, 2 across one observed run) even where the intent behind them had not
  * moved. A submission cannot be repaired against a target that moves while it is being
  * repaired, so the compaction runs once and every later submission of the run reuses the
- * result verbatim.
+ * stable result. Only missing publication timing metadata may be classified once later.
  *
  * Only the STABLE half lives here. Criterion mappings are per-submission by definition - they
  * bridge one submission's author coverage claims onto these criteria - so they stay on the
@@ -4931,6 +4970,7 @@ export interface WorkflowPersonaReviewInput {
   criteria: Array<{
     criterionId: string;
     material: boolean;
+    deferredToAction?: "pull_request";
     claimId: string | null;
     evidenceIds: string[];
     gaps: WorkflowEvidenceReadinessGapCode[];
@@ -5461,7 +5501,7 @@ export interface WorkflowRunDetail {
     kind: WorkflowDeliveryKind;
     state: WorkflowDeliveryState;
   } | null;
-  evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review"; label: string } | null;
+  evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review" | "publication"; label: string } | null;
   summary: WorkflowRunSummary;
   binding: WorkflowBinding;
   version: WorkflowVersion | null;

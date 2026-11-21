@@ -55,6 +55,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/mcp/v2/reviews", "attention.request", "permissions"],
   ["POST", "/mcp/reviews/:id/detach", "attention.detach", "permissions"],
   ["POST", "/api/reviews/:id/resolve", "attention.resolve", "permissions"],
+  ["POST", "/api/reviews/:id/snooze", "attention.snooze", "permissions"],
+  ["POST", "/api/reviews/:id/wake", "attention.wake", "permissions"],
   ["POST", "/api/attention/dismissals", "attention.dismiss", "permissions"],
   ["POST", "/api/sessions/:id/mode/cycle", "permission.mode_cycle", "permissions"],
   ["POST", "/api/sessions/:id/mode", "permission.mode_set", "permissions"],
@@ -202,6 +204,9 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/session-transfers/:id/resolve", "session.transfer_resolve", "sessions"],
   ["POST", "/api/history/sessions/:agent/:id/resume", "session.history_resume", "sessions"],
   ["POST", "/api/history/sessions/:agent/:id/resume/cancel", "session.history_resume_cancel", "sessions"],
+  ["PUT", "/api/feature-flags", "settings.feature_flags", "settings"],
+  ["PUT", "/api/shaping", "settings.shaping", "settings"],
+  ["POST", "/api/shaping/test", "settings.shaping_test", "settings"],
 ] as const;
 export type PrimaryAction = typeof PRIMARY_ACTION_ROUTES[number][2] | typeof ensembleActions[number] | typeof pipelineActions[number];
 export type PrimaryFeature = typeof PRIMARY_ACTION_ROUTES[number][3];

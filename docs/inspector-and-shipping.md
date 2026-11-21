@@ -2,7 +2,7 @@
 
 # GitHub Inspector (automated PR review)
 
-GitHub Inspector is the optional remote reviewer. It is separate from the local Personas
+GitHub Inspector is the remote reviewer. It is separate from the local Personas
 in [No-Mistakes Review](workflows.md#built-in-personas). No-Mistakes versions 9 through 17
 completed after verified PR publication; versions 18 and 19 include the final Inspector gate.
 A published workflow keeps its own completion policy. Installing that gate does not enable
@@ -48,11 +48,12 @@ not itself certify CI or authorize a merge.
 If Inspector's reply was posted but resolving its thread failed, that resolution is retried without
 another reply. An operator resolving local ledger findings does not authorize closing GitHub threads.
 
-It ships **off**, in **dry run**, trusting **no repositories**. Turning it on is three
-separate acts in Settings → GitHub Inspector, and the first two are reversible without anyone
-else seeing anything. Enabling and mode live on the GitHub Inspector panel; which repos it may post
-in is a column of **Settings → [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository)** now (the
-panel shows the count and links there), the same list `mode` is checked against below.
+Fresh installations start with the GitHub Inspector **enabled** in **Live** mode and with
+**no repository grants**. It can publish only in repositories granted access in
+**Settings → [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository)**. The
+**Settings → GitHub Inspector** panel shows the grant count and lets you switch the reviewer off
+or select Dry run. Saved settings carry forward on upgrade. Existing installations that never
+saved Inspector settings keep the prior defaults: off and Dry run.
 
 ### Only our pull requests
 
@@ -445,8 +446,9 @@ It ships **off**, trusting **no repositories**, with a **10 minute** soak.
 
 ### CodeRabbit follow-up
 
-**Follow up on CodeRabbit comments** is a separate Shipping setting, off by default and
-included in settings snapshots. It works while Inspector reviews and YOLO are off. The existing
+**Follow up on CodeRabbit comments** is a separate Shipping setting, on by default and
+included in settings snapshots. Upgrading turns it on once for an install that had it off; an
+operator who turns it off afterwards keeps that choice. It works while Inspector reviews and YOLO are off. The existing
 daemon poll observes only adopted PRs, including attached repositories, normally every 90 seconds.
 It reads GitHub but neither calls a review model nor replies to or resolves threads itself.
 
@@ -500,7 +502,7 @@ Every one of these, on the same read of the pull request:
 | No open GitHub Inspector findings | posted or previewed in dry run - a finding is a finding. [Three ways one closes](#how-a-finding-gets-closed) |
 | No unresolved review threads | stricter than the above on purpose: not merging over a colleague's unanswered question, whoever asked it |
 | Nobody requested changes, no required review outstanding | a human veto outranks a clean automated review |
-| **CI passing** on the head commit | a commit with **no** checks does not pass this: it has never been asked |
+| **CI passing** on the head commit | a commit with **no** checks does not pass this: it has never been asked. GitHub's own verdict stands, with one exception: GitHub keeps counting a failed run after a later run of the same check passed, so a failure a later run of that check has re-checked reads as the re-run's result. The same check means a GitHub Actions run of the same workflow file, triggering event and name, so a passing `pull_request` run never clears a failed `push` run, and neither another app's failed check nor a failed commit status is ever cleared. That holds only when GitHub returned every check on one page and each check still counting has a result Mission Control recognises |
 | GitHub says it merges cleanly | `CONFLICTING` blocks, and so does mergeability it has not computed yet |
 | Open for the **soak** | the window in which somebody can look and say no |
 | The repo holds the **merge grant** | its own column in [Trust](skills-and-settings.md#trust-who-may-act-in-which-repository), not the GitHub Inspector's |
@@ -581,7 +583,7 @@ because the [stack lifecycle](#the-stack-lifecycle) catches a stacked child up, 
 restacks it, and holds it with a named reason and a fix when its stack breaks. It lands a stack
 automatically when the conditions in [when a stack lands by itself](#the-stack-lifecycle) hold;
 that section also lists what needs an operator. An install that never chose a value follows the shipped default,
-and only an explicit choice is stored, so an explicit *Wait for merge* is kept. **Maximum stack depth** (1 to 5, default 3) caps how many stacked pull requests may
+and only an explicit choice is stored, so an explicit *Wait for merge* is kept. **Maximum stack depth** (1 to 10, default 3) caps how many stacked pull requests may
 sit above one that targets the default branch. Each dependency can override the default from
 its chip in the dispatch form and the backlog editor: **Stack** or **After merge**.
 
@@ -956,8 +958,15 @@ holds any pull request.
 
 ### When a task's pull request merges
 
-A task whose pull request merged ends as **done**, with that pull request as its outcome,
-instead of as `failed`. This is **not tied to YOLO mode** - a pull request you merged
+**Chat tasks are exempt from merge-driven completion.** A merged pull request stays recorded
+on the session and in its repository PR history, and still satisfies matching dependencies.
+The chat stays running with the same conversation and checkout, even while idle and regardless
+of the Shipping close-session setting. Use **Complete & close** when the conversation is over.
+If its agent disappears, normal failure and worktree retention rules apply; a later merge does
+not upgrade a failed or cancelled chat to done.
+
+For other task kinds, a task whose pull request merged ends as **done**, with that pull request
+as its outcome, instead of as `failed`. This is **not tied to YOLO mode** - a pull request you merged
 yourself on GitHub lands its task exactly the same way.
 
 Everything in this section is written about the task's pull request, singular, which is what
@@ -1051,3 +1060,39 @@ agents without task-owned worktrees:
 Provider or archive failures preserve the unreturned resource records. See
 [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for safe Kill returns,
 manual reconciliation, quarantine, and the unchanged 30-day fallback.
+
+## Automatic PR branch updates (preview)
+
+Enable **Automatic PR branch updates** in Settings > Feature flags. The daemon's PR
+poller then updates an open, non-draft PR only when GitHub reports `BEHIND` and its checks
+and required reviews are ready. This works with Inspector and automatic shipping disabled,
+including PRs you intend to merge by hand. Enabling it never grants merge permission.
+
+The PR link shows **Updating branch** until GitHub reports a new head, then **Waiting for
+checks** or **Waiting for review** as that commit is evaluated. A refusal shows GitHub's
+reason. Conflicts offer **Send to session to resolve** when the owning session can receive
+messages; that action asks the agent to resolve and push, explicitly without merging the PR.
+
+Each PR/head/target-commit pair is attempted at most once, including across daemon restarts
+and lost responses. A changed head or target commit is read again before
+another attempt. GitHub's expected-head guard protects the write. The update happens on
+GitHub, without editing the agent's local worktree. Disabling the preview stops new attempts
+and hides its status; an update GitHub already accepted may still finish. The poller follows
+PRs associated with live sessions and their attached repositories.
+
+## Reading CI warnings
+
+The warning beside a pull request opens its reported check results. Each result shows the
+check name and actual conclusion, including cancelled jobs and successful reruns. When GitHub
+supplies a job or status URL, the result links directly there; results without a usable URL
+remain plain text. The pull request overview has its own separate link.
+
+A blocking CI category is not itself evidence that a job failed. Failure wording requires an
+individual `FAILURE` or `ERROR` result. A cancellation-only warning names the cancellations
+and says no failures appear in the reported results. Missing details and possibly truncated
+lists are identified explicitly. The display retains up to 100 results from the current PR
+observation and does not alter review or merge gates, including retry handling.
+
+The workflow run separately shows its recorded wait reason. For example,
+`working_tree_not_pushed` describes publication evidence, even when the same pull request
+also has cancelled checks. The CI warning does not replace that reason.

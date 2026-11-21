@@ -11,6 +11,7 @@ import {
   SESSIONS_SLICE,
   createSessionScope,
   daemonUnit,
+  escapePropertyValue,
   formatPeak,
   oomStopLine,
   outOfMemoryText,
@@ -108,6 +109,69 @@ test("Linux with a manager and every executable: the exact argv, bound to the da
   assert.equal(SESSIONS_SLICE, "app-mission\\x2dcontrol\\x2dsessions.slice");
   assert.match(instance, /^[0-9a-f]{8}$/);
   assert.deepEqual(logs, [], "full isolation logs nothing");
+});
+
+const ESCAPED_CGROUP =
+  "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-mission\\x2dcontrol-324645.scope\n";
+const ESCAPED_UNIT = "app-mission\\x2dcontrol-324645.scope";
+const bindsTo = (call: Call) => call.args.find((arg) => arg.startsWith("BindsTo="));
+
+test("a bound unit name with an escape reaches a C-unescaping systemd-run doubled (systemd 262.2)", async () => {
+  assert.equal(escapePropertyValue(ESCAPED_UNIT), "app-mission\\\\x2dcontrol-324645.scope");
+  const { deps, calls, logs } = fakes({ ownCgroup: () => ESCAPED_CGROUP });
+  const scope = createSessionScope(deps);
+  await scope.ready();
+  const probes = calls.filter(isProbe);
+  assert.equal(probes.length, 1, "the escaped spelling is tried first and accepted");
+  assert.equal(bindsTo(probes[0]!), `BindsTo=${escapePropertyValue(ESCAPED_UNIT)}`);
+  const wrapped = scope.wrap("/usr/bin/claude", [], MANAGER_ENV, "sdk:escaped");
+  assert.ok(wrapped.unit);
+  assert.ok(wrapped.args.includes(`BindsTo=${escapePropertyValue(ESCAPED_UNIT)}`));
+  assert.ok(wrapped.args.includes(`After=${escapePropertyValue(ESCAPED_UNIT)}`));
+  assert.deepEqual(logs, []);
+});
+
+test("a systemd that takes -p values literally gets the bound unit name as written", async () => {
+  const { deps, calls, logs } = fakes({
+    ownCgroup: () => ESCAPED_CGROUP,
+    // Before 262.2 the doubled backslash names a unit that does not exist.
+    answer: (call) => isProbe(call) && bindsTo(call)?.includes("\\\\")
+      ? { code: 1, stdout: "", stderr: "Unit not found." }
+      : { code: 0, stdout: "", stderr: "" },
+  });
+  const scope = createSessionScope(deps);
+  await scope.ready();
+  assert.deepEqual(calls.filter(isProbe).map(bindsTo), [
+    `BindsTo=${escapePropertyValue(ESCAPED_UNIT)}`,
+    `BindsTo=${ESCAPED_UNIT}`,
+  ]);
+  const wrapped = scope.wrap("/usr/bin/claude", [], MANAGER_ENV, "sdk:literal");
+  assert.ok(wrapped.unit);
+  assert.ok(wrapped.args.includes("-p") && wrapped.args.includes("OOMPolicy=stop"));
+  assert.ok(wrapped.args.includes(`BindsTo=${ESCAPED_UNIT}`));
+  assert.deepEqual(logs, []);
+});
+
+test("both spellings refused with OOMPolicy fall back to the base properties in the same order", async () => {
+  const { deps, calls, logs } = fakes({
+    ownCgroup: () => ESCAPED_CGROUP,
+    answer: (call) => isProbe(call) && (call.args.includes("OOMPolicy=stop") || bindsTo(call)?.includes("\\\\"))
+      ? { code: 1, stdout: "", stderr: "refused" }
+      : { code: 0, stdout: "", stderr: "" },
+  });
+  const scope = createSessionScope(deps);
+  await scope.ready();
+  const probes = calls.filter(isProbe);
+  assert.deepEqual(probes.map((call) => [call.args.includes("OOMPolicy=stop"), bindsTo(call)]), [
+    [true, `BindsTo=${escapePropertyValue(ESCAPED_UNIT)}`],
+    [true, `BindsTo=${ESCAPED_UNIT}`],
+    [false, `BindsTo=${escapePropertyValue(ESCAPED_UNIT)}`],
+    [false, `BindsTo=${ESCAPED_UNIT}`],
+  ]);
+  const wrapped = scope.wrap("/usr/bin/claude", [], MANAGER_ENV, "sdk:base");
+  assert.ok(wrapped.unit);
+  assert.ok(!wrapped.args.includes("OOMPolicy=stop"));
+  assert.ok(logs.some((line) => /refused OOMPolicy=stop/.test(line)), logs.join("\n"));
 });
 
 test("BindsTo and After are omitted when the daemon's cgroup leaf is not a unit of this user manager", async () => {

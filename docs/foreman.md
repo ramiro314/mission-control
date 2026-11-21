@@ -58,10 +58,10 @@ A session is invited when any of these is true:
 
 | Invite | Which sessions |
 |--------|----------------|
-| `sdk` | **Embedded** sessions. Mission Control runs them, so they are invited by definition. |
+| `sdk` | **Embedded** sessions. Mission Control runs them, so they are invited by definition - except [residents](residents.md#lifecycle). |
 | `dispatch` | **Dispatched** terminal sessions. Recorded automatically once the spawn is confirmed. |
 | `operator` | Sessions **you** invited, explicitly. |
-| *(none)* | Everything else - every session merely discovered on your machine, and any session whose invite you withdrew. |
+| *(none)* | Everything else - every session merely discovered on your machine, every resident session until you invite Foreman, and any session whose invite you withdrew. |
 
 In an uninvited session Foreman does nothing at all: no Purpose note, no decision brief, no
 queue tick, no wrap-up prompt, no pull-request follow-through, and no backlog assignment. It
@@ -278,6 +278,13 @@ selection and an empty evidence tray establish no such authority. With no eligib
 workflow evidence registration is not required, including when an older prompt or held verdict
 asked for it. Manually attaching a Persona workflow makes registration applicable, and removing
 it retires that obligation. Implementation and verification remain required in either case.
+
+Registration includes evidence still staged and evidence reserved by this conversation's own
+workflow submissions. Capture does not unregister that proof or require the agent to register
+it again for the same intent episode. The dashboard staging tray still shows only editable,
+staged items. Foreman rechecks the admitted evidence after verification; a change in identity,
+content, or eligibility discards the stale verdict without consuming the work generation or
+sending recovery gaps.
 
 Mission Control states the registered count,
 kind, generation, timestamp and size as trusted structure; session-chosen names, file locators,
@@ -756,6 +763,10 @@ Foreman control: those are the things you reach for while watching the fleet, an
 panel is the durable posture.
 
 ### Mechanical pipeline triage
+
+Temporarily unavailable with the rest of the ai-conductor integration (see
+[Pipelines](pipelines.md)): the daemon reports pipeline triage as disabled and the worker does
+nothing for it, whatever the stored permission says.
 
 **Settings → Conductor → Foreman triage** is a separate, default-off permission for external
 pipeline halts. Both it and Foreman's master switch must be on when the halt is read, when its

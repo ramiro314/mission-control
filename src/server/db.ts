@@ -1,3 +1,4 @@
+import { RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
 import type { SdkUsage } from "./harness/types.ts";
 import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
@@ -78,6 +79,7 @@ import type {
   ReviewActor,
   ReviewItem,
   ReviewKind,
+  ReviewSnooze,
   ReviewStatus,
   SessionCost,
   CostBasis,
@@ -109,6 +111,7 @@ import type {
 import {
   DEFAULT_TASK_KIND,
   PROMPTED_COMPLETION_OUTCOMES,
+  REVIEW_SNOOZE_MODES,
   SESSION_BLOCKER_KINDS,
   SHAPE_TICKETS_STATES,
   TASK_KINDS,
@@ -142,7 +145,14 @@ import {
   type WritebackNotice,
   type WritebackSignal,
 } from "@shared/task-source.ts";
-import { HUMAN_REVIEW_STATUSES, isConversationResolvedReview } from "@shared/review-item.ts";
+import {
+  HOME_DISPATCH_ACTOR_NAMES,
+  HOME_DISPATCH_ACTOR_PREFIXES,
+  HUMAN_REVIEW_STATUSES,
+  isConversationResolvedReview,
+  isHomeDispatchResolvedReview,
+} from "@shared/review-item.ts";
+import { restoreRequestInputText } from "@shared/request-input.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import {
   FILE_COMMENT_MESSAGES_PER_THREAD_MAX,
@@ -163,6 +173,7 @@ import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import { parseLaunchFailure } from "@shared/launch-failure.ts";
+import { parseTaskHibernation } from "@shared/hibernation.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
 import { parseStackObservation, type StackObservation } from "@shared/stacking.ts";
 import {
@@ -248,9 +259,29 @@ let db: DatabaseSync | undefined;
 // 32: resident compaction epochs (`resident_runs.compaction_epoch`, `reanchored_epoch`) and a
 //     restating wake's exact text (`resident_iterations.wake_text`, `reanchor_epoch`). Zero and
 //     NULL with no backfill: no run owes a restatement until its conversation next compacts.
-// 33: fork - the fork's own 19 and 20, shipped before upstream's 19 to 32 arrived, combined
-//     above upstream's 32 so a fork database stamped anywhere from 19 to 32 takes its recovery
+// 33: the applied task retention window (`task_worktree_retention.retention_ms`). Existing
+//     rows keep their deadlines and gain the original 30-day window (2592000000 ms).
+// 34: "Remind me later" on request_input questions (`reviews.snoozable`, `snoozed_at`,
+//     `snoozed_until`, `snooze_mode`, `snooze_option_id`, `snooze_reminded_at`,
+//     `snooze_instruction_owed_at`, `snooze_instruction_queued_at`), nullable with no backfill:
+//     no question offered or used a snooze before these existed.
+// 35: the attached repositories a resident launch spelled (`resident_runs.launch_extra_repo_spellings`),
+//     '[]' with no backfill: no run attached a repository before this existed.
+// 36: headless mode (FR-05). Where a task came from (`tasks.origin_surface`, `origin_repo`,
+//     `origin_session_id`), the home sessions that registered (`home_dispatch_sessions`), the
+//     receipt of each answer given from one (`home_dispatch_receipts`) and what repository task
+//     skill text a launch included (`session_standing_instructions.repo_task_skills`). New
+//     tables and nullable columns with no backfill: no task has an origin before this existed,
+//     and nothing writes any of it while the `headless-mode` flag is off.
+// 37: a hibernated task's record (`tasks.hibernation`, @shared/hibernation.ts), nullable with no
+//     backfill: no task was hibernated before it existed.
+// 38: enable CodeRabbit follow-up (`shipping.codeRabbitAutoResolve`) once, preserving every
+//     other Shipping setting and any later opt-out.
+// 39: fork - the fork's own 19 and 20, shipped before upstream's 19 to 38 arrived, combined
+//     above upstream's 38 so a fork database stamped anywhere from 19 to 38 takes its recovery
 //     point before the combined upgrade. (The fork's 21, Grill me first, is upstream's 30 now.)
+//     A fork database stamped 33 by the sync that first combined this entry is below 38, so it
+//     still takes upstream's 33 to 38, including 38's one-time CodeRabbit rollout.
 //     They are, as fork entries numbered then:
 //     - 19: the fork's own 10 to 14 (renumbered by the sync that brought upstream's 10 to 18):
 //       the stored testing settings catalog (`testing_settings`), pending Command document
@@ -265,11 +296,13 @@ let db: DatabaseSync | undefined;
 //     - 20: a moved base branch's record (`tasks.base_branch_moved_from` and
 //       `tasks.base_branch_moved_sha`), NULL with no backfill: no task moved before they existed.
 //     The fork's unversioned Warm log column (`worktree_slots.deps_log_path`) rides on this entry.
-//     None of these migrations, fork or upstream, is gated by this number: each is
-//     `CREATE ... IF NOT EXISTS` or `addColumn` in `migrate()`, so a fork database stamped 28
-//     still gains upstream's 28 to 32. When the next upstream sync brings its own 33, renumber
-//     this entry above upstream's highest, as this sync did.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 33;
+//     None of these migrations is gated by this number: each is `CREATE ... IF NOT EXISTS` or
+//     `addColumn` in `migrate()`, as are upstream's schema steps, so a fork database stamped 28
+//     or 33 still gains upstream's later columns and tables. Upstream's only version-gated
+//     steps are one-time rollouts (`migrateMockupsSkill` below 23, `migrateCodeRabbitFollowUp`
+//     below 38), and both boundaries sit under this entry. When the next upstream sync brings
+//     its own 39, renumber this entry above upstream's highest, as this sync did.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 39;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -355,6 +388,29 @@ export function databaseMigratedOnOpen(): boolean {
   return ranMigrationOnOpen;
 }
 
+const CREATE_APP_CONFIG = `
+  CREATE TABLE IF NOT EXISTS app_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+`;
+
+function createAppConfig(d: DatabaseSync): void {
+  const fresh = databaseSchemaVersion(d) === 0 && !d.prepare("SELECT 1 FROM sqlite_schema LIMIT 1").get();
+  if (!fresh) {
+    d.exec(CREATE_APP_CONFIG);
+    return;
+  }
+
+  // Commit the first table and the install default together. An interrupted first start
+  // either retries as a fresh database or resumes with the default already recorded. The
+  // transaction that does it is the schema's own (`upgradeDatabaseToCurrentSchema`), which
+  // this runs first inside, so it opens none of its own.
+  d.exec(CREATE_APP_CONFIG);
+  d.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)")
+    .run(APP_CONFIG_ENTRIES.inspector.key, JSON.stringify({ enabled: true, mode: "live" }));
+}
+
 /**
  * The one forward-upgrade contract for both the live database and disposable restore
  * verification. Callers must provide a database they own and may mutate.
@@ -412,12 +468,27 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   migrateTelemetry(d);
   migrate(d);
   migrateMockupsSkill(d);
+  migrateCodeRabbitFollowUp(d);
   markDatabaseSchemaCurrent(d);
 }
 
-/** Every table and index the current schema declares, created where missing. */
+/**
+ * Every table and index the current schema declares, created where missing. The one row it
+ * writes is a fresh database's install default (`createAppConfig`), which has to commit with
+ * the first table; upgrade steps still belong in `migrate`.
+ */
 function createSchemaObjects(d: DatabaseSync): void {
+  createAppConfig(d);
   d.exec(`
+    CREATE TABLE IF NOT EXISTS pr_branch_update_attempts (
+      pr_url TEXT NOT NULL,
+      head_sha TEXT NOT NULL,
+      base_sha TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT,
+      attempted_at INTEGER NOT NULL,
+      PRIMARY KEY (pr_url, head_sha, base_sha)
+    );
     CREATE TABLE IF NOT EXISTS reviews (
       id                     TEXT PRIMARY KEY,
       session_id             TEXT NOT NULL,
@@ -548,15 +619,19 @@ function createSchemaObjects(d: DatabaseSync): void {
       outcome       TEXT,
       outcome_url   TEXT,
       error         TEXT,
-      -- JSON TaskClaimWarning[]: the dependency claims that failed in this task's worktrees
-      -- when they were leased. NULL when none failed, which is nearly every task.
-      claim_warnings TEXT,
       -- JSON TaskLaunchFailure (@shared/launch-failure.ts): this attempt failed before its
       -- session started. NULL on every other task, including one whose session ran and was
       -- later lost - the dispatcher writes it at the failure and nothing infers it later.
       launch_failure TEXT,
       -- A Report bug session: the failed task it was started to report. NULL on every other.
       launch_report_for TEXT,
+      -- JSON TaskHibernation (@shared/hibernation.ts): the embedded session that resumes, the
+      -- conversation it reopens and the blocker it carried. Written only while the task is
+      -- 'hibernated' and NULL on every other row.
+      hibernation TEXT,
+      -- JSON TaskClaimWarning[]: the dependency claims that failed in this task's worktrees
+      -- when they were leased. NULL when none failed, which is nearly every task.
+      claim_warnings TEXT,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL,
       dispatched_at INTEGER,
@@ -1014,11 +1089,6 @@ function createSchemaObjects(d: DatabaseSync): void {
       plan_id TEXT NOT NULL, revision INTEGER NOT NULL, receipt TEXT NOT NULL,
       PRIMARY KEY(plan_id, revision)
     );
-    CREATE TABLE IF NOT EXISTS app_config (
-      key   TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
     -- Operational identity for daemon-owned native worktree pools. Policy does not live
     -- here: app_config.worktrees is the sole source for enablement, capacity and setup argv.
     -- The physical Git common directory is the pool identity, not a remote URL, so two local
@@ -2382,6 +2452,9 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- repository resolves (launch_input holds the real path); it is what lets an exact
       -- replay be recognized once the repository no longer resolves.
       launch_repo_spelling TEXT NOT NULL DEFAULT '',
+      -- The attached repositories exactly as the request spelled them, trimmed, as a JSON array
+      -- in request order. The same role as launch_repo_spelling, for each attachment.
+      launch_extra_repo_spellings TEXT NOT NULL DEFAULT '[]',
       workspace_dir      TEXT,
       launch_state       TEXT NOT NULL,
       launch_error       TEXT,
@@ -3366,6 +3439,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- boundary a restart resumes from is the one that was actually granted, even if the
       -- window's value ever changes.
       cleanup_due_at  INTEGER NOT NULL,
+      retention_ms    INTEGER NOT NULL DEFAULT 2592000000,
       -- Everything from here down is Phase 2's claim/retry state, declared now so activating
       -- automatic reclamation needs no second migration. Phase 1 writes 'observing' and NULL
       -- to all of it and never transitions a claim; task-worktree-retention.ts has no
@@ -3573,6 +3647,85 @@ function migrateMockupsSkill(d: DatabaseSync): void {
     .run(entry.key);
 }
 
+/**
+ * One rollout of CodeRabbit follow-up's default-on, not a default applied again on every
+ * upgrade. Every Shipping save wrote the old schema default, so a stored `false` from before
+ * schema 38 cannot be told apart from "never chose" and is switched on. A stored `false`
+ * written after this upgrade is an opt-out and survives every later start.
+ */
+function migrateCodeRabbitFollowUp(d: DatabaseSync): void {
+  // Keep this boundary fixed when CURRENT_DATABASE_SCHEMA_VERSION advances.
+  if (databaseSchemaVersion(d) >= 38) return;
+  const entry = APP_CONFIG_ENTRIES.shipping;
+  const row = d.prepare("SELECT value FROM app_config WHERE key = ?").get(entry.key) as
+    | { value: string }
+    | undefined;
+  // Missing settings already default on. Corrupt settings must still fail closed.
+  if (!row) return;
+  let stored: unknown;
+  try {
+    stored = JSON.parse(row.value);
+  } catch {
+    return;
+  }
+  if (!entry.schema.safeParse(stored).success) return;
+  // Only an explicit stored `false` changes. An absent key already reads as the new default,
+  // and writing it would rewrite a row that holds nothing to migrate.
+  if ((stored as Record<string, unknown>).codeRabbitAutoResolve !== false) return;
+  // The schema ignores unknown properties, so a valid blob can carry one nested arbitrarily
+  // deep - deeper than SQLite's JSON functions accept, and deeper than `JSON.stringify` can
+  // recurse. A throw here aborts startup before the schema is marked current, so every restart
+  // would hit it again. So the stored text is edited in place: only the top-level value changes,
+  // and every other byte, known property or not, is kept.
+  const next = withTopLevelLiteral(row.value, "codeRabbitAutoResolve", "false", "true");
+  if (next === null) return;
+  d.prepare("UPDATE app_config SET value = ? WHERE key = ?").run(next, entry.key);
+}
+
+/**
+ * Replace one top-level member's literal value in a JSON object's text, without recursion.
+ *
+ * A single pass tracks nesting depth and string escapes, so it is safe at any depth. The last
+ * top-level occurrence of `key` is the one `JSON.parse` keeps, so that is the one replaced.
+ * Returns null when that member's value is not exactly `from`, or when the edited text does
+ * not parse back with the new value; the caller then writes nothing.
+ */
+function withTopLevelLiteral(text: string, key: string, from: string, to: string): string | null {
+  let depth = 0;
+  let target = -1;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === "\"") {
+      const start = i;
+      for (i += 1; i < text.length && text[i] !== "\""; i += text[i] === "\\" ? 2 : 1);
+      const token = text.slice(start, i + 1);
+      i += 1;
+      if (depth !== 1) continue;
+      let j = i;
+      while (j < text.length && /\s/.test(text[j]!)) j += 1;
+      if (text[j] !== ":") continue;
+      let name: unknown;
+      try { name = JSON.parse(token); } catch { return null; }
+      if (name !== key) continue;
+      for (j += 1; j < text.length && /\s/.test(text[j]!); j += 1);
+      target = j;
+      continue;
+    }
+    if (ch === "{" || ch === "[") depth += 1;
+    else if (ch === "}" || ch === "]") depth -= 1;
+    i += 1;
+  }
+  if (target < 0 || text.slice(target, target + from.length) !== from) return null;
+  const next = text.slice(0, target) + to + text.slice(target + from.length);
+  try {
+    if ((JSON.parse(next) as Record<string, unknown>)[key] !== JSON.parse(to)) return null;
+  } catch {
+    return null;
+  }
+  return next;
+}
+
 /** Close the daemon's singleton connection before releasing state-directory ownership. */
 export function closeDb(): void {
   if (!db) return;
@@ -3617,12 +3770,16 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  migrateHomeDispatch(d);
+  addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
   // Foreman's drafted answers for a plan-decisions review, as JSON `PlanDecisionAnswer[]`.
   // Null on every existing row, which is exact: no note before this column carried a draft.
   addColumn(d, "session_notes", "draft", "TEXT");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
+  addColumn(d, "tasks", "hibernation", "TEXT");
   addColumn(d, "resident_runs", "workspace_dir", "TEXT");
   addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "resident_runs", "launch_extra_repo_spellings", "TEXT NOT NULL DEFAULT '[]'");
   addColumn(d, "resident_runs", "loop_state", "TEXT NOT NULL DEFAULT 'waiting'");
   addColumn(d, "resident_runs", "iteration", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "resident_runs", "last_seq", "INTEGER NOT NULL DEFAULT 0");
@@ -4394,6 +4551,24 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "reviews", "mcp_wait_detached_at", "INTEGER");
   addColumn(d, "reviews", "continuation_queued_at", "INTEGER");
 
+  // "Remind me later" on a `request_input` question. `snoozable` marks the questions that
+  // offer it (only the tool's own asks), and the `snooze*` columns carry the operator's choice
+  // through the snoozed stretch and after the question comes back. All nullable with no
+  // default: an existing row reads as a question that was never snoozed and does not offer it,
+  // which is exactly what every row written before this was.
+  addColumn(d, "reviews", "snoozable", "INTEGER");
+  addColumn(d, "reviews", "snoozed_at", "INTEGER");
+  addColumn(d, "reviews", "snoozed_until", "INTEGER");
+  addColumn(d, "reviews", "snooze_mode", "TEXT");
+  addColumn(d, "reviews", "snooze_option_id", "TEXT");
+  addColumn(d, "reviews", "snooze_reminded_at", "INTEGER");
+  // A snooze made after the agent's MCP wait had already ended has nobody to hand the "carry on"
+  // instruction to as a tool result, so it is owed as a message. `snooze_instruction_owed_at`
+  // records that debt; `snooze_instruction_queued_at` is its own outbox guard, apart from
+  // `continuation_queued_at`, so delivering the instruction never suppresses the later answer.
+  addColumn(d, "reviews", "snooze_instruction_owed_at", "INTEGER");
+  addColumn(d, "reviews", "snooze_instruction_queued_at", "INTEGER");
+
   // `resolved_by`: who decided the episode, split back out of `sent_by`. Unlike the
   // ALTERs above this covers a window rather than a shipped release - `foreman_episodes`
   // is new enough that the only dbs carrying it are the ones this feature was developed
@@ -4879,6 +5054,9 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "archives", "source_session_json", "TEXT");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archives_session ON archives(producer_id, source_session_id, sort_at DESC, key DESC)");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_session ON archive_capture_jobs(session_id)");
+  // `sessionsBoundToAgents` reads bindings by agent session id, once per discovery sweep
+  // while a dispatch invite has no live card.
+  d.exec("CREATE INDEX IF NOT EXISTS idx_agent_bindings_agent ON session_agent_bindings(agent_session_id)");
 
   // Attention-inbox items the operator dismissed without resolving them (schema 24). One row per
   // dismissal key (`attentionDismissalKeys`): an inbox row's item id, or for a row of questions
@@ -5400,6 +5578,45 @@ function backfillWorktreeQuarantineCategory(d: DatabaseSync): void {
   );
 }
 
+/**
+ * Schema 36: headless mode's tables and columns (spec 2.4). Idempotent, because `migrate` runs
+ * on every start. The table is created before any index on it, and a column is added before any
+ * index that names it, so an upgraded database never indexes a column it does not have yet.
+ */
+function migrateHomeDispatch(d: DatabaseSync): void {
+  addColumn(d, "tasks", "origin_surface", "TEXT");
+  addColumn(d, "tasks", "origin_repo", "TEXT");
+  addColumn(d, "tasks", "origin_session_id", "TEXT");
+  addColumn(d, "session_standing_instructions", "repo_task_skills", "TEXT");
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS home_dispatch_sessions (
+      session_id          TEXT PRIMARY KEY,
+      harness             TEXT NOT NULL,
+      cwd                 TEXT NOT NULL,
+      repo_root           TEXT,
+      client_version      TEXT,
+      start_source        TEXT,
+      entrypoint          TEXT,
+      launcher_offered_at INTEGER,
+      launcher_disabled   INTEGER NOT NULL DEFAULT 0,
+      started_at          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_home_dispatch_sessions_repo
+      ON home_dispatch_sessions(repo_root);
+    -- One row per answer, keyed by the review it settled, so a retry finds its own receipt.
+    CREATE TABLE IF NOT EXISTS home_dispatch_receipts (
+      review_id  TEXT PRIMARY KEY,
+      task_id    TEXT NOT NULL,
+      session_id TEXT,
+      surface    TEXT NOT NULL,
+      sent       TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_home_dispatch_receipts_age
+      ON home_dispatch_receipts(created_at);
+  `);
+}
+
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {
   if (hasColumn(d, table, column)) return false;
   d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl};`);
@@ -5421,22 +5638,57 @@ interface ReviewRow {
   resolved_at: number | null;
   mcp_wait_detached_at: number | null;
   continuation_queued_at: number | null;
+  snoozable?: number | null;
+  snoozed_at?: number | null;
+  snoozed_until?: number | null;
+  snooze_mode?: string | null;
+  snooze_option_id?: string | null;
+  snooze_reminded_at?: number | null;
+  snooze_instruction_owed_at?: number | null;
+  snooze_instruction_queued_at?: number | null;
 }
 
 function rowToReview(r: ReviewRow): ReviewItem {
+  const snooze = rowToSnooze(r);
+  const kind = r.kind as ReviewKind;
+  const status = r.status as ReviewStatus;
+  const decisions = parseJsonArray<PlanDecision>(r.decisions);
   return {
     id: r.id,
     sessionId: r.session_id,
-    kind: r.kind as ReviewKind,
+    kind,
     title: r.title,
     body: r.body,
-    status: r.status as ReviewStatus,
+    status,
     response: r.response,
-    decisions: parseJsonArray<PlanDecision>(r.decisions),
+    // Add text entry to open questions while preserving the stored conversation history.
+    decisions: status === "pending" || status === "snoozed"
+      ? restoreRequestInputText(kind, decisions)
+      : decisions,
     selections: parseJsonArray<PlanDecisionAnswer>(r.selections),
     resolvedBy: (r.resolved_by as ReviewActor | null) ?? null,
+    // Spread only when set, so a row that never offered or used "Remind me later" decodes to
+    // exactly the item it always did.
+    ...(r.snoozable === 1 ? { snoozable: true } : {}),
+    ...(snooze ? { snooze } : {}),
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
+  };
+}
+
+/**
+ * A row's "Remind me later", or null when it was never snoozed. A mode this build cannot read
+ * decodes as best judgment: the agent was told whatever it was told when the snooze was made,
+ * and the dashboard only needs a reading it can render.
+ */
+function rowToSnooze(r: ReviewRow): ReviewSnooze | null {
+  if (r.snoozed_at == null || r.snoozed_until == null) return null;
+  return {
+    at: r.snoozed_at,
+    until: r.snoozed_until,
+    mode: readPersistedEnum(REVIEW_SNOOZE_MODES, r.snooze_mode) ?? "judgment",
+    optionId: r.snooze_option_id ?? null,
+    remindedAt: r.snooze_reminded_at ?? null,
   };
 }
 
@@ -5460,8 +5712,8 @@ function parseJsonArray<T>(raw: string | null): T[] | null {
 export function insertReview(r: ReviewItem): void {
   openDb()
     .prepare(
-      `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, created_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, snoozable, created_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       r.id,
@@ -5472,9 +5724,101 @@ export function insertReview(r: ReviewItem): void {
       r.status,
       r.response,
       jsonArrayColumn(r.decisions),
+      r.snoozable === true ? 1 : null,
       r.createdAt,
       r.resolvedAt,
     );
+}
+
+/**
+ * Park a pending question until `until`: the operator chose "Remind me later".
+ *
+ * One statement, conditioned on `status = 'pending'`, so a snooze racing an answer can only
+ * land on a question still open. It also records the MCP wait as detached, because the agent's
+ * blocking call returns with this snooze: whatever the operator says later can only reach the
+ * agent through the continuation outbox (`loadReviewContinuationCandidates`).
+ *
+ * `snooze_mode` and `snooze_option_id` are written only on the FIRST snooze. That is the one
+ * time the agent is told what to do meanwhile; a second snooze of a question that came back
+ * moves `until` and nothing the agent was told.
+ */
+export function snoozeReviewRow(
+  id: string,
+  snooze: {
+    at: number;
+    until: number;
+    mode: ReviewSnooze["mode"];
+    optionId: string | null;
+    /** An MCP wait is attached right now, so the agent hears this snooze as its tool result. */
+    listening: boolean;
+  },
+): { review: ReviewItem; instructionOwed: boolean } | null {
+  // Every SET expression reads the row as it was BEFORE this statement, so the instruction is
+  // owed exactly when this is the first snooze, nothing is listening, and the wait had already
+  // been recorded as detached - the one case in which the agent would otherwise never be told.
+  const row = openDb()
+    .prepare(
+      `UPDATE reviews
+          SET status = 'snoozed',
+              snoozed_at = ?,
+              snoozed_until = ?,
+              snooze_instruction_owed_at = CASE
+                WHEN ? = 0 AND snooze_mode IS NULL AND mcp_wait_detached_at IS NOT NULL THEN ?
+                ELSE snooze_instruction_owed_at END,
+              snooze_option_id = CASE WHEN snooze_mode IS NULL THEN ? ELSE snooze_option_id END,
+              snooze_mode = COALESCE(snooze_mode, ?),
+              mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
+        WHERE id = ? AND status = 'pending'
+        RETURNING *`,
+    )
+    .get(
+      snooze.at,
+      snooze.until,
+      snooze.listening ? 1 : 0,
+      snooze.at,
+      snooze.optionId,
+      snooze.mode,
+      snooze.at,
+      id,
+    ) as unknown as ReviewRow | undefined;
+  if (!row) return null;
+  return {
+    review: rowToReview(row),
+    instructionOwed: row.snooze_instruction_owed_at != null && row.snooze_instruction_queued_at == null,
+  };
+}
+
+/**
+ * Snoozed questions whose "carry on" instruction is owed to the agent as a message and not yet
+ * queued. Still unanswered (snoozed, or back as a reminder) and with no answer queued either:
+ * once the answer is on its way the interim instruction has nothing left to say.
+ */
+export function loadSnoozeInstructionCandidates(id?: string): ReviewItem[] {
+  const suffix = id === undefined ? "" : " AND id = ?";
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM reviews
+        WHERE snooze_instruction_owed_at IS NOT NULL
+          AND snooze_instruction_queued_at IS NULL
+          AND continuation_queued_at IS NULL
+          AND status IN ('snoozed', 'pending')${suffix}
+        ORDER BY snooze_instruction_owed_at ASC, created_at ASC`,
+    )
+    .all(...(id === undefined ? [] : [id])) as unknown as ReviewRow[];
+  return rows.map(rowToReview);
+}
+
+/** Bring a snoozed question back to the operator: pending again, stamped as a reminder. */
+export function wakeReviewRow(id: string, at: number): ReviewItem | null {
+  const row = openDb()
+    .prepare(
+      `UPDATE reviews
+          SET status = 'pending', snooze_reminded_at = ?
+        WHERE id = ? AND status = 'snoozed'
+        RETURNING *`,
+    )
+    .get(at, id) as unknown as ReviewRow | undefined;
+  return row ? rowToReview(row) : null;
 }
 
 /**
@@ -5521,6 +5865,19 @@ export function markReviewWaitDetached(id: string, at: number): ReviewItem | nul
   return row ? rowToReview(row) : null;
 }
 
+/**
+ * SQL for "settled by a home session or mctl", built from the same list `isHomeDispatchActor` reads
+ * (`@shared/review-item.ts`), so the TypeScript predicate and every query below cannot drift. The
+ * values are fixed literals from that list, never request data.
+ */
+const HOME_DISPATCH_ACTOR_SQL = [
+  ...HOME_DISPATCH_ACTOR_NAMES.map((name) => `resolved_by = '${name}'`),
+  ...HOME_DISPATCH_ACTOR_PREFIXES.map((prefix) => `resolved_by LIKE '${prefix}%'`),
+].join(" OR ");
+
+/** Answers whose result can still be carried to a detached session: the human, a delegated session, or a home actor. */
+const CONTINUATION_ACTOR_SQL = `(resolved_by = 'human' OR resolved_by LIKE 'session:%' OR ${HOME_DISPATCH_ACTOR_SQL})`;
+
 /** Human answers that have lost their MCP result channel and still need a session turn. */
 export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
   const suffix = id === undefined ? "" : " AND id = ?";
@@ -5529,7 +5886,7 @@ export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
       `SELECT * FROM reviews
         WHERE mcp_wait_detached_at IS NOT NULL
           AND continuation_queued_at IS NULL
-          AND (resolved_by = 'human' OR resolved_by LIKE 'session:%')
+          AND ${CONTINUATION_ACTOR_SQL}
           AND status IN ('approved', 'rejected', 'answered', 'dismissed')${suffix}
         ORDER BY resolved_at ASC, created_at ASC`,
     )
@@ -5550,18 +5907,56 @@ export function createReviewContinuationPendingTurn(input: {
   text: string;
   now: number;
 }): PendingTurn | null {
+  return queueReviewPendingTurn(input, {
+    turnId: `review-continuation:${input.reviewId}`,
+    eligible: `mcp_wait_detached_at IS NOT NULL
+            AND continuation_queued_at IS NULL
+            AND ${CONTINUATION_ACTOR_SQL}
+            AND status IN ('approved', 'rejected', 'answered', 'dismissed')`,
+    stamp: "continuation_queued_at",
+  });
+}
+
+/**
+ * Atomically hand a snoozed question's owed "carry on" instruction to the same outbox.
+ *
+ * Its own turn id and its own stamp, so it can never stand in for the answer's continuation.
+ * The id keeps the `review-continuation:` prefix on purpose: it is daemon-written news about a
+ * review, which every reader of that prefix (a resident's pacing) already treats correctly.
+ */
+export const SNOOZE_INSTRUCTION_TURN_PREFIX = "review-continuation:snooze:";
+
+export function createSnoozeInstructionPendingTurn(input: {
+  reviewId: string;
+  noteKey: string;
+  text: string;
+  now: number;
+}): PendingTurn | null {
+  return queueReviewPendingTurn(input, {
+    turnId: `${SNOOZE_INSTRUCTION_TURN_PREFIX}${input.reviewId}`,
+    eligible: `snooze_instruction_owed_at IS NOT NULL
+            AND snooze_instruction_queued_at IS NULL
+            AND continuation_queued_at IS NULL
+            AND status IN ('snoozed', 'pending')`,
+    stamp: "snooze_instruction_queued_at",
+  });
+}
+
+function queueReviewPendingTurn(
+  input: { reviewId: string; noteKey: string; text: string; now: number },
+  kind: {
+    turnId: string;
+    /** SQL over the review row: whether this turn is still owed. */
+    eligible: string;
+    /** The review column that records it was queued, which `eligible` must test as NULL. */
+    stamp: "continuation_queued_at" | "snooze_instruction_queued_at";
+  },
+): PendingTurn | null {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
     const eligible = d
-      .prepare(
-        `SELECT 1 AS present FROM reviews
-          WHERE id = ?
-            AND mcp_wait_detached_at IS NOT NULL
-            AND continuation_queued_at IS NULL
-            AND (resolved_by = 'human' OR resolved_by LIKE 'session:%')
-            AND status IN ('approved', 'rejected', 'answered', 'dismissed')`,
-      )
+      .prepare(`SELECT 1 AS present FROM reviews WHERE id = ? AND ${kind.eligible}`)
       .get(input.reviewId) as unknown as { present: number } | undefined;
     if (!eligible) {
       d.exec("COMMIT");
@@ -5570,19 +5965,15 @@ export function createReviewContinuationPendingTurn(input: {
     const sequence = d
       .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
       .get(input.noteKey) as unknown as { seq: number };
-    const pendingTurnId = `review-continuation:${input.reviewId}`;
     d.prepare(
       `INSERT INTO pending_turns
          (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error)
        VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL)`,
-    ).run(pendingTurnId, input.noteKey, sequence.seq, input.text, input.now, input.now);
-    d.prepare(`UPDATE reviews SET continuation_queued_at = ? WHERE id = ?`).run(
-      input.now,
-      input.reviewId,
-    );
+    ).run(kind.turnId, input.noteKey, sequence.seq, input.text, input.now, input.now);
+    d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
     d.exec("COMMIT");
     return {
-      id: pendingTurnId,
+      id: kind.turnId,
       noteKey: input.noteKey,
       seq: sequence.seq,
       text: input.text,
@@ -5611,14 +6002,19 @@ function jsonArrayColumn(rows: unknown[] | null | undefined): string | null {
 export function transferPendingReviews(sourceId: string, successorId: string, now = Date.now()): ReviewItem[] {
   const db = openDb();
   if (!db.isTransaction) throw new Error("Review transfer requires an ownership transaction");
+  // A snoozed question is as unanswered as a pending one, so it moves with the session too.
   const rows = db.prepare(`UPDATE reviews SET session_id = ?, mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
-    WHERE session_id = ? AND status = 'pending' RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
+    WHERE session_id = ? AND status IN ('pending', 'snoozed') RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
   return withStandingApprovalEligibility(rows.map(rowToReview));
 }
 
+/**
+ * Every review still awaiting a human, reloaded into the registry on start: the pending ones,
+ * and the snoozed ones, which are just as unanswered and must come back on time after a restart.
+ */
 export function loadPendingReviews(): ReviewItem[] {
   const rows = openDb()
-    .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
+    .prepare(`SELECT * FROM reviews WHERE status IN ('pending', 'snoozed') ORDER BY created_at ASC`)
     .all() as unknown as ReviewRow[];
   return withStandingApprovalEligibility(rows.map(rowToReview));
 }
@@ -5671,14 +6067,19 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
+            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ` OR ${HOME_DISPATCH_ACTOR_SQL}`})
             AND status IN (${statuses.map(() => "?").join(", ")})
           ORDER BY resolved_at DESC, created_at DESC
           LIMIT ?
        ) ORDER BY resolved_at ASC, created_at ASC`,
     )
     .all(sessionId, ...statuses, limit) as unknown as ReviewRow[];
-  return rows.map(rowToReview).filter(isConversationResolvedReview);
+  // The evidence-of-human-intent read (`includeDelegated` false) also returns the answers given from a
+  // home session or `mctl` (headless mode, 7.9), so plan publication can see a later refusal from
+  // any of them. Which of them APPROVE is decided by `isApprovingActor`, not here. The
+  // conversation replay (`includeDelegated`) never sees them.
+  return rows.map(rowToReview).filter((review) =>
+    isConversationResolvedReview(review) || (!includeDelegated && isHomeDispatchResolvedReview(review)));
 }
 
 /**
@@ -5763,12 +6164,29 @@ export function workCycleFor(logicalKey: string): WorkCycleSummary | null {
 }
 
 /**
+ * True when work observed at `occurredAt` happened before `cycle`'s last recorded completion.
+ *
+ * Signals reach the daemon on more than one path - an SDK driver's stream and a hook process
+ * that has to start and POST - so a hook stamped before a turn's end can land after it. Such a
+ * signal describes the turn that already completed, never a new one: arming on it leaves a
+ * cycle active that no later completion will close, and everything that waits for an idle
+ * conversation (a resident's next wake, a queued Run now) then waits forever.
+ */
+export function workStartPredatesCompletion(cycle: WorkCycleSummary | null | undefined, occurredAt: number): boolean {
+  return !!cycle && !cycle.active && cycle.completedAt !== null && occurredAt < cycle.completedAt;
+}
+
+/**
  * Arm a logical conversation after normalized work activity.
  *
  * Repeated activity keeps the same generation. The write time still moves because it is
- * the current-state projection's latest observation, not a completion identity.
+ * the current-state projection's latest observation, not a completion identity. Activity
+ * that happened before the last completion is a late delivery and leaves the row unchanged;
+ * `occurredAt` defaults to the write time for a signal observed as it happened.
  */
-export function markWorkCycleActive(logicalKey: string, updatedAt: number): WorkCycleSummary {
+export function markWorkCycleActive(logicalKey: string, updatedAt: number, occurredAt = updatedAt): WorkCycleSummary {
+  const current = workCycleFor(logicalKey);
+  if (current && workStartPredatesCompletion(current, occurredAt)) return current;
   openDb()
     .prepare(
       `INSERT INTO session_work_cycles
@@ -6276,6 +6694,28 @@ export function lastAgentBinding(sessionId: string): string | null {
   return row?.id ?? null;
 }
 
+/**
+ * The synthetic ids whose last binding is one of these agent session ids: `lastAgentBinding`
+ * read backwards, for a whole set of keys in one query. "Last" needs no ordering here:
+ * `session_id` is the table's primary key and `recordAgentBinding` upserts it, so a rebind
+ * (a `/clear`) replaces the earlier row, and an invite left on an earlier binding can never
+ * lead back to the session. Discovery admission asks it once per
+ * sweep for the dispatch invites no live card accounts for, rather than asking
+ * `lastAgentBinding` once per refused candidate. `idx_agent_bindings_agent` keeps it off a
+ * table scan, because bindings are never pruned.
+ */
+export function sessionsBoundToAgents(agentSessionIds: Iterable<string>): Set<string> {
+  const keys = [...agentSessionIds];
+  if (keys.length === 0) return new Set();
+  const rows = openDb()
+    .prepare(
+      `SELECT session_id AS id FROM session_agent_bindings
+        WHERE agent_session_id IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(keys)) as { id: string }[];
+  return new Set(rows.map((row) => row.id));
+}
+
 // ---- tasks ----
 
 interface TaskRow {
@@ -6336,6 +6776,7 @@ interface TaskRow {
   error: string | null;
   launch_failure: string | null;
   launch_report_for: string | null;
+  hibernation?: string | null;
   created_at: number;
   updated_at: number;
   dispatched_at: number | null;
@@ -6840,6 +7281,8 @@ function rowToTask(
     error: r.error,
     launchFailure: parseLaunchFailure(r.launch_failure),
     launchReportFor: r.launch_report_for,
+    // Read only for a hibernated row, so a record can never outlive the status it describes.
+    hibernation: r.status === "hibernated" ? parseTaskHibernation(r.hibernation) : null,
     automaticCleanup,
     residentRestart,
     ...readTaskClaimWarnings(r.claim_warnings ?? null),
@@ -6902,9 +7345,9 @@ export function upsertTask(t: Task): string[] {
          base_sha, stack_parent_task_id, stack_base_branch, stack_base_sha, stack_pr_url,
          home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
-         status, outcome, outcome_url, error, claim_warnings, launch_failure, launch_report_for,
+         status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings, hibernation,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -6938,9 +7381,9 @@ export function upsertTask(t: Task): string[] {
          schedule_occurrence_id=excluded.schedule_occurrence_id,
          scheduled_for=excluded.scheduled_for,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
-         error=excluded.error, claim_warnings=excluded.claim_warnings,
-         launch_failure=excluded.launch_failure,
-         launch_report_for=excluded.launch_report_for,
+         error=excluded.error, launch_failure=excluded.launch_failure,
+         launch_report_for=excluded.launch_report_for, claim_warnings=excluded.claim_warnings,
+         hibernation=excluded.hibernation,
          updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
@@ -6973,9 +7416,11 @@ export function upsertTask(t: Task): string[] {
       t.terminalLaunch ? JSON.stringify(t.terminalLaunch) : null, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
       t.status, t.outcome, t.outcomeUrl, t.error,
-      t.claimWarnings && t.claimWarnings.length > 0 ? JSON.stringify(t.claimWarnings) : null,
       t.launchFailure ? JSON.stringify(t.launchFailure) : null,
       t.launchReportFor ?? null,
+      t.claimWarnings && t.claimWarnings.length > 0 ? JSON.stringify(t.claimWarnings) : null,
+      // Stored only while hibernated: a status change that forgot to clear it clears it here.
+      t.status === "hibernated" && t.hibernation ? JSON.stringify(t.hibernation) : null,
       t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
       t.pipelineCommissionId !== undefined ? 1 : 0,
@@ -8339,11 +8784,14 @@ export function listTaskSourceBacklog(sourceId: string): Task[] {
   return rowsToTasks(rows);
 }
 
-/** Tasks still in flight (backlog/dispatching/running) - reloaded into the registry on start. */
+/**
+ * Tasks still in flight (backlog/dispatching/running) and hibernated ones, which wait for the
+ * operator's Resume - reloaded into the registry on start.
+ */
 export function loadActiveTasks(): Task[] {
   const rows = openDb()
     .prepare(
-      `SELECT * FROM tasks WHERE status = 'backlog' OR status IN (${ACTIVE_TASK_STATUSES_SQL})
+      `SELECT * FROM tasks WHERE status IN ('backlog', 'hibernated') OR status IN (${ACTIVE_TASK_STATUSES_SQL})
        ORDER BY created_at ASC`,
     )
     .all() as unknown as TaskRow[];
@@ -8491,6 +8939,7 @@ interface TaskWorktreeRetentionDbRow {
   last_changed_at: number;
   observed_at: number;
   cleanup_due_at: number;
+  retention_ms: number;
   cleanup_state: string;
   claim_token: string | null;
   claimed_at: number | null;
@@ -8751,6 +9200,23 @@ export function recordTaskWorktreeObservation(
             updated_at)
          VALUES (?, ?, ?, ?, ?, ?, 'observing', NULL, NULL, NULL, NULL, NULL, ?)`,
       ).run(taskId, generation, fingerprint, now, now, now + retentionMs, now);
+    }
+    // Rebase only after a successful probe, and never change a claimed deadline. Store the
+    // applied window separately: a grace-clamped deadline cannot tell us which policy made it.
+    // Starting the shortening grace at observation is conservative (at least six hours after
+    // saving), survives restart, and cannot slide forward again on each unchanged pass.
+    if (!existing || existing.cleanup_state !== "claimed" || outcome === "changed" || outcome === "replaced") {
+      const fresh = outcome === "seeded" || outcome === "changed" || outcome === "replaced";
+      const windowChanged = existing && existing.retention_ms !== retentionMs;
+      if (fresh || windowChanged) {
+        const lastChanged = fresh ? now : existing!.last_changed_at;
+        const due = fresh ? lastChanged + retentionMs
+          : retentionMs < existing!.retention_ms
+            ? Math.max(lastChanged + retentionMs, now + RETENTION_OBSERVE_INTERVAL_MS)
+            : Math.max(lastChanged + retentionMs, existing!.cleanup_due_at);
+        d.prepare(`UPDATE task_worktree_retention SET cleanup_due_at = ?, retention_ms = ? WHERE task_id = ?`)
+          .run(due, retentionMs, taskId);
+      }
     }
     const row = d
       .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)

@@ -6,7 +6,7 @@ import type { PlanDecision, PlanDecisionAnswer, ReviewItem } from "../src/shared
 import { ResolveReviewSchema } from "../src/shared/protocol.ts";
 import { formatResponse } from "../src/shared/review-item.ts";
 import { isAnswered } from "../src/web/lib/reviews.ts";
-import { DecisionForm } from "../src/web/components/PlanDecisions.tsx";
+import { DecisionForm, toDecisionAnswers } from "../src/web/components/PlanDecisions.tsx";
 import { ReviewAnswerCard } from "../src/web/components/ReviewAnswer.tsx";
 import {
   requestComposerFocus,
@@ -154,6 +154,50 @@ test("a moved question is drawn checked and Submit names the chat", () => {
   });
   assert.match(html, /class="decision-option decision-chat is-chat"/);
   assert.match(html, /<button class="btn btn-approve"[^>]*>Submit &amp; chat \(1\)<\/button>/);
+});
+
+test("Chat about it is the group's last choice, after the options and the Other radio", () => {
+  const withOther: PlanDecision = { ...decisions[0]!, allowOther: true };
+  const html = renderForm({ allowChat: true, decisions: [withOther], namePrefix: "r1" });
+  const lastOption = html.lastIndexOf("Server-side table");
+  const other = html.indexOf('class="decision-option decision-other-choice"');
+  const chat = html.indexOf("Chat about it");
+  assert.ok(lastOption > 0 && other > lastOption, "Other follows the agent's options");
+  assert.ok(chat > other, "Chat about it comes after every other choice in the group");
+  // Other is a radio of the question's own group, beside the options and Chat about it.
+  assert.equal(html.match(/name="r1-store"/g)?.length, withOther.options.length + 2);
+  assert.match(html, /placeholder="Other…"/);
+});
+
+test("a move to chat sends no Other text, even when the box still held some", () => {
+  const withOther: PlanDecision = { ...decisions[1]!, allowOther: true };
+  const [sent] = toDecisionAnswers([withOther], {
+    migrate: { selected: [], other: "the rollback window matters most", chat: true },
+  });
+  assert.deepEqual(sent, { decisionId: "migrate", selected: [], other: null, chat: true });
+  assert.equal(isAnswered(withOther, sent), true);
+  // And the agent reads the move alone, whatever text a caller sent beside it.
+  const text = formatResponse(
+    [withOther],
+    [{ decisionId: "migrate", selected: [], other: "the rollback window matters most", chat: true }],
+    "Answered:",
+  );
+  assert.match(text, /^• Should the migration ship in this PR\?\n {2}→ Chat about it$/m);
+  assert.equal(text.includes("rollback window"), false);
+});
+
+test("the conversation labels sent text as Other, alone or beside multi-select picks", () => {
+  const withOther: PlanDecision = { ...decisions[0]!, allowOther: true, multiSelect: true };
+  const card = (answer: PlanDecisionAnswer): string =>
+    replay(answered({ decisions: [withOther], selections: [answer], response: "x" }));
+  assert.match(
+    card({ decisionId: "store", selected: ["local"], other: "IndexedDB" }),
+    /review-answer-other-tag">Other<\/span>IndexedDB/,
+  );
+  assert.match(
+    card({ decisionId: "store", selected: [], other: "IndexedDB" }),
+    /review-answer-other-tag">Other<\/span>IndexedDB/,
+  );
 });
 
 function answered(over: Partial<ReviewItem> = {}): ReviewItem {

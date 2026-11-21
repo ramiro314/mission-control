@@ -159,6 +159,12 @@ protection: it reports which required checks to swap for `CI result`. The setup 
 own CI is the verification. The procedure lives in
 [`skills/docs-only-ci/SKILL.md`](../skills/docs-only-ci/SKILL.md).
 
+The **HTML Plans** row applies when explicitly invoked or required by the active Mission
+Control planning workflow. Installing it does not override a selected repository-native
+workflow's artifact or approval contracts, and missing Mission Control tools do not block
+that workflow. Selected Mission Control planning still requires the
+[managed-plan tools and policy](managed-plans.md).
+
 The **Phased Plan** row investigates an approved plan against the repository, writes
 merge-aware phase documents beside it, and schedules one dependency-linked backlog task per
 phase. It estimates total non-test implementation effort and complexity before choosing the fewest
@@ -395,8 +401,8 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Harnesses**, **Tasks**, **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
-| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
+| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Feature flags**, **Harnesses**, **Tasks**, **Task shaping** (preview, while its flag is on), **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
+| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (temporarily unavailable), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
 The badge on a group is the general case; the badge in a panel's own header is that
@@ -418,10 +424,25 @@ pseudonym. See [Observability and telemetry](observability.md).
 **Setup** checks external tools and configures this installation. It groups agent CLIs,
 terminal backends, GitHub CLI and authentication, agent extensions, pipelines, and the runtime.
 Re-check runs a fresh probe sweep; missing or incomplete rows offer the supported remedy.
+Its **Terminals** family also holds **Show sessions started outside Mission Control**, off by
+default, which decides whether discovery cards sessions Mission Control did not start. Some
+sessions are carded either way; [sessions started outside Mission
+Control](sessions.md#sessions-started-outside-mission-control) lists which.
 In the desktop app, **Application updates** also offers **Check for updates** and the
 default-off **Alpha updates** preference, which follows the latest `main` commit while
 including stable release news. Its badge says `This installation` because this page combines
 tool inspection with persisted settings. See [alpha updates](desktop-and-packaging.md#alpha-updates).
+
+**Feature flags** sits directly after Setup under Sessions, scoped to this machine. It offers
+searchable preview toggles, Enable all, and Advanced for default-on features. Alpha builds
+do not enable previews. See [Feature flags](feature-flags.md).
+
+**Task shaping** (`#/settings/task-shaping`) sits after Tasks and exists only while the
+`task-shaping` preview flag is on. It appears and disappears in the rail, the panel, settings
+search and the palette of every open window the moment the flag changes, with no reload. It
+lists the registered shapers by stage, imports a reviewed manifest switched off, switches each
+on or off, orders, dry-runs and removes them, and holds the caller identity and the two shaping
+budgets. Its settings are the `shaping` backup domain. See [Task shaping](task-shaping.md#settings).
 
 Display's **Appearance** panel holds the **Skin** picker, a row of preview tiles for Default
 (today's dark look), the light **Daylight** and **Paper** skins, and the dark **Blueprint**
@@ -551,11 +572,27 @@ and size as well as showing the exact text. That matters on Claude, where the te
 system prompt and never enters the transcript. Neither read-only surface is editable: one
 editor, in Settings, is the point.
 
+**Conductor** is temporarily unavailable: while `CONDUCTOR_INTEGRATION_ENABLED` is off it is
+absent from the rail, search, the palette and the router, and `#/settings/conductor` opens
+Display. The rest of this section describes it as it returns.
+
 **Conductor** is the one category whose subject is somebody else's software. It is
-**not** conditional, and that is the current rule for every category:
-[change contracts](agent-guides/change-contracts.md#registries) states that categories are
-unconditional destinations, so the rail, the arrow-key walk, the valid routes, the palette and
-the render tests all read one registry with no availability filter. A destination for software
+**not** conditional on runtime state such as whether an engine is installed, and that holds
+for every category: [change contracts](agent-guides/change-contracts.md#registries) allow a
+category to be withheld only by a build-time switch or a registered feature flag, never by a
+probe of installed software. Both go through one availability gate, `settingsCategoryAvailable`,
+which the rail, the arrow-key walk, the page, settings search, the palette and the render tests
+all read, so none of them can disagree:
+
+- **Build-time switch.** While `CONDUCTOR_INTEGRATION_ENABLED` above is off, Conductor is
+  withheld from every reader at once, and the router does not route to it.
+- **Feature flag.** A category that declares a preview flag, such as Task shaping's
+  `task-shaping`, is drawn only while that flag resolves on. The gate reads the live flags the
+  event stream holds, so the category appears and disappears in every open window the moment
+  the flag changes. The router keeps its link, because the flags are not known until the first
+  snapshot; the page shows Display while the flag is off.
+
+Engine presence, consent and probes never add or remove Conductor. A destination for software
 that is not installed explains that inside its own panel; a local visibility check is how a
 panel becomes reachable from search but absent from the rail, or how a valid deep link
 unexpectedly falls back to Display. It is the consent surface for observing an external SDLC

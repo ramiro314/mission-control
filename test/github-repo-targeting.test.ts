@@ -78,6 +78,10 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
   "src/server/base-branch-move.ts": [
     { fn: "newestMergedPullRequest", argv: "mergedPrListArgs(branch, repo.repo)", how: "resolver", why: "`--repo` from `checkoutGitHubRepository`; no gh call when it fails" },
   ],
+  "src/server/github/branch-update.ts": [
+    { fn: "readBranchSnapshot", argv: '["api", "graphql", "-f", `query=${QUERY}`, "-F", `owner=${pr.owner}`, "-F", `name=${pr.repo}`, "-F", `number=${pr.number}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
+    { fn: "update", argv: '["api", "--method", "PUT", `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/update-branch`, "-f", `expected_head_sha=${head}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
+  ],
   "src/server/inspector/github.ts": [
     { fn: "authenticatedLogin", argv: '["api", "user", "--jq", ".login"]', how: "none", why: "the token's own login" },
     { fn: "fetchPr", argv: '["api", "graphql", "-f", `query=${PR_QUERY(includeCodeRabbitComments)}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
@@ -101,6 +105,7 @@ const GH_CALLS: Readonly<Record<string, readonly GhCall[]>> = {
     { fn: "queryPr", argv: "prListArgs(branch, repo.repo, search)", how: "resolver", why: "the episode search; `--repo` from `checkoutGitHubRepository`, no gh call when it fails" },
     { fn: "queryPr", argv: "prListArgs(branch, repo.repo)", how: "resolver", why: "`--repo` from `checkoutGitHubRepository`; no gh call when it fails" },
     { fn: "queryPrUrl", argv: '["pr", "view", url, "--json", "state,mergedAt,mergeable,baseRefName,headRefOid"]', how: "url", why: "the adopted PR's URL" },
+    { fn: "queryHeadChecks", argv: '["api", "graphql", "-f", `query=${HEAD_CHECKS_QUERY}`, "-F", `owner=${parts[1]}`, "-F", `name=${parts[2]}`, "-F", `number=${parts[3]}`]', how: "explicit", why: "owner and name parsed from the PR URL" },
   ],
   "src/server/product-issues.ts": [
     { fn: "ProductIssueService.preflight", argv: '["--version"]', how: "none", why: "version probe" },

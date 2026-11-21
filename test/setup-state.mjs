@@ -18,12 +18,13 @@
 // Plain `.mjs` with only Node built-ins, and deliberately no import of anything under
 // `src/`: this runs through `--import` ahead of `tsx`, so it has no TypeScript loader yet,
 // and importing `harness-runtime.mjs` here to "reuse" the alias order would evaluate the
-// module whose behavior we are trying to arrange. It writes environment, nothing else, and
-// never opens SQLite.
+// module whose behavior we are trying to arrange. It writes environment - plus the private git
+// prefix `git-environment.mjs` describes - and never opens SQLite.
 
 import { mkdtempSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { bypassXcrunGitShim, disableAutoMaintenance } from "./git-environment.mjs";
 import { armLeakGuard, listProcesses } from "./leak-guard.mjs";
 import { armTempGuard, openTempParent } from "./temp-guard.mjs";
 
@@ -162,4 +163,9 @@ if (process.env.NODE_TEST_CONTEXT) {
   // The desktop's `$TERMINAL` is the default-terminal emulator's second launcher, so a
   // developer's value would let a test reaching the real registry open a real window.
   delete process.env.TERMINAL;
+
+  // Not isolation, but the one preload every worker loads is the place that reaches all of
+  // them: fewer git processes per git operation. See `test/git-environment.mjs`.
+  disableAutoMaintenance();
+  bypassXcrunGitShim();
 }

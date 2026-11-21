@@ -158,6 +158,10 @@ The daemon is the sole database writer. Foreman and MCP reach it through HTTP.
 
 ## Persisted identifiers
 
+Feature flag tombstones (`RETIRED_FEATURE_FLAG_IDS`) are append-only and never reused. The
+`feature-flags` settings backup domain id is also persisted and final; its surface is
+`settings`, matching the operator controls. See [Feature flags](../feature-flags.md).
+
 Persisted ID tuples are append-only. Never rename, reorder, or reuse values. This includes:
 
 - Agent and harness IDs
@@ -204,6 +208,15 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   inside `foreman_queues.prompted_recovery` and used in deterministic attempt markers. Append new
   values at the end; never rename, reorder, or reuse one.
 - Schedule enum values
+- Task shaping vocabularies in `src/shared/shaping-registry.ts`: stage ids (`SHAPING_STAGES`),
+  transport ids (`SHAPING_TRANSPORTS`), built-in ids (`SHAPING_BUILTINS`), outcomes
+  (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`) and reference kinds
+  (`SHAPING_REFERENCE_KINDS`), each with its retired tuple where it has one. Stage, transport and
+  built-in ids are stored inside `app_config.shaping` and in shaper manifests; the rest are
+  recorded with launches. A stored shaper whose stage or transport this build does not know is
+  kept unchanged and listed as unsupported, never reinterpreted. The `shaping` settings backup
+  domain id is final; its surface is `runtime` until the Settings panel moves it to `settings`.
+  See [Task shaping](../task-shaping.md)
 - Telemetry export shape ids (`TELEMETRY_EXPORT_SHAPE_IDS` in `src/shared/telemetry.ts`, with
   the records in `src/shared/telemetry-export-shapes.ts`) - persisted as `exportShape` on each
   destination in the telemetry config blob and read back by exact value through the config
@@ -1301,11 +1314,16 @@ Human conversation composer submissions enter the durable pending-turn outbox. O
 
 Route every server-side reset through `resetSession` in `src/server/reset.ts`; it owns pending-turn, work-queue, workflow, work-episode, and cache cleanup. It raises the registry reset marker before asking `PendingTurnManager` to settle a claimed SDK or terminal delivery. A turn refused before runtime acceptance is safe to discard. A turn that may have crossed that boundary is retained as `uncertain` through successful reset cleanup for explicit operator resolution. The UI reset callback separately clears message drafts, transcript history, file buffers, and reply attachments. Keep durable removal cleanup on `session_remove`, not `state === "exited"`.
 
+Trust and Feature flags share the `settings-pane-*`, `settings-search`, and `settings-grant`
+CSS leaves. Keep Trust-specific states and layout in Trust; do not fork the shared rules.
+
 ## Overlays and shortcuts
 
 Register overlays in `OVERLAY_IDS` and render through `OverlayHost`. Use `overlays.anyOpen` and `overlays.onlyOpen`; do not maintain a second list. The overlay owns Escape.
 
 A backdrop click dismisses an overlay only when both the press and the release land on the backdrop. `<Overlay>` applies this to every overlay, so a text selection that starts inside a panel and ends outside it never closes the panel. Do not add a per-modal opt-out or hand-roll a backdrop `onClick`.
+
+Backdrop clicks stop at the overlay, including when it is nested in a clickable tile. Modal overlays (`ariaModal`) move focus inside, contain Tab and Shift+Tab while topmost, and restore their connected opener on dismissal. Existing autofocus inside the panel is preserved. Use the shared behavior instead of adding a separate focus trap to a dialog.
 
 Keyboard shortcuts are registered through `ActionId` and `ACTIONS`, dispatched in `App.tsx`, surfaced in the command bar, documented in README, and tested.
 
@@ -1336,7 +1354,19 @@ Extend existing registries instead of adding parallel lists:
   its panel; engine presence may remain in `SettingsStatus` for wire compatibility, but it
   does not add or remove navigation. A local visibility check is how a panel becomes
   reachable from search but absent from the rail, or how a valid deep link unexpectedly
-  falls back to Display
+  falls back to Display. Visibility may be gated by a build-time switch or a registered feature flag, never by a
+  runtime probe for installed software. A feature flag must feed one shared availability gate
+  for all readers, updated live rather than frozen at module load. That gate is
+  `settingsCategoryAvailable(id, flags)` in `src/web/lib/settings-registry.ts`: it withholds
+  Conductor while `CONDUCTOR_INTEGRATION_ENABLED` in `src/shared/conductor-integration.ts` is off,
+  and a category that declares `flag` (Task shaping's `task-shaping`) while that flag resolves off
+  against the event stream's config. The rail, walk, palette, settings search and `SettingsPage`
+  read it through `visibleSettingsCategories(flags)` or `settingsControls(flags)`, so none of them
+  can disagree and none is frozen at module load. The router reads only `settingsCategoryInBuild`:
+  it parses a hash before the first snapshot says which flags are on, and a flag check there would
+  canonicalize every reload of a flag-gated link to Display. Setup applies the same switch to
+  its catalog through `availableSetupDependencyIds` and `visibleSetupFamilyIds`; the hidden ids
+  stay in the append-only tuples
 - ⌘K palette: `PALETTE_PROVIDERS` and `PALETTE_KIND_INFO` in `src/web/lib/palette-index.ts`. A new
   searchable kind is a provider over an existing client SSE store, never a second index, a
   server-side search endpoint, or a fetch. Its rows may target only routes the router already
@@ -1488,7 +1518,7 @@ profile is authoring state, and a launched resident reaches the Line as its task
 The `residentRuns` collection carries each live run (`ResidentRunSummary`: not ended, not failed)
 with its pinned revision's settings, and nothing is added to `Session`: the browser joins a
 session to its run through the task id (`residentMarksBySession`). Its `settings` is the pinned
-revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity`, `board`, `authority` and `loop`), not the whole
+revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity`, `board`, `authority`, `loop` and `schedule`), not the whole
 revision: the profile instructions, Persona id, execution and workspace choices stay on the
 daemon, which reads the full pinned revision through `ResidentStore.revision`. A later phase that
 shows its own pinned section in the browser appends that section id to the list, in one line,

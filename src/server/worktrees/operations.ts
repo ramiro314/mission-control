@@ -1,3 +1,5 @@
+import { getTask, getTaskWorktreeRetention } from "../db.ts";
+import { isRetentionCandidate, taskResourceGeneration } from "../task-resource-generation.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { lstat, open, readdir, rm } from "node:fs/promises";
@@ -200,6 +202,13 @@ interface HeldPreview {
   fingerprint: string;
   /** The slots it removes, read here because a removed slot's row can no longer say. */
   removals: ReadonlySet<string>;
+  /**
+   * The removal targets Git did not recognize when the operator was shown this preview. Only
+   * these may be deleted unverified: a target that was registered then, and loses its
+   * registration before its turn, is refused instead of riding on someone else's
+   * acknowledgement.
+   */
+  unverifiable: ReadonlySet<string>;
 }
 
 interface HeldOperation {
@@ -350,6 +359,29 @@ function taskIdentity(key: string): { id: string; position: number } | null {
   return { id: key.slice(0, split), position };
 }
 
+/** Only the pool's own proven path can be orphaned: anything else stays exactly as blocked. */
+function provenOrphan(pool: NativePoolStatus, slot: NativeSlotStatus): boolean {
+  return pool.identityValid && pool.markerValid && slot.nativePath && slot.orphaned !== null;
+}
+
+/**
+ * A quarantined orphan whose owner still holds it. A failed Git read can quarantine a slot
+ * while its lease is live, and Return is how that owner lets go while the files are kept. A
+ * lease no domain owner references is stale, and only Destroy clears it; a `warm` lease ends
+ * with its seed.
+ */
+function orphanReturnable(pool: NativePoolStatus, slot: NativeSlotStatus): boolean {
+  return provenOrphan(pool, slot) && slot.slot.state === "quarantined" &&
+    slot.slot.activeLeaseId !== null && slot.slot.activeOwnerKind !== null && slot.slot.activeOwnerKey !== null &&
+    slot.slot.activeOwnerKind !== "warm" && slot.ownerReferenced === true;
+}
+
+/** Only a positive domain lookup can detach an orphan from task/check cleanup. */
+function staleQuarantineLease(status: NativeSlotStatus): boolean {
+  return status.slot.state === "quarantined" && status.slot.activeLeaseId !== null &&
+    status.ownerReferenced === false;
+}
+
 function ownerView(
   status: NativeSlotStatus,
   task: WorktreeTaskOwner,
@@ -362,7 +394,13 @@ function ownerView(
   if (kind === "task") {
     const parsed = taskIdentity(key);
     const row = parsed ? task.get(parsed.id) : null;
-    return { kind, key, label: row?.title ?? `Task ${parsed?.id ?? key}` };
+    const retainedTask = parsed ? getTask(parsed.id) : null;
+    const retention = retainedTask && isRetentionCandidate(retainedTask) ? getTaskWorktreeRetention(retainedTask.id) : null;
+    return {
+      kind, key, label: row?.title ?? `Task ${parsed?.id ?? key}`,
+      ...(retainedTask && retention?.generation === taskResourceGeneration(retainedTask)
+        ? { cleanupDueAt: retention.cleanupDueAt } : {}),
+    };
   }
   return {
     kind,
@@ -435,6 +473,31 @@ function warmOutcome(result: WarmSlotResult): WorktreeOperationOutcome {
     case "failed":
       return "failed";
   }
+}
+
+/**
+ * The recovery checks a reset to the remote default settles: it discards work only with the
+ * operator's acknowledgement, moves HEAD to the default, and clears a lease whose owner it has
+ * proven gone. Every other check guards something the reset relies on, so failing one blocks
+ * both ways of recovering.
+ */
+const RESET_SETTLES = new Set(["Clean tree", "Detached HEAD", "Recorded HEAD", "Merged into remote default", "Final Git recheck"]);
+
+/**
+ * How Recover brings this slot back: in place when the proof passes and no `index.lock` is left,
+ * by the reset when only what the reset settles stands in the way, otherwise not at all. A
+ * lease left on the slot is the reset's to clear only when its identity is complete; whether
+ * its owner is gone is the preview's and the reset's own owner check.
+ */
+function recoverMode(
+  slot: WorktreeSlotRow,
+  failed: readonly { label: string }[],
+  lockExists: boolean,
+): "inPlace" | "reset" | "blocked" {
+  const completeLease = slot.activeLeaseId !== null && slot.activeOwnerKind !== null && slot.activeOwnerKey !== null;
+  const settled = failed.every((check) => RESET_SETTLES.has(check.label) || (check.label === "No active lease" && completeLease));
+  if (!settled) return "blocked";
+  return failed.length === 0 && !lockExists ? "inPlace" : "reset";
 }
 
 function ownerGoneBlocker(status: NativeSlotStatus): string {
@@ -568,6 +631,8 @@ export class WorktreeOperationsService {
   private readonly tokens = new Map<string, HeldPreview>();
   /** Each built Recover preview's work set (`worktreeResetWorkKey`), for execute to hold the reset to. */
   private readonly recoverWork = new WeakMap<object, string>();
+  /** Each built Recover preview whose proof passed, so execute recovers it in place without a reset. */
+  private readonly recoverInPlace = new WeakSet<object>();
   /** Each built re-registering Repair preview's commit, for execute to register at. */
   private readonly reregisterCommit = new WeakMap<object, string>();
   private legacyVisibleRevision: string | null = null;
@@ -706,17 +771,20 @@ export class WorktreeOperationsService {
             : { state: "unknown" as const, count: null, reason: compact(entry.occupancy.reason) };
           const exact = pool.identityValid && pool.markerValid && entry.nativePath &&
             entry.registered === true && entry.repositoryMatches === true;
+          // Git cannot speak for an orphaned slot, so `exact` never holds for one. Destroy is
+          // the one way out, and the preview names exactly what it cannot verify.
+          const orphaned = provenOrphan(pool, entry);
           const actions: WorktreeSlotAction[] = [];
           // A `warm` lease belongs to the seed copying from it, which returns it the moment the
           // copy ends. Nothing an operator could do to it here would be safer than that.
           if (entry.slot.state === "leased") {
             if (entry.slot.activeOwnerKind !== "warm") actions.push("return", "destroy");
           }
-          else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && exact) {
+          else if ((entry.slot.state === "available" || entry.slot.state === "quarantined") && (exact || orphaned)) {
             // A quarantine whose owner is still referenced comes back through that owner's own
             // return, which accepts a quarantined lease. The preview refuses it while a process
-            // is inside.
-            if (ownerReturns(entry, owner)) actions.push("return");
+            // is inside. An orphaned one's owner lets go of it without a reset.
+            if (exact ? ownerReturns(entry, owner) : orphanReturnable(pool, entry)) actions.push("return");
             actions.push("destroy");
           }
           // Recover is for a quarantine nobody is still working in: its owner, if it had one,
@@ -799,8 +867,9 @@ export class WorktreeOperationsService {
             },
             quarantinedAt: entry.slot.quarantinedAt,
             quarantineRecoverable: entry.slot.state === "quarantined"
-              ? quarantineAutoRecoverable(entry.slot)
+              ? !orphaned && quarantineAutoRecoverable(entry.slot)
               : null,
+            orphaned,
             actions,
             dependencies: slotDependencies({
               hasClaim: Boolean(pool.policy.claim),
@@ -919,11 +988,12 @@ export class WorktreeOperationsService {
     const token = this.deps.randomId();
     const preview = { ...built, token, expiresAt: this.deps.now() + TOKEN_TTL_MS };
     const fingerprint = previewFingerprint(built);
-    this.tokens.set(token, {
-      preview,
-      fingerprint,
-      removals: new Set(this.removalTargets(preview).map((target) => target.id)),
-    });
+    const unregistered = new Set(this.nativeTargets(observed)
+      .filter((target) => this.orphanedTarget(target) && target.slot.orphaned === "unregistered")
+      .map((target) => target.slot.slot.id));
+    const removals = new Set(this.removalTargets(preview).map((target) => target.id));
+    const unverifiable = new Set([...removals].filter((id) => unregistered.has(id)));
+    this.tokens.set(token, { preview, fingerprint, removals, unverifiable });
     while (this.tokens.size > WORKTREE_INVENTORY_LIMITS.previewTokens) {
       this.tokens.delete(this.tokens.keys().next().value!);
     }
@@ -1158,6 +1228,8 @@ export class WorktreeOperationsService {
   private async appendNativeTarget(
     target: NativeTarget,
     action: "return" | "destroy",
+    /** This slot is in the fixed set Destroy removes, not only released through its owner. */
+    removes: boolean,
     observed: Observation,
     affected: WorktreeActionAffected[],
     risks: WorktreeActionRisk[],
@@ -1165,7 +1237,9 @@ export class WorktreeOperationsService {
     consequences: string[],
   ): Promise<void> {
     const { pool, slot } = target;
-    const owner = ownerView(slot, this.deps.tasks, this.deps.historyResumeLabel);
+    const staleLease = action === "destroy" && staleQuarantineLease(slot);
+    const owner = staleLease ? null : ownerView(slot, this.deps.tasks, this.deps.historyResumeLabel);
+    if (staleLease) consequences.push(`Clears the stale lease for slot ${slot.slot.ordinal}, which no domain owner references, before removing the slot.`);
     affected.push({
       provider: "mission",
       id: slot.slot.id,
@@ -1182,18 +1256,47 @@ export class WorktreeOperationsService {
         dirty: slot.dirty,
         mergedIntoDefault: slot.mergedIntoDefault,
         occupancy: slot.occupancy,
+        orphaned: slot.orphaned,
+        ownerReferenced: slot.ownerReferenced,
       }),
       diskBytes: null,
     });
     if (slot.busy) blockers.push(`Slot ${slot.slot.ordinal} is busy with ${slot.busy}; preview again once it finishes.`);
-    if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
-    else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
-    if (slot.mergedIntoDefault === false) {
-      risks.push(risk("unlanded", "HEAD is not merged into the observed default branch", true));
-    } else if (slot.mergedIntoDefault === null) {
-      blockers.push(`Default-branch relationship is unknown for slot ${slot.slot.ordinal}.`);
+    // Only the pool's own proven path can be orphaned: anything else stays exactly as blocked.
+    const orphaned = this.orphanedTarget(target) ? slot.orphaned : null;
+    if (orphaned) {
+      // Cleanliness and the default-branch relationship are Git's answers, and Git has none
+      // here. Waiting for them would block this slot forever. Only a slot Destroy removes is
+      // deleted, so only that one asks the operator to accept what cannot be checked; Return,
+      // and a sibling released through its task, keep both the files and the row.
+      if (removes) {
+        if (orphaned === "unregistered") {
+          risks.push(risk(
+            "unverifiable",
+            "Git no longer recognizes a target slot, so any uncommitted or unpushed work in it cannot be checked and will be deleted",
+            true,
+          ));
+          consequences.push(`Slot ${slot.slot.ordinal} is deleted from disk directly, because Git no longer recognizes it as a worktree.`);
+        } else {
+          consequences.push(`Slot ${slot.slot.ordinal} has nothing left on disk; only its record is removed.`);
+        }
+      } else {
+        consequences.push(orphaned === "unregistered"
+          ? `Slot ${slot.slot.ordinal} cannot be reset because Git no longer recognizes it; its lease is released and it stays quarantined with its files until it is destroyed.`
+          : `Slot ${slot.slot.ordinal} has nothing left on disk; its lease is released and its record stays quarantined until it is destroyed.`);
+      }
+    } else {
+      if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
+      else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
+      if (slot.mergedIntoDefault === false) {
+        risks.push(risk("unlanded", "HEAD is not merged into the observed default branch", true));
+      } else if (slot.mergedIntoDefault === null) {
+        blockers.push(`Default-branch relationship is unknown for slot ${slot.slot.ordinal}.`);
+      }
     }
-    if (slot.occupancy.status === "unknown") {
+    if (orphaned === "absent") {
+      // Nothing is on disk, so there is nothing a process could be using.
+    } else if (slot.occupancy.status === "unknown") {
       risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
       blockers.push(slot.occupancy.reason);
     } else if (slot.occupancy.occupants.length > 0) {
@@ -1211,7 +1314,7 @@ export class WorktreeOperationsService {
       }
     }
     if (!pool.identityValid || !pool.markerValid || !slot.nativePath ||
-      slot.registered !== true || slot.repositoryMatches !== true) {
+      (!orphaned && (slot.registered !== true || slot.repositoryMatches !== true))) {
       blockers.push("Exact native pool, marker, Git registration, and repository ownership are not all proven.");
     }
     if (observed.pending.has(slot.slot.path)) {
@@ -1220,8 +1323,10 @@ export class WorktreeOperationsService {
     if (slot.slot.state === "quarantined") risks.push(risk("quarantined", "A target slot is quarantined", false));
     if (action === "return" && slot.slot.state === "quarantined") {
       // An owned quarantine returns through its owner. With no active owner at all, the
-      // blocker below already says so.
-      if (owner && slot.ownerReferenced === false) blockers.push(ownerGoneBlocker(slot));
+      // blocker below already says so. Recover never proves an orphan, so one is not pointed at it.
+      if (owner && slot.ownerReferenced === false) {
+        blockers.push(orphaned ? `Slot ${slot.slot.ordinal} is quarantined, not leased.` : ownerGoneBlocker(slot));
+      }
       else if (owner && slot.ownerReferenced === null) blockers.push(ownerUnknownBlocker(slot));
     } else if (action === "return" && slot.slot.state !== "leased") {
       blockers.push(`Slot ${slot.slot.ordinal} is ${slot.slot.state}, not leased.`);
@@ -1289,7 +1394,7 @@ export class WorktreeOperationsService {
           const native = await this.expandTaskResources(task, observed, affected, risks, blockers, consequences);
           await this.stateTaskDiscards(task, risks, consequences);
           for (const target of native) {
-            await this.appendNativeTarget(target, "return", observed, affected, risks, blockers, consequences);
+            await this.appendNativeTarget(target, "return", false, observed, affected, risks, blockers, consequences);
           }
           risks.push(risk("domain-owned", `${task.title} owns every affected task resource`, false));
           consequences.push("Stops the task agent, captures required archives and snapshots, and clears every task repository through TaskManager.");
@@ -1538,10 +1643,15 @@ export class WorktreeOperationsService {
   }
 
   /**
-   * Recover one quarantined slot. The preview names the `index.lock` it would remove, any Git
-   * process using the worktree (which blocks it), and each entry the reset would discard by the
-   * reset rule against origin's freshly fetched default, which is the one acknowledgeable risk.
-   * An ignored file that default keeps ignored and untracked is kept, so it asks nothing.
+   * Recover one quarantined slot, in one of two ways. First it runs the manager's recovery
+   * proof, which never changes a file: when every check passes and no `index.lock` is left, the
+   * slot goes back in place, keeping its files and warm install. When the only checks that fail
+   * are ones a reset settles (work in the tree, a moved or attached HEAD, a dead owner's lease
+   * still on the slot) or a stale `index.lock` is left, it offers the reset instead. That
+   * preview names the lock it would remove, any Git process using the worktree (which blocks
+   * it), and each entry the reset would discard by the reset rule against origin's freshly
+   * fetched default, which is the one acknowledgeable risk. An ignored file that default keeps
+   * ignored and untracked is kept, so it asks nothing. Any other failed check blocks both.
    * Everything it read is bound into the token, so a lock that appears or a file written after
    * the preview makes Execute refuse as stale, and the reset itself refuses a work set that
    * differs from the preview's once it has fetched its own target.
@@ -1559,7 +1669,14 @@ export class WorktreeOperationsService {
     const { pool, slot } = target;
     const ordinal = slot.slot.ordinal;
     const lock = await this.manager.slotIndexLock(slot.slot, pool.pool.gitCommonDirectory, slot.occupancy);
-    const work = slot.slot.state === "quarantined" && slot.nativePath ? await this.manager.slotResetWork(slot.slot) : null;
+    const proof = await this.manager.previewQuarantineRecovery(slot.slot.id);
+    if (!proof) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
+    const failed = proof.checks.filter((check) => check.status !== "passed");
+    const mode = recoverMode(proof.slot, failed, lock.exists);
+    // Only the reset discards, so only the reset reads what it would discard.
+    const work = mode === "reset" && slot.slot.state === "quarantined" && slot.nativePath
+      ? await this.manager.slotResetWork(slot.slot)
+      : null;
     const workKey = work ? worktreeResetWorkKey(work) : null;
     affected.push({
       provider: "mission",
@@ -1575,9 +1692,13 @@ export class WorktreeOperationsService {
         ownerReferenced: slot.ownerReferenced,
         lock: { ...lock, ageMs: null },
         work: workKey,
+        mode,
+        checks: proof.checks,
       }),
       diskBytes: null,
     });
+    // A failed check the reset cannot settle is the first thing the operator reads.
+    if (mode === "blocked") for (const check of failed) blockers.push(`${check.label}: ${check.detail}`);
     if (slot.slot.state !== "quarantined") blockers.push(`Slot ${ordinal} is ${slot.slot.state}, not quarantined.`);
     if (slot.slot.quarantineReason === INTERRUPTED_FORGET) blockers.push(RECOVER_REFUSES_INTERRUPTED_FORGET);
     if (slot.ownerReferenced !== false) {
@@ -1605,6 +1726,23 @@ export class WorktreeOperationsService {
       blockers.push("Known processes must exit before Recover can reset the slot.");
     }
     risks.push(risk("quarantined", "The slot is quarantined", false));
+    const recovery = {
+      reason: proof.slot.quarantineReason,
+      category: proof.slot.quarantineCategory,
+      quarantinedAt: proof.slot.quarantinedAt,
+      checks: proof.checks,
+    };
+    if (mode !== "reset") {
+      if (mode === "inPlace") {
+        consequences.push("Returns this slot to warm capacity without resetting or removing files. Release history and installed dependencies are retained.");
+      }
+      const built = { ...this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences), recovery };
+      if (mode === "inPlace") this.recoverInPlace.add(built);
+      return built;
+    }
+    consequences.push(lock.exists && failed.length === 0
+      ? "Cannot recover in place while an index.lock is left, so Recover resets the slot instead."
+      : `Cannot recover in place (${failed.map((check) => check.label).join(", ")}), so Recover resets the slot instead.`);
     if (work?.status === "work") {
       risks.push(risk("dirty", "Uncommitted, untracked, unpushed or ignored work will be discarded", true));
       const named = work.entries.map(describeWorktreeResetWork).join("; ");
@@ -1622,7 +1760,7 @@ export class WorktreeOperationsService {
       consequences.push(`No index.lock is present at ${lock.path}.`);
     }
     consequences.push("Resets the slot to the fetched remote default and returns it to the pool as available.");
-    const built = this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+    const built = { ...this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences), recovery };
     if (workKey !== null) this.recoverWork.set(built, workKey);
     return built;
   }
@@ -1855,6 +1993,11 @@ export class WorktreeOperationsService {
     return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
   }
 
+  /** Mirrors `appendNativeTarget`: only the pool's own proven path can be orphaned. */
+  private orphanedTarget({ pool, slot }: NativeTarget): boolean {
+    return provenOrphan(pool, slot);
+  }
+
   /** Return or destroy a fixed set of native slots, widened to every resource their tasks own. */
   private async buildSlotTargets(
     request: Extract<WorktreeActionRequest, { action: "return" | "destroy" }>,
@@ -1868,6 +2011,7 @@ export class WorktreeOperationsService {
     const targets = new Map(initialTargets.map((target) => [target.slot.slot.id, target]));
     const taskIds = new Set<string>();
     for (const target of initialTargets) {
+      if (request.action === "destroy" && staleQuarantineLease(target.slot)) continue;
       if (target.slot.slot.activeOwnerKind !== "task" || !target.slot.slot.activeOwnerKey) continue;
       const identity = taskIdentity(target.slot.slot.activeOwnerKey);
       if (identity) taskIds.add(identity.id);
@@ -1882,7 +2026,8 @@ export class WorktreeOperationsService {
       await this.stateTaskDiscards(task, risks, consequences);
       for (const target of expanded) targets.set(target.slot.slot.id, target);
       for (const target of initialTargets.filter((candidate) =>
-        candidate.slot.slot.activeOwnerKey?.startsWith(`${taskId}:`))) {
+        candidate.slot.slot.activeOwnerKey?.startsWith(`${taskId}:`) &&
+        !(request.action === "destroy" && staleQuarantineLease(candidate.slot)))) {
         const identity = taskIdentity(target.slot.slot.activeOwnerKey!);
         const resource = identity
           ? task.resources.find((candidate) => candidate.position === identity.position)
@@ -1893,10 +2038,14 @@ export class WorktreeOperationsService {
         }
       }
     }
+    // Only the requested set is removed. A sibling reached through its task is released, so
+    // it must never be described as deleted or ask for acknowledgement of a deletion.
+    const removing = new Set(initialTargets.map((target) => target.slot.slot.id));
     for (const target of targets.values()) {
       await this.appendNativeTarget(
         target,
         request.action,
+        request.action === "destroy" && removing.has(target.slot.slot.id),
         observed,
         affected,
         risks,
@@ -1908,7 +2057,7 @@ export class WorktreeOperationsService {
       consequences.push(request.target.kind === "slot"
         ? "Removes this exact manager-owned Git worktree and its slot row after final revalidation."
         : "Removes only the fixed manager-owned slot set shown here after final revalidation.");
-    } else {
+    } else if ([...targets.values()].some((target) => !this.orphanedTarget(target))) {
       consequences.push("Resets the slot to the fetched remote default and retains it as warm capacity.");
     }
     return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
@@ -2368,11 +2517,12 @@ export class WorktreeOperationsService {
       // The rebuild matched the preview, so its work set is the preview's.
       const expectedWork = this.recoverWork.get(rebuilt);
       const expectedCommit = this.reregisterCommit.get(rebuilt);
+      const inPlace = this.recoverInPlace.has(rebuilt);
       // publishOnSuccess covers legacy-only actions where no native manager method calls
       // publish(). Supplying the service publisher also coalesces native mutations through the
       // same content-free invalidation path instead of emitting once from each dependency.
       await runAsWorktreeActor("operator", () => this.manager.runChangeBatch(
-        () => this.dispatch(held, acknowledgementSet, removed, progress, expectedWork, expectedCommit),
+        () => this.dispatch(held, acknowledgementSet, removed, progress, expectedWork, expectedCommit, inPlace),
         true,
         this.deps.notifyChanged,
       ));
@@ -2463,6 +2613,7 @@ export class WorktreeOperationsService {
     progress: OperationProgress,
     expectedWork?: string,
     expectedCommit?: string,
+    recoverInPlace = false,
   ): Promise<void> {
     const { preview } = held;
     const request = preview.request;
@@ -2478,6 +2629,15 @@ export class WorktreeOperationsService {
     }
     if (request.action === "recover") {
       const target = preview.affected[0]!;
+      if (recoverInPlace) {
+        // The manager proves the slot again under its lock and changes no file.
+        try {
+          await this.manager.recoverQuarantineForOperator(target.id, target.version!);
+        } catch (error) {
+          throw new WorktreeOperationError(409, error instanceof Error ? error.message : String(error), "changed");
+        }
+        return;
+      }
       const result = await this.manager.recoverSlot({
         slotId: target.id,
         expectedVersion: target.version ?? undefined,
@@ -2589,8 +2749,11 @@ export class WorktreeOperationsService {
       for (const target of this.removalTargets(preview)) {
         const result = await this.manager.removeSlot({
           slotId: target.id,
+          expectedVersion: target.owner ? undefined : target.version ?? undefined,
+          allowStaleLease: target.owner === null,
           allowDirty: acknowledgements.has("dirty"),
           allowUnmerged: acknowledgements.has("unlanded"),
+          allowUnverifiable: acknowledgements.has("unverifiable") && held.unverifiable.has(target.id),
         });
         this.assertRemoved(result);
         finished(target);

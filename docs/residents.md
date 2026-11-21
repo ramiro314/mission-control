@@ -1,11 +1,13 @@
 # Residents
 
 A **resident** is a long-running agent with a standing role. You author a **resident profile**
-once - an optional Persona, instructions, a harness, model and effort, and a default repository - and
+once - an optional Persona, instructions, a harness, model and effort, and a default repository with
+any repositories attached beside it - and
 launch it from **Dispatch > Resident**. It runs as an ordinary session in the Agent SDK, keeps its
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
-This page describes profiles, launch, the persistent wake loop, repository-free residents,
+This page describes profiles, launch, [residents across several repositories](#attaching-more-than-one-repository),
+the persistent wake loop and its [active hours](#active-hours), repository-free residents,
 [instruction changes a resident proposes](#changing-instructions-from-the-conversation) and its
 retro, skill sources, session control, MCP servers and their dashboard controls. Skill selection remains a later phase of
 [the residents plan](plans/persistent-agent-profiles/plan.md).
@@ -22,9 +24,10 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Instructions | Markdown added after the Persona's guidance; without a Persona, the whole role | empty |
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
-| Workspace | The repository Dispatch pre-fills | none |
+| Workspace | The repository Dispatch pre-fills, and any repositories **+ Add another repo** attaches beside it | none |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
-| MCP servers | A pinned set or, on Claude Code, all native sources; whether the harness's global servers ride along, and which global or [custom](#custom-mcp-servers) servers are added; see [MCP servers](#mcp-servers) | pinned, inherit on, none selected |
+| Active hours (preview) | The days and hours the loop may wake the resident; see [Active hours](#active-hours) | off: always awake |
+| MCP servers | A pinned set or [all native sources](#all-native-sources), plus any selected [custom servers](#custom-mcp-servers) | pinned, inherit on, none selected |
 | Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 
 Each section is a card. When the editor has room, the cards form two columns: identity, Persona,
@@ -129,12 +132,42 @@ A launch is a task of kind `resident`:
 - It has no backlog, dependencies, schedule, autopilot, after-work Workflow or task-kind contract.
   Single agent Dispatch, MCP `create_task`, recurring missions and task sources do not offer it.
 
+### Attaching more than one repository
+
+A resident can work across several repositories in one session, the way a
+[multi-repository task](dispatch-and-backlog.md#attaching-more-than-one-repository) does.
+**+ Add another repo** under the profile's **Default repository** attaches secondary
+repositories to every launch of that profile. Dispatch > Resident pre-fills them under
+**Repository**, where you can detach one or attach another for this run alone. Changing the
+repository or its attachments in Dispatch makes the whole set your choice for this run; the
+profile's default is unchanged.
+
+- The primary repository stays the session's working directory and the task's repository.
+  Each attached repository gets its own worktree, and the resident has write access to all of
+  them: Claude Code through the Agent SDK's additional directories, Codex through its sandbox
+  writable roots. Provisioning is all-or-nothing, as for a task.
+- Turn one opens with the repository manifest: where each worktree is, its branch, and the
+  instruction to read each repository's own `AGENTS.md` or `CLAUDE.md` and open one pull request
+  per repository it changed. Because a compaction summarizes that turn away, the
+  [restated wake](#keeping-the-mission-through-compaction) after a compaction repeats the
+  manifest after the resident section.
+- Attached repositories need a primary. **No repository** detaches them, and a launch or
+  profile that names attachments without a primary is refused. A repository named twice, or
+  attached as its own primary, is refused too.
+- The **Launch** button in the [Residents dock](#the-residents-dock) launches with the
+  profile's default repository and its attachments.
+- **Restart on new profile** keeps the replaced run's whole repository set. To change which
+  repositories a running resident can write to, edit its launch and launch again: a running
+  session's write access cannot be widened.
+
 A launch is idempotent. Repeating a request - a second click, or a response lost on the way back
 - returns the same resident rather than starting a second one, including when two identical
 requests race. Reusing a launch for a different profile, repository or set of run instructions
-is refused. An exact repeat is recognized by the repository path as it was typed, even after that
-path stops resolving or a symlink in it is pointed elsewhere; any other spelling is compared by
-the repository it resolves to. If a profile is archived while one of its launches is still
+is refused, as is one that attaches a different set of repositories. An exact repeat is
+recognized by the repository path as it was typed, even after that path stops resolving or a
+symlink in it is pointed elsewhere; any other spelling is compared by the repository it resolves
+to. Attached repositories are recognized the same way: each by its path as typed, and any other
+spelling by the repository it resolves to. If a profile is archived while one of its launches is still
 unanswered, Dispatch keeps that one launch available to retry exactly.
 
 ## Finding a resident
@@ -262,6 +295,12 @@ and count.
 - **Footer.** **Profiles** lists every live profile with **Launch** or **Launch…**, with the
   same launch behavior the dock has (see below). The dock and the drawer share one launch
   state, so closing either while a launch is starting never starts a second resident.
+  With the **Fold the drawer's Profiles** preview on (`resident-profiles-fold`, in
+  **Settings > Feature flags**), a chevron beside the **Profiles** heading folds the list to its
+  heading, so the live residents above get the room, and opens it again. It works from the
+  keyboard with <kbd>Enter</kbd> or <kbd>Space</kbd>. The fold lasts while the drawer closes and
+  reopens, and a page reload opens the list again. With the preview off the heading has no
+  chevron and the list always shows, even if it was folded when the preview was switched off.
 - **Pin.** Open, the drawer lasts until it is closed or the page reloads: a refresh or a
   restart closes it. **Pin** keeps it open through those too, and changes nothing on screen.
   The pin is stored per machine. **Unpin** leaves the drawer open until the next reload, and
@@ -307,7 +346,7 @@ any resident is running it shows how many; with none running it shows no number.
   revision asks for session control also shows a **Control** badge at the end of the footer when
   control is granted, or **No control** beside the session control menu when it is not.
 - **Profiles** lists every live profile with **Launch**. A profile with a default repository
-  launches straight away, through the same launch call as Dispatch; while it starts the row reads
+  launches straight away, with any repositories the profile attaches beside it, through the same launch call as Dispatch; while it starts the row reads
   *starting…*, and closing the dock does not lose it - launching again resumes that same launch,
   in the repository it was sent with even if the profile's default has changed since.
   If it is still starting after a minute, the dock stops waiting and the row reads *still
@@ -380,7 +419,17 @@ messages, and never clears a blocker without evidence that its `resumeWhen` cond
 ## Lifecycle
 
 After each completed turn a resident waits for its next wake. Foreman never completes it
-automatically. It ends when you choose **Complete & close** on its session,
+automatically, and it is not invited into resident sessions: a resident launches with Foreman
+out of the session, so Foreman writes no Purpose note, queue tick, wrap-up prompt or
+pull-request follow-through there. Invite it from the session's Foreman rail if you want it.
+
+Upgrading from a build where residents were invited by default applies this to residents
+that are already running, too. A resident you had invited Foreman into explicitly keeps that
+invite. One you only restored, by withdrawing Foreman and then inviting it back, does not: that
+earlier re-invite went back to the old default rather than recording an invite of its own, so
+Foreman is out of that session after the upgrade. Invite it again from the Foreman rail.
+
+A resident ends when you choose **Complete & close** on its session,
 or when its session goes away, which settles its task through the ordinary task lifecycle. The
 Complete dialog first offers a [retro](#retro-before-completing) that turns your steering into
 proposed instruction changes. A
@@ -443,7 +492,7 @@ it there, or cancel to keep it. The old session's Console band also says it was 
 new revision and offers **Open new session** and **Complete & close**, so you decide when the
 replaced conversation closes. The offer stays until that task is completed, even if the new
 session has since ended or never started, and survives a reload or daemon restart. Restart
-preserves the repository choice and run instructions; a repository-free resident receives a fresh
+preserves the repository choice, including any attached repositories, and run instructions; a repository-free resident receives a fresh
 private workspace. New conversation creation ensures every changed launch option takes effect.
 If Restart is interrupted, recovery depends on whether it had reserved its replacement yet. Before
 the reservation no replacement launch exists, so retrying Restart starts it. After the
@@ -456,6 +505,49 @@ bound to the replacement request and the new profile revision. It grants control
 revision has **Control other sessions** on. A browser restart or a desktop app attached to a
 daemon it did not start still launches without control; the session control menu can grant it
 for that conversation.
+
+### Active hours
+
+**Active hours** is a preview: turn on **Resident active hours** in
+[Settings > Feature flags](feature-flags.md) to see its card, which sits under **Loop and
+guardrails**. Check **Sleep outside active hours**, pick the days (Monday to Friday to start
+with, **Weekdays** and **Every day** as shortcuts), the time it **Wakes at** and **Sleeps at**,
+and a time zone. Turning active hours on picks this browser's zone, shown and changeable, so the
+clock that governs the windows is always named. A profile saved without a zone, through the API,
+follows the Mission Control daemon's zone: the editor names it only as that, and every live-run
+surface evaluates it on the daemon's clock even when the dashboard is open in another zone. A week strip draws the awake spans, and a line
+under it says whether the resident would be awake now and when its next window opens.
+
+A window opens at its start time on each chosen day. When **Sleeps at** is at or before
+**Wakes at**, the window runs past midnight into the next day, so 22:00 to 06:00 is a night
+shift and 00:00 to 00:00 is the whole day. Wall-clock times follow the zone through
+daylight-saving changes.
+
+Outside its window a resident keeps running: its session, task and conversation stay open and
+its loop stays **waiting**. It only sleeps. A wake that falls due, at the cadence or one it asked
+for with `schedule_next_iteration`, is held and sent once when the next window opens; no loop
+prompt goes out and no compaction runs before it, so it spends no tokens. A window that closes
+while a compaction is running sends no wake after it; that wake waits for the next window. Whenever a waiting
+resident is outside its window, every live-run surface shows **asleep** with the time its next
+wake goes out: the next opening when that wake was held, or the wake's own time when it is
+already due inside the next window. While the window is still open, a resident whose next wake
+falls after it closes reads as **waiting**, with the time the held wake goes out. Asleep is not paused: nothing
+durable changes, it needs no Resume, and the iteration and spend windows are untouched. Your own
+messages, **Run now** and the launch's opening turn are never held. A resident launched with
+active hours while the preview is on is told them in its standing instructions, so it knows a
+wake it requests outside them waits; launched with the preview off, it is told nothing about
+them, because its loop does not enforce them.
+
+On a daylight-saving night that skips the chosen start time, the window opens when the clock
+jumps past it, never before: a 02:30 start on a spring-forward night opens at 03:00. A start
+time the clocks repeat in autumn opens at its first occurrence.
+
+Like every profile setting, a running resident keeps the hours its launch pinned; **Restart on
+new profile** adopts edited ones. Turning the preview off sends any held wake that is already
+due at once and makes every resident ignore its hours; the saved schedules are kept and apply
+again when the preview is turned back on. A draft whose active hours cannot be saved, such as
+one with no day chosen, keeps the card on screen even after the preview is turned off, so the
+problem stays reachable and the draft can still be fixed and saved.
 
 ### Compaction and guardrails
 
@@ -505,7 +597,9 @@ instead of its role. Two things keep it on its role:
 - **A restated wake.** The first wake after any compaction opens with **Your standing task,
   restated after compaction**: a line saying the summary is context rather than the mission,
   then the run's resident section exactly as its launch composed it (Persona guidance, profile
-  instructions, run instructions and the durable-state note), then the loop prompt. That covers
+  instructions, run instructions and the durable-state note), then, for a resident with
+  [attached repositories](#attaching-more-than-one-repository), the repository manifest, then the
+  loop prompt. That covers
   compactions the daemon did not start too: Claude Code's own auto-compact, Codex's native
   backstop, and a `/compact` you typed. Repository standing instructions are not repeated,
   because they are not the resident's role.
@@ -629,32 +723,39 @@ Dispatch's launch summary says what the launch carries, such as `MCP: defaults +
 
 ### All native sources
 
-**All native sources (not pinned)** starts a Claude Code resident with everything Claude Code
-loads on its own, as a terminal `claude` session on this machine and account would: user, local
-and project MCP servers, plugin servers and claude.ai connectors (such as
-`mcp__claude_ai_Slack__*`), beside Mission Control's own server and any custom server the profile
-selects. Choosing it asks for confirmation first, because it gives up what the pinned set
-guarantees:
+**All native sources (not pinned)** lets the harness load its own servers and saved logins beside
+Mission Control's server and any custom server the profile selects.
 
-- **Not frozen.** Claude Code reads its configuration and fetches the account's connectors at
-  every start, so a server or connector added, changed or removed natively, or in claude.ai's
-  settings, reaches a running resident at its next start or resume. Only the custom servers are
-  snapshotted at launch.
-- **Not checked.** Only Mission Control's own server and the profile's custom servers must connect
-  before the resident starts, as in [What a run starts](#what-a-run-starts). A native server or
-  connector that fails, is switched off or needs a login does not refuse the start; Claude Code
-  reports it the way a terminal session does.
-- **Broader reach.** An autonomous, looping resident can use every connector's account-level
-  access, such as sending Slack messages as you.
-- **Not isolated.** Native servers and connectors start from Claude Code's own configuration with
-  its own stored logins, not through Mission Control's [scoped launcher](#custom-mcp-servers).
+- **Claude Code** loads user, local, project and plugin servers and claude.ai connectors.
+- **Codex** loads its normal Codex home, trusted workspace configuration, system and managed
+  configuration, and enabled plugins. Enable **Codex resident native MCP** in **Settings >
+  Feature flags** to expose the option. For a server signed into through Codex OAuth, such as
+  Glean, select **All native sources (not pinned)** under **MCP servers**, confirm, save and
+  launch. If the login has expired, sign in again through Codex, for example with
+  `codex mcp login glean` when the server is named `glean`.
+
+Confirmation covers the change in access. Native configuration is read again at each start or
+resume, and the resident can use the permissions of the harness's saved logins. Mission Control
+requires its own server and the selected custom servers. The harness handles native startup and
+sign-in according to its own configuration. Custom servers are snapshotted at launch, with their
+secret values handled by the [scoped launcher](#custom-mcp-servers).
+Changing harnesses on an all-native profile asks for confirmation for the destination harness.
+Cancel keeps the current harness. If the destination cannot use all native sources, switching
+selects **Pinned at launch**.
 
 With it chosen, **Inherit harness defaults** and the global servers in **Add an MCP server** are
-hidden: Claude Code loads its global servers itself. A global server already selected stays in the
+hidden because the harness loads its global servers itself. A global server already selected stays in the
 profile, marked *loads natively*, and comes back into the set if you switch to **Pinned at
 launch**. A global server residents cannot carry no longer refuses the launch, because Mission
-Control does not resolve it. A custom server named like one of Claude Code's global servers is
-still refused, because both would load under one name.
+Control leaves it to the native client. A custom server that shares a name with a global server
+is refused. Codex also checks for collisions in active workspace and managed configuration before
+starting the thread. Codex's user `[mcp_servers.mission-control]` table may keep what Mission
+Control's own setup writes there: the `command`, `args` and `env.ELECTRON_RUN_AS_NODE = "1"` from
+installing the integration, and `default_tools_approval_mode = "approve"` from the Setup trust
+action. An `env` key the launch flags also set, such as `MISSION_PORT`, is accepted because the
+launch replaces its value. Any other field or `env` key in that table, or the server defined in
+another layer, refuses the start and names the key to remove. To use **Pinned at launch** while a Codex OAuth server is configured globally,
+turn off **Inherit harness defaults** and select the servers the resident needs.
 
 If plugin MCP tools disappear when the account has a claude.ai connector for the same server,
 enable **Disable claude.ai connectors** under **MCP servers**. Claude Code can suppress both
@@ -685,8 +786,11 @@ below apply to them and to Mission Control's server:
   Codex's configuration layers are read again to verify the run before any server starts, but a
   native definition reaches a resident only as its snapshot copy. On Claude Code a repository's
   `.mcp.json`, local-scope servers, plugin servers and claude.ai connectors do not load. On Codex,
-  a server that only a trusted project's `.codex/config.toml` (or a system or managed
-  configuration) defines is switched off for the run.
+  project discovery stops at the resident's working directory, so an ancestor's `~/.codex`
+  cannot reintroduce the global configuration that the run's overlay replaced. This applies
+  with and without a repository, at launch and on resume. A server that only the workspace's
+  trusted `.codex/config.toml` (or a system or managed configuration) defines is switched off
+  for the run.
 - A launch is refused, with the reason, when the set cannot be pinned: an inherited or selected
   global server residents cannot use, a custom server named like a global server of that harness,
   a selected server that no longer exists, a custom secret that is not set, or, on Codex, another
@@ -711,13 +815,24 @@ restarted by the harness; it starts again with the session's next start, such as
 A global server residents cannot use is shown as unavailable, with the reason, in the catalog and
 the picker. That happens when it uses a field residents cannot carry (anything beyond the command,
 arguments, environment, URL, headers, and the timeouts and tool filters each harness maps one to
-one), reads a value from the agent's environment (`env_vars`, `bearer_token_env_var`,
+one), reads an HTTP credential from the agent's environment (`bearer_token_env_var`,
 `env_http_headers`), relies on an OAuth login Codex holds, would send its headers or query
 values over plain `http` to another host, has a credential in an argument,
 or uses a Claude Code `${VAR}` reference. A reference to a variable that is set reads a value the
 resident's agent inherits too, so it would not be private to the server; define that server as a
 custom server with a secret instead. A reference to an unset variable is refused unless it has a
 `:-default`, which is used as written.
+
+Codex stdio servers may use `env_vars` as a list of local environment variable names. At launch,
+Mission Control copies the set values into the run's private secret snapshot, omits unset names,
+and gives explicit `env` values precedence. Inherited and selected servers use the same path.
+An `env_vars` reference to `MISSION_HOME` or `CODEX_HOME` requires an explicit `env` override:
+Mission Control gives each process its own state home and each resident a private Codex overlay,
+so neither the catalog probe's temporary state home nor its operator Codex home can be pinned.
+Resume uses the saved values, even if the daemon's environment changes. Values are never added
+to catalog responses, generated MCP configuration or launcher arguments. Ambient variables may
+already be visible to the agent through its inherited environment; snapshotting does not make
+those existing values exclusive to the server. Remote environment references remain unsupported.
 
 A Claude Code remote (`http` or `sse`) server with no headers, and no query, user name, password,
 fragment or key-shaped path segment in its URL, reached over `https` or over plain `http` to this

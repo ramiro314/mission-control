@@ -103,7 +103,9 @@ export type WorktreeRiskKey =
   | "quarantined"
   | "over-capacity"
   | "legacy-unverifiable"
-  | "foreign";
+  | "foreign"
+  /** Git no longer recognizes the slot, so nothing in it can be checked before deletion. */
+  | "unverifiable";
 
 /**
  * Who may hold a native slot's lease: the one list the allocator validates against, the slot
@@ -118,6 +120,8 @@ export function isWorktreeOwnerKind(value: unknown): value is WorktreeOwnerKind 
 }
 
 export interface WorktreeOwnerView {
+  /** Persisted task retention deadline, when a matching activity clock exists. */
+  cleanupDueAt?: number;
   kind: WorktreeOwnerKind;
   key: string;
   label: string;
@@ -295,6 +299,14 @@ export interface NativeWorktreeSlotView {
   /** Only on a quarantined slot, and only for the quarantine it is in now. */
   recoveryRefusal: WorktreeRecoveryRefusalView | null;
   /**
+   * Git no longer recognizes this slot: the repository's worktree list does not name it, and
+   * what is on disk is provably not a worktree (or nothing is). A re-cloned or moved main
+   * checkout leaves every slot like this. Recovery can never prove such a slot through Git,
+   * so Destroy is its only way out, and its preview asks the operator to accept that the
+   * files cannot be checked first.
+   */
+  orphaned: boolean;
+  /**
    * `recover` is offered on a quarantined slot no live owner references: it removes a stale
    * `index.lock` when no Git process uses the slot, then resets it to available. `return` is
    * offered on a leased slot, and on a quarantined one whose active owner is still referenced:
@@ -455,7 +467,19 @@ export interface WorktreeActionAffected {
   diskBytes: number | null;
 }
 
+export interface WorktreeRecoveryCheck {
+  label: string;
+  status: "passed" | "failed" | "unavailable";
+  detail: string;
+}
+
 export interface WorktreeActionPreview {
+  recovery?: {
+    reason: string | null;
+    category: string | null;
+    quarantinedAt: number | null;
+    checks: WorktreeRecoveryCheck[];
+  };
   token: string;
   request: WorktreeActionRequest;
   inventoryRevision: string;

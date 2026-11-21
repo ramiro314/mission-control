@@ -172,12 +172,12 @@ test("only chat and resident are excluded from backlog-producing surfaces", () =
   );
 });
 
-test("recurring missions offer every backlog kind except shape", () => {
+test("recurring missions offer every backlog kind except shape, plus chat", () => {
   // A shape task opens with an interview, so a mission filing it on a schedule would ask the
-  // same questions of nobody in particular.
-  assert.deepEqual([...SCHEDULE_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix", "document"]);
+  // same questions of nobody in particular. A mission may file a chat (upstream #1533).
+  assert.deepEqual([...SCHEDULE_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"]);
   assert.equal(taskKindAllowsSchedule("shape"), false);
-  assert.equal(taskKindAllowsSchedule("chat"), false);
+  assert.equal(taskKindAllowsSchedule("chat"), true);
   assert.equal(taskKindAllowsSchedule("resident"), false);
 });
 
@@ -190,6 +190,10 @@ test("resident is launched only from a profile: Dispatch does not offer it and i
   assert.equal(taskKindForcedRuntime("chat"), null);
   assert.equal(taskKindLaunchesHarness("resident"), false, "the profile, not a per-kind default, owns its launch");
   assert.equal(allowsBacklogAutopilot("resident"), false);
+  assert.equal(TASK_KIND_BEHAVIOR.resident.foremanInvite, false, "a resident launches with Foreman out of its session");
+  for (const kind of TASK_KINDS.filter((k) => k !== "resident")) {
+    assert.equal(TASK_KIND_BEHAVIOR[kind].foremanInvite, true, `${kind} keeps the launch-time Foreman invite`);
+  }
   assert.equal(taskDefaultWorkflowId("resident", {}), null);
   assert.equal(taskKindBacklogRefusal("resident"), RESIDENT_TASK_REFUSAL);
   assert.equal(taskKindBacklogRefusal("chat"), TASK_KIND_BACKLOG_REFUSAL);
@@ -223,6 +227,7 @@ test("chat has the approved conversational copy", () => {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: false,
+    foremanInvite: true,
     constraint: null,
   });
 });
@@ -232,6 +237,7 @@ test("pipeline is provider-owned work and never backlog autopilot work", () => {
     repoAvailability: "pipeline-enabled",
     launch: "pipeline",
     autopilot: false,
+    foremanInvite: true,
     constraint:
       "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   });

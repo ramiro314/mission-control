@@ -1,11 +1,14 @@
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { ResidentRun } from "@shared/residents.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
-import type { AgentType, SessionRuntime } from "@shared/types.ts";
+import type { AgentType, SessionRuntime, Task } from "@shared/types.ts";
+import { taskRepoManifest } from "../repo-manifest.ts";
 import type { ResidentMcpLaunch } from "../harness/types.ts";
 import { appendStandingSections } from "../instructions/compose.ts";
 import { ensureResidentState, residentStateDir } from "./state.ts";
 import { residentMcpLaunchForRun } from "./mcp-launch.ts";
+import { residentScheduleSummary } from "@shared/resident-schedule.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 
 /**
  * The resident launch composer: what a resident run adds to the SDK launch the dispatcher
@@ -76,6 +79,23 @@ export const mcpContributor: ResidentLaunchContributor = {
   },
 };
 
+/**
+ * The pinned active hours, so a resident that asks to wake at 3 a.m. knows the loop will hold
+ * that wake until its next window. Said only while the loop enforces them: a profile whose
+ * schedule is on but whose `resident-active-hours` preview is off is told nothing, because its
+ * loop wakes it on the ordinary cadence. The wording is conditional on the preview too, since
+ * the operator can turn it off while the run is live and the role it launched with stays.
+ */
+export const activeHoursContributor: ResidentLaunchContributor = {
+  id: "activeHours",
+  contribute({ run }) {
+    const schedule = run.settings.schedule;
+    if (!schedule.enabled || !featureEnabled("resident-active-hours")) return {};
+    const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "the daemon's local time";
+    return { standingInstructions: `### Active hours\n\nYour profile sets active hours: ${residentScheduleSummary(schedule, localZone)}. While Mission Control's Resident active hours preview is on, the loop wakes you only inside them. Outside them you sleep: no loop prompt is sent, and a wake that falls due, including one you request with \`schedule_next_iteration\`, waits until the next window opens. If the operator turns the preview off, the loop wakes you on its ordinary cadence again. A message from the operator still reaches you at any time.` };
+  },
+};
+
 /** Ordered. Append; never reorder an existing entry, because order is delivery order. */
 export const RESIDENT_LAUNCH_CONTRIBUTORS: readonly ResidentLaunchContributor[] = [
   personaInstructionsContributor,
@@ -84,6 +104,7 @@ export const RESIDENT_LAUNCH_CONTRIBUTORS: readonly ResidentLaunchContributor[] 
   mcpContributor,
   { id: "durableState", contribute: ({ run }) => ({ standingInstructions:
     `### Durable resident state\n\nYour profile state directory is ${residentStateDir(run.profileId)} (RESIDENT_STATE_DIR). Read it at the start of each run. Store notes, corrections, ledgers and already-handled watermarks here. It survives restarts and profile edits; the run workspace is temporary. Concurrent runs of this profile share this directory; coordinate writes.` }) },
+  activeHoursContributor,
 ];
 
 /** The composed resident additions to one launch. */
@@ -142,11 +163,15 @@ export function residentStandingSection(run: ResidentRun): string {
  * whose next step is the last item in flight. This restates the role verbatim, in the turn the
  * resident acts on, so the summary reads as context for the mandate rather than as the mandate.
  */
-export function residentStandingRestatement(run: ResidentRun): string {
+export function residentStandingRestatement(run: ResidentRun, task?: Task): string {
+  // A resident with attached repositories was told where they are only in its first turn, which
+  // a compaction summarizes away, so the manifest is restated beside the role.
+  const manifest = task ? taskRepoManifest(task) : "";
   return [
     RESIDENT_RESTATEMENT_HEADING,
     "Your conversation was compacted. Its summary records what you were doing, not what you are for: treat its current work and next step as context. Your standing task follows exactly as you were given it. Re-read it and carry out the whole of it, not only the item you were last working on.",
     residentStandingSection(run),
+    ...(manifest ? [manifest] : []),
     "---",
   ].join("\n\n");
 }

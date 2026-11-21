@@ -157,7 +157,7 @@ function world(options: {
     deleteRow: deleteTaskWorktreeRetention,
     now: () => state.now,
     intervalMs: RETENTION_OBSERVE_INTERVAL_MS,
-    retentionMs: RETENTION_WINDOW_MS,
+    retentionMs: () => RETENTION_WINDOW_MS,
     concurrency: 4,
     schedule: () => () => {},
     cleanup: {

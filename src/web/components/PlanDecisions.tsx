@@ -222,7 +222,8 @@ export function draftOnChange(
  * alone never does, so tabbing through the form leaves the selection as it was - which is why
  * the box listens for `pointerdown` and not `focus`. A pointer click on the radio moves focus
  * into the box; a keyboard-driven click (`detail === 0`, from Space or the arrow keys) leaves
- * focus on the radio, as a radio group normally does.
+ * focus on the radio, as a radio group normally does. A click on the radio while Other is
+ * already the choice clears it, as it does for a listed option (`clearOnReclick`); the text stays.
  */
 function OtherChoice({
   name,
@@ -230,6 +231,7 @@ function OtherChoice({
   chosen,
   busy,
   onChoose,
+  onClear,
   onText,
 }: {
   name: string;
@@ -237,6 +239,7 @@ function OtherChoice({
   chosen: boolean;
   busy: boolean;
   onChoose: () => void;
+  onClear: () => void;
   onText: (text: string) => void;
 }): React.JSX.Element {
   const box = useRef<HTMLInputElement>(null);
@@ -252,7 +255,9 @@ function OtherChoice({
             checked={chosen}
             onChange={onChoose}
             onClick={(e) => {
-              if (e.detail > 0) box.current?.focus();
+              // `chosen` is this render's state, read before the click lands.
+              if (chosen) onClear();
+              else if (e.detail > 0) box.current?.focus();
             }}
             disabled={busy}
           />
@@ -462,16 +467,21 @@ export function DecisionForm({
     edit((prev) => {
       const cur = prev[d.id] ?? EMPTY;
       let selected: string[];
-      if (d.multiSelect) {
-        selected = checked
-          ? [...cur.selected, optionId]
-          : cur.selected.filter((x) => x !== optionId);
+      if (!checked) {
+        selected = cur.selected.filter((x) => x !== optionId);
+      } else if (d.multiSelect) {
+        selected = [...cur.selected, optionId];
       } else {
         selected = [optionId]; // radio: single choice replaces
       }
       // Picking a listed radio deselects Other; its text stays in the box, unsent.
       return { ...prev, [d.id]: { ...cur, selected, otherChosen: false, chat: false } };
     });
+  }
+
+  /** Single choice: Other is no longer the choice. Its text stays in the box, unsent. */
+  function clearOther(d: PlanDecision): void {
+    edit((prev) => ({ ...prev, [d.id]: { ...(prev[d.id] ?? EMPTY), selected: [], otherChosen: false } }));
   }
 
   /** Single choice: make Other the choice, clearing the listed option. */
@@ -482,6 +492,18 @@ export function DecisionForm({
       ...prev,
       [d.id]: { ...(prev[d.id] ?? EMPTY), selected: [], otherChosen: true, chat: false },
     }));
+  }
+
+  /**
+   * A click on a radio that was ALREADY checked clears it.
+   *
+   * A browser never fires `change` for that click, so a radio group on its own can only move a
+   * pick, never take it back - the human who picked by mistake had to pick something else or
+   * dismiss the whole ask. `wasChecked` is this render's state, read before the click lands.
+   * Checkboxes toggle natively and need nothing here.
+   */
+  function clearOnReclick(d: PlanDecision, wasChecked: boolean, clear: () => void): void {
+    if (!d.multiSelect && wasChecked) clear();
   }
 
   function moveToChat(id: string, chat: boolean): void {
@@ -564,6 +586,9 @@ export function DecisionForm({
                 name={`${namePrefix}-${d.id}`}
                 checked={get(d.id).selected.includes(o.id)}
                 onChange={(e) => choose(d, o.id, e.target.checked)}
+                onClick={() =>
+                  clearOnReclick(d, get(d.id).selected.includes(o.id), () => choose(d, o.id, false))
+                }
                 disabled={busy}
               />
               <span className="decision-option-body">
@@ -584,6 +609,7 @@ export function DecisionForm({
               chosen={otherIsChosen(get(d.id)) && !get(d.id).chat}
               busy={busy}
               onChoose={() => chooseOther(d)}
+              onClear={() => clearOther(d)}
               onText={(text) => setText(d, "other", text)}
             />
           )}
@@ -607,6 +633,7 @@ export function DecisionForm({
                   name={`${namePrefix}-${d.id}`}
                   checked={get(d.id).chat === true}
                   onChange={(e) => moveToChat(d.id, e.target.checked)}
+                  onClick={() => clearOnReclick(d, get(d.id).chat === true, () => moveToChat(d.id, false))}
                   disabled={busy}
                 />
               </Tooltip>

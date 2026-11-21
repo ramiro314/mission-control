@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
-import type { ServerEvent, Session, TranscriptMessage } from "../src/shared/types.ts";
+import type { ServerEvent, Session, Task, TranscriptMessage } from "../src/shared/types.ts";
 import { RESIDENT_COMPACTION_FOCUS, residentRunSummary, ResidentProfileRevisionSchema, type ResidentLoopSettings } from "../src/shared/residents.ts";
+import type { ResidentScheduleSection } from "../src/shared/resident-schedule.ts";
+import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { foldAttention } from "../src/web/lib/attention.ts";
 import { residentWakeMarker } from "../src/shared/resident-turn.ts";
 import { mkSession, mkTask, mkTaskSummary, meta } from "./helpers/session-fixture.ts";
@@ -63,12 +65,12 @@ test("the inbox draws no row for a stale needs-you hold, while a guardrail pause
   assert.equal(row?.kind === "session_blocked" ? row.activity : null, "Spend guardrail reached");
 });
 
-function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
-  let now = 1_800_000_000_000;
-  const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Watcher" }, persona: { personaId: "p" }, loop: options });
+function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true, schedule?: Partial<ResidentScheduleSection>, start = 1_800_000_000_000) {
+  let now = start;
+  const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Watcher" }, persona: { personaId: "p" }, loop: options, ...(schedule ? { schedule } : {}) });
   store.createResidentProfile({ id: "profile", settings, at: now });
   store.reserveResidentRun({ id: "run", profileId: "profile", profileRevision: 1, taskId: "task", launchRequestId: "request",
-    launchInput: { version: 1, repoRoot: "/repo", instructions: "" }, repoSpelling: "/repo", persona: { personaId: "p", name: "Observer", guidanceMarkdown: "Observe" }, runInstructions: "", at: now });
+    launchInput: { version: 1, repoRoot: "/repo", additionalRepoRoots: [], instructions: "" }, repoSpelling: "/repo", persona: { personaId: "p", name: "Observer", guidanceMarkdown: "Observe" }, runInstructions: "", at: now });
   if (launched) store.markResidentRunLaunched("run", null, now);
   let session = mkSession({ id: "sdk:resident", runtime: "sdk", state: "idle", terminals: [], task: mkTaskSummary({ id: "task", kind: "resident" }),
     workCycle: { logicalKey: "native", generation: 1, active: false, completedAt: now, updatedAt: now }, meta: meta({ contextPct: 5 }) });
@@ -77,6 +79,8 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
   const compactions = new Set<(event: SessionCompacted) => void>();
   const focuses: string[] = [];
   const calls: string[] = [];
+  /** Every summary the loop published, as the registry received it. */
+  const published: Array<NonNullable<ReturnType<typeof residentRunSummary>>> = [];
   let send: "accept" | "null" | "gate_throw" | "driver_throw" = "accept";
   // A measured compaction, announced the way both drivers do: the boundary's `compacted` event
   // reaches the registry's listeners before the result that completes the operation.
@@ -90,13 +94,14 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
   let unreadable = false;
   let refreshedContext: number | null = null;
   let onRefresh: (() => void) | null = null;
+  let task = mkTask({ id: "task", sessionId: session.id, kind: "resident" });
   const registry = {
     subscribe: (fn: (e: ServerEvent) => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
     onTurnDelivered: (fn: (event: TurnDelivered) => void) => { humans.add(fn); return () => { humans.delete(fn); }; },
     onCompacted: (fn: (event: SessionCompacted) => void) => { compactions.add(fn); return () => { compactions.delete(fn); }; },
-    getTask: () => mkTask({ id: "task", sessionId: session.id, kind: "resident" }),
+    getTask: () => task,
     getSession: () => session,
-    upsertResidentRun: (run: NonNullable<ReturnType<typeof import("../src/shared/residents.ts").residentRunSummary>>) => { for (const fn of listeners) fn({ type: "resident_run_upsert", run }); },
+    upsertResidentRun: (run: NonNullable<ReturnType<typeof import("../src/shared/residents.ts").residentRunSummary>>) => { published.push(run); for (const fn of listeners) fn({ type: "resident_run_upsert", run }); },
   };
   const deps = { registry, refreshSession: () => {
     onRefresh?.();
@@ -121,11 +126,13 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
   } };
   function loop() { const value = new ResidentLoop(deps); loops.push(value); value.start(); return value; }
   const emit = () => { for (const fn of listeners) fn({ type: "session_upsert", session }); };
-  return { loop, calls, focuses, settings, get session() { return session; }, get now() { return now; }, advance: (ms: number) => { now += ms; },
+  return { loop, calls, focuses, published, settings, get session() { return session; }, get now() { return now; }, advance: (ms: number) => { now += ms; },
     run: () => store.getResidentRun("run")!.run, rows: () => openDb().prepare("SELECT * FROM resident_iterations ORDER BY seq").all() as unknown as state.ResidentIteration[],
     setSend: (value: typeof send) => { send = value; }, setCompact: (fn: typeof compact) => { compact = fn; },
     refreshContext: (value: number) => { refreshedContext = value; },
     onRefresh: (fn: (() => void) | null) => { onRefresh = fn; },
+    /** What the registry holds for the run's task, as the loop reads it at wake time. */
+    setTask: (patch: Partial<Task>) => { task = { ...task, ...patch }; },
     patch: (value: Partial<Session>) => { session = { ...session, ...value }; emit(); },
     complete: (generation = session.workCycle!.generation) => { session = { ...session, state: "idle", workCycle: { ...session.workCycle!, generation, active: false, completedAt: now, updatedAt: now } }; emit(); },
     human: (turnId = "human") => { session = { ...session, state: "working", workCycle: { ...session.workCycle!, active: true, generation: session.workCycle!.generation + 1 } }; for (const fn of humans) fn({ sessionId: session.id, turnId, deliveredAt: now }); emit(); },
@@ -413,7 +420,7 @@ for (const contextPct of [null, NaN, Infinity, -1]) test(`unmeasured context (${
   assert.equal(f.run().iteration, 2);
 });
 
-for (const hold of [{ pendingReviews: 1 }, { state: "awaiting_input" as const }, { paneDialog: { options: [], highlighted: 0 } }]) test(`human request holds overdue wakes without pausing: ${JSON.stringify(hold)}`, async () => {
+for (const hold of [{ pendingReviews: 1 }, { state: "awaiting_input" as const }, { paneDialog: { options: [], highlighted: 0 } }]) test(`human request holds overdue wakes without pausing: ${JSON.stringify(hold)}`, async t => {
   const f = fixture(); const loop = f.loop(); await flush();
   const due = f.run().nextWakeAt;
   f.patch(hold); await flush();
@@ -421,8 +428,9 @@ for (const hold of [{ pendingReviews: 1 }, { state: "awaiting_input" as const },
   assert.equal(f.run().nextWakeAt, due);
   await loop.stop(); f.advance(400_000); f.loop(); await flush();
   assert.equal(f.calls.length, 0);
-  f.patch({ pendingReviews: 0, state: "idle", paneDialog: null }); await flush();
-  assert.equal(f.calls.length, 1);
+  f.patch({ pendingReviews: 0, state: "idle", paneDialog: null });
+  // Observation arms a timer, so one fixed sleep can finish before delivery under load.
+  await t.waitFor(() => assert.equal(f.calls.length, 1));
 });
 
 test("pacing before and during a review survives resolution and completes with the requested delay", async () => {
@@ -755,6 +763,31 @@ test("the first wake after a compaction restates the standing task verbatim, onc
   assert.equal(f.rows()[2]!.wake_text, null);
 });
 
+test("a resident with attached repositories is told where they are again in the first wake after a compaction", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.setTask({
+    repoRoot: "/repo", worktreePath: "/trees/primary", branch: "harness/watcher",
+    extraRepos: [{ repoRoot: "/work/contracts", worktreePath: "/trees/contracts", branch: "harness/watcher", provider: null, worktreeLeaseId: null, baseSha: null, prUrl: null, prState: null, mergedAt: null }],
+  });
+  f.patch({ meta: meta({ contextPct: 80 }) });
+  await loop.runNow("run");
+  assert.equal(f.calls[0], "compact");
+  const delivered = f.calls[1]!;
+  // Observed on the wake the loop actually sent, not composed by the test.
+  assert.ok(delivered.includes("## Repositories for this task"), delivered);
+  assert.ok(delivered.includes("- /trees/contracts - from /work/contracts, on branch harness/watcher"), "the attached worktree path is delivered");
+  assert.ok(delivered.includes("- /trees/primary - PRIMARY (your working directory), from /repo"), "beside the primary's");
+  assert.ok(delivered.indexOf(residentStandingSection(f.run())) < delivered.indexOf("## Repositories for this task"), "after the resident section");
+  assert.ok(delivered.endsWith(`\n\n---\n\n${f.settings.loop.prompt}`), "the loop prompt still closes the wake");
+  assert.equal(f.rows()[1]!.wake_text, delivered, "the exact text, manifest included, is recorded for confirmation");
+
+  // An ordinary wake carries no manifest: it rides only with a restatement.
+  f.complete(); await flush();
+  f.patch({ meta: meta({ contextPct: 5 }) });
+  await loop.runNow("run");
+  assert.equal(f.calls[2], `${residentWakeMarker("run", 3)}\n${f.settings.loop.prompt}`);
+});
+
 const epochs = () => ({ ...openDb().prepare("SELECT compaction_epoch, reanchored_epoch FROM resident_runs WHERE id = 'run'").get() });
 
 test("the driver's boundary is the one record of a compaction: completing the loop's compaction records nothing itself", async () => {
@@ -833,4 +866,176 @@ test("restart confirms a restated wake by its recorded text, and the dashboard d
   assert.equal(state.residentWakePresentation(message, conversation), `RESTATED ROLE\n\n${f.settings.loop.prompt}`);
   const plain = { ...message, text: `${residentWakeMarker("run", 2)}\n${f.settings.loop.prompt}` };
   assert.equal(state.residentWakePresentation(plain, conversation), null, "the bare loop prompt is not this wake");
+});
+
+// Active hours. 1_800_000_000_000 is Friday 2027-01-15 08:00 UTC: an hour before a Mon-Fri
+// 09:00-17:00 UTC window opens.
+const FRIDAY_0800_UTC = 1_800_000_000_000;
+const HOUR = 3_600_000;
+const WORKDAY = { enabled: true, days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00", timeZone: "UTC" };
+const activeHours = (enabled: boolean) => assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "resident-active-hours", enabled }).ok, true);
+
+test("outside active hours a due wake is held until the window opens, then the loop runs as usual", async (t) => {
+  activeHours(true);
+  try {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+    const f = fixture({}, true, WORKDAY, FRIDAY_0800_UTC);
+    const elapse = async (ms: number) => { f.advance(ms); t.mock.timers.tick(ms); await settle(); };
+    f.loop(); await settle();
+    assert.equal(f.run().nextWakeAt, FRIDAY_0800_UTC + 300_000, "the wake stays due at its cadence; nothing durable moves");
+    await elapse(HOUR - 1);
+    assert.deepEqual(f.calls, [], "asleep: no loop prompt and no compaction before 09:00");
+    assert.equal(f.run().loopState, "waiting", "the resident is still running, not paused");
+    await elapse(1);
+    assert.equal(f.calls.length, 1, "the window opens and the held wake goes out once");
+    assert.match(f.calls[0]!, /mission-resident:run:2/);
+
+    // Inside the window the ordinary cadence applies.
+    f.complete(); await settle();
+    await elapse(300_000);
+    assert.equal(f.calls.length, 2);
+
+    // A turn finishing at 16:58 is due at 17:03, after the window closes: it sleeps through the
+    // weekend and goes out on Monday at 09:00.
+    await elapse(8 * HOUR - 300_000 - 2 * 60_000);
+    f.complete(); await settle();
+    const monday = FRIDAY_0800_UTC + 3 * 24 * HOUR + HOUR;
+    await elapse(monday - f.now - 1);
+    assert.equal(f.calls.length, 2, "nothing is sent overnight or over the weekend");
+    await elapse(1);
+    assert.equal(f.calls.length, 3, "Monday's window opens the held wake");
+  } finally { activeHours(false); }
+});
+
+test("Run now is the operator's own and wakes a sleeping resident at once", async () => {
+  activeHours(true);
+  try {
+    const f = fixture({}, true, WORKDAY, FRIDAY_0800_UTC); const loop = f.loop(); await flush();
+    assert.equal(await loop.runNow("run"), "started");
+    assert.equal(f.calls.length, 1);
+  } finally { activeHours(false); }
+});
+
+test("with the preview off, active hours hold nothing; turning it on and off re-times a waiting resident", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const f = fixture({}, true, WORKDAY, FRIDAY_0800_UTC);
+  const elapse = async (ms: number) => { f.advance(ms); t.mock.timers.tick(ms); await settle(); };
+  f.loop(); await settle();
+  try {
+    activeHours(true); await settle();
+    await elapse(300_000);
+    assert.deepEqual(f.calls, [], "turning the preview on holds the already armed wake");
+    activeHours(false); await settle();
+    await elapse(0);
+    assert.equal(f.calls.length, 1, "turning it off sends the overdue wake at once");
+    f.complete(); await settle();
+    await elapse(300_000);
+    assert.equal(f.calls.length, 2, "and the cadence ignores the schedule while it is off");
+  } finally { activeHours(false); }
+});
+
+test("a resident with active hours is told them only while the preview enforces them, and one without is told nothing", async () => {
+  const { activeHoursContributor } = await import("../src/server/residents/launch.ts");
+  const f = fixture({}, true, WORKDAY, FRIDAY_0800_UTC);
+  assert.deepEqual(activeHoursContributor.contribute({ run: f.run(), agent: "claude", runtime: "sdk" }), {},
+    "with the preview off its loop ignores the schedule, so the resident is not told it sleeps");
+  assert.doesNotMatch(residentStandingSection(f.run()), /Active hours/);
+  activeHours(true);
+  try {
+    const told = activeHoursContributor.contribute({ run: f.run(), agent: "claude", runtime: "sdk" }).standingInstructions!;
+    assert.match(told, /^### Active hours\n\nYour profile sets active hours: Mon–Fri, 09:00–17:00 \(UTC\)\. While Mission Control's Resident active hours preview is on, the loop wakes you only inside them\./);
+    assert.match(told, /If the operator turns the preview off, the loop wakes you on its ordinary cadence again\./);
+    assert.match(residentStandingSection(f.run()), /### Active hours/, "the restatement after compaction carries it too");
+  } finally { activeHours(false); }
+  openDb().exec("DELETE FROM resident_runs; DELETE FROM resident_profile_revisions; DELETE FROM resident_profiles;");
+  const plain = fixture();
+  assert.deepEqual(activeHoursContributor.contribute({ run: plain.run(), agent: "claude", runtime: "sdk" }), {});
+  assert.doesNotMatch(residentStandingSection(plain.run()), /Active hours/);
+});
+
+test("a wake held for a start time the spring clock change skips goes out at 03:00, not an hour early", async (t) => {
+  activeHours(true);
+  try {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+    // Sunday 2026-03-08, 00:30 EST in New York; the window is 02:30-03:30, and 02:30 never happens.
+    const start = Date.parse("2026-03-08T05:30:00Z");
+    const f = fixture({}, true, { enabled: true, days: [0], start: "02:30", end: "03:30", timeZone: "America/New_York" }, start);
+    const elapse = async (ms: number) => { f.advance(ms); t.mock.timers.tick(ms); await settle(); };
+    f.loop(); await settle();
+    const opens = Date.parse("2026-03-08T07:00:00Z");
+    await elapse(Date.parse("2026-03-08T06:30:00Z") - f.now);
+    assert.deepEqual(f.calls, [], "01:30 EST, the hour-early resolution of 02:30, sends nothing");
+    await elapse(opens - f.now - 1);
+    assert.deepEqual(f.calls, [], "nothing before the clock jumps to 03:00 EDT");
+    await elapse(1);
+    assert.equal(f.calls.length, 1, "the held wake goes out at 03:00 EDT");
+  } finally { activeHours(false); }
+});
+
+test("in a UTC+13 zone too, a wake held for a skipped start goes out at the jump, not an hour early", async (t) => {
+  activeHours(true);
+  try {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+    // Auckland, Sunday 2026-09-27 00:30 NZST; the window is 02:30-04:00 and 02:30 never happens.
+    const f = fixture({}, true, { enabled: true, days: [0], start: "02:30", end: "04:00", timeZone: "Pacific/Auckland" }, Date.parse("2026-09-26T12:30:00Z"));
+    const elapse = async (ms: number) => { f.advance(ms); t.mock.timers.tick(ms); await settle(); };
+    f.loop(); await settle();
+    const jump = Date.parse("2026-09-26T14:00:00Z");
+    await elapse(Date.parse("2026-09-26T13:30:00Z") - f.now);
+    assert.deepEqual(f.calls, [], "01:30 NZST, an hour before the chosen opening, sends nothing");
+    await elapse(jump - f.now - 1);
+    assert.deepEqual(f.calls, []);
+    await elapse(1);
+    assert.equal(f.calls.length, 1, "the held wake goes out at 03:00 NZDT");
+  } finally { activeHours(false); }
+});
+
+test("a sleeping resident whose context is over the threshold does not compact until its window opens", async (t) => {
+  activeHours(true);
+  try {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+    const f = fixture({}, true, WORKDAY, FRIDAY_0800_UTC);
+    const elapse = async (ms: number) => { f.advance(ms); t.mock.timers.tick(ms); await settle(); };
+    f.loop(); await settle();
+    // 80% is over the profile's 70% threshold: an awake wake would compact before it sends.
+    f.patch({ meta: meta({ contextPct: 80 }) }); await settle();
+    assert.equal(f.run().nextWakeAt, FRIDAY_0800_UTC + 300_000, "the wake is due at 08:05, outside the 09:00-17:00 window");
+    await elapse(HOUR - 1);
+    assert.deepEqual(f.calls, [], "asleep: no compaction and no loop prompt, though compaction is due");
+    assert.deepEqual(f.focuses, [], "the harness was never asked to compact");
+    assert.equal(f.run().loopState, "waiting", "never entered compacting while asleep");
+    await elapse(1);
+    assert.equal(f.calls[0], "compact", "the window opens: compaction first, as for any wake over the threshold");
+    assert.match(f.calls[1]!, /mission-resident:run:2/, "then the held wake goes out");
+    assert.equal(f.calls.length, 2);
+  } finally { activeHours(false); }
+});
+
+test("a window that closes while a compaction runs sends no wake after it; the wake waits for the next window", async (t) => {
+  activeHours(true);
+  try {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+    // Friday 16:50 UTC: the 16:55 wake is inside the 09:00-17:00 window, but compaction is due.
+    const f = fixture({}, true, WORKDAY, FRIDAY_0800_UTC + 8 * HOUR + 50 * 60_000);
+    const elapse = async (ms: number) => { f.advance(ms); t.mock.timers.tick(ms); await settle(); };
+    f.loop(); await settle();
+    f.patch({ meta: meta({ contextPct: 80 }) }); await settle();
+    // The compaction takes ten minutes and finishes at 17:05, after the window has closed.
+    f.setCompact(async () => { f.calls.push("compact"); f.advance(10 * 60_000); return 5; });
+    t.mock.timers.tick(300_000); f.advance(300_000); await settle();
+    assert.deepEqual(f.calls, ["compact"], "compacted while awake, but no loop prompt after the window closed");
+    assert.equal(f.run().loopState, "waiting", "the resident sleeps; it is not paused");
+    assert.equal(f.published.at(-1)?.loopState, "waiting", "the live surfaces are told it is waiting, not left showing compacting");
+    const monday = FRIDAY_0800_UTC + 3 * 24 * HOUR + HOUR;
+    await elapse(monday - f.now - 1);
+    assert.equal(f.calls.filter((call) => call.includes("mission-resident:")).length, 0, "nothing over the weekend");
+    await elapse(1);
+    assert.match(f.calls.at(-1)!, /mission-resident:run:2/, "the held wake goes out when Monday's window opens");
+  } finally { activeHours(false); }
 });

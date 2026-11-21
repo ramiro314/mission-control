@@ -1077,9 +1077,16 @@ test("the PR card and Wait for CI classify a check by one shared rule", async ()
   assert.equal(classifyCheckEntry({ state: "EXPECTED" }), "pending");
   assert.equal(classifyCheckEntry({ state: "ERROR" }), "failing");
   assert.equal(classifyCheckEntry({ other: 1 }), null);
-  for (const path of ["../src/server/pr.ts", "../src/shared/wait-for-ci.ts"]) {
+  // The PR card's chip and the Inspector's merge gate read checks through upstream's
+  // `check-rollup.ts` (#1524), which `pr.ts` and `inspector/github.ts` call.
+  for (const path of ["../src/server/github/check-rollup.ts", "../src/shared/wait-for-ci.ts"]) {
     const source = readFileSync(new URL(path, import.meta.url), "utf8");
     assert.match(source, /classifyCheckEntry\(/, path);
+    assert.doesNotMatch(source, /FAIL_CONCLUSIONS/, `${path} keeps its own copy of the rule`);
+  }
+  for (const path of ["../src/server/pr.ts", "../src/server/inspector/github.ts"]) {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.match(source, /rollUpChecks\(/, path);
     assert.doesNotMatch(source, /FAIL_CONCLUSIONS/, `${path} keeps its own copy of the rule`);
   }
 });

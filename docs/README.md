@@ -11,6 +11,7 @@ Mission Control's product reference is organized by feature below.
 - [Sessions and conversations](sessions.md)
 - [Pi extension](pi-extension.md): tool bridge, lifecycle, identity, build and verification contracts.
 - [Dispatch, backlog, and task sources](dispatch-and-backlog.md)
+- [Task shaping](task-shaping.md): shapers that supply context for a task, registered and dry-run through the API, behind the `task-shaping` preview.
 - [Recurring missions](recurring-missions.md)
 - [Multi-agent ensembles](ensembles.md)
 - [Residents](residents.md): long-running agents launched from resident profiles.
@@ -51,6 +52,7 @@ Mission Control's product reference is organized by feature below.
 - [Tasks, queues, and schedules](tasks-and-scheduling.md)
 - [Database and migrations](database-and-migrations.md)
 - [Event stream](event-stream.md)
+- [Feature flags](feature-flags.md): flag core, live gates and the three-release lifecycle.
 - [Desktop shell and packaging](desktop-and-packaging.md)
 - [Owned runtimes and integration repair](owned-runtimes.md)
 - [Signed release production and verification](release-verification.md)
@@ -63,6 +65,7 @@ Mission Control's product reference is organized by feature below.
 - [Syncing the fork with upstream](upstream-sync.md): the runbook for merging `teamupstart/mission-control` into this fork.
 - [Proposing a fork feature upstream](upstream-contribution.md): the runbook for porting one fork feature to `teamupstart/mission-control` as one pull request: the personal machine ports it and hands it off, and the work machine owns the pull request from then on.
 - [Tracking the fork's features](fork/README.md): the GitHub tracking issues and `fork:<slug>` labels that record every feature this fork changes against upstream, the "Fork feature changes" PR section, and the daily refresh.
+- [Test suite process churn](runbooks/test-process-churn.md): measure how many processes the suite starts, and the fixture rules that keep endpoint security agents quiet.
 
 ## Support
 
