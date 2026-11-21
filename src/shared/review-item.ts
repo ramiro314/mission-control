@@ -221,21 +221,17 @@ export function formatResponse(
     const answer = byId.get(d.id);
     const note = answer?.note?.trim() ?? "";
     const lines = [`• ${d.question}`];
-    const other = answer?.other?.trim() ?? "";
     if (answer?.chat) {
       // Moved to the conversation: whatever was picked before the move is not an answer.
       lines.push(`  → ${CHAT_ABOUT_IT}`);
-      if (d.allowOther && other) lines.push(`  Context: ${other}`);
     } else {
       const labels = selectedOptions(d, answer).map((o) => o.label);
+      const other = answer?.other?.trim() ?? "";
       if (labels.length) lines.push(`  → ${labels.join(", ")}`);
-      // The same box is an answer of its own when nothing is picked, and context for the
-      // pick when something is - so the agent is told which, rather than reading "Other"
-      // beside a single choice as a second, competing answer. Provenance rides in the text
-      // the agent reads, not only in the record beside it: the agent should know these words
-      // were drafted by Foreman and accepted by the human.
+      // Provenance rides in the text the agent reads, not only in the record beside it: the
+      // agent should know these words were drafted by Foreman and accepted by the human.
       if (d.allowOther && other) {
-        lines.push(`  ${labels.length ? "Context" : "Other"}: ${other}${answer?.foremanDraftAccepted ? ` (${FOREMAN_DRAFT_ACCEPTED})` : ""}`);
+        lines.push(`  Other: ${other}${answer?.foremanDraftAccepted ? ` (${FOREMAN_DRAFT_ACCEPTED})` : ""}`);
       }
       if (!labels.length && !(d.allowOther && other)) lines.push("  → (no selection)");
     }

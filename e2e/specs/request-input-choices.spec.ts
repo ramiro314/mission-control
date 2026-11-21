@@ -9,9 +9,10 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
  * A `request_input` question with options, answered the way a person actually answers one:
- * "Chat about it" sits with the agent's options rather than under the text box, the text box
- * carries context beside whichever row is picked, and clicking a picked radio a second time
- * takes the pick back. Driven end to end, from `POST /mcp/reviews` to the
+ * "Chat about it" is the last row of the group, after the agent's options and the Other radio,
+ * in the same column. Other is a choice of its own (fork:decision-forms): its text answers
+ * alone, and text left in the box beside a listed pick is kept but never sent. Clicking a picked
+ * radio a second time takes the pick back. Driven end to end, from `POST /mcp/reviews` to the
  * `GET /mcp/reviews/:id/wait` long poll the agent's MCP call reads.
  */
 
@@ -118,7 +119,7 @@ async function box(target: Locator): Promise<{ x: number; y: number; width: numb
   return b!;
 }
 
-test("Chat about it is laid out with the options, above the text box and aligned with them", async ({
+test("Chat about it is laid out with the options, after the Other row and aligned with them", async ({
   dashboard,
   daemon,
 }) => {
@@ -128,24 +129,28 @@ test("Chat about it is laid out with the options, above the text box and aligned
   const group = modal.getByRole("group", { name: LINTER });
 
   const lastOption = await box(group.locator("label.decision-option").filter({ hasText: "eslint" }));
+  const otherRow = await box(group.locator(".decision-other-choice"));
   const chatRow = await box(group.locator("label.decision-chat"));
-  const textBox = await box(group.getByPlaceholder("Other answer, or add context…"));
 
-  // Directly after the last option, and the text box only after that.
-  expect(chatRow.y).toBeGreaterThan(lastOption.y);
-  expect(textBox.y, "the text box sits below Chat about it, not above it").toBeGreaterThanOrEqual(
-    chatRow.y + chatRow.height,
+  // Every choice in one stack: the agent's options, then Other, then Chat about it last.
+  expect(otherRow.y).toBeGreaterThanOrEqual(lastOption.y + lastOption.height);
+  expect(chatRow.y, "Chat about it sits below the Other row, not above it").toBeGreaterThanOrEqual(
+    otherRow.y + otherRow.height,
   );
   // The same column as the agent's options: same left edge, same width.
-  expect(Math.abs(chatRow.x - lastOption.x)).toBeLessThanOrEqual(1);
-  expect(Math.abs(chatRow.width - lastOption.width)).toBeLessThanOrEqual(1);
+  for (const row of [otherRow, chatRow]) {
+    expect(Math.abs(row.x - lastOption.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(row.width - lastOption.width)).toBeLessThanOrEqual(1);
+  }
   const radioX = (await box(group.getByRole("radio", { name: /^eslint/ }))).x;
+  const otherRadioX = (await box(group.getByRole("radio", { name: "Other", exact: true }))).x;
   const chatRadioX = (await box(group.getByRole("radio", { name: "Chat about it" }))).x;
+  expect(Math.abs(otherRadioX - radioX), "the radios line up in one column").toBeLessThanOrEqual(1);
   expect(Math.abs(chatRadioX - radioX), "the radios line up in one column").toBeLessThanOrEqual(1);
   await evidence(modal, "chat-about-it-with-the-options");
 });
 
-test("an option can be picked with context typed beside it, and both reach the agent", async ({
+test("typing chooses Other, and text left beside a listed pick is kept but not sent", async ({
   dashboard,
   daemon,
 }) => {
@@ -154,59 +159,65 @@ test("an option can be picked with context typed beside it, and both reach the a
   const modal = await openReview(dashboard);
   const group = modal.getByRole("group", { name: LINTER });
   const eslint = group.getByRole("radio", { name: /^eslint/ });
-  const text = group.getByPlaceholder("Other answer, or add context…");
+  const biome = group.getByRole("radio", { name: /^biome/ });
+  const other = group.getByRole("radio", { name: "Other", exact: true });
+  const text = group.getByPlaceholder("Other…");
 
-  await eslint.check();
+  await expect(eslint, "the form opens on the recommendation").toBeChecked();
   await text.click();
   await text.fill("but keep the flat config");
-  // Typing does not clear the pick, and picking again does not clear the text.
-  await expect(eslint).toBeChecked();
-  await group.getByRole("radio", { name: /^biome/ }).check();
+  // Typing is answering with Other, which replaces the pick.
+  await expect(other).toBeChecked();
+  await expect(eslint).not.toBeChecked();
+  // Picking a listed option takes Other back out, and the text stays where it was.
+  await biome.check();
+  await expect(other).not.toBeChecked();
   await expect(text).toHaveValue("but keep the flat config");
   await eslint.check();
   await expect(eslint).toBeChecked();
   await expect(text).toHaveValue("but keep the flat config");
-  await evidence(modal, "option-picked-with-context");
+  await expect(modal.getByText("Selected: eslint", { exact: true })).toBeVisible();
+  await evidence(modal, "option-picked-text-kept");
 
   await modal.getByRole("button", { name: "Submit" }).click();
   await expect(modal).toBeHidden();
 
   const result = await agentResult(daemon, id);
   expect(result.status).toBe("answered");
-  expect(result.response).toBe(`Answered:\n\n• ${LINTER}\n  → eslint\n  Context: but keep the flat config`);
-  expect(result.selections).toEqual([{ decisionId: "q", selected: ["o1"], other: "but keep the flat config" }]);
+  expect(result.response).toBe(`Answered:\n\n• ${LINTER}\n  → eslint`);
+  expect(result.selections).toEqual([{ decisionId: "q", selected: ["o1"], other: null }]);
 
-  // The conversation replays the text as the context it was, beside the pick.
+  // The conversation replays the pick alone: the kept text was never part of the answer.
   const answer = dashboard.locator(".console-detail .transcript-log .review-answer");
   await expect(answer.getByLabel("Chosen: eslint")).toBeVisible();
-  await expect(answer.locator(".review-answer-other")).toHaveText("Contextbut keep the flat config");
+  await expect(answer.locator(".review-answer-other")).toHaveCount(0);
 });
 
-test("Chat about it can carry typed context too", async ({ dashboard, daemon }) => {
+test("Chat about it on a request_input card sends the move alone", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
   const id = await askLinter(daemon);
   const modal = await openReview(dashboard);
   const group = modal.getByRole("group", { name: LINTER });
   const chat = group.getByRole("radio", { name: "Chat about it" });
-  const text = group.getByPlaceholder("Other answer, or add context…");
+  const text = group.getByPlaceholder("Other…");
 
-  await chat.check();
+  // An Other answer typed first is replaced by the move, as a listed pick would be.
   await text.fill("does biome cover our import rules?");
+  await chat.check();
   await expect(chat).toBeChecked();
+  await expect(text).toHaveValue("");
   await modal.getByRole("button", { name: "Submit & chat (1)" }).click();
   await expect(modal).toBeHidden();
 
   const result = await agentResult(daemon, id);
   expect(result.status).toBe("answered");
   expect(result.response).toMatch(
-    /^Answered:\n\n• Which linter should this repo use\?\n {2}→ Chat about it\n {2}Context: does biome cover our import rules\?\n\nThe human wants to discuss/,
+    /^Answered:\n\n• Which linter should this repo use\?\n {2}→ Chat about it\n\nThe human wants to discuss/,
   );
-  expect(result.selections).toEqual([
-    { decisionId: "q", selected: [], other: "does biome cover our import rules?", chat: true },
-  ]);
+  expect(result.selections).toEqual([{ decisionId: "q", selected: [], other: null, chat: true }]);
 });
 
-test("clicking a picked radio again clears it, for an option and for Chat about it", async ({
+test("clicking a picked radio again clears it, for an option, for Other and for Chat about it", async ({
   dashboard,
   daemon,
 }) => {
@@ -215,6 +226,8 @@ test("clicking a picked radio again clears it, for an option and for Chat about 
   const modal = await openReview(dashboard);
   const group = modal.getByRole("group", { name: LINTER });
   const biome = group.getByRole("radio", { name: /^biome/ });
+  const other = group.getByRole("radio", { name: "Other", exact: true });
+  const text = group.getByPlaceholder("Other…");
   const chat = group.getByRole("radio", { name: "Chat about it" });
   const submit = modal.getByRole("button", { name: /^Submit/ });
 
@@ -230,6 +243,16 @@ test("clicking a picked radio again clears it, for an option and for Chat about 
   await expect(biome).toBeChecked();
   await group.locator("label.decision-option").filter({ hasText: "biome" }).getByText("biome", { exact: true }).click();
   await expect(biome).not.toBeChecked();
+
+  // Other: a second click on its radio clears the choice and keeps the text, unsent.
+  await other.click();
+  await text.fill("oxlint");
+  await expect(other).toBeChecked();
+  await expect(submit).toBeEnabled();
+  await other.click();
+  await expect(other).not.toBeChecked();
+  await expect(text).toHaveValue("oxlint");
+  await expect(submit).toBeDisabled();
 
   await chat.click();
   await expect(chat).toBeChecked();

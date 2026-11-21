@@ -155,12 +155,12 @@ test("a multi-select keeps the order the agent listed, not the order clicked", (
   assert.match(formatResponse([decision], answers, "Answered:"), /→ biome, oxlint/);
 });
 
-test("free text beside a chosen option reaches the agent as context for it", () => {
+test("free text rides along with the chosen options, as Other", () => {
   const withOther: PlanDecision = { ...decision, allowOther: true };
   const answers: PlanDecisionAnswer[] = [{ decisionId: "q", selected: ["o1"], other: "  pinned  " }];
   assert.equal(
     formatResponse([withOther], answers, "Answered:"),
-    "Answered:\n\n• Which linter should this repo use?\n  → eslint\n  Context: pinned",
+    "Answered:\n\n• Which linter should this repo use?\n  → eslint\n  Other: pinned",
   );
 });
 

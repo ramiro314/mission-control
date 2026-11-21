@@ -180,19 +180,26 @@ test("a task's decision reaches the operator with its context and tradeoffs, and
     await expect(group.getByText(ESLINT_TRADEOFF)).toBeVisible();
     await expect(group.getByRole("radio", { name: /^eslint/ })).toHaveAccessibleName(/recommended/i);
 
-    await group.getByRole("radio", { name: /^eslint/ }).check();
-    const answerBox = group.getByRole("textbox", { name: /^Other answer or context/ });
+    // The card always offers a typed answer. On a single choice it is the Other radio's box:
+    // typing chooses Other, and picking a listed option again keeps the text but does not send it.
+    const eslint = group.getByRole("radio", { name: /^eslint/ });
+    const answerBox = group.getByRole("textbox", { name: "Other answer" });
     await expect(answerBox).toBeVisible();
     await answerBox.fill("Please keep the flat config.");
-    await evidence(modal, "decision-with-typed-context");
+    await expect(group.getByRole("radio", { name: "Other", exact: true })).toBeChecked();
+    await eslint.check();
+    await expect(eslint).toBeChecked();
+    await expect(answerBox).toHaveValue("Please keep the flat config.");
+    await evidence(modal, "decision-with-context");
     await modal.getByRole("button", { name: /^Submit/ }).click();
     await expect(modal).toBeHidden();
 
-    // The blocked call returns the operator's choice to the agent.
+    // The blocked call returns the operator's choice to the agent, and only the choice.
     const result = await answered;
     const text = (result.content as { type: string; text: string }[]).map((item) => item.text).join("\n");
     expect(result.isError, text).toBeFalsy();
-    expect(text).toContain("→ eslint\n  Context: Please keep the flat config.");
+    expect(text).toContain("→ eslint");
+    expect(text).not.toContain("Please keep the flat config.");
   } finally {
     await tools.close();
   }
@@ -223,7 +230,7 @@ test("a legacy allowOther false still lets the operator submit a typed answer by
         const group = modal.getByRole("group", { name: QUESTION });
         await expect(group.getByRole("radio", { name: "biome" })).toBeVisible();
         await expect(group.getByRole("radio", { name: "Chat about it" })).toBeVisible();
-        const text = group.getByRole("textbox", { name: /^Other answer or context/ });
+        const text = group.getByRole("textbox", { name: "Other answer" });
         await expect(text).toBeVisible();
         const submit = modal.getByRole("button", { name: "Submit" });
         await expect(submit).toBeDisabled();

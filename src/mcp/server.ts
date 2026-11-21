@@ -1131,7 +1131,8 @@ server.registerTool(
     description:
       "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
       "they resolve it. The operator can always type an answer. With `options`, they can also " +
-      "pick choices and add typed context. The tool returns their answer, selections, or an " +
+      "pick choices; a typed answer comes back as Other, instead of a single choice or alongside " +
+      "multiSelect picks. The tool returns their answer, selections, or an " +
       "explicit dismissal. They may choose to chat about it, in which case the result tells you " +
       "how to proceed. Do not decide or re-ask that question yourself. They may also choose Remind me later. " +
       "the tool then returns at once WITHOUT an answer, saying how to carry on meanwhile (your " +

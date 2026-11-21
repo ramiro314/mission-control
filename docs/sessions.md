@@ -2855,7 +2855,7 @@ The MCP tools are:
   reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
 - `request_input(question, context?, options?)` - ask a question and **block** for an answer or
   dismissal. The human can always type an answer. With `options` the card also shows radios
-  (or checkboxes with `multiSelect`), and text sent alongside a choice is included as context.
+  (or checkboxes with `multiSelect`), and the typed answer is an Other answer, as described below.
   Use `question` for the decision itself, which becomes the card's heading. The card prints
   `context` (up to 4000 characters) beneath it, preserving line breaks. Include what the human
   needs to decide on their own, including why the decision came up, what the agent found, and the tradeoffs.
@@ -2864,7 +2864,8 @@ The MCP tools are:
   this rule for every harness (`src/shared/decision-asks.ts`), and the dispatch-scoped Claude
   and Codex prompts repeat it in the same words. On a single-choice question Other is one more
   radio in the group: typing in it, clicking its radio, or clicking into its box chooses it
-  alone, and picking a listed option keeps the text visible but unsent. On a multi-choice
+  alone, and picking a listed option keeps the text visible but unsent. Clicking a checked
+  radio again, Other and **Chat about it** included, clears it. On a multi-choice
   question Other is sent alongside the checked options. Either shape can be dismissed without
   sending an answer, or [moved to chat](#chat-about-it). An ask its
   card could not carry is refused

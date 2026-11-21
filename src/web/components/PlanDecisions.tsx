@@ -222,7 +222,8 @@ export function draftOnChange(
  * alone never does, so tabbing through the form leaves the selection as it was - which is why
  * the box listens for `pointerdown` and not `focus`. A pointer click on the radio moves focus
  * into the box; a keyboard-driven click (`detail === 0`, from Space or the arrow keys) leaves
- * focus on the radio, as a radio group normally does.
+ * focus on the radio, as a radio group normally does. A click on the radio while Other is
+ * already the choice clears it, as it does for a listed option (`clearOnReclick`); the text stays.
  */
 function OtherChoice({
   name,
@@ -230,6 +231,7 @@ function OtherChoice({
   chosen,
   busy,
   onChoose,
+  onClear,
   onText,
 }: {
   name: string;
@@ -237,6 +239,7 @@ function OtherChoice({
   chosen: boolean;
   busy: boolean;
   onChoose: () => void;
+  onClear: () => void;
   onText: (text: string) => void;
 }): React.JSX.Element {
   const box = useRef<HTMLInputElement>(null);
@@ -252,7 +255,9 @@ function OtherChoice({
             checked={chosen}
             onChange={onChoose}
             onClick={(e) => {
-              if (e.detail > 0) box.current?.focus();
+              // `chosen` is this render's state, read before the click lands.
+              if (chosen) onClear();
+              else if (e.detail > 0) box.current?.focus();
             }}
             disabled={busy}
           />
@@ -474,6 +479,11 @@ export function DecisionForm({
     });
   }
 
+  /** Single choice: Other is no longer the choice. Its text stays in the box, unsent. */
+  function clearOther(d: PlanDecision): void {
+    edit((prev) => ({ ...prev, [d.id]: { ...(prev[d.id] ?? EMPTY), selected: [], otherChosen: false } }));
+  }
+
   /** Single choice: make Other the choice, clearing the listed option. */
   function chooseOther(d: PlanDecision): void {
     const cur = get(d.id);
@@ -599,6 +609,7 @@ export function DecisionForm({
               chosen={otherIsChosen(get(d.id)) && !get(d.id).chat}
               busy={busy}
               onChoose={() => chooseOther(d)}
+              onClear={() => clearOther(d)}
               onText={(text) => setText(d, "other", text)}
             />
           )}
