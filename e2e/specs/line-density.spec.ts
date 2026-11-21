@@ -166,7 +166,9 @@ test("Shift+L folds the Line from the fleet, and not from inside the composer", 
   page,
   daemon,
 }) => {
-  await page.setViewportSize(VIEWPORT);
+  // Wider than VIEWPORT: on CI's Linux font metrics the fork's History page segment takes the
+  // 1512px bar to rung 3, which collapses the filter box this test types into.
+  await page.setViewportSize({ width: 1700, height: VIEWPORT.height });
   await page.goto(`${daemon.baseURL}/#/fleet`);
   await page.evaluate(() => window.localStorage.clear());
   await page.reload();

@@ -468,9 +468,10 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   `AskUserQuestion` keeps those one-click choice rows and adds a separate custom-answer
   field; multi-question or multi-select asks show every question together and submit once.
   Each question accepts either its choice rows or non-empty custom text, and parallel asks
-  wait their turn on the same session detail instead of replacing one another. Claude's own question
-  tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
-  terminal is unreadable, and here it is not;
+  wait their turn on the same session detail instead of replacing one another. A task's Claude
+  session only shows that form when it launched without the Mission MCP server, because
+  otherwise it asks through `request_input` like a terminal session does
+  ([the ask channel](#the-ask-channel));
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
   just as they control a pane-backed one - though on Codex a reasoning-effort selection
   takes effect when the next turn starts rather than immediately, which the effort badge
@@ -750,6 +751,138 @@ every other shortcut it is rebindable in **Settings → Keyboard**.
 With nothing to stop - an idle agent - the chord does nothing, and the session keeps
 everything it had.
 
+### Pause and resume a session
+
+Pausing stops an agent from using the machine and the network without ending it. The
+conversation, the checkout and the task are untouched, and a resumed agent carries on exactly
+where it stopped. There are three ways to pause:
+
+- **One session**, from its card or its console. **Pause now** freezes it at once. **Pause
+  after this turn** lets the current turn finish and freezes it then; a turn waiting on your
+  answer to a question is not finished, so you can still answer it.
+- **Pause all**, the two-bar button in the title bar. It pauses every live session at once.
+  With nothing running it can still hold automatic launches, so the autopilot starts nothing.
+  Its confirm can also hold automatic launches, so the backlog autopilot starts nothing new
+  until you resume. It can also resume everything automatically in 1 hour, in 4 hours or
+  tomorrow at 8:00 am. A banner under the title bar says what is paused and offers **Resume
+  all now**.
+- **Make priority**, from a session's pause menu. That session keeps running and every other
+  live session pauses for it, which is how you give an urgent session (an oncall
+  investigation, say) the whole machine. Automatic launches are held while it lasts. **End
+  priority** resumes the sessions it paused.
+
+**What a pause does.** From the moment you ask, nothing automated starts a turn in the
+session: Foreman, workflow packets, the resident loop, the work queue and the outbox all hold
+their work rather than failing it. The hold is in place before the daemon has finished reading
+the process table, so nothing can slip a turn in while the freeze is being prepared. Pause all
+and Make priority hold every session they take before freezing the first one. When the pause freezes, the daemon stops the agent's whole
+process tree with `SIGSTOP`, including its running tools and background sub-agents. A stopped
+process sends and receives nothing, which is what frees the network. Resume sends `SIGCONT`.
+If the model's server dropped a request during a long pause, the agent retries it.
+
+For a pane-backed agent started from an interactive shell, that shell is stopped first and
+resumed last, so it never notices its foreground job stop and keeps the terminal.
+
+**A process that will not stop is never called frozen.** If any process in the tree refuses
+`SIGSTOP` (for example it belongs to another user), whatever did stop is continued again, the
+session stays held but running, and the control that asked says which process refused. The
+freeze is retried on a timer that backs off from 15 seconds to 5 minutes, never in a tight
+loop. A **Pause now** keeps retrying even while its turn runs, including on an SDK session whose
+driver process has not started yet or an agent, idle or not, that one read of the process table
+missed;
+only **Pause after this turn** waits for the turn to end. A
+paused card and conversation say when the agent actually froze, which for an after-turn pause is
+when its turn ended, not when you asked. After every stop the tree is read again, so a tool the agent started
+in the instant before it stopped, or a process whose identity changed in that instant (it
+replaced its own program, or its pid went to another process), is saved and stopped as a new
+member; the session reads as frozen only once a read finds nothing new. While a **Pause now** is
+being retried, its card and console say **Held - not frozen yet**, not "Pausing after this turn".
+While any Pause all session is only held, its banner reads "Paused, but not everything is
+frozen" and counts frozen and held sessions separately; a Pi session, which has nothing to stop, is always counted as held, never as frozen. A re-freeze after a restart
+that cannot read the process table keeps the processes an earlier freeze stopped, so resuming
+still continues them.
+
+**A resume that does not complete says so.** If a stopped process refuses `SIGCONT`, the
+session stays paused with only that process recorded, and Resume reports it, so pressing Resume
+again finishes the job. A resume is saved as asked for before any `SIGCONT` is sent, and its
+record stays until the processes have continued and that is saved too. So a restart in between
+finishes the resume instead of freezing the session again, and never loses a process that
+refused. Each stopped process is saved with a fingerprint of its start time and command line,
+and checked against it immediately before every `SIGSTOP` and every `SIGCONT`, so a pid that an
+unrelated process reused - in the instant between reading the tree and stopping it, or while
+Mission Control was down - is never frozen or continued. A process whose identity changed in that
+instant fails the freeze rather than being skipped, and the retry reads the tree again. Kill, Complete, Interrupt and Reset do nothing if the agent could not be thawed first,
+and say why, because a stopped process cannot act on any of them.
+
+**Nothing is stopped that is not saved first.** The processes a freeze is about to stop are
+saved before the first `SIGSTOP`, so a daemon that exits straight afterwards leaves the next one
+a record of what to continue. The next one also finishes that freeze at once, even though the
+stopped agent still reports the turn it was in, and until it has, nothing is typed or sent into
+those stopped processes. A pause that cannot be saved stops and holds nothing, and says so, and
+a Pause all or priority that cannot be saved holds nothing either. Once a freeze has happened,
+what it stopped is already saved, so a failure of the last save after it is not reported as a
+pause that did not happen: the pause is reported as it stands and that save is retried on the
+backing-off timer. Either way: no launch or delivery waits behind a
+pause you were told did not happen. A resume
+that cannot be saved continues nothing, because a restart would otherwise freeze again what you
+resumed. A scheduled morning resume that cannot be saved leaves everything paused and tries
+again on a timer that backs off from 15 seconds to 5 minutes. A Pi session
+running inside Mission Control has no separate process to stop. It is held instead, and once
+its current turn ends it starts nothing new until you resume.
+
+**Who resumes what.** Every pause has one owner. Ending Pause all or priority is saved before
+it is reported, even when there is nothing left for it to resume, so its launch hold does not
+come back after a restart. Ending priority, Resume all and the scheduled
+morning resume each lift only what they paused. If any of it will not continue, Pause all or
+priority stays in force, banner and button included, and pressing it again retries just those. A session you paused yourself stays paused
+until you resume it. Making a paused session the priority is saved before that session is
+continued: if it cannot be saved, or the session would not continue, nothing changes. Pausing a
+session that Pause all or priority already holds makes it yours
+only once that is saved: if it cannot be, the control says so and the session stays theirs, so
+Resume all still brings it back. Resuming one session lifts it whatever paused it.
+
+**Messages wait.** While a session is paused, the reply box's **Send** reads **Queue**. A
+message sent then waits in the session's outbox and is delivered when it resumes. Its steer
+and interrupt deadlines count from the resume, not from when you typed it, so a message queued
+overnight does not interrupt the turn it resumed. Foreman's work queue counts the same way: an
+item delivered just before a pause gets its whole pickup window again after the resume, so it is
+not resent or escalated for the time the agent spent paused. The resume time is saved, so a
+daemon restart just after a resume keeps those deadlines too. Writing straight into a frozen agent is
+refused, which includes answering a menu on its screen. Resume it first.
+
+**Stopping a paused session thaws it first.** Kill, Complete, Interrupt and Reset all need an
+answer from the agent, so they resume it before acting.
+
+**Across a restart.** A frozen pane agent outlives the daemon, so quitting Mission Control
+leaves it frozen, and the next start picks the pause back up without rescanning or signalling
+it again. An Agent SDK session is the
+daemon's own child: it is thawed so it can shut down cleanly, then frozen again once it is
+restored. Until that new freeze succeeds the session reads as pausing, never as frozen, and a failed
+attempt - including one made before the restored driver has started - is retried on the same
+backing-off timer; the processes it listed before are kept for the resume. A paused session that does not come back is thawed and forgotten.
+
+**Where the controls are.** Settings → Display → **Pause controls** chooses which pause
+controls the cards and the console draw, each with its own preview. Any number of each can be
+on, or none. On a card:
+
+- **Corner buttons**: pause and priority buttons in the card's corner, shown when you point at it.
+- **Run chip**: a Running, Paused or Priority chip that leads the runtime row and opens the pause menu. On by default.
+- **Card menu**: a ⋯ menu, plus a Resume button on a paused card.
+
+In the console:
+
+- **Toolbar button**: a button beside session control in the tab row that opens the pause menu. On by default.
+- **Message box button**: a button beside Send, plus a band above the reply box while paused.
+- **State badge and band**: a pause half on the header's state badge, plus a band under the header while paused or while it is the priority session. On by default.
+
+A paused session looks paused whichever controls are on. Its card has a hatched slate spine
+and a flag that says why: **Paused · 14m**, **Fleet paused** or **Paused for priority**. Its
+activity line says when it stopped and what it was doing, and its state reads `paused`.
+Pause all can be hidden from the title bar under Settings → Display → **Top bar**. On the
+narrowest title bar it gives way with the fleet pulse's words, and comes back as the window
+widens; while Pause all or priority is on, the banner under the title bar keeps **Resume all
+now** and **End priority** at every width.
+
 ### What each agent can do is declared, not assumed
 
 Claude Code, Codex and Pi are not the same product, and several features below reach
@@ -819,7 +952,7 @@ Expected output:
 
 ```
 Wired Mission Control hooks into /Users/you/.claude/settings.json
-  events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionEnd
+  events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionEnd, SubagentStart
   shim:   /Users/you/.mission-control/bin/harness-hook
   script: /Users/you/workspace/mission-control/hooks/harness-hook.mjs
 ```
@@ -916,7 +1049,7 @@ repo):
       ]}
     ]
     // ...one group per event: SessionStart, UserPromptSubmit, PostToolUse,
-    //    Notification, SubagentStop, PreCompact, SessionEnd
+    //    Notification, SubagentStop, PreCompact, SessionEnd, SubagentStart
   }
 }
 ```
@@ -1096,6 +1229,129 @@ rather than sitting in the pane's footer: the posture governs the session, while
 readings beside it are consequences of running under it. Before
 Codex writes its first observable mode, the neutral `permissions` chip still opens the
 picker. When the pane cannot be written the chip stays read-only.
+
+### Background sub-agents
+
+A session can launch sub-agents: Claude through its Agent tool, Codex through its
+collaboration tools. One launched in the background keeps running after the parent's turn ends, so the parent can read as idle while
+agents are still reading, editing and spending tokens under it. The board shows them beneath
+the parent's card (see [the board](ui.md#layout-console-or-board-in-settings)), the parent's
+conversation docks them in a tray above its reply box with a **Jump to launch** link per agent
+(see [Background agents in a conversation](ui.md#background-agents-in-a-conversation)), and the
+parent's activity line reads **idle · N agents still running**. That is the default treatment;
+**Settings → Display → Board card → Background sub-agents → Chip and popover** shows the same
+summary as a chip on the card and an **Agents** tab on the conversation rail instead (see
+[Chip and popover](ui.md#chip-and-popover)).
+
+Each source reduces its own sub-agent signal into one bounded summary on the session,
+`Session.subagents`. An SDK driver sends it to the daemon whole as an `SdkEvent` of kind
+`subagents`; a terminal session's comes from its hooks (below). `Registry.setSubagents` is its
+only writer and it rides the existing `session_upsert`.
+It is live state, rebuilt from the agent's stream: nothing is written to SQLite, a session
+registered again starts without it, and a Claude process that is replaced starts from an empty
+set. The summary lists at most twelve agents, running first and then the newest finished;
+older finished ones fold into a count. Because running agents come first, a list with any
+finished agent in it holds every running one. Only a list of twelve running agents can be cut
+short, and `subagentCounts` reports that as `atLeast`, so every surface writes the count as
+**12+** instead of understating it.
+
+For a Claude Agent SDK session the source is the CLI's task stream. `background_tasks_changed`
+is the full live set and decides who is running; an agent that leaves it without reporting an
+end is shown as stopped. `task_started`, `task_progress`, `task_updated` and
+`task_notification` add the type, description, tool and token counts, last tool, summary and
+how it ended. Only `local_agent` tasks count: shells, MCP tasks, monitors, workflows, a
+backgrounded main session and anything flagged `ambient` are left out. The flag counts
+whichever frame carries it: a run marked ambient by its start or by the live set stays hidden
+even when a later frame about the same run omits the field. The flag belongs to the run, so a
+new run of the same agent starts unclassified.
+
+A resumed agent keeps its task id. When the CLI reports run ids it also gets a new run id, but
+any frame, the live set included, may omit one. The run ids a task has had are remembered for
+the life of the CLI process, including after it leaves the live set and rejoins, and the rules
+below read them:
+
+- **What opens a run.** A run is new when the task reports an id it has not had before that
+  differs from the current run's id. If the current run has no id, a newly reported id is taken
+  as that run's own. Without run ids, a live set that names again an agent it had dropped opens
+  a new run. A new run starts a fresh row with nothing carried over. Once a live set has been
+  seen, a start counts only if the set names the agent, and it is refused when the set lists a
+  different run for it or when it names a run the task already had. An agent that has ended
+  then comes back only for a new run, so a repeated start without a run id does not revive it.
+  A CLI that sends no live set is read from its start and update frames, by `is_backgrounded`.
+- **What a progress, update or end frame can change.** These frames never open a run. One that
+  names a run other than the run being shown, or a run the task already had, is a late frame and
+  changes nothing. The second check covers a shown run that has no id of its own.
+
+A foreground agent
+counts only once it is moved to the background. Finished agents fold on the next turn you
+send, not on a turn the agent starts for itself, because a finished agent's notification can
+start one. A change to who is running or how one ended reaches the board at once; a change
+that moves only counters is sent at most once every five seconds per session.
+
+Each agent's `launchTurnId` is the id of the parent's tool call that launched it (Claude's
+`tool_use` id), not a transcript record id: the SDK stream and the transcript file do not share
+record ids, and the call id is the one both carry. The transcript reader keeps that id on each
+`ToolCall`, and the browser finds the turn that made the call among the turns it has loaded,
+paging older ones in when it is not there yet. An agent whose `launchTurnId` is null is found
+by identity too. Claude Code answers an `Agent` call that went to the background with a tool
+result naming the agent (`agentId`, in the result text and in the record's `toolUseResult`),
+and that id is the task id the SDK reports, so `SubagentEntry.id`. The browser asks
+`GET /api/sessions/:id/subagents/:agentId/launch`, and the harness's
+`TranscriptSpec.subagentLaunch` reads the transcript FILE for the result naming that agent and
+returns its `tool_use_id`; the browser then searches for that call id like any other. The read
+is asynchronous and incremental: each file's launch results are indexed in awaited chunks, so a
+long resident's transcript never holds the daemon's event loop, and a later lookup reads only
+what was appended since. A file that shrinks, is replaced, or is rewritten in place (its last
+indexed bytes changed, checked only when the file changed) is indexed again, and at most 32
+files' indexes are kept. The file answers rather than the turns the browser holds because the
+call and its result are written apart, so a live conversation receives them in separate appends
+and paging can split them, while the file holds both once the result is written. Until then the
+file names no call for the agent: the route answers `{ toolUseId: null }`, the link reports the
+launch as not in the transcript, and a later click asks again. A description is never used to claim
+a launch: agents can share one, and a folded agent's call stays behind. No page count limits a
+search; it ends at the start, on a failed page, or when a page arrives without moving the
+paging cursor back. A page that moves it while adding no turn, such as a stretch of pure tool
+output, is progress and the search continues.
+
+Claude and Codex terminal sessions have no driver, so their sub-agents are read from their
+hooks, and only for the terminal runtime: an SDK session's hooks fire too, and are ignored
+because its driver already owns the summary. Which events count, end or list an agent is
+documented once, in
+[Background sub-agents from terminal hooks](harnesses-and-terminals.md#background-sub-agents-from-terminal-hooks).
+What a session shows as a result:
+
+- A terminal row carries the agent's type, the launch description when Claude sent one, its
+  state and elapsed time. Hooks carry no tool or token counters and no last tool, so those are
+  left out, and `launchTurnId` stays null.
+- Finished agents fold on the operator's next prompt, and the list starts again when the agent
+  process starts or resumes.
+- The state lives in memory, so a daemon restart forgets it, and a discovery sweep carries the
+  summary forward because discovery itself cannot see sub-agents. What comes back after a
+  restart differs by harness. A Claude session's next `Stop` lists the in-flight background
+  tasks, so its still-running agents reappear then. Codex hooks carry no such list: a child that
+  started before the restart is not shown again, and only children started afterwards appear.
+
+Claude hooks installed before `SubagentStart` was added do not run for it until they are
+installed again. Settings > Setup shows a **Claude Code hook events** row naming the missing
+event and the installer command; see [setup.md](setup.md#run-mission-control).
+
+A Claude sub-agent's own activity cannot restart its parent. The two channels it arrives on are
+handled separately:
+
+- **The SDK stream.** A frame carrying `parent_tool_use_id` belongs to a sub-agent. While the
+  parent's own turn is running, it updates the parent's activity line, since the session is
+  working on that sub-agent's behalf, but it never opens a turn of its own. Once the parent's
+  turn has ended, such a frame is dropped, so it cannot re-open a finished turn or flip an idle
+  parent back to working.
+- **Hooks.** A hook Claude raised inside a sub-agent carries `agent_id`; the bridge forwards it
+  as `HookIngest.agentId`, and the daemon then leaves the parent's state, activity line and work
+  cycle as they were, in the moment and in the hook reading that later discovery sweeps replay.
+  SDK sessions run the machine's installed hooks too, so this matters for both runtimes.
+
+For Codex terminal hooks the guard is narrower. The Codex bridge forwards `agent_id` only on `SubagentStart`
+and `SubagentStop`, so a Codex child starting or stopping never re-arms an idle parent. Any other
+hook Codex raises for a child carries no forwarded id, and reaches the parent as it did before
+sub-agents were tracked.
 
 ### Open a terminal, or the agent's own CLI, on a session
 
@@ -1478,6 +1734,15 @@ tool calls recorded in the conversation, and **Yours**, which indexes the messag
 sent. It shares its column with find - while find is open its results own the space
 ([below](#find-in-a-conversation)), and closing find gives the rail back on the tab you
 left it on.
+
+To give its width back to the transcript, press **»** in the rail's header. The rail folds to
+a thin strip on the right edge that still names the tab that is up and its count; click
+anywhere on the strip to open it again. The fold is the same in the chat and terminal
+renderings - in the terminal one the key legend under the rail moves beside **Send** while it
+is folded - and it is remembered per machine, so it holds across sessions and restarts. Find
+still opens its results in a full column while the rail is folded. On a narrow conversation,
+where the rail is already a single row (below), there is nothing to fold and the control is
+not shown.
 
 #### Activity
 
@@ -2029,6 +2294,18 @@ reported usage, the Spend popover says **Claude utilization unavailable**, with 
 zero-percent bar. The next valid report updates the display automatically. Codex windows still
 disappear when their reset time passes.
 
+Mission Control treats a report that carries the 7-day window but no 5-hour window as the
+signal that the account has no 5-hour limit, and clears the saved 5-hour window on it, even one
+whose reset has not passed. This is an interpretation, not a documented Claude guarantee. It
+rests on two observations. Both transports read the two windows from one payload: the statusLine
+`rate_limits` block and the SDK usage response. And as of 2026-11-13, Claude's pricing page lists
+a 5-hour limit for Pro and Max but "No 5-hour limit" for verified Ultra (formerly Max 20x)
+accounts. On Ultra the **Claude · 5-hr window** bar therefore goes away on the first 7-day-only
+report instead of waiting for an update that will never come. Pro and Max are expected to keep
+reporting both windows and keep their bar. If Claude ever sends one of those accounts a 7-day-only
+report, its 5-hour bar disappears until the next report that includes the window. A 5-hour-only
+report keeps the saved 7-day window, because every plan has a weekly limit.
+
 **Every dollar figure is one API-equivalent estimate.** Session surfaces mark it `≈$`; so does
 the cost chip, and the Spend popover says so once in its footer rather than five times.
 **Automation** follows the valuation described above. Claude Code calculates its rows from request usage; Mission Control prices
@@ -2172,7 +2449,9 @@ a blocked session's review, menu or form, which can only respond to the question
 
 On the Board a blocked card has a red spine and border and an always-drawn **Blocked · 3h**
 flag. Its kind, reason, waiting-on, link and **Reply flagged** pill are optional
-[Board card items](ui.md). For now a blocked idle session stays in the Idle column.
+[Board card items](ui.md). An idle blocked session is drawn where **Settings → Display → Blocked
+sessions** says: a lane under Needs you (the default), a red frame at the top of Idle, or a
+Blocked column of its own. See [Layout](ui.md#layout-console-or-board-in-settings).
 The Conversation tab opens with a red band: one row with the kind, the reason, how long it has
 stood and two buttons. **Flag reply** marks a likely answer (with an optional note and link)
 without clearing anything or messaging the session, and **Clear blocker** ends the hold. Click
@@ -2318,7 +2597,8 @@ The MCP tools are:
   just filed with `create_task`. Shares the dashboard's dispatch path and its dependency,
   workflow, kind, and launch checks. Disabled backlog work needs `overrideDisabled: true`.
   The calling agent can set this override itself, without human approval; disabled is an
-  autopilot hold, not a permission boundary against the agent.
+  autopilot hold, not a permission boundary against the agent. The operator's launch hold
+  (Pause all, or a priority session) has no agent override: the launch is refused until it lifts.
   `defaultModel` fills only a task without a pinned model. Returns the task's current status:
   `dispatching` means accepted, so use `get_task` to confirm it reaches `running`. Uses the same
   daemon-token authority as task creation without a Control other sessions grant. Chat launches
@@ -2380,14 +2660,20 @@ The MCP tools are:
   rules. Running and dispatching tasks must be cancelled first. Archive preservation and resource
   cleanup run before the record is removed; a cleanup refusal keeps the record and returns the
   reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
-- `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
-  With `options` the human gets clickable choices (radios, or checkboxes with
-  `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
-  can be dismissed without sending an answer, or [moved to chat](#chat-about-it). A
-  `recommended` option preselects, as it does for `request_plan_decisions`. On a single-choice
-  question Other is one more radio in the group: typing in it, clicking its radio, or clicking
-  into its box chooses it alone, and picking a listed option keeps the text visible but unsent.
-  On a multi-choice question Other is sent alongside the checked options. An ask its
+- `request_input(question, context?, options?)` - ask a question and **block** for an answer or
+  dismissal. With `options` the human gets clickable choices (radios, or checkboxes with
+  `multiSelect`, plus an optional free-text "Other"); without them, a text box. `question` is
+  the card's heading and should be the decision itself; `context` (up to 4000 characters) is
+  printed beneath it, line breaks kept, for what the human needs to decide without the agent's
+  context - what is being decided, why it came up, what the agent found and the tradeoffs.
+  Each option's `detail` states that option's tradeoff, and `recommended` marks the agent's
+  pick and preselects it, as it does for `request_plan_decisions`. The tool description carries
+  this rule for every harness (`src/shared/decision-asks.ts`), and the dispatch-scoped Claude
+  and Codex prompts repeat it in the same words. On a single-choice question Other is one more
+  radio in the group: typing in it, clicking its radio, or clicking into its box chooses it
+  alone, and picking a listed option keeps the text visible but unsent. On a multi-choice
+  question Other is sent alongside the checked options. Either shape can be dismissed without
+  sending an answer, or [moved to chat](#chat-about-it). An ask its
   card could not carry is refused
   before anything is shown: an empty question, an option with an empty label, or two options
   with the same label (compared ignoring case and surrounding spaces), since the answer
@@ -2561,23 +2847,43 @@ publishes nothing and returns `outcome=cancelled reason=chat published=false`.
 
 ### The ask channel
 
-Claude sessions the dashboard dispatches into the **terminal runtime** do not use Claude's
-built-in `AskUserQuestion`. It is disallowed on the spawn, and the agent is pointed at
-`request_input` instead, so a clarifying question arrives as structured arguments in the
-dashboard rather than as a menu drawn on a terminal nobody is watching. Agent SDK sessions
-keep the built-in tool because its questions already arrive as structured driver requests;
-see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer
-lands in the session's conversation as the same gold entry - the two channels differ in how
-the question reaches you, not in what is written down afterwards.
+Claude sessions the dashboard dispatches for a task do not use Claude's built-in
+`AskUserQuestion`, on either runtime. It is disallowed at launch, `request_input` is
+pre-approved, and the agent is told to ask every decision there instead - with the decision as
+`question`, the background in `context`, a tradeoff on each option and its recommended pick -
+so every decision a task asks arrives as the same `request_input` review, in the review queue
+with **Chat about it** and with what you need to make it, rather than as a menu drawn on a
+terminal nobody is watching or a driver-only form with no room for context. On the terminal
+runtime that is four argv flags; on the **Agent SDK runtime** the same three pieces ride on
+the query options on every launch (`sdkAskChannel` in `src/server/ask-channel-prompt.ts`):
+`allowedTools` pre-approves `request_input`, `disallowedTools` removes the built-in, and the
+redirect leads the one `systemPrompt.append`, ahead of any standing instructions. A Claude
+launch on either runtime that cannot be given the Mission Control MCP server is refused, and
+lands in **Did not start** with a message saying so (usually the MCP bundle is not built -
+run `npm run build`), rather than started with the built-in or with no way to ask at all; see
+[Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Restoring an SDK session after
+a restart applies the same check, but a refused restore costs a conversation, so only a bundle
+verified not to publish `request_input` fails the session. A bundle that is not built yet, or a
+handshake that did not complete, leaves it `suspended` for the next restore instead - for at
+most three restores in a row. A deferral that has not cleared by then is refused the ordinary
+way: the card appears, says why it could not be resumed, and its task settles. A resume that
+goes through starts the count over. The answer
+lands in the session's conversation as the same gold entry.
 
 A Codex Agent SDK launch that successfully registers the bundled Mission MCP server also
-appends one developer instruction: when the operator needs to review alternatives, select an
-option, or answer another discrete multiple-choice question, call `request_input` with
-`options` and wait for the response instead of presenting the choices only as prose and
-ending the turn. Mission Control reads Codex's effective configured developer instruction
-first and preserves it ahead of this appendix. If the MCP server is unavailable, or that
-effective instruction cannot be read safely, the appendix is omitted so the launch never
-points Codex at an unavailable tool or replaces the operator's customization.
+appends one developer instruction: whenever it needs a decision, a clarification or a choice
+from the operator, call `request_input` - with `options` for discrete choices, `context` for
+the background and a tradeoff on each option - and wait for the response instead of
+presenting the choices only as prose and ending the turn. Mission Control reads Codex's
+effective configured developer instruction first and preserves it ahead of this appendix. A
+Codex launch without the MCP server is refused, like a Claude one.
+
+If that effective instruction cannot be read safely, the developer instruction is left as the
+operator configured it, and the decision instruction is sent in turn one instead. It comes
+after everything else turn one carries - the intent, or the standing instructions when those
+fell back to turn one too - so a turn one that opens with a skill invocation such as
+`$engineer` keeps it first. On a resume that sends nothing else, it is turn one by itself.
+Either way the session is still told to ask its decisions through `request_input`.
 
 For the terminal runtime, four flags go on together or not at all
 (`src/server/ask-channel.ts`): `--mcp-config`
@@ -2587,15 +2893,14 @@ carries the redirect that tells the agent where to go instead, inline.
 
 If **anything** prevents the full set - the MCP bundle is missing (`npm run build` never
 ran), or the state directory cannot be written - then **none** of them are passed and the
-session keeps the built-in menu. An agent with nowhere to ask is worse than one with a menu
-we can read, so every failure disarms the whole channel rather than half of it, and setting
-up the *ask channel* never fails the dispatch: it is best-effort, and the daemon logs which
-condition it hit.
+dispatch is refused, naming the condition it hit. The flags are still all or nothing: an
+agent with the built-in removed and nowhere to ask is worse than one with a menu. But a
+session that kept the built-in would ask its decisions outside `request_input`, without the
+context and tradeoffs a decision needs, so a Claude task never starts that way either.
 
-A launch that **requires** a Mission tool is the exception, and it is a different question.
-Asking is best-effort because a session that keeps the built-in menu is merely the status quo;
-submitting is not, because a scout with no `submit_scout_artifacts` and an ensemble member with
-no `submit_ensemble_result` have no way to finish their task at all. So those launches are
+A launch that **requires** another Mission tool is checked further. A scout with no
+`submit_scout_artifacts` and an ensemble member with no `submit_ensemble_result` have no way
+to finish their task at all. So those launches are
 checked twice before the agent spawns - that the registration reached the argv, and that the
 bundle it names actually **publishes** the tools, established by a real MCP handshake against
 that exact file. Either check failing fails the dispatch, names the tool and points at

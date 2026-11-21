@@ -243,6 +243,7 @@ const SETUP_PROBES = {
     throw new Error("not probed in the oracle");
   },
   terminalTargets: () => [],
+  repositoryIndex: async () => ({ repoCount: 1, directories: [{ path: "~/fixture", status: "ok", repoCount: 1 }] }),
   environmentChecks: async () => [
     {
       id: "upstartclaw-core-setup",

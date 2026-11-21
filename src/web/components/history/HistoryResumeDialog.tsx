@@ -18,7 +18,7 @@ import { api } from "../../lib/api.ts";
 import { useTerminalTargets } from "../../lib/terminalTargets.ts";
 import { agentRowUnavailable, LaunchList } from "../LaunchMenu.tsx";
 import { Overlay, OVERLAY_IDS } from "../Overlay.tsx";
-import { RUNTIME_LABEL } from "../session-bits.tsx";
+import { RUNTIME_LABEL } from "../../lib/session-text.ts";
 import { Tooltip } from "../Tooltip.tsx";
 
 /**
@@ -190,8 +190,8 @@ export function HistoryResumeDialog({
             : picker.slots.length > 0
               ? "in a worktree slot or a directory you choose, because the original cannot be used"
               : "in a directory you choose, because the original cannot be used"}.
-          In the {RUNTIME_LABEL} it runs inside Mission Control as a card in the Fleet; in a terminal it runs
-          outside. Either way: no task, and no Mission Control tools.
+          In the {RUNTIME_LABEL} it runs inside Mission Control as a card in the Fleet, and asks its questions
+          through Mission Control; in a terminal it runs outside, with no Mission Control tools. Either way: no task.
         </p>
         <dl className="history-resume-place">
           <div>

@@ -1,3 +1,4 @@
+import { workflowPublicationTree } from "@shared/workflow-publication.ts";
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
 import { resolveCodeRabbitComparison } from "./coderabbit.ts";
 import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView } from "@shared/workflow.ts";
@@ -1838,6 +1839,8 @@ export class WorkflowEngine {
         repoRoot: binding.sessionRepoRoot,
         headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
         baseBranch: this.checkBaseBranch(binding),
+        publicationTreeOid: context.data.evidence.publication
+          ? workflowPublicationTree(context.data.evidence) : null,
         // Bound to THIS attempt: the execution runtime keys its pooled lease and its
         // supervisor's durable identity by attempt id, and `claimed.id` is that id.
       }, deps);

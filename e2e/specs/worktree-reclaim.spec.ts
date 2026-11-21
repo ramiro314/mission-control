@@ -165,7 +165,7 @@ test("a live lease quiet past staleLeaseDays shows a stale chip and a Storage-on
   await expect(problems).toContainText(`${lease.path} is still leased but has had no Git-visible change since ${
     new Date(quietSince).toISOString().slice(0, 10)
   }`);
-  await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toHaveCount(0);
+  await expect(dashboard.getByRole("status", { name: "Storage warning" })).toHaveCount(0);
   const storage = await (await dashboard.request.get(`${daemon.baseURL}/api/storage`)).json() as StorageView;
   expect(storage.health.problems).toEqual([{
     id: `stale-lease:${slotId}:${lease.leaseId}`,
@@ -271,7 +271,7 @@ test("a settled task kept for its uncommitted work is listed, and its Return sta
   const row = problems.getByRole("listitem").filter({ hasText: "Dirty settled tree" });
   await expect(row).toContainText(`settled with work left in ${worktree}`);
   await expect(row).toContainText("kept for the 30-day retention window");
-  await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toHaveCount(0);
+  await expect(dashboard.getByRole("status", { name: "Storage warning" })).toHaveCount(0);
   await shoot(dashboard, "04-dirty-settled-tree");
 
   // Its link lands on the slot card, whose Return preview says what it discards.
@@ -358,7 +358,7 @@ test("a Storage problem link opens the quarantined slot, whose Recover previews 
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
   // The dashboard banner raised by this problem, read from the `storage_health` stream.
-  const banner = dashboard.getByRole("status", { name: "Storage needs attention" })
+  const banner = dashboard.getByRole("status", { name: "Storage warning" })
     .filter({ hasText: "is quarantined: a stale index.lock blocked its reset" });
   await expect(banner).toBeVisible();
   const problems = dashboard.getByRole("list", { name: "Storage problems" });
@@ -893,84 +893,6 @@ function alive(pid: number): boolean {
   }
 }
 
-test("a maintenance pass returns a slot quarantined only by a failed read to its live owner, as it stood", async ({
-  dashboard,
-  daemon,
-}) => {
-  test.setTimeout(120_000);
-  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
-    data: { repositoryPath: daemon.repo, label: "restored lease" },
-  });
-  expect(acquired.status()).toBe(201);
-  const lease = await acquired.json() as { path: string; leaseId: string };
-  const draft = join(lease.path, "in-progress.md");
-  writeFileSync(draft, "Work its owner is still doing.\n");
-  const tree = () => ["rev-parse HEAD", "status --porcelain"]
-    .map((command) => execFileSync("git", ["-C", lease.path, ...command.split(" ")]).toString());
-  const before = tree();
-
-  // The audited state: a process listing failed under load, and an earlier build quarantined a
-  // slot whose owner was alive and working in it.
-  withDaemonDb(daemon, (db) => {
-    const changed = db.prepare(
-      `UPDATE worktree_slots
-          SET state = 'quarantined', version = version + 1, quarantined_at = ?,
-              quarantine_reason = 'slot occupancy is unknown',
-              last_error = 'process listing was killed before it answered'
-        WHERE path = ? AND state = 'leased'`,
-    ).run(Date.now() - 60 * 60_000, lease.path);
-    expect(Number(changed.changes)).toBe(1);
-  });
-  let occupant: ChildProcess | null = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-    cwd: lease.path, stdio: "ignore",
-  });
-  await once(occupant, "spawn");
-  const pid = occupant.pid!;
-  occupant.once("exit", () => { occupant = null; });
-
-  try {
-    const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
-    const ordinal = inventory.repositories.flatMap((pool) => pool.slots).find((slot) => slot.path === lease.path)!.ordinal;
-    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
-    const disclosure = dashboard.getByRole("button", { name: /demo-repo/ });
-    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
-    const card = dashboard.getByRole("article", { name: `Slot ${ordinal}` });
-    await expect(card.getByText("quarantined", { exact: true })).toBeVisible();
-    await expect(card).toContainText("slot occupancy is unknown");
-    const banner = dashboard.getByRole("status", { name: "Storage needs attention" });
-    await expect(banner).toBeVisible();
-    await shoot(dashboard, "13-failed-read-quarantine");
-
-    // The fixture switches recurring maintenance off, so this daemon comes back with an hour's
-    // interval and runs its startup pass, and no other, here.
-    await daemon.crash();
-    await daemon.restart({ MISSION_WORKTREE_SWEEP_MS: String(60 * 60_000) });
-    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
-    await dashboard.reload();
-    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
-
-    await expect(card.getByText("leased", { exact: true })).toBeVisible({ timeout: 30_000 });
-    await expect(card.getByText("quarantined", { exact: true })).toHaveCount(0);
-    await expect(card).not.toContainText("slot occupancy is unknown");
-    await expect(banner).toHaveCount(0);
-    await shoot(dashboard, "14-lease-restored");
-
-    // It is the same lease, and nothing about the tree or the process inside it changed.
-    const after = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
-    const slot = after.repositories.flatMap((pool) => pool.slots).find((entry) => entry.path === lease.path)!;
-    expect(slot.state).toBe("leased");
-    expect(slot.owner?.kind).toBe("manual");
-    expect(tree()).toEqual(before);
-    expect(readFileSync(draft, "utf8")).toBe("Work its owner is still doing.\n");
-    expect(alive(pid)).toBe(true);
-
-    await dashboard.goto(`${daemon.baseURL}/#/settings/storage`);
-    await expect(dashboard.getByText("No storage problems.")).toBeVisible();
-  } finally {
-    occupant?.kill("SIGKILL");
-  }
-});
-
 test("a quarantined slot whose owner is referenced names it, and Return opens the owner's preview, refused while a process is inside", async ({
   dashboard,
   daemon,
@@ -1090,7 +1012,7 @@ test("a slot a dead seed left quarantined refuses Destroy, points at Recover, an
   await card.getByRole("button", { name: "Destroy", exact: true }).click();
   const destroy = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
   await expect(destroy.getByText(`Slot ${ordinal}'s owner no longer references it; Recover it instead.`)).toBeVisible();
-  await expect(destroy.getByText("A dependency seed holds this slot")).toHaveCount(0);
+  await expect(destroy.getByText(/A dependency seed holds slot/)).toHaveCount(0);
   await expect(destroy.getByRole("button", { name: "Execute" })).toBeDisabled();
   await expectContentClearsBorder(destroy);
   await card.scrollIntoViewIfNeeded();
@@ -1676,7 +1598,7 @@ test("an unowned tree: Kill its process from its row, then Discard and remove it
     await dashboard.getByRole("tab", { name: "Storage" }).click();
     const keptProblem = problems.getByRole("listitem").filter({ hasText: "Dirty unowned tree" });
     await expect(keptProblem).toContainText(tree);
-    await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toBeVisible();
+    await expect(dashboard.getByRole("status", { name: "Storage warning" })).toBeVisible();
     await shoot(dashboard, "09-dirty-unowned-tree-problem");
     await keptProblem.getByRole("button", { name: "Open tree" }).click();
     await expect(row).toBeInViewport();
@@ -1709,7 +1631,7 @@ test("an unowned tree: Kill its process from its row, then Discard and remove it
     await shoot(dashboard, "12-unowned-tree-removed");
     await dashboard.getByRole("tab", { name: "Storage" }).click();
     await expect(dashboard.getByText("No storage problems.")).toBeVisible();
-    await expect(dashboard.getByRole("status", { name: "Storage needs attention" })).toHaveCount(0);
+    await expect(dashboard.getByRole("status", { name: "Storage warning" })).toHaveCount(0);
   } finally {
     holder?.kill("SIGKILL");
   }

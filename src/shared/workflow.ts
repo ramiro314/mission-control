@@ -1442,6 +1442,13 @@ export interface SessionAction {
    * operator chose. Absent on every other action.
    */
   editable?: boolean;
+  /**
+   * False for an action a Workflow stage may never run: the Grill action, which runs ahead of a
+   * task through Grill me first and, bound after the work, would tell the agent to start that
+   * finished task over. Absent on every other action. Independent of `editable`, which says who
+   * may change the instruction, not where it may run.
+   */
+  workflowStage?: false;
   /** An editable built-in whose instruction is the operator's rather than the shipped text. */
   customized?: boolean;
 }
@@ -1490,10 +1497,16 @@ export function sessionActionsForDisplay<
  * honest "nothing is addable yet" rather than a silent fallback to everything.
  */
 export function addableSessionActions<
-  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName">,
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName" | "workflowStage">,
 >(actions: readonly T[], available: ReadonlySet<SessionActionCompletionKind>): T[] {
   return sessionActionsForDisplay(actions)
-    .filter((action) => action.archivedAt === null && available.has(action.completion.kind));
+    .filter((action) =>
+      action.archivedAt === null && available.has(action.completion.kind) && sessionActionIsStage(action));
+}
+
+/** Whether a Workflow stage may run this action. See `SessionAction.workflowStage`. */
+export function sessionActionIsStage(action: Pick<SessionAction, "workflowStage">): boolean {
+  return action.workflowStage !== false;
 }
 
 /**
@@ -2440,6 +2453,7 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "wait_for_ci_placement",
   "wait_for_ci_quiet_period",
   "wait_for_ci_expected_checks",
+  "session_action_not_a_stage",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 
@@ -5142,9 +5156,19 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
     headSha: string | null;
     /** Complete tracked and nonignored worktree content, independent of commit identity. */
     contentTreeOid?: string | null;
+    /** Daemon-derived publication proof. Older captures retain their strict dirty-tree rule. */
+    publication?: {
+      version: 1;
+      treeOid: string;
+      unpublishedPaths: string[];
+      pathsTruncated: boolean;
+      localArtifacts: Array<{ path: string; sha256: string; bytes: number }>;
+      artifactProblems?: string[];
+    };
     /**
      * The full commit Commands and CodeRabbit are pinned to. HEAD for a clean capture; for an
-     * uncommitted one, a Mission Control review snapshot of `contentTreeOid` parented on HEAD.
+     * uncommitted one, a Mission Control review snapshot of the publication tree parented on
+     * HEAD (the complete content tree for captures made before publication proofs existed).
      * Null for snapshots captured before review snapshots existed, or with no Command to run.
      */
     reviewCommit?: string | null;

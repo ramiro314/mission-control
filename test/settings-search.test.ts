@@ -3,6 +3,16 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SettingsPage } from "../src/web/components/SettingsPage.tsx";
+import { SetupPanel } from "../src/web/components/SetupPanel.tsx";
+import { SETUP_FAMILY_IDS } from "../src/shared/setup-catalog.ts";
+import { StorageSettingsPanelView } from "../src/web/components/StorageSettingsPanel.tsx";
+import { STORAGE_TABS } from "../src/web/lib/storage-view.ts";
+import {
+  IDLE_ACTIONS,
+  idleStateFixture,
+  STORAGE_ACTIONS,
+  storageStateFixture,
+} from "./helpers/storage-fixtures.ts";
 import {
   BINDABLE_CONTROL_IDS,
   SETTINGS_CONTROLS,
@@ -108,6 +118,30 @@ function renderedAnchors(): Set<string> {
     for (const m of renderCategory(c.id).matchAll(/data-anchor="([^"]+)"/g)) {
       anchors.add(m[1]!);
     }
+  }
+  // Setup shows one family at a time, so a control inside a family that is not the opening
+  // one (the Repositories family's directory editor) is rendered only once that family is
+  // selected. A deep link selects it during render, which is the path a palette jump takes.
+  for (const family of SETUP_FAMILY_IDS) {
+    const html = renderToStaticMarkup(createElement(SetupPanel, {
+      state: SETUP,
+      jumpAnchor: `setup/family-${family}`,
+      jumpRequestId: 1,
+    }));
+    for (const m of html.matchAll(/data-anchor="([^"]+)"/g)) anchors.add(m[1]!);
+  }
+  // Storage shows one tab at a time, and a deep link selects its tab during render the same way.
+  for (const tab of STORAGE_TABS) {
+    const html = renderToStaticMarkup(createElement(StorageSettingsPanelView, {
+      state: storageStateFixture(),
+      actions: STORAGE_ACTIONS,
+      idle: idleStateFixture(),
+      idleActions: IDLE_ACTIONS,
+      onNavigate: () => {},
+      jumpAnchor: tab.anchor,
+      jumpRequestId: 1,
+    }));
+    for (const m of html.matchAll(/data-anchor="([^"]+)"/g)) anchors.add(m[1]!);
   }
   return anchors;
 }

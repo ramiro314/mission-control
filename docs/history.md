@@ -157,7 +157,8 @@ the agent like any other terminal session, which turns the row **Live**.
   with no turn one and the recorded permission mode) in the same directory or slot. Its card
   joins the Fleet idle, waiting for the operator's next message, and binds the launch as it
   registers, so the dialog reports it started and the row turns **Live**. Like a terminal
-  Resume it has no task and no Mission Control tools. It never forks: with a typed directory as
+  Resume it has no task. Unlike one, it is given Mission Control's MCP server, because every
+  Claude Agent SDK session asks its decisions through `request_input`. It never forks: with a typed directory as
   the target the row is disabled, and the route refuses it with `host_unavailable`, as it does
   for an agent with no Agent SDK driver or a build with no session supervisor.
 - **Original directory.** The default target, when it still exists and lies outside every

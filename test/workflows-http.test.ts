@@ -329,6 +329,44 @@ test("a configured dispatch default cannot be archived or deleted", async () => 
   );
 });
 
+test("PUT /api/workflows/config takes the deprecated defaultWorkflowId as the Ship row, beside the fork's shape row", async () => {
+  const { taskDefaultWorkflowId } = await import("../src/shared/task.ts");
+  const { request } = fixture();
+  const valid = await seedValid(request);
+  assert.equal(
+    (await request(`/api/workflows/${valid.workflow.id}/publish`, {
+      method: "POST",
+      body: JSON.stringify({ expectedDraftRevision: 1 }),
+    })).status,
+    200,
+  );
+  // Upstream #1430: the old field is a deprecated alias for the Ship row, not a 400. The map's
+  // own Ship key loses to it, and the fork's shape row stands beside it.
+  const written = await request("/api/workflows/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      liveEnabled: false,
+      repoAllowlist: [],
+      defaultWorkflowId: valid.workflow.id,
+      kindWorkflowDefaults: { ship: null, shape: valid.workflow.id },
+    }),
+  });
+  assert.equal(written.status, 200);
+  const rows = (await written.json() as { kindWorkflowDefaults: Record<string, string | null> }).kindWorkflowDefaults;
+  assert.deepEqual(rows, { ship: valid.workflow.id, shape: valid.workflow.id });
+  const read = await (await request("/api/workflows/config")).json() as { kindWorkflowDefaults: Record<string, string | null> };
+  assert.deepEqual(read.kindWorkflowDefaults, rows, "the GET reads back what the PUT stored");
+  assert.equal(taskDefaultWorkflowId("ship", read.kindWorkflowDefaults), valid.workflow.id);
+  assert.equal(taskDefaultWorkflowId("shape", read.kindWorkflowDefaults), valid.workflow.id, "a shape task follows its own row");
+  assert.equal(
+    (await request("/api/workflows/config", {
+      method: "PUT",
+      body: JSON.stringify({ liveEnabled: false, repoAllowlist: [], kindWorkflowDefaults: {} }),
+    })).status,
+    200,
+  );
+});
+
 test("a task source names only a bindable workflow, and keeps it from being archived", async () => {
   const { request } = fixture();
   const published = await seedValid(request);

@@ -1,3 +1,5 @@
+import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
+import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
 import type { TaskManager } from "../tasks.ts";
 import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence, localPlanRecoveryPending } from "../plans/publication.ts";
 import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
@@ -619,6 +621,8 @@ export class WorkflowManager {
    * nothing but the right to stay quiet about a hold it has already reported once.
    */
   private readonly queuedDeliveries = new Set<string>();
+  /** Prepared packets held because their session is paused, re-offered when it resumes. */
+  private readonly pausedDeliveries = new Set<string>();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly queues: QueueManager;
   private readonly inject: typeof injectPrompt;
@@ -793,6 +797,7 @@ export class WorkflowManager {
           return;
         }
         if (event.type !== "session_upsert") return;
+        if (!event.session.pause && this.pausedDeliveries.size > 0) this.offerResumedDeliveries(event.session.id);
         // Pickup is recorded HERE rather than on the sweep: a turn can start and finish
         // between two fifteen-second samples, and the proof would be gone by the time the
         // observer looked. See `noteSessionActionActivity`.
@@ -1312,7 +1317,11 @@ export class WorkflowManager {
      */
     try {
       if (input.replaceBindingId) {
+        // The replacement archives every active binding for this note, not only the one named.
+        const running = this.store.activeBindingsForNote(noteKey)
+          .flatMap((binding) => this.runningAttemptIdsForBinding(binding.id));
         const replaced = this.store.replaceBindingAndCancel(input.replaceBindingId, insert);
+        if (replaced) this.engine.stopCheckAttempts(running);
         if (!replaced) return {
           ok: false,
           reason: "conflict",
@@ -1551,7 +1560,9 @@ export class WorkflowManager {
   }
 
   archiveBinding(id: string, now = Date.now()): WorkflowRuntimeMutation<WorkflowBinding> {
+    const running = this.runningAttemptIdsForBinding(id);
     const archived = this.store.archiveBindingAndCancel(id, now);
+    if (archived) this.engine.stopCheckAttempts(running);
     if (archived?.cancelledRunId) this.publishRun(archived.cancelledRunId);
     if (archived) this.publishBinding(archived.binding.id);
     return archived
@@ -2329,7 +2340,7 @@ export class WorkflowManager {
      * entirely rather than getting a flag of its own to keep in step.
      */
     if (!input.resubmitUnchanged) {
-      const probe = await this.probeRepository(binding).catch(() => null);
+      const probe = await this.probeRepository(binding, latest).catch(() => null);
       const unchanged = probe && this.repositoryUnchangedSince(probe, binding, latest);
       if (unchanged) {
         this.store.setRunState(
@@ -2698,15 +2709,26 @@ export class WorkflowManager {
     };
   }
 
+  /**
+   * Read before a cancel, which moves every running attempt to `cancelled`. A running check
+   * attempt may be running a dependency claim, or be on its way to one; the engine aborts it,
+   * the claim stops or never starts, and the attempt's result is recorded as audit-only.
+   */
+  private runningAttemptIds(runId: string): string[] {
+    return this.store.listAttemptsForRun(runId)
+      .filter((attempt) => attempt.state === "running")
+      .map((attempt) => attempt.id);
+  }
+
+  private runningAttemptIdsForBinding(bindingId: string): string[] {
+    const active = this.store.activeRunForBinding(bindingId);
+    return active ? this.runningAttemptIds(active.id) : [];
+  }
+
   cancel(runId: string, requestId: string, now = Date.now()): WorkflowRuntimeMutation<WorkflowRun> {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
-    // Read before the cancel, which moves every running attempt to `cancelled`. A running check
-    // attempt may be running a dependency claim, or be on its way to one; the engine aborts it,
-    // the claim stops or never starts, and the attempt's result is recorded as audit-only.
-    const running = this.store.listAttemptsForRun(run.id)
-      .filter((attempt) => attempt.state === "running")
-      .map((attempt) => attempt.id);
+    const running = this.runningAttemptIds(run.id);
     const cancelled = this.store.cancelRun(run.id, `cancelled:${requestId}`, now) ?? run;
     if (running.length > 0) this.engine.stopCheckAttempts(running);
     this.publishRun(run.id);
@@ -4651,7 +4673,7 @@ export class WorkflowManager {
       );
       return;
     }
-    if (fullContext?.success && fullContext.data.evidence.workingTreeDirty) {
+    if (fullContext?.success && workflowHasUnpublishedChanges(fullContext.data.evidence)) {
       this.transitionInspectorGate(
         run,
         state,
@@ -4694,6 +4716,33 @@ export class WorkflowManager {
         now,
       );
       return;
+    }
+    // Compare the complete published commit tree, never a filtered remote view. This
+    // refuses both missing deliverables and unexpected committed artifacts.
+    // A missing repositoryRoot already returns through !submittedHead above, including
+    // shipping continuations. Keeping the root condition here also narrows its type.
+    const shippingOnlyContinuation = submission.refinementReason === "session_action"
+      && submission.continuationNodeId !== null
+      && sessionActionContinuationReachesOnlyEnd(version.graph, submission.continuationNodeId);
+    if (fullContext?.success && repositoryRoot
+      && (fullContext.data.evidence.publication || shippingOnlyContinuation)) {
+      const publishedTree = await (this.options.resolveCommitTree ?? resolveCommitTree)(
+        repositoryRoot, submittedHead,
+      ).catch(() => null);
+      // A shipping-only continuation has captured the author's packaging result, not a
+      // new semantic review. Keep the parent's accepted content as a second obligation,
+      // including children captured before publication proofs existed.
+      const parent = shippingOnlyContinuation && submission.parentSubmissionId
+        ? this.store.getSubmission(submission.parentSubmissionId) : null;
+      const accepted = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
+      const acceptedTree = accepted?.success
+        ? workflowPublicationTree(accepted.data.evidence) : null;
+      if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
+        || (shippingOnlyContinuation && publishedTree !== acceptedTree)) {
+        this.transitionInspectorGate(run, state, { ...state, waitReason: "working_tree_not_pushed" },
+          "waiting_for_session", "inspector_working_tree_not_pushed", null, null, now);
+        return;
+      }
     }
     if (state.targetHeadSha && state.targetHeadSha !== state.observedHeadSha) {
       this.transitionInspectorGate(
@@ -5211,6 +5260,16 @@ export class WorkflowManager {
     }
     this.publishRun(run.id);
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
+  }
+
+  /** Re-offer every packet a pause held for this session, now that it has resumed. */
+  private offerResumedDeliveries(sessionId: string): void {
+    for (const id of [...this.pausedDeliveries]) {
+      const delivery = this.store.getDelivery(id);
+      if (delivery && delivery.sessionId !== sessionId) continue;
+      this.pausedDeliveries.delete(id);
+      if (delivery?.state === "prepared") this.schedulePreparedDelivery(id);
+    }
   }
 
   private recoverWaitingDeliveries(noteKey?: string): void {
@@ -5979,7 +6038,7 @@ export class WorkflowManager {
       adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt),
       capturedHeadOid,
       acceptedContentTreeOid: parentContext.success
-        ? parentContext.data.evidence.contentTreeOid ?? null
+        ? workflowPublicationTree(parentContext.data.evidence)
         : null,
     });
     if (decision.kind === "blocked") {
@@ -6486,6 +6545,15 @@ export class WorkflowManager {
     const delivery = this.store.getDelivery(deliveryId);
     if (!delivery || transferForNote(delivery.noteKey)) return;
     if (delivery.state !== "prepared" && !(explicitRetry && delivery.state === "refused")) return;
+    // The operator paused this session. Not a refusal: the packet stays `prepared`, the run is
+    // left as it is, and the same bytes are offered again the moment the pause lifts (the
+    // `session_upsert` arm of the subscription). A restart re-offers prepared packets anyway,
+    // and lands back here while the pause still stands.
+    if (this.registry.getSession(delivery.sessionId)?.pause) {
+      this.pausedDeliveries.add(delivery.id);
+      return;
+    }
+    this.pausedDeliveries.delete(delivery.id);
     const initialBlock = this.deliveryBlock(delivery);
     if (initialBlock) {
       const retainPrepared = [
@@ -6561,6 +6629,20 @@ export class WorkflowManager {
         // outcome here is ambiguous and keeps it: an echo that may still arrive must find
         // authorship on file, and the cost of being wrong that way is one suppressed retype.
         releaseInjection(session.id, sending.payload);
+        // The operator paused the session while this packet was on its way: the guard refused
+        // for the pause, not for anything wrong with the packet. Held exactly as the check at
+        // the top holds one - back to `prepared`, the run left as it is, offered again when the
+        // pause lifts - never refused with the run blocked.
+        if (result.error === PAUSED_SESSION_REASON) {
+          if (this.store.getDelivery(sending.id)?.state === "sending") {
+            this.store.setDeliveryState(sending.id, "prepared", null);
+            this.pausedDeliveries.add(sending.id);
+            // Lifted while the write was in flight: the resume that would offer it has passed.
+            if (!this.registry.getSession(sending.sessionId)?.pause) this.offerResumedDeliveries(sending.sessionId);
+          }
+          this.publishRun(sending.runId);
+          return;
+        }
         const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
         const refused = this.store.finishDeliverySend(sending.id, "refused", reason);
         if (!refused) return;
@@ -6811,6 +6893,7 @@ export class WorkflowManager {
           ),
           frozenIntent,
           version?.graph,
+          this.store.listReservedWorkflowEvidence(submission.id).filter((item) => item.evidenceKind === "text"),
         ),
         (candidate) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
           this.registry,
@@ -6867,7 +6950,8 @@ export class WorkflowManager {
       // bytes into daemon-owned immutable storage after the external artifact guard, but
       // before raw context is persisted or the compaction model can spend a token.
       await captureSubmissionImages(this.store, submission.id);
-      await captureSubmissionTextArtifacts(this.store, submission.id);
+      await captureSubmissionTextArtifacts(this.store, submission.id, Date.now(),
+        recovered ? [] : captured.context.evidence.artifacts ?? []);
       /*
        * Then carry forward what the previous submission proved and this one did not re-stage.
        *
@@ -8018,12 +8102,14 @@ export class WorkflowManager {
    * Read the repository, and nothing else.
    *
    * Half of "has the work under review moved since this submission was captured?", which is
-   * the cheap pre-filter and the whole reason there is no "capture then discard" mode: an
+   * the repository pre-filter and the whole reason there is no "capture then discard" mode: an
    * idle repair session with unchanged work must leave the run exactly where it is.
    * Re-reading the diff, the transcript window and the standards on every tick to discover
-   * unchanged repair work is not free. `readWorkflowEvidenceProbe` costs two git commands and
-   * reads the repository only. Every field it reads is a fingerprint input, so a differing
-   * probe cannot lead to `unchanged_evidence`. Its content-sensitive diff fingerprint also
+   * unchanged repair work is not free. `readWorkflowEvidenceProbe` reads the bounded diff,
+   * hashes the complete worktree through a temporary index, and reads prior retained report
+   * bytes. Its cost grows with nonignored checkout content; see the measurements beside that
+   * reader. Every field it reads is a fingerprint input,
+   * so a differing probe cannot lead to `unchanged_evidence`. Its content-sensitive diff fingerprint also
    * detects edits inside a path that was already dirty in the failed round. The converse is
    * deliberately not true: a transcript-only change leaves the probe matching while the full
    * fingerprint has moved, and a repair that changed no code is not a repair.
@@ -8038,8 +8124,10 @@ export class WorkflowManager {
    * opened. Returning the read's own promise keeps the caller to the single turn the git call
    * itself needs, which is what it has always cost.
    */
-  private probeRepository(binding: WorkflowBinding): Promise<WorkflowEvidenceProbe> {
-    return (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(this.registry, binding);
+  private probeRepository(binding: WorkflowBinding, submission: WorkflowSubmission): Promise<WorkflowEvidenceProbe> {
+    const parsed = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    const retained = parsed.success ? parsed.data.evidence.publication?.localArtifacts : undefined;
+    return (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(this.registry, binding, retained);
   }
 
   /**
@@ -8163,17 +8251,18 @@ export class WorkflowManager {
   ): Promise<void> {
     const scheduled = this.store.getRun(runId);
     const scheduledBinding = scheduled ? this.store.getBinding(scheduled.bindingId) : null;
-    if (!scheduled || !scheduledBinding) return;
+    const scheduledSubmission = this.store.getSubmission(submissionId);
+    if (!scheduled || !scheduledBinding || !scheduledSubmission) return;
 
     /*
      * The repository read comes FIRST, and every other gate is asked after it.
      *
      * This is the method's only await, so it is also the only point at which the world can
      * move underneath it - and asking the gates before it would recheck a world that had not
-     * had the chance to change yet, which is the same as not rechecking at all. Two git reads
+     * had the chance to change yet, which is the same as not rechecking at all. The repository reads
      * take long enough for a session to pick up its turn.
      */
-    const probe = await this.probeRepository(scheduledBinding).catch(() => null);
+    const probe = await this.probeRepository(scheduledBinding, scheduledSubmission).catch(() => null);
     if (!probe) return;
 
     const eligible = this.resumableRun(runId, this.registry.snapshot().sessions, now);
@@ -8253,7 +8342,7 @@ export class WorkflowManager {
     }
     // A settled PR handoff is the explicit exception below because unchanged repository
     // evidence proves it needs a fresh Inspector observation, not another submission.
-    const probe = await this.probeRepository(binding);
+    const probe = await this.probeRepository(binding, latest);
     // The session may have reported a blocker while git ran. Both branches below can move the
     // run (the unchanged one can hand a PR to the Inspector), so ask again before either does.
     const current = this.registry.getSession(eligible.session.id);

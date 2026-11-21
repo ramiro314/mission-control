@@ -923,7 +923,7 @@ test("Warm targeting with a failed read skips the slot and quarantines nothing",
   assert.equal(after.state, "available");
   assert.equal(after.quarantineReason, null);
   assert.equal(after.version, before.version);
-  assert.match(after.lastError ?? "", /^Last observation failed: slot Git state is unknown \(git status timed out/);
+  assert.equal(after.lastError, before.lastError, "an unanswered read is not recorded against the slot");
   assert.equal(runCount(slot!.path), 0, "no step ran");
 });
 

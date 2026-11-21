@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   MISSION_HOOK_SCRIPTS,
   MISSION_HOOK_SHIM,
+  claudeHooks,
   isMissionHookCommand,
   missionHookScriptPath,
   missionHookShimCommand,
@@ -55,6 +56,7 @@ const EVENTS = [
   "SubagentStop",
   "PreCompact",
   "SessionEnd",
+  "SubagentStart",
 ];
 
 const missing = (): FileRead => ({ ok: false, missing: true, reason: "ENOENT" });
@@ -198,7 +200,7 @@ test("a renamed checkout is named, counted, and given the command that repairs i
   // The path, so the operator can see which of their checkouts it is.
   assert.ok(view.warning.includes(STALE), view.warning);
   // How much of their machine is affected. Nine events, not "a hook".
-  assert.match(view.warning, /9 hook events/);
+  assert.match(view.warning, new RegExp(`${EVENTS.length} hook events`));
   // The symptom they actually saw, so they can connect this note to the stack in their
   // transcript rather than reading it as an unrelated complaint.
   assert.match(view.warning, /MODULE_NOT_FOUND/);
@@ -331,9 +333,9 @@ test("two dead paths are read once each and both reported", async () => {
 const SHIM = join(HOME, MISSION_HOOK_SHIM);
 
 /** A settings file whose every event runs the shim, as the repo installer now writes it. */
-function shimSettings(): string {
+function shimSettings(events: readonly string[] = EVENTS): string {
   const hooks: Record<string, unknown[]> = {};
-  for (const event of EVENTS) hooks[event] = [{ hooks: [{ type: "command", command: missionHookShimCommand(event) }] }];
+  for (const event of events) hooks[event] = [{ hooks: [{ type: "command", command: missionHookShimCommand(event) }] }];
   return JSON.stringify({ hooks }, null, 2);
 }
 
@@ -357,7 +359,7 @@ test("a shim pointing at a moved checkout is reported through the shim", async (
   const view = await hookCheck({ [SETTINGS]: text(shimSettings()), [SHIM]: text(shimFor(STALE)) });
   assert.ok(view.warning);
   assert.ok(view.warning.includes(STALE), view.warning);
-  assert.match(view.warning, /9 hook events/);
+  assert.match(view.warning, /10 hook events/);
 });
 
 test("a shim pointing at a live checkout hears nothing", async () => {
@@ -369,13 +371,85 @@ test("a shim pointing at a live checkout hears nothing", async () => {
   assert.equal(view.warning, null);
 });
 
+// --- hooks installed before an event existed ---------------------------------------------
+//
+// The installers write the event list they know and never re-run themselves, so a machine that
+// installed before `SubagentStart` keeps a bridge that works and is silent on it. Nothing fails;
+// terminal sessions just report less. The events check names that, and only that.
+
+/** The events check's view for a machine whose files are exactly `files`. */
+async function eventsCheck(files: Record<string, FileRead>) {
+  const views = await environmentCheckViews(deps(files));
+  const view = views.find((v) => v.id === "mission-hook-events");
+  assert.ok(view, "the check must always be reported");
+  return view;
+}
+
+const WITHOUT_SUBAGENT_START = EVENTS.filter((event) => event !== "SubagentStart");
+
+test("the fixture's event list is exactly what this build installs", () => {
+  assert.deepEqual([...claudeHooks.events].sort(), [...EVENTS].sort());
+  assert.ok(claudeHooks.events.includes("SubagentStart"));
+});
+
+test("hooks covering every current event say nothing", async () => {
+  const view = await eventsCheck({ [SETTINGS]: text(settingsFor(LIVE)), [LIVE]: text("") });
+  assert.equal(view.warning, null);
+  assert.equal(view.detail, null);
+});
+
+test("hooks installed before SubagentStart are told to reinstall", async () => {
+  const view = await eventsCheck({
+    [SETTINGS]: text(settingsFor(LIVE, WITHOUT_SUBAGENT_START)),
+    [LIVE]: text(""),
+  });
+  assert.ok(view.warning);
+  assert.equal(view.label, "Claude Code hook events");
+  // The event by name, and what its absence costs.
+  assert.match(view.warning, /do not run for SubagentStart/);
+  assert.match(view.warning, /background sub-agents/);
+  // Both repairs, because the operator may have installed from either.
+  assert.match(view.warning, /npm run install-hooks/);
+  assert.match(view.warning, /Install Claude integrations/);
+  // The evidence: which file, which script, and what is missing.
+  assert.ok(view.detail?.includes(SETTINGS), view.detail ?? "");
+  assert.ok(view.detail?.includes(LIVE), view.detail ?? "");
+  assert.match(view.detail ?? "", /missing SubagentStart$/);
+  // A bridge that works is not a dead path: the louder check stays quiet.
+  const views = await environmentCheckViews(deps({
+    [SETTINGS]: text(settingsFor(LIVE, WITHOUT_SUBAGENT_START)),
+    [LIVE]: text(""),
+  }));
+  assert.equal(views.find((v) => v.id === "mission-hook-script")?.warning, null);
+});
+
+test("a dead hook path is the other check's finding, not a missing event", async () => {
+  const files = { [SETTINGS]: text(settingsFor(STALE, WITHOUT_SUBAGENT_START)) };
+  assert.equal((await eventsCheck(files)).warning, null);
+  assert.ok((await hookCheck(files)).warning);
+});
+
+test("events are pooled across the installs that still exist", async () => {
+  const hooks: Record<string, unknown[]> = {};
+  for (const event of EVENTS) {
+    const script = event === "SubagentStart" ? SATELLITE : LIVE;
+    hooks[event] = [{ hooks: [{ type: "command", command: `"/opt/homebrew/bin/node" "${script}" ${event}` }] }];
+  }
+  const view = await eventsCheck({
+    [SETTINGS]: text(JSON.stringify({ hooks })),
+    [LIVE]: text(""),
+    [SATELLITE]: text(""),
+  });
+  assert.equal(view.warning, null);
+});
+
 // The check runs in the daemon, so this machine runs Mission Control and should have the
 // shim. Without it every hook exits 0 before running: no error, and no session state.
 test("a missing shim is reported, with the installer that writes it", async () => {
   const view = await hookCheck({ [SETTINGS]: text(shimSettings()) });
   assert.ok(view.warning);
   assert.ok(view.warning.includes(SHIM), view.warning);
-  assert.match(view.warning, /9 hook events/);
+  assert.match(view.warning, /10 hook events/);
   assert.match(view.warning, /is not there/);
   assert.match(view.warning, /npm run install-hooks/);
   // The desktop button would swap the shared commands for absolute paths.
@@ -390,4 +464,45 @@ test("a shim that lost its execute bit is reported", async () => {
   );
   assert.ok(view.warning);
   assert.match(view.warning, /is not executable/);
+});
+
+test("silent when the hooks were never installed, or the read was cut short", async () => {
+  assert.equal((await eventsCheck({})).warning, null);
+  assert.equal((await eventsCheck({ [SETTINGS]: text(JSON.stringify({ hooks: {} })) })).warning, null);
+  // Truncation can drop the very entries that would show an event installed, so a cut read
+  // never produces this finding.
+  const cut = settingsFor(LIVE, WITHOUT_SUBAGENT_START);
+  assert.equal((await eventsCheck({ [SETTINGS]: text(cut, true), [LIVE]: text("") })).warning, null);
+});
+
+// The fork's shim names its script only inside the shim, so the events check reads it there.
+test("a shim install missing SubagentStart is told to re-run the installer, never the desktop button", async () => {
+  const view = await eventsCheck({
+    [SETTINGS]: text(shimSettings(WITHOUT_SUBAGENT_START)),
+    [SHIM]: text(shimFor(LIVE)),
+    [LIVE]: text("#!/usr/bin/env node\n"),
+  });
+  assert.ok(view.warning);
+  assert.match(view.warning, /do not run for SubagentStart/);
+  assert.match(view.warning, /npm run install-hooks/);
+  // The desktop button would replace the shared file's shim commands with absolute paths.
+  assert.doesNotMatch(view.warning, /Install Claude integrations/);
+  assert.ok(view.detail?.includes(LIVE), view.detail ?? "");
+});
+
+test("a shim install with every current event says nothing", async () => {
+  const view = await eventsCheck({
+    [SETTINGS]: text(shimSettings()),
+    [SHIM]: text(shimFor(LIVE)),
+    [LIVE]: text("#!/usr/bin/env node\n"),
+  });
+  assert.equal(view.warning, null);
+});
+
+test("the Setup row for a missing event is optional, with the installer as its remedy", () => {
+  const row = ENVIRONMENT_ROW_METADATA["mission-hook-events"];
+  assert.equal(row.requirement, "optional");
+  assert.equal(row.family, "extensions");
+  assert.equal(row.remedy.kind, "command");
+  if (row.remedy.kind === "command") assert.deepEqual(row.remedy.argv, ["npm", "run", "install-hooks"]);
 });

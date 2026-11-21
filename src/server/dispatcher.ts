@@ -96,6 +96,7 @@ import {
   kindMissionMcpRequirement,
   missionMcpDescriptor,
   missionMcpDescriptorForPipelineTask,
+  withDecisionAskTool,
   newPipelineCallerCredential,
   verifyMissionMcpTools,
   type MissionMcpDescriptor,
@@ -472,10 +473,13 @@ export class Dispatcher {
         return;
       }
       const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
-      const missionMcp = kindMissionMcpRequirement(
-        task,
-        withShapeTicketsCompletion(task, options.missionMcp ?? null),
-        workflowEvidence,
+      const missionMcp = withDecisionAskTool(
+        kindMissionMcpRequirement(
+          task,
+          withShapeTicketsCompletion(task, options.missionMcp ?? null),
+          workflowEvidence,
+        ),
+        capabilitiesFor(task.agent).missionTools?.mechanism,
       );
       // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
       // the fork further down. Resolved before provisioning so the guard can refuse before
@@ -854,8 +858,8 @@ export class Dispatcher {
       // as a menu we read off the child's screen. Scoped to dispatch for the same reason
       // `modeArgs` is - we only reconfigure agents WE launched, never one the operator
       // started and we merely discovered. It returns nothing rather than half its flags on
-      // ANY failure - a missing bundle, an unwritable state dir - and never throws, so it
-      // cannot sink a dispatch that is otherwise fine; see `askChannelArgs`.
+      // ANY failure - a missing bundle, an unwritable state dir - and says why, and the
+      // launch is then refused below with that reason; see `askChannelContribution`.
       const codexLaunch = task.agent === "codex"
         ? await prepareCodexLaunch(
             getHarnessesConfig().autoModeOnDispatch,
@@ -886,15 +890,19 @@ export class Dispatcher {
         ? preparePiLaunch(piText)
         : { args: [] as string[], sessionId: null };
       const askChannel = await askChannelContribution(task.agent, missionMcp, wt.path, stateHome);
+      // Every decision a task asks goes through `request_input`. A launch that needs the ask
+      // channel and cannot have it is refused, with the reason, rather than started with the
+      // built-in menu (a decision asked outside it) or with no way to ask at all.
+      if (askChannel.unavailable) throw new Error(askChannel.unavailable);
       // Claude: ONE `--append-system-prompt`, carrying every contributor to it. The flag is
       // single-valued and repeating it is last-wins with no warning, so a second flag beside
       // this one would silently discard whichever came first - see `systemPromptAppendArgs`.
       //
       // The ask channel's redirect keeps its all-or-nothing tie to the MCP flags: an agent
       // with `AskUserQuestion` removed and no replacement is worse than one with the
-      // built-in intact. The standing instruction does NOT acquire that tie - a missing MCP
-      // bundle has nothing to do with the operator's own words - so it still ships when
-      // `askChannelContribution` returns nothing at all.
+      // built-in intact, and a launch that needs the channel and cannot have it was refused
+      // just above. The standing instruction does NOT acquire that tie, so it still ships for
+      // an agent the ask channel does not apply to.
       const askArgs = [
         ...askChannel.args,
         ...systemPromptAppendArgs([
@@ -934,8 +942,8 @@ export class Dispatcher {
       if (missionMcp && !missionMcpRegistered) {
         throw new Error(
           `the launch could not carry the required Mission MCP tools ` +
-            `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
-            `session could not submit its result`,
+            `${missionMcp.tools.join(", ")} (is the MCP bundle built? run: npm run build), so this ${task.agent} ` +
+            `session could not use them`,
         );
       }
       // …and that the registration points at a server which actually PUBLISHES them.
@@ -1149,6 +1157,17 @@ export class Dispatcher {
       // Read off `cur` before any branch below tears its resources down, so the record names
       // the phase this attempt actually reached.
       const launchFailure = this.launchFailureFor(cur);
+      // This catch also returns resource-free failures to Backlog. Record them before that
+      // early return: the task card alone cannot correlate a failed attempt with daemon load.
+      console.error(`[dispatch] ${JSON.stringify({
+        event: "dispatch_failed",
+        timestamp: new Date(launchFailure.at).toISOString(),
+        taskId,
+        phase: launchFailure.phase,
+        repoRoot: err instanceof DispatchBaseError ? err.repoRoot : cur.repoRoot,
+        error: message,
+        ...(err instanceof DispatchBaseError ? { git: err.git } : {}),
+      })}`);
       // The same resource proof startup reconciliation uses, restricted to the base-freeze
       // and all-or-nothing worktree phase. A fetch or provisioning failure can leave no
       // hidden agent or checkout, so put backlog-capable work back where the operator is
@@ -1969,8 +1988,8 @@ export class Dispatcher {
     if (missionMcp && !extensionProvidesMissionTools && !mcp) {
       throw new Error(
         `the launch could not carry the required Mission MCP tools ` +
-          `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
-          `session could not submit its result`,
+          `${missionMcp.tools.join(", ")} (is the MCP bundle built? run: npm run build), so this ${task.agent} ` +
+          `session could not use them`,
       );
     }
     // The terminal arm's content check, applied to the same bundle for the same reason: an
@@ -2239,6 +2258,11 @@ export class Dispatcher {
     return this.registry.getTask(taskId)?.status === "dispatching";
   }
 
+  /** The condition under which task cancel stops this task's claims, asked as one registers. */
+  private taskCancelled(taskId: string): boolean {
+    return this.registry.getTask(taskId)?.status === "cancelled";
+  }
+
   /**
    * Checkpoint between dispatch steps: if a cancel/complete settled the task in
    * flight, tear down whatever this dispatch already created (it may have run
@@ -2293,6 +2317,7 @@ export class Dispatcher {
       bases.primary,
       0,
       this.worktrees,
+      () => this.taskCancelled(taskId),
     );
     const taken: Array<{ repoRoot: string; position: number; wt: ProvisionedWorktree }> = [
       { repoRoot: task.repoRoot, position: 0, wt: primary },
@@ -2319,6 +2344,7 @@ export class Dispatcher {
           bases.extras[index] ?? null,
           index + 1,
           this.worktrees,
+          () => this.taskCancelled(taskId),
         );
         taken.push({ repoRoot: entry.repoRoot, position: index + 1, wt });
         extras.push({
@@ -2511,6 +2537,25 @@ function gitNeverAnswered(question: string, r: RunResult): Error {
   );
 }
 
+interface DispatchGitResult {
+  command: string[];
+  elapsedMs: number;
+  timeoutMs: number | null;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  outcomeUnknown: boolean;
+  overflowed: boolean;
+}
+
+/** Carry process facts through the error boundary without changing the task's error text. */
+class DispatchBaseError extends Error {
+  constructor(message: string, readonly repoRoot: string, readonly git: DispatchGitResult | null) {
+    super(message);
+    this.name = "DispatchBaseError";
+  }
+}
+
 /**
  * Where an ordinary, unpinned task starts: a freshly fetched remote-default commit.
  *
@@ -2529,12 +2574,32 @@ function gitNeverAnswered(question: string, r: RunResult): Error {
  * nobody can reconstruct afterwards. So only a `git remote` listing that SUCCEEDED and did
  * not name `origin` may take the local-HEAD path - a probe that timed out cannot.
  */
-export async function resolveDispatchBase(repoRoot: string): Promise<string> {
-  const origin = await originConfigured(repoRoot);
+export async function resolveDispatchBase(repoRoot: string, execute: typeof run = run): Promise<string> {
+  let lastCommand: DispatchGitResult | null = null;
+  const measured: typeof run = async (bin, args, opts) => {
+    const started = performance.now();
+    const result = await execute(bin, args, opts);
+    lastCommand = {
+      command: [bin, ...args],
+      elapsedMs: Math.round(performance.now() - started),
+      timeoutMs: result.timeoutMs ?? opts?.timeoutMs ?? null,
+      // `run` uses a synthetic code 1 for killed children and spawn refusals. It is not
+      // an exit status Git reported, so retain the signal/uncertainty instead.
+      exitCode: result.outcomeUnknown || result.signal || result.overflowed || result.childPid === null
+        ? null : result.code,
+      signal: result.signal ?? null,
+      timedOut: result.timedOut ?? false,
+      outcomeUnknown: result.outcomeUnknown,
+      overflowed: result.overflowed,
+    };
+    return result;
+  };
+  const origin = await originConfigured(repoRoot, measured);
   if (!origin.ok) {
-    throw new Error(
+    throw new DispatchBaseError(
       `could not determine whether ${repoRoot} has an origin remote: ${origin.reason} - ` +
         "nothing was provisioned, so this can be retried",
+      repoRoot, lastCommand,
     );
   }
   // A local-only repository is ordinary - a scratch checkout, a fixture, a repo whose
@@ -2549,11 +2614,12 @@ export async function resolveDispatchBase(repoRoot: string): Promise<string> {
     }
     return head;
   }
-  const fresh = await freshRemoteDefaultSha(repoRoot);
+  const fresh = await freshRemoteDefaultSha(repoRoot, measured);
   if (!fresh.ok) {
-    throw new Error(
+    throw new DispatchBaseError(
       `could not freeze ${repoRoot}'s remote default branch: ${fresh.reason} - ` +
         "nothing was provisioned, so this can be retried",
+      repoRoot, lastCommand,
     );
   }
   return fresh.value;
@@ -2711,6 +2777,7 @@ export async function provisionWorktree(
    */
   slot = 0,
   manager?: WorktreeManager,
+  abandoned?: () => boolean,
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree", "--is-bare-repository"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
@@ -2734,6 +2801,7 @@ export async function provisionWorktree(
       owner: { kind: "task", key: `${taskId}:${slot}` },
       awaitingDomainRecord: true,
       runClaim: true,
+      ...(abandoned ? { abandoned } : {}),
     });
     if (acquired.outcome === "acquired") {
       return {

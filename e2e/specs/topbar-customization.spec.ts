@@ -95,9 +95,10 @@ test("the top bar hides and minimizes what Display says, previews it, and keeps 
 }) => {
   await seedCost(daemon);
   // Wide enough that the ladder sheds nothing on the default bar, so every "minimized" below
-  // is the operator's choice and not the fit's. The fork's History page segment (about 100px)
-  // puts the full bar with a priced spend chip at about 1937px, past 1920.
-  await dashboard.setViewportSize({ width: 2048, height: 1000 });
+  // is the operator's choice and not the fit's. 2200px, because at 1920 the default bar with
+  // the Pause all glyph is within a few pixels of its first rung on Linux font metrics, and the
+  // fork's History page segment (about 100px) takes it past 1920 on its own.
+  await dashboard.setViewportSize({ width: 2200, height: 1000 });
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
 
   const bar = dashboard.locator("header.topbar");
@@ -189,14 +190,15 @@ test("the top bar hides and minimizes what Display says, previews it, and keeps 
   await shoot(bar, "03-bar-customized");
 
   // A customized bar still keeps to one row when the window narrows - the ladder still runs.
-  // 1000px rather than 900px: the fork's History page segment adds about 100px.
-  await dashboard.setViewportSize({ width: 1000, height: 800 });
+  // 1100px rather than upstream's 900px: the fork's History page segment adds about 100px, and
+  // on CI's Linux font metrics the Pause all glyph left 1000px a few pixels short.
+  await dashboard.setViewportSize({ width: 1100, height: 800 });
   await expect
     .poll(() => bar.evaluate((el) => el.getBoundingClientRect().height), {
-      message: "the customized bar stays on one row at 1000px",
+      message: "the customized bar stays on one row at 1100px",
     })
     .toBeLessThan(80);
-  // With five items gone the bar fits at 1000px without shedding anything - which is the point
+  // With five items gone the bar fits at 1100px without shedding anything - which is the point
   // of hiding them. Narrower still, the ladder takes Library's word too: "expanded" means
   // expanded while there is room, exactly as the shipped bar behaves.
   await expectDrawn(libraryWord, true, "Library keeps its word while the slimmer bar fits");

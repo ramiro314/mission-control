@@ -38,27 +38,63 @@ function render(
   return renderToStaticMarkup(createElement(TaskSettingsPanel, { state, ...props }));
 }
 
-/** One kind's section, as drawn: its card from the opening tag to the next card. */
+function skills(view: Partial<SkillsView> | null): SkillsState {
+  return {
+    view: view && {
+      alwaysDraftPr: false,
+      commitPlanHtml: false,
+      planStorage: "repository",
+      grillFirstKinds: [],
+      enabled: true,
+      skills: [{ id: "grill", name: "grill", description: "", category: "planning", enforcement: "triggered", enabled: true }],
+      pending: 0,
+      problems: [],
+      ...view,
+    },
+    update: async () => {},
+    error: null,
+  };
+}
+
+function renderGrill(state: SkillsState): string {
+  return render(DEFAULT_WORKFLOW_CONFIG, { skills: state });
+}
+
+/** One kind's After work row, as drawn: from its anchor to the next kind's row. */
 function section(html: string, kind: string): string {
   const start = html.indexOf(`data-anchor="tasks/kind-${kind}"`);
+  if (start === -1) return "";
+  const next = html.indexOf('data-anchor="tasks/kind-', start + 1);
+  return html.slice(start, next === -1 ? undefined : next);
+}
+
+/** One card, by its anchor, up to the next card. */
+function card(html: string, anchor: string): string {
+  const start = html.indexOf(`data-anchor="${anchor}"`);
   if (start === -1) return "";
   const next = html.indexOf('<section class="sc-card"', start);
   return html.slice(start, next === -1 ? undefined : next);
 }
 
-test("the Tasks panel gives each kind its own section, holding its after-work Workflow", () => {
+/** The toggle chip for one kind's default, as drawn. */
+function kindChip(html: string, kind: string): string {
+  return html.match(new RegExp(`<button[^>]*aria-label="Grill me first for ${kind} tasks"[^>]*>`))?.[0] ?? "";
+}
+
+test("the Tasks panel offers one dispatch default per task kind", () => {
   const html = render(
     { ...DEFAULT_WORKFLOW_CONFIG, kindWorkflowDefaults: { bugfix: "workflow-review", scout: null } },
     { foremanEnabled: true, workflows: [REVIEW] },
   );
   assert.match(html, /data-anchor="tasks\/kinds"/);
   for (const kind of ["ship", "bugfix", "document", "plan", "shape", "scout", "chat"]) {
-    const card = section(html, kind);
-    assert.ok(card, `a section for ${kind}`);
-    assert.match(card, new RegExp(`<h3 class="sc-card-title">${kind}</h3>`));
-    assert.match(card, new RegExp(`aria-label="Default after-work Workflow for ${kind} tasks"`), `${kind}'s own select`);
+    const row = section(html, kind);
+    assert.ok(row, `a row for ${kind}`);
+    assert.match(row, new RegExp(`<span class="task-kind-setting-name" aria-hidden="true">${kind}</span>`));
+    assert.match(row, new RegExp(`aria-label="Default after-work Workflow for ${kind} tasks"`), `${kind}'s select is on ${kind}'s row`);
+    assert.ok(card(html, "tasks/kinds").includes(`data-anchor="tasks/kind-${kind}"`), `${kind}'s row is in the After work card`);
   }
-  assert.equal(section(html, "pipeline"), "", "Conductor owns a pipeline's launch");
+  assert.equal(section(html, "pipeline"), "");
   assert.doesNotMatch(html, /for pipeline tasks/, "Conductor owns what runs after a pipeline");
   assert.match(html, /Release review · v2/);
   // A row with nothing stored says what it resolves to; the built-in catalog is not in this
@@ -82,45 +118,28 @@ test("a default that arms a Workflow while Foreman is off says so", () => {
   assert.match(html, /Foreman is off/);
 });
 
-function skills(view: Partial<SkillsView> | null): SkillsState {
-  return {
-    view: view && {
-      alwaysDraftPr: false,
-      commitPlanHtml: false,
-      planStorage: "repository",
-      grillFirstKinds: [],
-      enabled: true,
-      skills: [{ id: "grill", name: "grill", description: "", category: "planning", enforcement: "triggered", enabled: true }],
-      pending: 0,
-      problems: [],
-      ...view,
-    },
-    update: async () => {},
-    error: null,
-  };
-}
-
-/** The checkbox for one kind's default, as drawn. */
-function kindBox(html: string, kind: string): string {
-  return html.match(new RegExp(`<input type="checkbox"[^>]*aria-label="Grill me first for ${kind} tasks"[^>]*/>`))?.[0] ?? "";
-}
-
-test("each kind's section holds its Grill me first default, off, with an info tip; shape always grills", () => {
-  const html = render(DEFAULT_WORKFLOW_CONFIG, { skills: skills({}) });
+test("Grill me first's defaults are one card of kind chips, all off, with an info tip", () => {
+  const html = renderGrill(skills({}));
+  const grill = card(html, "tasks/grill-first");
+  assert.match(grill, /<h3 class="sc-card-title">Grill me first<\/h3>/);
+  assert.match(grill, /<button type="button" class="info-tip" aria-label="About Grill me first"[^>]*>i<\/button>/);
+  assert.match(grill, /role="group" aria-label="Kinds that start with Grill me first"/);
   for (const kind of ["ship", "bugfix", "document", "plan", "scout", "chat"]) {
-    const box = kindBox(section(html, kind), kind);
-    assert.ok(box, `${kind}'s box is in ${kind}'s own section`);
-    assert.doesNotMatch(box, /checked/, `${kind} starts off`);
-    assert.match(section(html, kind), /<button type="button" class="info-tip" aria-label="About Grill me first"[^>]*>i<\/button>/);
+    const chip = kindChip(grill, kind);
+    assert.ok(chip, `${kind}'s chip is in the Grill me first card`);
+    assert.match(chip, /aria-pressed="false"/, `${kind} starts off`);
+    assert.doesNotMatch(chip, /disabled/);
+    assert.equal(kindChip(section(html, kind), kind), "", `${kind}'s After work row holds no chip`);
   }
-  assert.equal(kindBox(html, "shape"), "");
-  assert.match(section(html, "shape"), /Always: a shape task grills on its own contract/);
+  assert.equal(kindChip(html, "pipeline"), "", "Conductor owns a pipeline's launch");
+  assert.equal(kindChip(html, "shape"), "", "a shape task grills on its own contract");
   assert.match(html, /runs the Library&#x27;s Grill action/);
+  assert.doesNotMatch(html, /Can&#x27;t reach the daemon/);
 
-  const chosen = render(DEFAULT_WORKFLOW_CONFIG, { skills: skills({ grillFirstKinds: ["plan", "bugfix"] }) });
-  assert.match(kindBox(chosen, "plan"), /checked=""/);
-  assert.match(kindBox(chosen, "bugfix"), /checked=""/);
-  assert.doesNotMatch(kindBox(chosen, "ship"), /checked/);
+  const chosen = renderGrill(skills({ grillFirstKinds: ["plan", "bugfix"] }));
+  assert.match(kindChip(chosen, "plan"), /aria-pressed="true"/);
+  assert.match(kindChip(chosen, "bugfix"), /aria-pressed="true"/);
+  assert.match(kindChip(chosen, "ship"), /aria-pressed="false"/);
   assert.doesNotMatch(chosen, /The grill skill is off/);
 });
 
@@ -129,12 +148,14 @@ test("a Grill me first default whose skill is off says the dispatch would be ref
     grillFirstKinds: ["ship"],
     skills: [{ id: "grill", name: "grill", description: "", category: "planning", enforcement: "triggered", enabled: false }],
   });
-  assert.match(render(DEFAULT_WORKFLOW_CONFIG, { skills: grillOff }), /The grill skill is off/);
-  assert.match(render(DEFAULT_WORKFLOW_CONFIG, { skills: skills({ grillFirstKinds: ["ship"], enabled: false }) }), /The grill skill is off/);
+  assert.match(renderGrill(grillOff), /The grill skill is off/);
+  assert.match(renderGrill(skills({ grillFirstKinds: ["ship"], enabled: false })), /The grill skill is off/);
   // No kind on, nothing is refused, so nothing is said.
-  assert.doesNotMatch(render(DEFAULT_WORKFLOW_CONFIG, { skills: { ...grillOff, view: { ...grillOff.view!, grillFirstKinds: [] } } }), /The grill skill is off/);
+  assert.doesNotMatch(renderGrill({ ...grillOff, view: { ...grillOff.view!, grillFirstKinds: [] } }), /The grill skill is off/);
 });
 
-test("before the Skills config answers, the Grill me first boxes are drawn disabled", () => {
-  assert.match(kindBox(render(DEFAULT_WORKFLOW_CONFIG, { skills: skills(null) }), "plan"), /disabled=""/);
+test("before the Skills config answers, the Grill me first chips are drawn disabled", () => {
+  const html = renderGrill(skills(null));
+  assert.match(html, /Can&#x27;t reach the daemon/);
+  assert.match(kindChip(html, "plan"), /disabled=""/);
 });

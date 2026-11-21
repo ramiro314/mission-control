@@ -15,7 +15,7 @@ async function shoot(target: Locator, name: string): Promise<void> {
 }
 
 /**
- * Settings -> Tasks -> Dispatch defaults: one after-work Workflow per task kind.
+ * Settings -> Tasks: one after-work Workflow per task kind, in that kind's own card.
  *
  * Driven through the browser because the claim spans two surfaces: a row chosen on the
  * Settings page is what the dispatch form preselects when that kind is picked, and what the
@@ -85,11 +85,11 @@ test("each kind's dispatch default is chosen in Settings and preselected at disp
   await shoot(dialog, "02-dispatch-bugfix-preselects-row");
   await kind.selectOption("scout");
   await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+  // Plan stays on its dispatch default, resolved with its plan storage when the task is saved,
+  // and here that default is the row's None.
   await kind.selectOption("plan");
-  // Plan follows the Dispatch default rather than pinning its row, because a plan's default
-  // resolves with its storage at save time (upstream #1362). That default is the row: None.
   await expect(afterWork).toHaveValue("__default");
-  expect(await selectedLabel(afterWork)).toContain("none");
+  expect(await selectedLabel(afterWork)).toBe("Dispatch default — none");
   await expect(dialog.getByText("No handoff")).toBeVisible();
   // Back to the kind the form opened on hands back what it opened with.
   await kind.selectOption("ship");
@@ -137,15 +137,12 @@ test("the rows live under Settings -> Tasks and nowhere under Workflows", async 
   await tasks.click();
   await expect(dashboard).toHaveURL(/#\/settings\/tasks$/);
   await expect(tasks).toHaveAttribute("aria-selected", "true");
-  // One section per kind, each holding that kind's own after-work Workflow.
-  const sections = dashboard.locator('[data-anchor="tasks/kinds"]');
+  const cards = dashboard.locator('[data-anchor="tasks/kinds"]');
   await expect(kindRow(dashboard, "ship")).toBeEnabled();
-  await expect(sections.getByRole("combobox", { name: /^Default after-work Workflow for / })).toHaveCount(7);
+  await expect(cards.getByRole("combobox", { name: /^Default after-work Workflow for / })).toHaveCount(7);
   for (const kind of ["ship", "scout", "plan", "chat", "bugfix", "document", "shape"]) {
-    const card = dashboard.locator(`[data-anchor="tasks/kind-${kind}"]`);
-    await expect(card.getByRole("heading", { name: kind, exact: true })).toBeVisible();
-    await expect(card.getByRole("combobox", { name: `Default after-work Workflow for ${kind} tasks`, exact: true }))
-      .toBeVisible();
+    await expect(dashboard.locator(`[data-anchor="tasks/kind-${kind}"]`)
+      .getByRole("combobox", { name: `Default after-work Workflow for ${kind} tasks`, exact: true })).toHaveCount(1);
   }
   const head = dashboard.locator(".settings-panel-head");
   await expect(head.getByRole("heading", { name: "Tasks", exact: true })).toBeVisible();
@@ -215,4 +212,227 @@ test("a Workflow chosen by hand while the rows load is not replaced when they la
   release();
   await expect.poll(() => selectedLabel(afterWork)).not.toContain("loading");
   await expect(afterWork).toHaveValue("__none");
+});
+
+/** Fill what a backlog save needs, and return the dialog's Kind and After work controls. */
+async function openDispatch(page: Page, repo: string, intent: string) {
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(repo);
+  await page.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill(intent);
+  return {
+    dialog,
+    kind: dialog.getByRole("combobox", { name: "Kind", exact: true }),
+    afterWork: dialog.getByRole("combobox", { name: "After work", exact: true }),
+  };
+}
+
+async function addToBacklog(page: Page, dialog: Locator, before?: () => void): Promise<{ workflowId: string | null }> {
+  const created = page.waitForResponse((response) =>
+    response.request().method() === "POST" && new URL(response.url()).pathname === "/api/tasks");
+  await dialog.getByRole("button", { name: "Add to backlog", exact: true }).click();
+  before?.();
+  const response = await created;
+  expect(response.ok(), await response.text()).toBe(true);
+  return (await response.json()) as { workflowId: string | null };
+}
+
+test("a guess carried through a second rowless kind is still corrected when the rows land", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { chat: GENERAL_REVIEW });
+  const release = await holdConfigReads(dashboard);
+  const { kind, afterWork } = await openDispatch(dashboard, daemon.repo, "talk it through");
+
+  // Scout and chat both rest on None as built-ins, so the hop to chat changes nothing yet...
+  await kind.selectOption("scout");
+  await expect(afterWork).toHaveValue("__none");
+  await kind.selectOption("chat");
+  await expect(afterWork).toHaveValue("__none");
+
+  // ...but chat's real row names a Workflow, and that is what arrives.
+  release();
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+});
+
+test("a task saved while the rows load is filed on the kind's real row, not the guess", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { bugfix: null });
+  const release = await holdConfigReads(dashboard);
+  const { dialog, kind, afterWork } = await openDispatch(dashboard, daemon.repo, "fix the flaky retry");
+
+  await kind.selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  const task = await addToBacklog(dashboard, dialog, release);
+  expect(task.workflowId).toBe(null);
+  // The rows landing mid-save must not read as a newer edit that keeps the filed form open.
+  await expect(dialog).toBeHidden();
+});
+
+test("a guess left by a closed form is still corrected when it reopens", async ({ dashboard, daemon }) => {
+  await setRows(daemon, dashboard, { bugfix: GENERAL_REVIEW });
+  const release = await holdConfigReads(dashboard);
+  const { dialog, kind, afterWork } = await openDispatch(dashboard, daemon.repo, "fix it later");
+  await kind.selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  release();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await expect(dialog.getByPlaceholder("What should this agent do?")).toHaveValue("fix it later");
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+});
+
+test("an explicit None on a plan survives a switch to local storage under a None plan row", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { plan: null });
+  const { dialog, kind, afterWork } = await openDispatch(dashboard, daemon.repo, "plan the migration");
+  await expect.poll(() => selectedLabel(afterWork)).not.toContain("loading");
+
+  await kind.selectOption("plan");
+  await afterWork.selectOption("__none");
+  await dialog.getByRole("button", { name: /^Advanced/ }).click();
+  const storage = dialog.getByRole("combobox", { name: "Plan storage", exact: true });
+  await expect(storage).toBeEnabled();
+  await storage.selectOption("local");
+  await expect(afterWork).toHaveValue("__none");
+
+  const task = await addToBacklog(dashboard, dialog);
+  expect(task.workflowId).toBe(null);
+});
+
+test("a guess left by a cancelled backlog edit is still corrected when the edit reopens", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { bugfix: GENERAL_REVIEW });
+  const title = "Edit before the rows";
+  const seeded = await dashboard.request.post(`${daemon.baseURL}/api/tasks`, {
+    data: { repoRoot: daemon.repo, title, intent: "decide the kind later", agent: "claude", kind: "ship", backlog: true },
+  });
+  expect(seeded.ok()).toBe(true);
+  const taskId = ((await seeded.json()) as { id: string }).id;
+  const layout = await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });
+  expect(layout.ok()).toBe(true);
+  await dashboard.reload();
+  const card = dashboard.locator(".bl-card", { hasText: title });
+  await expect(card).toBeVisible();
+
+  const release = await holdConfigReads(dashboard);
+  const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+  await card.getByRole("button", { name: title, exact: true }).click();
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  release();
+
+  await card.getByRole("button", { name: title, exact: true }).click();
+  await expect(dialog.getByRole("combobox", { name: "Kind", exact: true })).toHaveValue("bugfix");
+  await expect(afterWork).toHaveValue(GENERAL_REVIEW);
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(async () => {
+    const all = (await (await dashboard.request.get(`${daemon.baseURL}/api/tasks`)).json()) as Array<{ id: string; workflowId: string | null }>;
+    return all.find((task) => task.id === taskId)?.workflowId;
+  }).toBe(GENERAL_REVIEW);
+});
+
+test("reverting an edit drops its kind guess, so the restored Workflow is not retargeted", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { bugfix: GENERAL_REVIEW });
+  const title = "Pinned bugfix";
+  const seeded = await dashboard.request.post(`${daemon.baseURL}/api/tasks`, {
+    data: {
+      repoRoot: daemon.repo,
+      title,
+      intent: "fix the pinned thing",
+      agent: "claude",
+      kind: "bugfix",
+      workflowId: "builtin-workflow:bug-fix-review",
+      backlog: true,
+    },
+  });
+  expect(seeded.ok()).toBe(true);
+  const layout = await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });
+  expect(layout.ok()).toBe(true);
+  await dashboard.reload();
+  const card = dashboard.locator(".bl-card", { hasText: title });
+  await expect(card).toBeVisible();
+
+  const release = await holdConfigReads(dashboard);
+  const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+  await card.getByRole("button", { name: title, exact: true }).click();
+  await dialog.getByPlaceholder("What should this agent do?").fill("fix the pinned thing, differently");
+  await kind.selectOption("document");
+  await kind.selectOption("bugfix");
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+
+  await dialog.getByRole("button", { name: "Revert", exact: true }).click();
+  await expect(dialog.getByPlaceholder("What should this agent do?")).toHaveValue("fix the pinned thing");
+  const read = dashboard.waitForResponse((response) =>
+    response.url().endsWith("/api/workflows/config") && response.request().method() === "GET");
+  release();
+  await (await read).finished();
+  // A value assertion alone would pass before the rows-landed effect had a chance to run.
+  await dashboard.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 100)));
+  }));
+  // The pinned Bug Fix Review is the task's own choice, not a guess the bugfix row may replace.
+  await expect(afterWork).toHaveValue("builtin-workflow:bug-fix-review");
+});
+
+test("an edit whose kind guess cannot be checked is refused until After work is chosen", async ({
+  dashboard,
+  daemon,
+}) => {
+  await setRows(daemon, dashboard, { scout: GENERAL_REVIEW });
+  const title = "Edit with no rows";
+  const seeded = await dashboard.request.post(`${daemon.baseURL}/api/tasks`, {
+    data: { repoRoot: daemon.repo, title, intent: "look around later", agent: "claude", kind: "ship", backlog: true },
+  });
+  expect(seeded.ok()).toBe(true);
+  const task = (await seeded.json()) as { id: string; workflowId: string | null };
+  const storedWorkflowId = async () => {
+    const all = (await (await dashboard.request.get(`${daemon.baseURL}/api/tasks`)).json()) as Array<{ id: string; workflowId: string | null }>;
+    return all.find((entry) => entry.id === task.id)?.workflowId;
+  };
+  const layout = await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });
+  expect(layout.ok()).toBe(true);
+  await dashboard.reload();
+  const card = dashboard.locator(".bl-card", { hasText: title });
+  await expect(card).toBeVisible();
+
+  await dashboard.route("**/api/workflows/config", async (route) => {
+    if (route.request().method() === "GET") await route.fulfill({ status: 500, body: "unavailable" });
+    else await route.continue();
+  });
+  const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+  await card.getByRole("button", { name: title, exact: true }).click();
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("scout");
+  await expect(afterWork).toHaveValue("__none");
+
+  // Scout's real row names a Workflow, so saving the built-in None would be a silent change.
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog.getByText(/After work defaults on Settings → Tasks could not be read/)).toBeVisible();
+  await expect(dialog).toBeVisible();
+  expect(await storedWorkflowId()).toBe(task.workflowId);
+
+  await afterWork.selectOption(GENERAL_REVIEW);
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(storedWorkflowId).toBe(GENERAL_REVIEW);
 });

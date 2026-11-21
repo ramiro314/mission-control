@@ -720,6 +720,8 @@ function stubRegistry(operational: string[]) {
     reconcilePrUrlMergeability: () => {},
     reconcilePrMerges: (m: Map<string, number>) => merges.push(new Map(m)),
     reconcilePrClosures: () => {},
+    // No stacked pull requests here: every merge passes the stacked-merge gate unread.
+    isStackedTaskPr: () => false,
   };
 }
 

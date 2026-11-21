@@ -20,7 +20,7 @@ const { GRILL_FIRST_TASK_KINDS, taskGrillsFirst } = await import("../src/shared/
 const { GRILL_SKILL } = await import("../src/shared/skills.ts");
 const { PLAN_APPENDIX_MARKER, planContractAppendix } = await import("../src/server/plans/prompt.ts");
 const { PLAN_DECISIONS_TOOL } = await import("../src/server/plans/tools.ts");
-const { kindMissionMcpRequirement } = await import("../src/server/mission-mcp.ts");
+const { grillFirstMissionMcpTools, kindMissionMcpRequirement } = await import("../src/server/mission-mcp.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { GRILL_FIRST_HEADING, grillAction, grillFirstAppendix, grillFirstDispatchBlock } =
   await import("../src/server/grill-first.ts");
@@ -55,10 +55,16 @@ test("Grill is a built-in session action, editable in place, requiring the grill
   assert.equal(grill.requiredSkillId, GRILL_SKILL);
   assert.deepEqual(grill.completion, { kind: "session_turn" });
   assert.equal(grill.editable, true);
+  assert.equal(grill.workflowStage, false, "never a Workflow stage, a property apart from editability");
   assert.match(grill.promptMarkdown, /`request_plan_decisions` form/);
   assert.match(grill.promptMarkdown, /may open with nothing selected/);
   assert.match(grill.promptMarkdown, /A dismissed\nround ends the work/);
   assert.equal(BUILTIN_SESSION_ACTIONS.find((action) => action.id === RETRO_SESSION_ACTION_ID)?.editable, undefined);
+  assert.deepEqual(
+    BUILTIN_SESSION_ACTIONS.filter((action) => action.workflowStage === false).map((action) => action.id),
+    [GRILL_SESSION_ACTION_ID],
+    "Grill is the only built-in kept off Workflow stages",
+  );
 });
 
 test("every kind but shape offers it, and only a task pinned on grills", () => {
@@ -121,6 +127,12 @@ test("a grill-first launch pre-approves request_plan_decisions, whatever its kin
   const ship = mkTask({ kind: "ship", grillFirst: true });
   assert.deepEqual(kindMissionMcpRequirement(ship, null)?.tools, [PLAN_DECISIONS_TOOL]);
   assert.equal(kindMissionMcpRequirement(mkTask({ kind: "ship", grillFirst: false }), null), null, "off, unchanged");
+  // One rule for both launch paths: the fresh launch's requirement and a live assignment's probe
+  // both read it, so changing the interview's tool changes it for each.
+  for (const kind of GRILL_FIRST_TASK_KINDS) {
+    assert.deepEqual(grillFirstMissionMcpTools(mkTask({ kind, grillFirst: true })), [PLAN_DECISIONS_TOOL], kind);
+    assert.deepEqual(grillFirstMissionMcpTools(mkTask({ kind, grillFirst: false })), [], kind);
+  }
 });
 
 test("one rule pins the task, from each kind's own default", () => {
@@ -165,6 +177,108 @@ test("creation pins each kind's default, a dispatch overrides it, and an edit wr
   const toShape = await tasks.update(shipDefault.id, { kind: "shape" });
   assert.equal(toShape.ok, true, toShape.error);
   assert.equal(getTask(shipDefault.id)?.grillFirst, false);
+});
+
+test("a dashboard pin edit held at the tools probe while another edit lands is re-prepared on the newer row", async () => {
+  // The probe is the await an edit makes AFTER reading its base row. Held here on purpose, so
+  // the other write lands between that read and this edit's own write, every time.
+  let probes = 0;
+  let reached!: () => void;
+  const atProbe = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const registry = new Registry();
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, undefined, {
+    missionTools: async () => {
+      probes += 1;
+      if (probes === 1) {
+        reached();
+        await held;
+      }
+      return { available: true, reason: null };
+    },
+  });
+  applySkillsConfig({ grillFirstKinds: [] });
+  const task = tasks.create({
+    repoRoot: "/repos/demo", intent: "do it", title: "Race", kind: "ship", agent: "claude", backlog: true,
+  });
+  const base = registry.getTask(task.id);
+
+  const pinning = tasks.update(task.id, { grillFirst: true });
+  await atProbe;
+  assert.equal(registry.getTask(task.id), base, "the pin edit has read its base row and is held");
+  // A title edit needs no probe, so it writes while the pin edit is still held.
+  const saved = await tasks.update(task.id, { title: "Saved meanwhile" });
+  assert.equal(saved.ok, true, saved.error);
+  assert.notEqual(registry.getTask(task.id), base, "the row the pin edit read is now stale");
+  release();
+
+  const pinned = await pinning;
+  assert.equal(pinned.ok, true, pinned.error);
+  assert.equal(probes, 2, "the stale row was detected and the edit prepared again from the newer one");
+  assert.equal(registry.getTask(task.id), pinned.task);
+  assert.equal(getTask(task.id)?.title, "Saved meanwhile", "the other edit survives");
+  assert.equal(getTask(task.id)?.grillFirst, true, "and so does the pin");
+});
+
+test("a pin edit whose retry is overtaken too is refused rather than written over the newer row", async () => {
+  // The same hold on both preparations: a dashboard edit retries once, then reports the race.
+  let probes = 0;
+  const holds: Array<() => void> = [];
+  const arrivals: Array<() => void> = [];
+  const arrived = [0, 1].map(() => new Promise<void>((resolve) => arrivals.push(resolve)));
+  const registry = new Registry();
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, undefined, {
+    missionTools: async () => {
+      const n = probes++;
+      arrivals[n]?.();
+      await new Promise<void>((resolve) => holds.push(resolve));
+      return { available: true, reason: null };
+    },
+  });
+  applySkillsConfig({ grillFirstKinds: [] });
+  const task = tasks.create({
+    repoRoot: "/repos/demo", intent: "do it", title: "Race", kind: "ship", agent: "claude", backlog: true,
+  });
+
+  const pinning = tasks.update(task.id, { grillFirst: true });
+  await arrived[0];
+  assert.equal((await tasks.update(task.id, { title: "First meanwhile" })).ok, true);
+  holds[0]!();
+  // Raced against the edit settling, so an edit that never retries fails here rather than hanging.
+  const next = await Promise.race([arrived[1]!.then(() => "retried"), pinning.then(() => "settled")]);
+  assert.equal(next, "retried", "the stale first preparation was detected and prepared again");
+  assert.equal((await tasks.update(task.id, { title: "Second meanwhile" })).ok, true);
+  holds[1]!();
+
+  const result = await pinning;
+  assert.equal(result.ok, false);
+  assert.match(result.error!, /task changed while preparing the update; retry/);
+  assert.equal(probes, 2, "one retry, no more");
+  assert.equal(getTask(task.id)?.title, "Second meanwhile", "the newer write stands");
+  assert.equal(getTask(task.id)?.grillFirst, false, "and the refused pin was not written over it");
+});
+
+test("a dashboard edit never undoes a dispatch that landed while it was being prepared", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  applySkillsConfig({ grillFirstKinds: [] });
+  const task = tasks.create({
+    repoRoot: "/repos/demo", intent: "do it", title: "Race", kind: "ship", agent: "claude", backlog: true,
+  });
+  const pinning = tasks.update(task.id, { grillFirst: true });
+  // Lands after the edit read its row, while it waits on the tools probe.
+  await Promise.resolve();
+  registry.upsertTask({ ...registry.getTask(task.id)!, status: "running" });
+  const result = await pinning;
+  assert.equal(result.ok, false);
+  assert.match(result.error!, /not in the backlog/);
+  assert.equal(getTask(task.id)?.status, "running");
+  assert.equal(getTask(task.id)?.grillFirst, false);
 });
 
 test("the Grill action is edited in place and reset, and delivery reads what is saved", () => {

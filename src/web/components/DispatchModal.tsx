@@ -1,6 +1,6 @@
 import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   AGENT_TYPES,
   TASK_KINDS,
@@ -54,12 +54,14 @@ import {
 } from "@shared/task-source.ts";
 import {
   api,
+  cachedRepos,
   fetchEnvironmentChecks,
   fetchHarnessesConfig,
   fetchPipelineRepos,
-  fetchRepos,
+  fetchReposAnswer,
   fetchSkills,
   fetchTaskSources,
+  onCachedReposDropped,
   type DispatchResult,
 } from "../lib/api.ts";
 import {
@@ -97,7 +99,6 @@ import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { DeleteButton } from "./DeleteButton.tsx";
 import { LabelChips, ScheduleSwitch } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import { InfoTip } from "./InfoTip.tsx";
 import { GRILL_FIRST_TIP } from "../lib/grill-first.ts";
 import { DispatchModeToggle } from "./DispatchModeToggle.tsx";
 import { DispatchPersonaField, dispatchPersonaSummary } from "./DispatchPersonaField.tsx";
@@ -276,6 +277,10 @@ function repoCollision(d: DispatchDraft): string | null {
  */
 const NO_STASH = Symbol("no-stash");
 type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
+type ProvisionalWorkflow = { kind: TaskKind; workflowId: string | null };
+
+const UNRESOLVED_KIND_DEFAULT =
+  "The After work defaults on Settings → Tasks could not be read, so this kind's After work default is unknown. Choose an After work Workflow, or try again.";
 type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
 
 /**
@@ -429,51 +434,85 @@ export function defaultEffortOptionLabel(
 const AGENT_FIELD_TIP =
   "Which harness this task is dispatched to - switching resets the model and effort overrides";
 /**
- * Grill me first: this dispatch's override of its kind's default on Settings -> Tasks. What it
- * does is said once, on the "i" beside it, so the crew row stays one line.
+ * Grill me first: this dispatch's override of its kind's default on Settings -> Tasks, as a
+ * toggle chip in a bar under the Task box - where the request is written, which is when its
+ * author knows whether it is clear enough to start on. What it does is the chip's tooltip; the
+ * bar's trailing text says where the value came from.
  *
- * An untouched box sends nothing and the daemon pins the kind's default, so the box only claims
- * an answer once it knows that default: indeterminate, and disabled, while it loads;
- * indeterminate but choosable when it could not be read. It never shows an "off" it would not
- * send.
+ * An untouched chip sends nothing and the daemon pins the kind's default, so the chip only
+ * claims an answer once it knows that default: `aria-pressed="mixed"`, and disabled, while it
+ * loads; mixed but choosable when it could not be read. It never shows an "off" it would not
+ * send. Outside the Task `<label>` on purpose: inside it, the chip's text would become part of
+ * the text box's accessible name.
  */
-function GrillFirstField({
+function GrillFirstBar({
+  kind,
   choice,
   fallback,
+  editing,
   className,
   onChange,
 }: {
+  kind: TaskKind;
   /** The choice made on this form, or undefined to follow the default. */
   choice: boolean | undefined;
   /** The kind's default: undefined while loading, null when it could not be read. */
   fallback: boolean | null | undefined;
+  /** The backlog editor, whose value is the task's own pin rather than a default to reset to. */
+  editing: boolean;
   className: string;
-  onChange: (grillFirst: boolean) => void;
+  onChange: (grillFirst: boolean | undefined) => void;
 }): React.JSX.Element {
+  const label = TASK_KIND_INFO[kind].label;
   const value = choice ?? fallback;
   const known = typeof value === "boolean";
+  const overridden = choice !== undefined && typeof fallback === "boolean" && choice !== fallback;
   const tip = value === undefined
     ? `${GRILL_FIRST_TIP} Reading this kind's default from Settings → Tasks…`
     : value === null
-      ? `${GRILL_FIRST_TIP} This kind's default could not be read, so an untouched box follows it; tick or clear it to choose for this task.`
+      ? `${GRILL_FIRST_TIP} This kind's default could not be read, so an untouched chip follows it; click it to choose for this task.`
       : GRILL_FIRST_TIP;
+  // Where the value came from. A choice reads as this task's own unless it merely repeats a
+  // default the form can see; the editor's value is always the task's pin.
+  const status = value === undefined
+    ? `Reading the ${label} default…`
+    : choice === undefined
+      ? fallback === null ? `${label} default unknown` : `Follows the ${label} default`
+      : editing || fallback !== choice
+        ? `${choice ? "On" : "Off"} for this task`
+        : `Same as the ${label} default`;
   return (
-    <div className={`dispatch-grill-first${className}`}>
-      <label className="dispatch-grill-first-control">
-        <Tooltip label="Interview me before this task starts its work">
-          <input
-            type="checkbox"
-            checked={value === true}
-            disabled={value === undefined}
-            ref={(el) => {
-              if (el) el.indeterminate = !known;
-            }}
-            onChange={(e) => onChange(e.target.checked)}
-          />
-        </Tooltip>
-        <span className="field-label">Grill me first</span>
-      </label>
-      <InfoTip about="Grill me first" text={tip} />
+    <div className={`dispatch-composer-bar${className}`}>
+      <Tooltip label={tip}>
+        <button
+          type="button"
+          className="grill-chip dispatch-grill-chip"
+          aria-pressed={known ? value : "mixed"}
+          disabled={value === undefined}
+          onClick={() => onChange(!(value === true))}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden focusable="false">
+            <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" />
+            <path d="M6.6 5.6a1.4 1.4 0 1 1 1.9 1.3c-.4.2-.5.4-.5.8" />
+            <circle cx="8" cy="9.1" r=".3" />
+          </svg>
+          Grill me first
+          {overridden && <span className="grill-chip-dot" aria-hidden />}
+        </button>
+      </Tooltip>
+      <span className="dispatch-composer-status">
+        {status}
+        {overridden && !editing && (
+          <>
+            {" · "}
+            <Tooltip label={`Follow the ${label} default again`}>
+              <button type="button" className="link-btn" onClick={() => onChange(undefined)}>
+                Reset
+              </button>
+            </Tooltip>
+          </>
+        )}
+      </span>
     </div>
   );
 }
@@ -673,6 +712,8 @@ export function DispatchLayer({
   const editTask = requested?.kind === "edit" ? requested.task : null;
   const tourDemo = requested?.kind === "tour" ? requested.demo : null;
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
+  // Lives with the draft, which outlives the modal: a guess left by a closed form is still a guess.
+  const draftProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
   // The tour demonstrates the real form without borrowing or erasing the operator's draft.
   // This temporary slot lives beside the owner's existing new/edit slots and disappears when
   // a later tour id replaces it. It is not a second Dispatch owner or a persisted draft.
@@ -729,6 +770,7 @@ export function DispatchLayer({
   // frame of whatever the slot last held - an empty form, or the PREVIOUS task's text -
   // and a task whose intent blinks blank is a task that looks like it lost its intent.
   const [edit, setEdit] = useState<EditSlot | null>(null);
+  const editProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
   const stored = editTask ? draftFromTask(editTask) : null;
   // Which task the open form is over. Held as state so the staleness test below runs
   // exactly once per opening, and never again while the form is up: re-testing on every
@@ -742,6 +784,11 @@ export function DispatchLayer({
     // that no longer exists. Dropping it costs an abandoned draft; keeping it costs
     // whoever made that change their change, silently, on the next Save.
     if (openOn && edit?.id === openOn && stored && !draftsEqual(edit.seed, stored)) setEdit(null);
+    // The guess belongs to the slot: a form opened without that slot, on another task or
+    // after it was saved, dropped or reverted, must not inherit it.
+    if (openOn && !(edit?.id === openOn && !(stored && !draftsEqual(edit.seed, stored)))) {
+      editProvisionalWorkflow.current = null;
+    }
   }
   /**
    * The mode the OPERATOR last chose, as distinct from one a launch intent imposed.
@@ -918,6 +965,9 @@ export function DispatchLayer({
    * means when the thing it was is still moving.
    */
   const onEditRevert = useCallback(() => {
+    // The form stays open, so the reset on opening never runs: a guess that matches the
+    // restored Workflow would otherwise retarget it when the rows land.
+    editProvisionalWorkflow.current = null;
     setEdit(null);
   }, []);
 
@@ -1062,6 +1112,7 @@ export function DispatchLayer({
         sessions={sessions}
         draft={editDraft}
         onDraftChange={onEditDraftChange}
+        provisionalWorkflowRef={editProvisionalWorkflow}
         onAttachmentsChange={onEditAttachmentsChange}
         onRevert={onEditRevert}
         onClose={onClose}
@@ -1116,6 +1167,7 @@ export function DispatchLayer({
       sessions={sessions}
       draft={draft}
       onDraftChange={setDraft}
+      provisionalWorkflowRef={draftProvisionalWorkflow}
       onAttachmentsChange={onAttachmentsChange}
       onRevert={onNewRevert}
       onClose={onClose}
@@ -1152,6 +1204,7 @@ function DispatchModal({
   sessions,
   draft,
   onDraftChange,
+  provisionalWorkflowRef,
   onAttachmentsChange,
   onRevert,
   onClose,
@@ -1179,6 +1232,7 @@ function DispatchModal({
   sessions: Session[];
   draft: DispatchDraft;
   onDraftChange: (draft: DispatchDraft) => void;
+  provisionalWorkflowRef?: MutableRefObject<ProvisionalWorkflow | null>;
   onAttachmentsChange: (attachments: PendingAttachment[]) => void;
   /** Discard the working copy - an empty form for a create, the live row for an edit. */
   onRevert: () => void;
@@ -1248,8 +1302,13 @@ function DispatchModal({
   const availableTaskKinds: readonly TaskKind[] =
     mode.kind === "single" || mode.kind === "tour" ? DISPATCH_TASK_KINDS : BACKLOG_TASK_KINDS;
   const backlogCompatible = taskKindAllowsBacklog(draft.kind);
-  const [repos, setRepos] = useState<string[]>([]);
-  const [reposLoading, setReposLoading] = useState(true);
+  // Opens on the last list this window received, so a rescan behind the daemon never leaves
+  // the picker empty. "Loading" means there is no list at all yet, never "a newer one is due".
+  const [repos, setRepos] = useState<string[]>(() => cachedRepos() ?? []);
+  const [reposLoading, setReposLoading] = useState(() => cachedRepos() === null);
+  // Every read of this load failed and the window holds no list: no answer, which is not the
+  // same as an index with no repositories in it.
+  const [reposUnavailable, setReposUnavailable] = useState(false);
   const [pipelineRepos, setPipelineRepos] = useState<Set<string>>(new Set());
   const [pipelineLaunchRuntime, setPipelineLaunchRuntime] =
     useState<PipelineLaunchRuntime | null>(null);
@@ -1636,10 +1695,11 @@ function DispatchModal({
    * built-ins. Held so the rows can correct it when they land: the value is otherwise
    * indistinguishable from an operator's pick and would override their configured row.
    */
-  const provisionalWorkflow = useRef<{ kind: TaskKind; workflowId: string | null } | null>(null);
+  const ownProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
+  const provisionalWorkflow = provisionalWorkflowRef ?? ownProvisionalWorkflow;
 
   /**
-   * A kind switch arms that kind's After work on Settings -> Tasks.
+   * A kind switch arms that kind's After work row under Settings -> Tasks.
    *
    * Ship is the kind the stash belongs to: leaving it puts the current choice aside, and
    * returning hands it back, unless the operator chose an after-work Workflow by hand in
@@ -1652,6 +1712,7 @@ function DispatchModal({
    */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
+    const guess = provisionalWorkflow.current;
     provisionalWorkflow.current = null;
     if (kind === "ship") {
       const stashed = stashedWorkflowId.current;
@@ -1666,6 +1727,10 @@ function DispatchModal({
       && !hasReviewableDiff(draft.kind)
       && target === taskDefaultWorkflowId(draft.kind, rows, storage)
     ) {
+      // The rows only agree as built-ins, so a guess still standing stays a guess.
+      if (guess && guess.kind === draft.kind && guess.workflowId === draft.workflowId) {
+        provisionalWorkflow.current = { kind, workflowId: guess.workflowId };
+      }
       return {};
     }
     if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
@@ -1675,16 +1740,17 @@ function DispatchModal({
   }
 
   // The rows landed after a kind switch guessed at them: replace the guess with the kind's
-  // real row, unless the operator has since chosen, or the kind has moved on.
+  // real row, unless the operator has since chosen, or the kind has moved on. Not while a
+  // save is out: it captured this draft, and a changed one stops it closing the form.
   useEffect(() => {
     const guess = provisionalWorkflow.current;
-    if (!workflowConfig || !guess) return;
+    if (!workflowConfig || !guess || busy) return;
     provisionalWorkflow.current = null;
     if (draft.kind !== guess.kind || draft.workflowId !== guess.workflowId) return;
     const resolved = taskDefaultWorkflowId(guess.kind, workflowConfig.kindWorkflowDefaults, effectivePlanStorage);
     if (resolved !== guess.workflowId) update({ workflowId: resolved });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when the rows arrive
-  }, [workflowConfig]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the rows arrive, or once a save settles
+  }, [workflowConfig, busy]);
 
   /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
   function dependenciesForKind(kind: TaskKind): Partial<DispatchDraft> {
@@ -2289,14 +2355,52 @@ function DispatchModal({
     };
   }, [harnessesRevision]);
 
-  // Index the workspace's repos so the base can be searched/picked.
-  // Re-fetched on every open so a freshly-cloned repo shows up without a full app reload.
+  // Index the workspace's repos so the base can be searched/picked. Two reads on every open:
+  // the daemon's last scan, which answers at once, and a current one, which waits for a walk
+  // that may be slow under load. Each answers with the newest list the window holds - ordered
+  // by scan, not arrival - so a freshly cloned repo still shows up without a full app reload,
+  // a late older answer never replaces it, and the picker is never empty while a rescan runs.
+  //
+  // When the window drops its list while this form is open - another window saved the
+  // indexed directories, or settings were restored - the picker lets go of it at once rather
+  // than keep offering a repository from a directory no longer indexed, and asks again.
+  //
+  // Only the latest load's reads are shown. One still out when the list was dropped resolves
+  // for the directories that were; applying it would clear "indexing workspace…" and print
+  // "0 repos found" over a load that has not answered yet.
   useEffect(() => {
     let alive = true;
-    void fetchRepos().then((list) => {
+    let currentLoad = 0;
+    const load = (): void => {
+      const thisLoad = ++currentLoad;
+      let unanswered = 2;
+      const take = ({ repos: list, outcome }: Awaited<ReturnType<typeof fetchReposAnswer>>): void => {
+        if (!alive || thisLoad !== currentLoad) return;
+        unanswered -= 1;
+        // A newer load is already out (the drop listener started it).
+        if (outcome === "dropped") return;
+        if (outcome === "answered" || outcome === "held") {
+          setRepos(list);
+          setReposLoading(false);
+          setReposUnavailable(false);
+          return;
+        }
+        // Failed with nothing held: say so once both reads have, rather than "0 repos".
+        if (unanswered === 0) {
+          setReposLoading(false);
+          setReposUnavailable(true);
+        }
+      };
+      void fetchReposAnswer().then(take);
+      void fetchReposAnswer({ rescan: true }).then(take);
+    };
+    load();
+    const stopListening = onCachedReposDropped(() => {
       if (!alive) return;
-      setRepos(list);
-      setReposLoading(false);
+      setRepos([]);
+      setReposLoading(true);
+      setReposUnavailable(false);
+      load();
     });
     void fetchSkills().then((skills) => {
       if (!alive) return;
@@ -2324,6 +2428,7 @@ function DispatchModal({
     });
     return () => {
       alive = false;
+      stopListening();
     };
   }, []);
 
@@ -2491,6 +2596,28 @@ function DispatchModal({
     else (onDeleted ?? onClose)();
   }
 
+  /**
+   * The draft's Workflow, with a kind-switch guess still standing from before the rows loaded
+   * resolved against the real rows first: saved as-is it would pin a built-in the operator
+   * may have replaced. A create that cannot read them sends no Workflow, so the daemon
+   * resolves the row itself. An edit cannot: no Workflow there keeps the old kind's, so it
+   * comes back unresolved and the save is refused until the rows can be read.
+   */
+  async function settledWorkflowId(
+    d: DispatchDraft,
+  ): Promise<{ resolved: true; workflowId: DispatchDraft["workflowId"] } | { resolved: false }> {
+    const guess = provisionalWorkflow.current;
+    if (workflowConfig || !guess || guess.kind !== d.kind || guess.workflowId !== d.workflowId) {
+      return { resolved: true, workflowId: d.workflowId };
+    }
+    const config = await workflowRequest<WorkflowConfig>("/api/workflows/config").catch(() => null);
+    if (!config) return editing ? { resolved: false } : { resolved: true, workflowId: undefined };
+    return {
+      resolved: true,
+      workflowId: taskDefaultWorkflowId(d.kind, config.kindWorkflowDefaults, d.planStorage ?? planStorage ?? "repository"),
+    };
+  }
+
   async function submit(dispatchNow: boolean): Promise<void> {
     // Ensemble has no route through here. Its primary action and Cmd/Ctrl+Enter follow
     // Review-then-Launch through `useEnsembleLaunch`; its shelve button is not rendered.
@@ -2546,7 +2673,14 @@ function DispatchModal({
     // field, update sends an explicit null to take an override back off a row that has
     // one. Either way the daemon resolves the default at launch, so a task shelved
     // today runs on the default in force when it is finally picked up.
-    const patch = editing ? taskUpdatePatch(editing, submitted, intent) : null;
+    const settled = await settledWorkflowId(submitted);
+    if (!settled.resolved) {
+      setPending(null);
+      fail(UNRESOLVED_KIND_DEFAULT);
+      return;
+    }
+    const { workflowId } = settled;
+    const patch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent) : null;
     // One call per mode, chosen by the mode itself rather than by asking which optional inputs
     // happen to be present: an edit PATCHes its row, the tour hands its own fixed dispatcher
     // the repo and nothing else, and a Single dispatch posts the form.
@@ -2574,7 +2708,7 @@ function DispatchModal({
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
           personaId: draftPersonaId(submitted) ?? undefined,
-          workflowId: submitted.workflowId,
+          workflowId,
           ...(submitted.kind === "plan" ? { planStorage: submitted.planStorage } : {}),
           // Omitted unless chosen here, so the daemon pins the Settings default itself.
           grillFirst: isGrillFirstTaskKind(submitted.kind) ? submitted.grillFirst : undefined,
@@ -2649,7 +2783,9 @@ function DispatchModal({
           <span className="field-hint">
             {reposLoading
               ? "indexing workspace…"
-              : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
+              : reposUnavailable
+                ? "workspace index unavailable - type a path"
+                : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
           </span>
         )}
       </span>
@@ -3015,6 +3151,16 @@ function DispatchModal({
         )}
 
         {taskField}
+        {!ensembleMode && !tourDemo && isGrillFirstTaskKind(draft.kind) && (
+          <GrillFirstBar
+            kind={draft.kind}
+            choice={draft.grillFirst}
+            fallback={grillFirstKinds ? grillFirstKinds.includes(draft.kind) : grillFirstKinds}
+            editing={editing !== null}
+            className={guidedDim}
+            onChange={(grillFirst) => update({ grillFirst })}
+          />
+        )}
 
         {!ensembleMode && (
         <>
@@ -3194,14 +3340,6 @@ function DispatchModal({
                 : kindBehavior.constraint}
           </span>
           {usesHarness && <ModelCatalogNotice agent={draft.agent} />}
-          {isGrillFirstTaskKind(draft.kind) && (
-            <GrillFirstField
-              choice={draft.grillFirst}
-              fallback={grillFirstKinds ? grillFirstKinds.includes(draft.kind) : grillFirstKinds}
-              className={guidedDim}
-              onChange={(grillFirst) => update({ grillFirst })}
-            />
-          )}
           {kindUnavailable && (
             <span className={`dispatch-workflow-warning${guidedDim}`}>
               This kind is available only when conductor is enabled for the selected repository.
@@ -3254,7 +3392,8 @@ function DispatchModal({
                         const savedDefault = editing?.kind === "plan"
                           && editing.workflowId === taskDefaultWorkflowId("plan", workflowConfig?.kindWorkflowDefaults ?? {}, editing.planPolicy?.storage ?? "repository");
                         update({ planStorage: storage,
-                          ...(draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
+                          // A None plan row makes an explicit null look like the default.
+                          ...(draft.workflowId !== null && draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
                             ? undefined
                             : taskDefaultWorkflowId("plan", workflowConfig?.kindWorkflowDefaults ?? {}, storage ?? planStorage ?? "repository") } : {}) });
                       }}>

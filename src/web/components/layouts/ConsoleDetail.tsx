@@ -1,4 +1,6 @@
 import { SessionControlToggle } from "../SessionControlToggle.tsx";
+import { BadgePauseHalf, PausedBand, PauseToolbarButton } from "../PauseControls.tsx";
+import { usePauseConsoleControls } from "../../lib/pause-controls.ts";
 import { featureVisit } from "../../lib/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
@@ -215,9 +217,9 @@ export function ConsoleDetail({
   view: SessionViewProps;
   session: Session;
   /**
-   * The Board's way back, drawn at the head's leading edge. Given only when the Board opened
-   * this session with no rail beside it - its column had no card to list - so the rail head's
-   * back button is not on screen to do the job.
+   * The Board's way back, drawn at the head's leading edge. Given only when the rail head's back
+   * button is not on screen to do the job: the Board opened this session with no rail beside it
+   * (its column had no card to list), or the rail beside it is folded to its strip.
    */
   onBack?: () => void;
 }): React.JSX.Element {
@@ -550,6 +552,8 @@ export function ConsoleDetail({
   });
 
   useEffect(() => (headRef.current ? observeDetailHead(headRef.current) : undefined), []);
+  // The pause controls the operator chose for the console (Settings > Display > Pause controls).
+  const pauseControls = usePauseConsoleControls();
 
   return (
     <div className={`cdetail tone-${st.tone}`}>
@@ -686,6 +690,12 @@ export function ConsoleDetail({
           onOpenReviews={() => view.onOpenReviews(session.id)}
           display={st}
         />
+        {/* The pause half sits flush against the state badge: pausing is an action on the
+            state, so it lives on the badge that names it (Pause controls > State badge). Its
+            own child of the header, never wrapped with the badge: the deepest rung's allowlist
+            keeps `.badge` and sheds everything else, so it takes the half and never the review
+            button. */}
+        {pauseControls.has("badge") && <BadgePauseHalf session={session} />}
         <span className="detail-head-spacer" />
         {/* Leads the runtime cluster - mode, model, context, cost - because the posture
             governs the session while the other three are consequences of running under
@@ -699,6 +709,11 @@ export function ConsoleDetail({
         <RuntimeMetaRow meta={session.meta} session={session} />
         <CostChip cost={session.cost} />
       </header>
+
+      {/* Paused, or the priority session: a band of its own under the header, the way the
+          resident and blocker bands sit, with the way back in it. Part of the State badge
+          placement; the other placements carry their own resume. */}
+      {pauseControls.has("badge") && <PausedBand session={session} />}
 
       {/* The resident this session is, under the header rather than in it: the header's
           one-row fit already has a give-way order to keep, and the band is the surface the
@@ -855,20 +870,25 @@ export function ConsoleDetail({
           session={session}
           registerLaunchers={view.registerLaunchers}
           leading={
-            // Only on Conversation, because unlike the launchers this control is about the
-            // pane you are reading rather than about somewhere else to open the session.
-            // On Files or Diff it would choose a rendering for a surface that is
-            // not on screen, changing nothing a reader can see.
-            tab === "conversation" ? (
-              <>
-                <SessionControlToggle key={session.id} session={session} />
-                <ConversationViewToggle
-                  terminal={conversationView.view === "terminal"}
-                  overridden={conversationView.overridden}
-                  onChange={conversationView.setView}
-                />
-              </>
-            ) : null
+            <>
+              {/* On every tab, unlike the two below: pausing is about the session, not about
+                  the pane you are reading. */}
+              {pauseControls.has("toolbar") && <PauseToolbarButton session={session} />}
+              {/* Only on Conversation, because unlike the launchers this control is about the
+                  pane you are reading rather than about somewhere else to open the session.
+                  On Files or Diff it would choose a rendering for a surface that is
+                  not on screen, changing nothing a reader can see. */}
+              {tab === "conversation" ? (
+                <>
+                  <SessionControlToggle key={session.id} session={session} />
+                  <ConversationViewToggle
+                    terminal={conversationView.view === "terminal"}
+                    overridden={conversationView.overridden}
+                    onChange={conversationView.setView}
+                  />
+                </>
+              ) : null}
+            </>
           }
         />
 

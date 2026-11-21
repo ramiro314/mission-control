@@ -17,6 +17,7 @@ import type {
 } from "@shared/types.ts";
 import type { LineSummary } from "@shared/line.ts";
 import type { StorageHealth } from "@shared/storage-health.ts";
+import { EMPTY_PAUSE_STATE, type PauseState } from "@shared/pause.ts";
 import type {
   PersonaView,
   SessionAction,
@@ -43,6 +44,7 @@ import { dropSessionArtifactState } from "./lib/conversationArtifacts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
+import { forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
   observeSettingsRestored,
@@ -206,6 +208,11 @@ export interface MissionState {
    */
   keepAwakeStatus: KeepAwakeStatus | null;
   /**
+   * Pause all and the priority session. Starts empty and is replaced whole by the snapshot and
+   * every `pause_state` frame; an older daemon that sends none reads as nothing paused.
+   */
+  pauseState: PauseState;
+  /**
    * Backups and storage problems, or null before the first snapshot and from an older daemon
    * that sends none. Replaced whole by every `storage_health` frame.
    */
@@ -307,6 +314,7 @@ export function useEventStream(): MissionState {
   const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
   const [keepAwakeStatus, setKeepAwakeStatus] = useState<KeepAwakeStatus | null>(null);
+  const [pauseState, setPauseState] = useState<PauseState>(EMPTY_PAUSE_STATE);
   const [storageHealth, setStorageHealth] = useState<StorageHealth | null>(null);
   const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [worktreesRevision, setWorktreesRevision] = useState(0);
@@ -385,6 +393,7 @@ export function useEventStream(): MissionState {
         case "snapshot":
           // Before the sessions below, so their first render already shortens their paths.
           setDaemonHome(msg.home ?? "");
+          if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
           setSessions(new Map(msg.sessions.map((s) => [s.id, s])));
@@ -454,6 +463,8 @@ export function useEventStream(): MissionState {
           // development this build can connect to an older daemon whose snapshot has no
           // such field, and `undefined` must read as unknown - never as on.
           setKeepAwakeStatus(msg.keepAwake ?? null);
+          // Version-skew guard again: an older daemon's snapshot carries no pause state.
+          setPauseState(msg.pause ?? EMPTY_PAUSE_STATE);
           // The `?? null` is the version-skew guard: an older daemon's snapshot has no field.
           setStorageHealth(msg.storageHealth ?? null);
           // A fresh window loaded current settings before this first snapshot, so the marker
@@ -705,6 +716,10 @@ export function useEventStream(): MissionState {
         case "keep_awake_status":
           setKeepAwakeStatus(msg.status);
           break;
+        // Replaced whole: two singletons the daemon owns, so every window converges on them.
+        case "pause_state":
+          setPauseState(msg.state);
+          break;
         // Replaced whole: the aggregate is one recompute, and a patch could draw a problem
         // list from one pass beside backup status from another.
         case "storage_health":
@@ -721,6 +736,13 @@ export function useEventStream(): MissionState {
         case "storage_config_changed":
           setStorageConfigRevision((n) => n + 1);
           break;
+        // Not counted: nothing re-reads on it. A repository list answering for any other index
+        // is dropped (an open picker re-asks), and the next Dispatch open asks again. The
+        // snapshot carries the same identity, so a window that was disconnected for this frame
+        // still catches up on reconnect - without dropping a list that is still right.
+        case "repo_index_changed":
+          noteRepoIndexIdentity(msg.identity);
+          break;
         // Counted: the frame carries no rows, and the hook holding them re-reads the route.
         case "attention_dismissals_changed":
           setAttentionDismissalsRevision((n) => n + 1);
@@ -736,6 +758,8 @@ export function useEventStream(): MissionState {
           setHistoryRevision((n) => n + 1);
           break;
         case "settings_restored":
+          // A restore can replace the indexed directories along with everything else.
+          forgetCachedRepos();
           latestSettingsRestoreRequestIdRef.current = msg.requestId;
           if (observeSettingsRestored(msg) === "external") setSettingsRestoreNotice(msg);
           break;
@@ -849,6 +873,7 @@ export function useEventStream(): MissionState {
     lineSummary,
     settingsStatus,
     keepAwakeStatus,
+    pauseState,
     storageHealth,
     harnessesRevision,
     worktreesRevision,

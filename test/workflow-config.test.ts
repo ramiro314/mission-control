@@ -96,6 +96,23 @@ test("a stored legacy defaultWorkflowId migrates into the Ship row on read", () 
   setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [], kindWorkflowDefaults: {} });
 });
 
+test("a save mirrors the effective Ship row as defaultWorkflowId for a rolled-back build", () => {
+  const stored = (rows: Record<string, string | null>) => {
+    setWorkflowPolicy({ repoAllowlist: [], kindWorkflowDefaults: rows });
+    return getAppConfig(APP_CONFIG_ENTRIES.workflows) as Record<string, unknown>;
+  };
+  assert.equal(stored({}).defaultWorkflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID, "an untouched row mirrors the built-in");
+  assert.equal(stored({ ship: null }).defaultWorkflowId, null, "an explicit None stays None");
+  const blob = stored({ ship: "workflow-mine", bugfix: "workflow-fix" });
+  assert.equal(blob.defaultWorkflowId, "workflow-mine");
+  assert.deepEqual(blob.kindWorkflowDefaults, { ship: "workflow-mine", bugfix: "workflow-fix" });
+  // This build reads the map and drops the mirror, so the other rows survive the round trip.
+  const read = getWorkflowPolicy();
+  assert.deepEqual(read.kindWorkflowDefaults, { ship: "workflow-mine", bugfix: "workflow-fix" });
+  assert.equal("defaultWorkflowId" in read, false);
+  setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [], kindWorkflowDefaults: {} });
+});
+
 test("a settings backup from before per-kind defaults restores its Ship choice", async () => {
   const { parseSettingPayload } = await import("../src/server/settings-backups/config-registry.ts");
   const legacy = {
@@ -116,10 +133,20 @@ test("a settings backup from before per-kind defaults restores its Ship choice",
   );
 });
 
-test("a write that still names defaultWorkflowId is refused rather than silently dropped", () => {
-  const parsed = WorkflowConfigSchema.safeParse({ repoAllowlist: [], defaultWorkflowId: "workflow-review" });
-  assert.equal(parsed.success, false);
-  assert.match(JSON.stringify(parsed.error?.issues), /kindWorkflowDefaults\.ship/);
+test("a write that still names defaultWorkflowId sets the Ship row rather than being dropped", () => {
+  const rows = (body: Record<string, unknown>) =>
+    WorkflowConfigSchema.parse({ repoAllowlist: [], ...body }).kindWorkflowDefaults;
+  assert.deepEqual(rows({ defaultWorkflowId: "workflow-review" }), { ship: "workflow-review" });
+  assert.deepEqual(rows({ defaultWorkflowId: null }), { ship: null }, "null is an explicit None");
+  assert.deepEqual(rows({ defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID }), {}, "the built-in reads as unset");
+  assert.deepEqual(
+    rows({ defaultWorkflowId: "workflow-review", kindWorkflowDefaults: { ship: "workflow-old", plan: "workflow-plan" } }),
+    { ship: "workflow-review", plan: "workflow-plan" },
+    "the alias names Ship and every other row stands",
+  );
+  const parsed = WorkflowConfigSchema.parse({ repoAllowlist: [], defaultWorkflowId: "workflow-review" });
+  assert.equal("defaultWorkflowId" in parsed, false, "only the map is written");
+  assert.equal(WorkflowConfigSchema.safeParse({ repoAllowlist: [], defaultWorkflowId: 42 }).success, false);
 });
 
 test("task creation owns Workflow inheritance and preserves explicit opt-outs", async () => {

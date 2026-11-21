@@ -268,6 +268,7 @@ function harness({ task = false, repoRoot = null }: { task?: boolean; repoRoot?:
       (now += 10 * 60_000),
       async () => null,
       () => [],
+      undefined,
       tracker,
     );
   return {
@@ -560,6 +561,7 @@ test("a restarted daemon is re-marked nudges-exhausted by Foreman's re-send", as
     Date.now(),
     async () => null,
     () => [],
+    undefined,
     restarted,
   );
   assert.equal(h.frames.at(-1)![0]!.reason, "foreman-cannot-nudge");

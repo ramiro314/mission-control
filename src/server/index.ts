@@ -20,8 +20,19 @@ import type { Context } from "hono";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import { HOST, PORT, historyWatch, residentLaunchWaitMs } from "./config.ts";
-import { closeDb, databaseMigratedOnOpen, listTaskWorktreeReturnRefusals, openDb } from "./db.ts";
+import { HOST, PORT, historyWatch, residentLaunchWaitMs, STATE_DIR } from "./config.ts";
+import {
+  closeDb,
+  databaseMigratedOnOpen,
+  getAppConfig,
+  listTaskWorktreeReturnRefusals,
+  openDb,
+  setAppConfig,
+} from "./db.ts";
+import { PauseManager } from "./pause/manager.ts";
+import { processFreezer } from "./pause/freezer.ts";
+import { StoredPauseStateSchema } from "@shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   acquireStateOwnership,
   STATE_CONTENTION_EXIT_STATUS,
@@ -117,7 +128,7 @@ import { TaskManagerGateway } from "./ensembles/member-launch.ts";
 import { createFinalizeDeps, resolveEnsembleWorkflowVersion } from "./ensembles/finalize-deps.ts";
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 import { createCheckScheduler } from "./workflows/checks.ts";
-import { WorktreeManager } from "./worktrees/manager.ts";
+import { WorktreeManager, type NativePoolStatus } from "./worktrees/manager.ts";
 import {
   LegacyTreehouseService,
   warnRetiredTreehouseCadence,
@@ -138,6 +149,9 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { StorageHealthService, stuckReturnSource } from "./storage-health.ts";
+import { getStorageAlertState, getStorageLimitsConfig, setStorageAlertState } from "./storage-limits.ts";
+import { remeasureGrowthFor, StorageUsageMonitor } from "./storage-usage.ts";
+import { idleCacheSelection } from "./storage-pools.ts";
 import { knownOwnerLabels, observedSessionProcesses } from "./worktrees/known-owners.ts";
 import { inspectWorktreeOccupancy } from "./worktrees/occupancy.ts";
 import { finishedTrees, OrphanProcessMonitor } from "./worktrees/orphan-processes.ts";
@@ -299,7 +313,26 @@ const reviews = new ReviewManager(registry);
 // embedded task's agent survived. `restore()` is a separate step further down, and its
 // ordering against `startPoller` is the contract - see the comment there.
 maintainScoutSessionCredentials(registry);
-const sdkSessions = new SdkSupervisor(registry);
+// The one owner of pausing: a session, Pause all, and the priority session. Constructed before
+// the SDK supervisor and the task manager, which take it as an explicit dependency for the
+// thaw every stop and reset starts with. Its freezer reads the supervisor's driver pids through
+// a closure, called only once a pause is asked for - long after both exist. `start()` publishes
+// what the last daemon left and freezes the sessions that come back once the first sweep has
+// observed them.
+const pauses: PauseManager = new PauseManager({
+  registry,
+  freezer: processFreezer({ sdkDriverPid: (id): number | null => sdkSessions.driverProcessId(id) }),
+  store: {
+    load: () => {
+      const stored = getAppConfig(APP_CONFIG_ENTRIES.pauseState);
+      const parsed = stored === undefined ? null : StoredPauseStateSchema.safeParse(stored);
+      return parsed?.success ? parsed.data : undefined;
+    },
+    save: (state) => setAppConfig(APP_CONFIG_ENTRIES.pauseState, state),
+  },
+});
+pauses.start();
+const sdkSessions: SdkSupervisor = new SdkSupervisor(registry, { pause: pauses });
 const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
 // and that ordering is load-bearing rather than tidy: the TaskManager constructor's startup
@@ -353,6 +386,7 @@ const tasks = new TaskManager(
   {},
   worktrees,
   legacyWorktrees,
+  pauses,
 );
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
@@ -424,6 +458,12 @@ const checkRuntime = new CheckRuntime(checkLeases, {
 checkLeases.reconcileOnStartup(checkRuntime.groupRecovery).catch((err) => {
   console.error("[mission-control] could not reconcile check leases:", err);
 });
+// Assigned once Settings > Storage's measurer exists, below: a cleanup that removed slots
+// lowers its totals at once instead of at the next measurement.
+let onWorktreesChanged = () => {};
+// Likewise: the slots the saved idle-cache budget removes, which a `trimIdle` removal is checked
+// against when it is previewed and again, on the daemon, when it is executed.
+let currentIdleSelection: (status: NativePoolStatus[]) => ReadonlySet<string> = () => new Set();
 const worktreeOperations = new WorktreeOperationsService(worktrees, {
   legacy: legacyWorktrees,
   tasks: {
@@ -458,10 +498,14 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
   checks: checkLeases,
   checkRecovery: checkRuntime.groupRecovery,
   // Not the lease-activity probe: this notice also carries a running Warm's output tail.
-  notifyChanged: publishWorktreesChanged,
+  notifyChanged: () => {
+    publishWorktreesChanged();
+    onWorktreesChanged();
+  },
   staleLeases: () => leaseActivity.staleSinceBySlot(),
   unownedTrees: orphanTrees,
   historyResumeLabel: (ownerKey) => history.slotLabel(ownerKey),
+  trimIdleSelection: (status) => currentIdleSelection(status),
 });
 // No Warm survives a restart, so only the Warm logs a slot row still names are kept. Native
 // reconciliation above has already returned every slot a crashed Warm held.
@@ -541,9 +585,10 @@ let stopSettingsBackups = () => {};
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune
-// (the backup loop's startup prune seeds it), after every worktree maintenance pass,
-// whenever the worktree pool publishes a change, so a quarantine raises its problem at once,
-// and when the settled task trees a restart kept change.
+// (the backup loop's startup prune seeds it), after every measurement or volume check that
+// moved, after every worktree maintenance pass, whenever the worktree pool publishes a change,
+// so a quarantine raises its problem at once, and when the settled task trees a restart kept
+// change.
 // Processes still inside a tree whose owner has finished (a pending task return, a check
 // lease stuck in `returning`, a quarantined slot) or that has none (an available slot with no
 // lease, an unreferenced folder the sweep left).
@@ -566,11 +611,28 @@ const orphanProcesses = new OrphanProcessMonitor({
   killFinished: (kill) => worktreeOperations.recordKill(kill),
   changed: () => storageHealth.recompute(),
 });
+// The state directory's measured size and its volume's free space. `storageHealth` is assigned
+// on the next line, before any measurement or volume check can finish and call back.
+const storageUsage: StorageUsageMonitor = new StorageUsageMonitor({
+  root: STATE_DIR,
+  onChange: () => storageHealth.recompute(),
+  // While a storage limit is set, losing as much free space as is left before the next threshold
+  // (at most a GiB) starts an early walk, so the limit warning does not wait for the six-hourly one.
+  remeasureGrowthBytes: (measured) => remeasureGrowthFor(getStorageLimitsConfig(), measured),
+  // The floor is judged on every free-space check, not only once the reading moves 64 MiB.
+  volumeThresholds: () => {
+    const floor = getStorageLimitsConfig().freeFloorBytes;
+    return floor === null ? [] : [floor];
+  },
+});
 // A task or check return refused for over an hour is a `stuck-return` problem. Its first
 // appearance comes with the maintenance pass that follows the hour; a task return outcome
 // recomputes at once, so a success clears its problem without waiting for one.
-const storageHealth = new StorageHealthService({
+const storageHealth: StorageHealthService = new StorageHealthService({
   backups: databaseBackups,
+  usage: storageUsage,
+  limits: getStorageLimitsConfig,
+  alerts: { read: getStorageAlertState, write: setStorageAlertState },
   publish: (health) => registry.setStorageHealth(health),
   sources: [
     () => leaseActivity.problems(),
@@ -593,6 +655,18 @@ databaseBackups.onChange(() => storageHealth.recompute());
 tasks.onWorktreeReturnOutcome(() => storageHealth.recompute());
 tasks.registerSettledTreesListener(() => storageHealth.recompute());
 recomputeStorageHealth = () => storageHealth.recompute();
+onWorktreesChanged = () => storageUsage.forgetRemovedSlots();
+currentIdleSelection = (status) => {
+  const limits = getStorageLimitsConfig();
+  return idleCacheSelection({
+    status,
+    slotBytes: (path) => storageUsage.slotBytes(path),
+    sizesMeasuredAt: storageUsage.measurement()?.measuredAt ?? null,
+    budgetBytes: limits.poolIdleBudgetBytes,
+    keepWarm: limits.poolKeepWarm,
+  });
+};
+let stopStorageUsage = () => {};
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
@@ -657,10 +731,14 @@ ensembles = new EnsembleManager(registry, undefined, {
     workflows,
     sdk: sdkSessions,
     pendingTurns,
+    pause: pauses,
   }),
   // Resolve an operator's Workflow placement to an immutable version at creation; a Live/Foreman
   // selection is a typed refusal here, never a Preview downgrade.
   resolveWorkflowVersion: (workflowId, version) => resolveEnsembleWorkflowVersion(workflows, workflowId, version),
+  // Pause all with launches held, or a priority session: later member launches and the winner's
+  // replacement Task wait it out.
+  launchHold: () => pauses.launchHoldReason(),
 });
 // Resume non-terminal ensembles once the first discovery sweep makes member Task/Session state
 // real - the same gate TaskManager and WorkflowManager recovery use, and registered after both so
@@ -864,6 +942,7 @@ const keepAwake = new KeepAwakeManager({
 });
 registry.setKeepAwakeStatus(keepAwake.status());
 
+
 // One in-memory owner for live Pi discovery, freshness, and last-success fallback. It is
 // deliberately not persisted and is shared by every dashboard request through the route.
 const modelCatalogs = new HarnessModelCatalogService();
@@ -912,6 +991,7 @@ const app = buildApp({
   sessionActions,
   pendingTurns,
   keepAwake,
+  pauses,
   archives,
   history,
   workflowCommands,
@@ -928,6 +1008,7 @@ const app = buildApp({
   storageHealth,
   orphanProcesses,
   prConflicts,
+  storageUsage,
 });
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -987,6 +1068,13 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
     console.warn(`[mission-control] database backup leftovers were not removed: ${reason}`);
   }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
+  // The first walk waits out startup's own disk work; then one every six hours, and the free
+  // space every minute, which is cheap and is what a low-space warning needs to be timely.
+  stopStorageUsage = storageUsage.start({
+    firstMeasureMs: 2 * 60 * 1_000,
+    measureEveryMs: 6 * 60 * 60 * 1_000,
+    volumeEveryMs: 60 * 1_000,
+  });
   // Adopt every review the store still believes is running, so a daemon restart RESUMES a
   // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:
   // `recoverSendingPendingTurns` has just turned any in-flight row `uncertain`, which lands on
@@ -1150,6 +1238,7 @@ async function shutdown(): Promise<void> {
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();
+  stopStorageUsage();
   stopSettingsBackups();
   stopPoller();
   stopAgentsShadow();
@@ -1187,6 +1276,9 @@ async function shutdown(): Promise<void> {
   await sessionTransfers.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
+  // Before the drivers drain: a stopped SDK child cannot answer the interrupt its driver's
+  // stop opens with. Pane agents stay frozen - they outlive us, and quitting is not resuming.
+  await pauses.stop();
   await sdkSessions.stopAll();
   // `workflows.stop()` cancels any live check process group and then waits for its attempt to
   // release its provider-authoritative worktree before native maintenance stops.
