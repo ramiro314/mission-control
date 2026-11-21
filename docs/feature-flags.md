@@ -22,9 +22,11 @@ runs keep their launch revision's MCP mode on resume. A saved profile can switch
 **Pinned at launch** when the preview is off.
 
 **Headless mode** (`headless-mode`) is a preview scaffold for dispatching work to Mission Control from
-a Claude Code terminal session. It ships off until chosen. With it on, every `/dispatch/*` route
-answers 501 `not implemented` until later phases fill the routes. With it off, every `/dispatch/*`
-route answers 404 and the `home-dispatch-v1` health capability is absent.
+a Claude Code terminal session. It ships off until chosen. With it on, `/dispatch/sessions`,
+`/dispatch/inbox`, `/dispatch/answers` and `/dispatch/config` are served, and the routes later phases
+have not built yet (dispatch options, drafts, readiness, residents, and a task's transcript, stream
+and send) answer 501 `not implemented`. With it off, every `/dispatch/*` route answers 404 and the
+`home-dispatch-v1` health capability is absent.
 
 **Hibernate tasks** adds [Hibernate](sessions.md#hibernate-a-task-and-resume-it-later) to a
 task session's pause menu. Turning it off hides Hibernate. Tasks already hibernated stay in the
