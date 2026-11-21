@@ -455,6 +455,62 @@ test("an original slot another owner holds opens the picker; the chosen slot is 
   await capture(dashboard, "11-missing-branch");
 });
 
+test("an Agent SDK Resume into another slot shows its conversation before any prompt, and again after a daemon restart", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The original slot stays held, so the Resume runs in a second slot of the same repository.
+  // Claude continues such a conversation IN PLACE: its file stays in the original slot's project
+  // folder, and nothing is written under the slot it now runs in.
+  const acquire = async (label: string) => {
+    const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(response.status()).toBe(201);
+    return await response.json() as { path: string; leaseId: string };
+  };
+  const held = await acquire("the conversation's first slot");
+  const spare = await acquire("spare slot");
+  expect((await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, { data: { leaseId: spare.leaseId } })).ok()).toBe(true);
+  const id = writeSession(daemon, { cwd: held.path, title: "Break down the merge", at: "2026-10-31T09:30:00.000Z" });
+  await indexed(daemon, id);
+
+  await dashboard.goto(`${daemon.baseURL}/#/history/claude/${id}`);
+  await detail(dashboard).getByRole("button", { name: "Resume", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Resume this conversation" });
+  await expect(dialog.getByRole("group", { name: "Choose an idle slot of this repository" }).getByRole("radio", { name: /^Slot 2\b/ })).toBeChecked();
+  await dialog.getByRole("menu", { name: "Resume in" }).getByRole("menuitem").filter({ hasText: "Agent SDK" }).click();
+  await expect(dialog.getByRole("status")).toContainText(`Started in the Agent SDK, in ${spare.path}`);
+
+  const embedded = async () => {
+    const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Array<{ id: string; name: string; runtime: string; cwd: string }>;
+    return sessions.find((session) => session.runtime === "sdk" && session.cwd === spare.path) ?? null;
+  };
+  await expect.poll(embedded, { timeout: 15_000 }).not.toBeNull();
+  const { id: sessionId } = (await embedded())!;
+
+  // The resumed conversation is on the card before anyone types into it.
+  const conversation = async (label: string) => {
+    // The card's name, read each time: a restored card takes its name afresh.
+    const { name } = (await embedded())!;
+    // A hash-only `goto` keeps the page, so reload: the conversation must come from THIS daemon.
+    await dashboard.goto(`${daemon.baseURL}/#/session/${encodeURIComponent(sessionId)}`);
+    await dashboard.reload();
+    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: name }).first().click();
+    await expect(dashboard.getByText("Start Break down the merge")).toBeVisible({ timeout: 15_000 });
+    await expect(dashboard.getByText("On it.", { exact: true })).toBeVisible();
+    await expect(dashboard.getByText(/No transcript for this session yet/)).toHaveCount(0);
+    await capture(dashboard, label);
+  };
+  await conversation("13-sdk-slot-conversation");
+
+  // A restart restores the embedded session with no hook-reported path. It still finds the file.
+  await daemon.shutdown();
+  await daemon.restart();
+  await expect.poll(async () => (await embedded())?.id, { timeout: 30_000 }).toBe(sessionId);
+  await conversation("14-sdk-slot-conversation-after-restart");
+});
+
 test("a resumed session that ends with uncommitted changes keeps its slot and says why; a clean one returns it; one never seen is held", async ({
   dashboard,
   daemon,

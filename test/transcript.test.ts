@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -584,6 +584,62 @@ test("resolveTranscriptPath finds the transcript of a cwd with an underscore, a 
   const file = join(dir, `${UUID}.jsonl`);
   writeFileSync(file, "{}\n");
   assert.equal(resolveTranscriptPath(session({ cwd: "/Users/me/my_app v2+x" }), root), file);
+});
+
+test("resolveTranscriptPath finds a conversation resumed in place from another worktree's project folder", () => {
+  // History's slot Resume continues the conversation in place: Claude keeps appending to the
+  // file in the ORIGINAL worktree's project folder, so nothing exists under the session's own
+  // cwd. A restored Agent SDK session has no hook-reported path until it is prompted, and this
+  // fallback is what lets its conversation load before then.
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  mkdirSync(join(root, encode("/pool/3/app")), { recursive: true });
+  const original = join(root, encode("/pool/2/app"));
+  mkdirSync(original, { recursive: true });
+  const file = join(original, `${UUID}.jsonl`);
+  writeFileSync(file, "{}\n");
+  assert.equal(resolveTranscriptPath(session({ cwd: "/pool/3/app" }), root), file);
+});
+
+test("resolveTranscriptPath prefers the cwd's own file over one elsewhere with the same id", () => {
+  // A fork from a copy leaves the source and History's copy under one session id; the copy in
+  // the session's own project folder is the one it runs in.
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const elsewhere = join(root, encode("/pool/2/app"));
+  const own = join(root, encode("/pool/3/app"));
+  mkdirSync(elsewhere, { recursive: true });
+  mkdirSync(own, { recursive: true });
+  writeFileSync(join(elsewhere, `${UUID}.jsonl`), "{}\n");
+  const mine = join(own, `${UUID}.jsonl`);
+  writeFileSync(mine, "{}\n");
+  assert.equal(resolveTranscriptPath(session({ cwd: "/pool/3/app" }), root), mine);
+});
+
+test("resolveTranscriptPath picks the most recently written of several files elsewhere", () => {
+  // Run twice with the newer file on opposite sides: once in the folder that sorts and is
+  // created last, once in the one that sorts and is created first. Whatever order the
+  // directory lists in, a resolver that kept the first or the last match fails one of them;
+  // only the mtime comparison passes both.
+  for (const newest of ["/pool/1/app", "/pool/2/app"]) {
+    const root = mkdtempSync(join(tmpdir(), "proj-"));
+    const paths = new Map<string, string>();
+    for (const cwd of ["/pool/1/app", "/pool/2/app"]) {
+      const dir = join(root, encode(cwd));
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `${UUID}.jsonl`);
+      writeFileSync(file, "{}\n");
+      const at = new Date(cwd === newest ? 2_000_000_000 : 1_000_000_000);
+      utimesSync(file, at, at);
+      paths.set(cwd, file);
+    }
+    assert.equal(resolveTranscriptPath(session({ cwd: "/pool/3/app" }), root), paths.get(newest));
+  }
+});
+
+test("resolveTranscriptPath returns null, without throwing, when the projects folder cannot be read", () => {
+  // A fresh machine has no `~/.claude/projects` at all; the search must not turn that into a
+  // throw on every transcript read.
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  assert.equal(resolveTranscriptPath(session({ cwd: "/pool/3/app" }), join(root, "missing")), null);
 });
 
 test("resolveTranscriptPath returns null when neither locates a file", () => {
