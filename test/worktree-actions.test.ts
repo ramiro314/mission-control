@@ -674,21 +674,20 @@ test("a quarantined slot under a warm lease offers no Return, and the preview na
   assert.equal(preview.consequences.some((line) => line.includes("manual lease")), false);
 
   // A restart ends the seed, so nothing is coming back for the slot: the preview must not say
-  // it is. Destroy stays refused, as execute refuses every `warm` owner, and points at Recover.
+  // it is. Return stays refused and points at Recover. Destroy clears the stale lease, as it
+  // does for any quarantined lease no domain owner references.
   (seedManager as unknown as { liveWarmOwners: Set<string> }).liveWarmOwners.delete("warm-op-1");
   const gone = "owner no longer references it; Recover it instead.";
   const card = (await seeded.inventory()).repositories.flatMap((repo) => repo.slots)
     .find((slot) => slot.id === acquired.lease.slotId)!;
   assert.deepEqual(card.actions, ["destroy", "recover"]);
-  for (const request of [
-    { action: "destroy", target: { kind: "slot", slotId: acquired.lease.slotId } },
-    { action: "return", slotId: acquired.lease.slotId },
-  ] as const) {
-    const refused = await seeded.preview(request);
-    assert.equal(refused.allowed, false);
-    assert.deepEqual(refused.blockers.filter((line) => line.includes(gone)).length, 1, refused.blockers.join("; "));
-    assert.equal(refused.blockers.some((line) => line.includes("dependency seed holds")), false);
-  }
+  const refused = await seeded.preview({ action: "return", slotId: acquired.lease.slotId });
+  assert.equal(refused.allowed, false);
+  assert.deepEqual(refused.blockers.filter((line) => line.includes(gone)).length, 1, refused.blockers.join("; "));
+  assert.equal(refused.blockers.some((line) => line.includes("dependency seed holds")), false);
+  const destroy = await seeded.preview({ action: "destroy", target: { kind: "slot", slotId: acquired.lease.slotId } });
+  assert.equal(destroy.allowed, true, destroy.blockers.join("; "));
+  assert.ok(destroy.consequences.some((line) => /^Clears the stale lease for slot \d+/.test(line)), destroy.consequences.join("\n"));
 
   // Before reconcile judges it, the slot is still leased and has no Recover to point at.
   db.prepare("UPDATE worktree_slots SET state = 'leased', quarantine_reason = NULL, quarantined_at = NULL WHERE id = ?")

@@ -77,6 +77,7 @@ import {
   INTERRUPTED_FORGET,
   OBSERVATION_FAILURE,
   observationFailureText,
+  ORPHANED_SLOT_REASON,
   RECOVER_REFUSES_INTERRUPTED_FORGET,
   REGISTRATION_OR_IDENTITY,
   registrationOrIdentityQuarantine,
@@ -716,12 +717,7 @@ function registrationsFor(
   return registrations.filter((registration) => registration.path === path);
 }
 
-/**
- * Why a slot whose lease was handed back without a reset is held in quarantine. Shown on its
- * card, so it says what happened and what the operator can do about it.
- */
-export const ORPHANED_SLOT_REASON =
-  "Git no longer recognizes this slot: its worktree registration is gone, as happens when the main checkout is re-cloned or moved. Destroy removes it.";
+export { ORPHANED_SLOT_REASON };
 
 const ORPHAN_NOT_PHYSICAL = "orphaned slot path is not its exact physical directory";
 

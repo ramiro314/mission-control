@@ -263,7 +263,9 @@ No Git proof can pass for an orphaned slot, so none is waited for:
 - An owner-authorized release (a task's cleanup, a check's recovery, or a manual return) cannot
   reset it. It hands the exact lease back without touching the files and leaves the slot in a
   **state** quarantine for the operator, so the owner is never pinned to a slot that can never be
-  returned.
+  returned. Once its owner is gone that slot also offers **Repair**, which registers a folder
+  that is still there again in place, keeping every file, and then judges it as any other repaired
+  slot.
 - **Destroy** replaces the cleanliness and default-branch blockers with one acknowledgement:
   any uncommitted or unpushed work in the slot cannot be checked and will be deleted. Execute
   releases the owner through its usual cleanup, rechecks every fact under the slot lock, and
@@ -983,18 +985,36 @@ The operations have deliberately narrow meanings:
   Destroy may discard dirty or unlanded work only after those risks are acknowledged. It has no target
   meaning every pool and cannot override unknown identity, ownership, registration, or process
   state.
-- **Recover** brings back a quarantined slot that no live owner references. It is offered on
-  every such slot's card, and Settings > Storage lists each quarantined slot as a problem whose
-  **Open slot** link jumps to that card. Its preview names the slot's `index.lock` (under the Git
-  directory its `.git` file names), any Git process whose working directory is in the slot, and
-  each entry the reset would discard, which must be acknowledged. Execute runs the same
-  owner-authorized reset Return ends in, and the slot becomes available. It removes `index.lock`
-  as the reset's last check, once the target is fetched and the work check has passed, and only
-  when no Git process uses the worktree and `lsof` shows nothing holding the lock. A slot with a
-  live or unknown owner, any process inside it, or a lock it cannot prove free is refused, and a
-  refusal leaves the lock in place.
+- **Recover** brings back a quarantined slot that no live owner references, in one of two ways,
+  and its preview says which. It is offered on every such slot's card, never on an orphaned slot
+  or one whose lease identity is incomplete, and Settings > Storage lists each quarantined slot as
+  a problem whose **Open slot** link jumps to that card. The preview first runs the recovery proof
+  automatic recovery uses, which changes no file, and shows the slot's original quarantine reason,
+  category and time with every check's result, such as "Recorded HEAD: passed" or "Clean tree:
+  failed". Execute uses the background queue, shares its 64-operation limit, and refuses a stale
+  preview.
 
-  Recover keeps the slot's folder, so it counts work by the **reset rule**, against origin's
+  When every check passes and no `index.lock` is left, Execute recovers the slot **in place**: it
+  repeats the proof under the slot lock, then one compare-and-swap on the slot version returns it
+  to available without resetting or removing a file, so its warm install and release history
+  stay. The operator may recover any category this way, legacy quarantines included, and the log
+  records `quarantine_recovered` with the operator authorization.
+
+  When the only failed checks are ones a reset settles (work in the tree, a HEAD that moved, is
+  attached to a branch or is not merged into the remote default, or a lease whose owner is gone
+  still on the slot), or a stale `index.lock` is left, the preview says the slot cannot be
+  recovered in place and offers the **reset** instead. That preview names the slot's `index.lock`
+  (under the Git directory its `.git` file names), any Git process whose working directory is in
+  the slot, and each entry the reset would discard, which must be acknowledged. Execute runs the
+  same owner-authorized reset Return ends in, and the slot becomes available. It removes
+  `index.lock` as the reset's last check, once the target is fetched and the work check has
+  passed, and only when no Git process uses the worktree and `lsof` shows nothing holding the
+  lock. Any other failed check (pool identity or marker, exact path, Git registration or common
+  directory, process occupancy, an incomplete lease identity or release history, a live or
+  unknown owner) blocks both ways, and no acknowledgement overrides it. A lock it cannot prove
+  free is refused too, and a refusal leaves the lock in place.
+
+  The reset keeps the slot's folder, so it counts work by the **reset rule**, against origin's
   default fetched for the preview. A reset runs `checkout --force`, `reset --hard` and
   `clean -fd`, never `-fdx`, so it keeps an ignored file while that file stays ignored and
   nothing the default tracks lands on it. Work is an uncommitted change, an untracked file that is

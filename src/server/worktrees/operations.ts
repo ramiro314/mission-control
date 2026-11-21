@@ -475,6 +475,31 @@ function warmOutcome(result: WarmSlotResult): WorktreeOperationOutcome {
   }
 }
 
+/**
+ * The recovery checks a reset to the remote default settles: it discards work only with the
+ * operator's acknowledgement, moves HEAD to the default, and clears a lease whose owner it has
+ * proven gone. Every other check guards something the reset relies on, so failing one blocks
+ * both ways of recovering.
+ */
+const RESET_SETTLES = new Set(["Clean tree", "Detached HEAD", "Recorded HEAD", "Merged into remote default", "Final Git recheck"]);
+
+/**
+ * How Recover brings this slot back: in place when the proof passes and no `index.lock` is left,
+ * by the reset when only what the reset settles stands in the way, otherwise not at all. A
+ * lease left on the slot is the reset's to clear only when its identity is complete; whether
+ * its owner is gone is the preview's and the reset's own owner check.
+ */
+function recoverMode(
+  slot: WorktreeSlotRow,
+  failed: readonly { label: string }[],
+  lockExists: boolean,
+): "inPlace" | "reset" | "blocked" {
+  const completeLease = slot.activeLeaseId !== null && slot.activeOwnerKind !== null && slot.activeOwnerKey !== null;
+  const settled = failed.every((check) => RESET_SETTLES.has(check.label) || (check.label === "No active lease" && completeLease));
+  if (!settled) return "blocked";
+  return failed.length === 0 && !lockExists ? "inPlace" : "reset";
+}
+
 function ownerGoneBlocker(status: NativeSlotStatus): string {
   return `Slot ${status.slot.ordinal}'s owner no longer references it; Recover it instead.`;
 }
@@ -606,6 +631,8 @@ export class WorktreeOperationsService {
   private readonly tokens = new Map<string, HeldPreview>();
   /** Each built Recover preview's work set (`worktreeResetWorkKey`), for execute to hold the reset to. */
   private readonly recoverWork = new WeakMap<object, string>();
+  /** Each built Recover preview whose proof passed, so execute recovers it in place without a reset. */
+  private readonly recoverInPlace = new WeakSet<object>();
   /** Each built re-registering Repair preview's commit, for execute to register at. */
   private readonly reregisterCommit = new WeakMap<object, string>();
   private legacyVisibleRevision: string | null = null;
@@ -1296,8 +1323,10 @@ export class WorktreeOperationsService {
     if (slot.slot.state === "quarantined") risks.push(risk("quarantined", "A target slot is quarantined", false));
     if (action === "return" && slot.slot.state === "quarantined") {
       // An owned quarantine returns through its owner. With no active owner at all, the
-      // blocker below already says so.
-      if (owner && slot.ownerReferenced === false) blockers.push(ownerGoneBlocker(slot));
+      // blocker below already says so. Recover never proves an orphan, so one is not pointed at it.
+      if (owner && slot.ownerReferenced === false) {
+        blockers.push(orphaned ? `Slot ${slot.slot.ordinal} is quarantined, not leased.` : ownerGoneBlocker(slot));
+      }
       else if (owner && slot.ownerReferenced === null) blockers.push(ownerUnknownBlocker(slot));
     } else if (action === "return" && slot.slot.state !== "leased") {
       blockers.push(`Slot ${slot.slot.ordinal} is ${slot.slot.state}, not leased.`);
@@ -1614,10 +1643,15 @@ export class WorktreeOperationsService {
   }
 
   /**
-   * Recover one quarantined slot. The preview names the `index.lock` it would remove, any Git
-   * process using the worktree (which blocks it), and each entry the reset would discard by the
-   * reset rule against origin's freshly fetched default, which is the one acknowledgeable risk.
-   * An ignored file that default keeps ignored and untracked is kept, so it asks nothing.
+   * Recover one quarantined slot, in one of two ways. First it runs the manager's recovery
+   * proof, which never changes a file: when every check passes and no `index.lock` is left, the
+   * slot goes back in place, keeping its files and warm install. When the only checks that fail
+   * are ones a reset settles (work in the tree, a moved or attached HEAD, a dead owner's lease
+   * still on the slot) or a stale `index.lock` is left, it offers the reset instead. That
+   * preview names the lock it would remove, any Git process using the worktree (which blocks
+   * it), and each entry the reset would discard by the reset rule against origin's freshly
+   * fetched default, which is the one acknowledgeable risk. An ignored file that default keeps
+   * ignored and untracked is kept, so it asks nothing. Any other failed check blocks both.
    * Everything it read is bound into the token, so a lock that appears or a file written after
    * the preview makes Execute refuse as stale, and the reset itself refuses a work set that
    * differs from the preview's once it has fetched its own target.
@@ -1635,7 +1669,14 @@ export class WorktreeOperationsService {
     const { pool, slot } = target;
     const ordinal = slot.slot.ordinal;
     const lock = await this.manager.slotIndexLock(slot.slot, pool.pool.gitCommonDirectory, slot.occupancy);
-    const work = slot.slot.state === "quarantined" && slot.nativePath ? await this.manager.slotResetWork(slot.slot) : null;
+    const proof = await this.manager.previewQuarantineRecovery(slot.slot.id);
+    if (!proof) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
+    const failed = proof.checks.filter((check) => check.status !== "passed");
+    const mode = recoverMode(proof.slot, failed, lock.exists);
+    // Only the reset discards, so only the reset reads what it would discard.
+    const work = mode === "reset" && slot.slot.state === "quarantined" && slot.nativePath
+      ? await this.manager.slotResetWork(slot.slot)
+      : null;
     const workKey = work ? worktreeResetWorkKey(work) : null;
     affected.push({
       provider: "mission",
@@ -1651,9 +1692,13 @@ export class WorktreeOperationsService {
         ownerReferenced: slot.ownerReferenced,
         lock: { ...lock, ageMs: null },
         work: workKey,
+        mode,
+        checks: proof.checks,
       }),
       diskBytes: null,
     });
+    // A failed check the reset cannot settle is the first thing the operator reads.
+    if (mode === "blocked") for (const check of failed) blockers.push(`${check.label}: ${check.detail}`);
     if (slot.slot.state !== "quarantined") blockers.push(`Slot ${ordinal} is ${slot.slot.state}, not quarantined.`);
     if (slot.slot.quarantineReason === INTERRUPTED_FORGET) blockers.push(RECOVER_REFUSES_INTERRUPTED_FORGET);
     if (slot.ownerReferenced !== false) {
@@ -1681,6 +1726,23 @@ export class WorktreeOperationsService {
       blockers.push("Known processes must exit before Recover can reset the slot.");
     }
     risks.push(risk("quarantined", "The slot is quarantined", false));
+    const recovery = {
+      reason: proof.slot.quarantineReason,
+      category: proof.slot.quarantineCategory,
+      quarantinedAt: proof.slot.quarantinedAt,
+      checks: proof.checks,
+    };
+    if (mode !== "reset") {
+      if (mode === "inPlace") {
+        consequences.push("Returns this slot to warm capacity without resetting or removing files. Release history and installed dependencies are retained.");
+      }
+      const built = { ...this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences), recovery };
+      if (mode === "inPlace") this.recoverInPlace.add(built);
+      return built;
+    }
+    consequences.push(lock.exists && failed.length === 0
+      ? "Cannot recover in place while an index.lock is left, so Recover resets the slot instead."
+      : `Cannot recover in place (${failed.map((check) => check.label).join(", ")}), so Recover resets the slot instead.`);
     if (work?.status === "work") {
       risks.push(risk("dirty", "Uncommitted, untracked, unpushed or ignored work will be discarded", true));
       const named = work.entries.map(describeWorktreeResetWork).join("; ");
@@ -1698,7 +1760,7 @@ export class WorktreeOperationsService {
       consequences.push(`No index.lock is present at ${lock.path}.`);
     }
     consequences.push("Resets the slot to the fetched remote default and returns it to the pool as available.");
-    const built = this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+    const built = { ...this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences), recovery };
     if (workKey !== null) this.recoverWork.set(built, workKey);
     return built;
   }
@@ -2455,11 +2517,12 @@ export class WorktreeOperationsService {
       // The rebuild matched the preview, so its work set is the preview's.
       const expectedWork = this.recoverWork.get(rebuilt);
       const expectedCommit = this.reregisterCommit.get(rebuilt);
+      const inPlace = this.recoverInPlace.has(rebuilt);
       // publishOnSuccess covers legacy-only actions where no native manager method calls
       // publish(). Supplying the service publisher also coalesces native mutations through the
       // same content-free invalidation path instead of emitting once from each dependency.
       await runAsWorktreeActor("operator", () => this.manager.runChangeBatch(
-        () => this.dispatch(held, acknowledgementSet, removed, progress, expectedWork, expectedCommit),
+        () => this.dispatch(held, acknowledgementSet, removed, progress, expectedWork, expectedCommit, inPlace),
         true,
         this.deps.notifyChanged,
       ));
@@ -2550,6 +2613,7 @@ export class WorktreeOperationsService {
     progress: OperationProgress,
     expectedWork?: string,
     expectedCommit?: string,
+    recoverInPlace = false,
   ): Promise<void> {
     const { preview } = held;
     const request = preview.request;
@@ -2565,6 +2629,15 @@ export class WorktreeOperationsService {
     }
     if (request.action === "recover") {
       const target = preview.affected[0]!;
+      if (recoverInPlace) {
+        // The manager proves the slot again under its lock and changes no file.
+        try {
+          await this.manager.recoverQuarantineForOperator(target.id, target.version!);
+        } catch (error) {
+          throw new WorktreeOperationError(409, error instanceof Error ? error.message : String(error), "changed");
+        }
+        return;
+      }
       const result = await this.manager.recoverSlot({
         slotId: target.id,
         expectedVersion: target.version ?? undefined,

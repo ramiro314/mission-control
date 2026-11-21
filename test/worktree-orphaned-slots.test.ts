@@ -10,6 +10,7 @@ import {
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
 import { observeSlotOrphan } from "../src/server/worktrees/orphan.ts";
+import { registrationRepairQuarantine } from "../src/server/worktrees/quarantine-reasons.ts";
 import {
   WorktreeOperationsService,
   type WorktreeTaskView,
@@ -427,7 +428,26 @@ test("a quarantined orphan still held by its owner can be returned, keeping its 
   assert.deepEqual([after.state, after.activeLeaseId], ["quarantined", null]);
   assert.equal(readFileSync(join(slot.path, "docs/reports/crash/report.md"), "utf8"), "never committed\n");
   const card = (await operations.inventory()).repositories.flatMap((pool) => pool.slots).find((entry) => entry.id === slot.id)!;
-  assert.deepEqual(card.actions, ["destroy"], "with the lease gone, only Destroy remains");
+  assert.deepEqual(card.actions, ["destroy", "repair"], "with the lease gone, Destroy or Repair remains");
+});
+
+test("Repair registers a released orphan's folder again in place, keeping its files", async () => {
+  const { manager, lease, clone, slot } = await orphanedTaskSlot("mission-orphan-repair-");
+  assert.equal((await manager.release(current(manager, lease), { ownerAuthorized: true })).outcome, "released");
+  assert.equal(manager.store.slot(slot.id)?.quarantineReason, ORPHANED_SLOT_REASON);
+  assert.equal(registrationRepairQuarantine(ORPHANED_SLOT_REASON), true);
+  const operations = operationsFor(manager, { view: null, reclaimed: 0 });
+  const card = (await operations.inventory()).repositories.flatMap((pool) => pool.slots).find((entry) => entry.id === slot.id)!;
+  assert.ok(card.actions.includes("repair"), JSON.stringify(card.actions));
+  const preview = await operations.preview({ action: "repair", slotId: slot.id });
+  assert.equal(preview.allowed, true, JSON.stringify(preview.blockers));
+  await operations.execute(preview.token, []);
+  assert.ok(gitIn(clone, "worktree", "list", "--porcelain").split("\n").includes(`worktree ${slot.path}`),
+    "Git names the slot's path again");
+  assert.equal(readFileSync(join(slot.path, "docs/reports/crash/report.md"), "utf8"), "never committed\n");
+  const after = manager.store.slot(slot.id)!;
+  assert.equal(after.state, "quarantined", "the report it kept is work, so it waits for Recover");
+  assert.equal(after.quarantineReason, "registration repaired; holds work");
 });
 
 test("a quarantined orphan whose lease no owner references offers only Destroy", async () => {

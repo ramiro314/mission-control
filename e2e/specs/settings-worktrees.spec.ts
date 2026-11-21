@@ -2180,10 +2180,10 @@ test("Settings shows when each slot was quarantined and which ones Reconcile can
 });
 
 
-// Upstream's operator Recover (#1507) proves a quarantine back without touching files. The fork's
-// Recover resets the slot to the remote default instead, so this preview is not the one Recover
-// shows here. Fixme until the sync decides which Recover the action keeps.
-test.fixme("Recover previews state quarantine checks, preserves warm files and blocks dirty slots", async ({ dashboard, daemon }) => {
+// One Recover: it runs upstream's proof (#1507) first and brings a slot that passes back in place,
+// keeping its files. A slot whose proof fails only on work is offered the fork's reset instead,
+// which Execute runs only once its discard is acknowledged.
+test("Recover previews state quarantine checks, preserves warm files and resets dirty slots only once acknowledged", async ({ dashboard, daemon }) => {
   const leases: Array<{ path: string; leaseId: string }> = [];
   for (const label of ["safe operator recovery", "dirty operator recovery"]) {
     const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
@@ -2230,11 +2230,18 @@ test.fixme("Recover previews state quarantine checks, preserves warm files and b
   await shoot(dashboard, "27-recover-warm-capacity", true);
   await dirtyRow.getByRole("button", { name: "Recover", exact: true }).click();
   await expect(preview.getByText("Clean tree: failed", { exact: true })).toBeVisible();
+  // The proof failed on work, so the preview offers the reset, naming what it would discard.
+  await expect(preview.getByText(/^Cannot recover in place \(Clean tree.*\), so Recover resets the slot instead\.$/)).toBeVisible();
+  await expect(preview.getByText("Discards the slot's work: untracked unfinished.txt.", { exact: true })).toBeVisible();
+  const discard = preview.getByRole("checkbox", { name: /I understand: Uncommitted, untracked, unpushed or ignored work will be discarded/ });
+  await expect(discard).toHaveCount(1);
   await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
-  await expect(preview.getByRole("checkbox")).toHaveCount(0);
+  await discard.check();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
   await expectContentClearsBorder(preview);
-  await shoot(dashboard, "28-recover-dirty-blocked", true);
+  await shoot(dashboard, "28-recover-dirty-acknowledge", true);
   await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(preview).toHaveCount(0);
   expect(readFileSync(join(dirty.path, "unfinished.txt"), "utf8")).toBe("keep this work");
   const reuse = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
     data: { repositoryPath: daemon.repo, label: "reuse recovered slot" },

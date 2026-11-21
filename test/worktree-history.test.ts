@@ -1348,6 +1348,8 @@ test("an operator's Recover left unknown reads as the automatic one does: refuse
   const m = realManager();
   const operations = operationsFor(m);
   const [slotId] = await idleSlots(m, clone, sha, 1);
+  // A HEAD on a branch fails the in-place proof, so Recover offers the reset this test stubs.
+  gitIn(m.store.slot(slotId!)!.path, "switch", "-q", "-c", "recover-unknown");
   const quarantine = () => assert.ok(
     quarantineOrRelabel(m, slotId!, "slot Git state is unknown"),
   );

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -634,18 +634,16 @@ for (const category of ["state", "transition", null] as const) {
   });
 }
 
-for (const [change, firstCheck] of [
-  ["moved HEAD", "Recorded HEAD"],
-  ["dirty", "Clean tree"],
-  ["occupied", "Process occupancy"],
-  ["unknown occupancy", "Process occupancy"],
-  ["leased", "No active lease"],
-  ["partial lease", "No active lease"],
-  ["referenced owner", "Released owner"],
-  ["incomplete release", "Complete release history"],
+// The fork's one Recover: a failed proof that only a reset settles (work in the tree, a moved
+// HEAD, a dead owner's complete lease) is not refused but offered as the reset, which asks the
+// dirty acknowledgement only for work it would discard. Nothing changes at preview time.
+for (const [change, failedCheck, acknowledgements] of [
+  ["moved HEAD", "Recorded HEAD", []],
+  ["dirty", "Clean tree", ["dirty"]],
+  ["leased", "No active lease", []],
 ] as const) {
-  test(`operator recovery refuses ${change} without an override`, async () => {
-    const { manager, slot, repository } = await releasedSlot("mission-operator-refuse-");
+  test(`operator recovery offers the reset for ${change} instead of recovering in place`, async () => {
+    const { manager, slot, repository } = await releasedSlot("mission-operator-fallback-");
     manager.store.quarantine(slot.id, "state", "original reason", null, 4_000, slot.version);
     if (change === "moved HEAD") {
       gitIn(repository.origin, "commit", "--allow-empty", "-qm", "landed");
@@ -653,9 +651,52 @@ for (const [change, firstCheck] of [
       gitIn(slot.path, "checkout", "-q", "--detach", gitIn(repository.clone, "rev-parse", "origin/main"));
     }
     if (change === "dirty") writeFileSync(join(slot.path, "unfinished.txt"), "keep");
-    if (change === "leased" || change === "partial lease") db.prepare(`UPDATE worktree_slots
-      SET active_lease_id = 'held', active_owner_kind = ?, active_owner_key = ? WHERE id = ?`)
-      .run(change === "leased" ? "task" : null, change === "leased" ? "held" : null, slot.id);
+    if (change === "leased") db.prepare(`UPDATE worktree_slots
+      SET active_lease_id = 'held', active_owner_kind = 'task', active_owner_key = 'held' WHERE id = ?`).run(slot.id);
+    const operations = recoveryOperations(manager);
+    const before = manager.store.slot(slot.id);
+    const preview = await operations.preview({ action: "recover", slotId: slot.id });
+    assert.equal(preview.allowed, true, JSON.stringify(preview.blockers));
+    assert.equal(preview.recovery?.checks.find((check) => check.label === failedCheck)?.status, "failed");
+    assert.deepEqual(preview.requiredAcknowledgements, acknowledgements);
+    assert.ok(preview.consequences.some((line) => line.startsWith("Cannot recover in place (") && line.includes(failedCheck)),
+      preview.consequences.join("\n"));
+    assert.ok(preview.consequences.includes("Resets the slot to the fetched remote default and returns it to the pool as available."));
+    if (change === "dirty") assert.throws(() => operations.submit(preview.token, []), /missing acknowledgement: dirty/);
+    assert.deepEqual(manager.store.slot(slot.id), before);
+    const view = (await operations.inventory()).repositories.flatMap((pool) => pool.slots).find((item) => item.id === slot.id)!;
+    assert.ok(view.actions.includes("recover"));
+  });
+}
+
+test("an acknowledged reset recovers a dirty quarantine, discarding the work and keeping the warm install", async () => {
+  const { manager, slot, repository } = await releasedSlot("mission-operator-fallback-run-");
+  writeFileSync(join(repository.clone, ".git/info/exclude"), "node_modules/\n");
+  mkdirSync(join(slot.path, "node_modules"), { recursive: true });
+  writeFileSync(join(slot.path, "node_modules/warm"), "keep me");
+  writeFileSync(join(slot.path, "unfinished.txt"), "discard me");
+  manager.store.quarantine(slot.id, "state", "original reason", null, 4_000, slot.version);
+  const operations = recoveryOperations(manager);
+  const preview = await operations.preview({ action: "recover", slotId: slot.id });
+  assert.deepEqual(preview.requiredAcknowledgements, ["dirty"]);
+  assert.equal((await operations.execute(preview.token, ["dirty"])).ok, true);
+  assert.equal(manager.store.slot(slot.id)?.state, "available");
+  assert.equal(existsSync(join(slot.path, "unfinished.txt")), false);
+  assert.equal(readFileSync(join(slot.path, "node_modules/warm"), "utf8"), "keep me");
+});
+
+for (const [change, firstCheck] of [
+  ["occupied", "Process occupancy"],
+  ["unknown occupancy", "Process occupancy"],
+  ["partial lease", "No active lease"],
+  ["referenced owner", "Released owner"],
+  ["incomplete release", "Complete release history"],
+] as const) {
+  test(`operator recovery refuses ${change} without an override`, async () => {
+    const { manager, slot } = await releasedSlot("mission-operator-refuse-");
+    manager.store.quarantine(slot.id, "state", "original reason", null, 4_000, slot.version);
+    if (change === "partial lease") db.prepare(`UPDATE worktree_slots
+      SET active_lease_id = 'held', active_owner_kind = NULL, active_owner_key = NULL WHERE id = ?`).run(slot.id);
     if (change === "incomplete release") db.prepare("UPDATE worktree_slots SET last_released_owner_key = NULL WHERE id = ?").run(slot.id);
     const checking = new WorktreeManager(db, {
       ownerReferenced: async () => change === "referenced owner",
@@ -671,7 +712,7 @@ for (const [change, firstCheck] of [
     assert.deepEqual(preview.requiredAcknowledgements, []);
     assert.throws(() => operations.submit(preview.token, []), /./);
     assert.deepEqual(manager.store.slot(slot.id), before);
-    if (change === "leased" || change === "partial lease") {
+    if (change === "partial lease") {
       const view = (await operations.inventory()).repositories.flatMap((pool) => pool.slots).find((item) => item.id === slot.id)!;
       assert.ok(!view.actions.includes("recover"));
     }

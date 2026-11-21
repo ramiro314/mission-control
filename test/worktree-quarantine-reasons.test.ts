@@ -8,6 +8,7 @@ import {
   isObservationFailure,
   OBSERVATION_FAILURE,
   OBSERVATION_FAILURE_REASONS,
+  ORPHANED_SLOT_REASON,
   REGISTRATION_OR_IDENTITY,
   REGISTRATION_OR_IDENTITY_REASONS,
   registrationOrIdentityQuarantine,
@@ -107,6 +108,16 @@ const OTHER_QUARANTINE_REASONS = new Set([
   "return verification failed",
   "startup found an interrupted provisioning intent",
   "warmed slot verification failed",
+  // Upstream's `observation` quarantines (#1475): the confirming read of a HEAD mismatch failed
+  // or disagreed, which proves nothing about the slot, so automatic recovery may judge them.
+  "available slot HEAD mismatch could not be confirmed",
+  "available slot HEAD observations disagree",
+  // Upstream's `transition` quarantines of an orphaned slot's Destroy (#1517) that stopped
+  // before the slot was proven gone.
+  "orphaned slot changed before its removal",
+  "orphaned slot was occupied before its removal",
+  "orphaned slot removal failed",
+  "orphaned slot removal could not be verified",
 ]);
 
 test("Forget's write-ahead is a reason no pass may clear or repair", () => {
@@ -114,6 +125,12 @@ test("Forget's write-ahead is a reason no pass may clear or repair", () => {
   assert.equal(isObservationFailure(INTERRUPTED_FORGET), false);
   assert.equal(registrationRepairQuarantine(INTERRUPTED_FORGET), false);
   assert.equal(untrustedTreeQuarantine(INTERRUPTED_FORGET), true, "a seed never copies what a Forget may have half deleted");
+});
+
+test("an orphaned slot's release quarantine is one Repair answers, and no pass clears it as a failed read", () => {
+  assert.equal(registrationRepairQuarantine(ORPHANED_SLOT_REASON), true);
+  assert.equal(clearableQuarantineReason(ORPHANED_SLOT_REASON), false);
+  assert.equal(isObservationFailure(ORPHANED_SLOT_REASON), false);
 });
 
 test("no quarantine reason in the manager escapes classification", () => {
