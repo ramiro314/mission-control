@@ -185,7 +185,9 @@ export function carriedPlanApproval(authority: PlanAuthority, input: PlanIdentit
   const latest = loadHumanResolvedReviews(authority.sessionId).filter((review) => bound.some((row) => row.review_id === review.id)).at(-1);
   const answers = latest?.status === "answered" ? latest.selections ?? [] : [];
   const approved = answers.find((answer) => answer.decisionId === PLAN_APPROVAL_DECISION);
-  if (!latest || !approved || approved.other || approved.note || approved.chat || approved.selected.length !== 1 || approved.selected[0] !== PLAN_APPROVAL_OPTION) return null;
+  // Only an approving actor's answer may be carried: a plain `home:` or `mctl` answer is in the
+  // list (upstream #1580) so a later refusal there blocks the carry, but it never approves.
+  if (!latest || !isApprovingActor(latest.resolvedBy) || !approved || approved.other || approved.note || approved.chat || approved.selected.length !== 1 || approved.selected[0] !== PLAN_APPROVAL_OPTION) return null;
   const sameQuestion = (a: PlanDecision, b: PlanDecision) => a.question === b.question
     && a.options.map((option) => option.id).join("\n") === b.options.map((option) => option.id).join("\n");
   const carried: PlanDecisionAnswer[] = [];
