@@ -221,8 +221,8 @@ From a checkout, `make install` retains the updater-owned build cache as before.
 source-build route. Binary installation shares destination, swap and receipt ownership.
 
 The explicit source install needs Node.js 24+ with npm, `git`, an authenticated `gh` (`gh auth login`), the Xcode
-command line tools (`xcode-select --install`, for the native keep-awake module node-gyp
-compiles during packaging), and an Apple Silicon Mac - it refuses an Intel host rather than
+command line tools (`xcode-select --install`, for the native keep-awake and tree-clone modules
+node-gyp compiles during packaging), and an Apple Silicon Mac - it refuses an Intel host rather than
 building an app that cannot run there. Each is checked before the build clone, so a missing one
 costs seconds rather than failing at the end of a full build. `make install`:
 

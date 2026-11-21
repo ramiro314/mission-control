@@ -154,9 +154,9 @@ native addon rather than to one builder. Rewriting an addon in place while a liv
 it mapped invalidates macOS's code-signature bookkeeping for that inode, and from then on
 every process that loads it is `SIGKILL`ed with an empty stderr - no exception, no log line.
 `npm run build:native` runs on every `make start`, so one restart with the previous daemon
-still up is enough to make a worktree unable to start a daemon at all. Both builders publish
-through `publishNativeAddon`, and `test/native-addon-publish.test.ts` refuses a builder that
-copies its own artifact into `dist/native` again.
+still up is enough to make a worktree unable to start a daemon at all. Every native builder
+publishes through `publishNativeAddon`, and `test/native-addon-publish.test.ts` refuses a builder
+that copies its own artifact into `dist/native` again.
 
 `npm test` runs six files at a time by default. `MISSION_TEST_CONCURRENCY` changes that,
 and CI explicitly pins it to 4 on its ephemeral GitHub-hosted runner. CI therefore does
