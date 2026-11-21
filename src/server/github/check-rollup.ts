@@ -1,4 +1,5 @@
 import type { PrChecks } from "@shared/types.ts";
+import { checkEntryRecognized, classifyCheckEntry } from "@shared/ci-checks.ts";
 
 // One answer to "is CI failing on this commit", for both places that ask: the branch poller's
 // PR chip (`src/server/pr.ts`) and the Inspector's merge gate (`src/server/inspector/github.ts`).
@@ -37,18 +38,15 @@ export const CHECK_CONTEXTS = `contexts(first:100){
         }
       }`;
 
-// CheckRun conclusions and StatusContext states that count as a failed check.
-const FAIL_CONCLUSIONS = new Set([
-  "FAILURE",
-  "TIMED_OUT",
-  "CANCELLED",
-  "ACTION_REQUIRED",
-  "STARTUP_FAILURE",
-  "STALE",
-]);
-const PASS_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-const FAIL_STATES = new Set(["FAILURE", "ERROR"]);
-const PENDING_STATES = new Set(["PENDING", "EXPECTED"]);
+// Fork (ci-strictness / Wait for CI): which result fails, passes or is still pending is the one
+// rule in `@shared/ci-checks.ts`, which Wait for CI reads too, so the chip, the merge gate and
+// Wait for CI cannot disagree about a single check. Retiring a re-checked failure stays here.
+function entryState(o: Record<string, unknown>): CheckState {
+  const state = classifyCheckEntry(o);
+  if (state === "failing") return "fail";
+  if (state === "pending") return "pending";
+  return checkEntryRecognized(o) ? "pass" : "unknown";
+}
 
 /** `unknown` is a finished result this file does not recognise. The chip reads it as a pass. */
 type CheckState = "fail" | "pending" | "pass" | "unknown";
@@ -166,25 +164,17 @@ function readEntry(e: unknown): CheckEntry | null {
   const o = e as Record<string, unknown>;
   if (typeof o.status === "string") {
     const done = o.status.toUpperCase() === "COMPLETED";
-    const conclusion = text(o.conclusion).toUpperCase();
     const name = text(o.name);
     return {
       key: name ? runKey(o, name) : null,
       looseKey: name ? `run\0${workflowOf(o)}\0${name}` : null,
       suite: text((o.checkSuite as CheckSuite)?.id) || null,
-      state: !done
-        ? "pending"
-        : FAIL_CONCLUSIONS.has(conclusion)
-          ? "fail"
-          : PASS_CONCLUSIONS.has(conclusion)
-            ? "pass"
-            : "unknown",
+      state: entryState(o),
       startedAt: instant(o.startedAt),
       finishedAt: done ? instant(o.completedAt) : null,
     };
   }
   if (typeof o.state === "string") {
-    const s = o.state.toUpperCase();
     // A commit status names no app, workflow or event - anything that can post to the API can
     // post one under any context - so, like another app's check, it never retires another and is
     // never retired: a failed status stands until the next push. GitHub's rollup already keeps
@@ -195,7 +185,7 @@ function readEntry(e: unknown): CheckEntry | null {
       key: null,
       looseKey: null,
       suite: null,
-      state: FAIL_STATES.has(s) ? "fail" : PENDING_STATES.has(s) ? "pending" : s === "SUCCESS" ? "pass" : "unknown",
+      state: entryState(o),
       startedAt: at,
       finishedAt: at,
     };

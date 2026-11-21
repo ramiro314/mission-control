@@ -1,8 +1,8 @@
 // Which GitHub check results count as pending, passing or failing. Browser-safe.
 //
-// The one classification for a `statusCheckRollup` entry, read by the PR card's CI chip
-// (`src/server/pr.ts`) and by Wait for CI (`src/shared/wait-for-ci.ts`), so the two cannot
-// disagree about whether a check failed.
+// The one classification for a `statusCheckRollup` entry, read by the PR card's CI chip and the
+// Inspector's merge gate (through upstream's `src/server/github/check-rollup.ts`) and by Wait for
+// CI (`src/shared/wait-for-ci.ts`), so they cannot disagree about whether a check failed.
 
 import type { PrChecks } from "./types.ts";
 
@@ -19,6 +19,9 @@ const FAIL_CONCLUSIONS = new Set([
 const FAIL_STATES = new Set(["FAILURE", "ERROR"]);
 /** StatusContext states that are still running. */
 const PENDING_STATES = new Set(["PENDING", "EXPECTED"]);
+/** CheckRun conclusions and StatusContext states this rule names as a pass. */
+const PASS_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+const PASS_STATES = new Set(["SUCCESS"]);
 
 export type CiCheckEntryState = "pending" | "passing" | "failing";
 
@@ -42,6 +45,25 @@ export function classifyCheckEntry(entry: unknown): CiCheckEntryState | null {
     return "passing";
   }
   return null;
+}
+
+/**
+ * Whether `classifyCheckEntry` named this entry's result outright. False for a finished result
+ * it does not know, which it reads as passing: the check rollup reports such a commit as not
+ * fully recognised rather than as a plain pass.
+ */
+export function checkEntryRecognized(entry: unknown): boolean {
+  const o = (entry ?? {}) as { status?: unknown; conclusion?: unknown; state?: unknown };
+  if (typeof o.status === "string") {
+    if (o.status.toUpperCase() !== "COMPLETED") return true;
+    const conclusion = typeof o.conclusion === "string" ? o.conclusion.toUpperCase() : "";
+    return FAIL_CONCLUSIONS.has(conclusion) || PASS_CONCLUSIONS.has(conclusion);
+  }
+  if (typeof o.state === "string") {
+    const state = o.state.toUpperCase();
+    return FAIL_STATES.has(state) || PENDING_STATES.has(state) || PASS_STATES.has(state);
+  }
+  return false;
 }
 
 /**
