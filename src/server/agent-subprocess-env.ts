@@ -1,4 +1,4 @@
-import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE } from "./terminal/launch-process.ts";
+import { LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE, disposableStateRoots } from "./terminal/launch-process.ts";
 import {
   existsSync,
   lstatSync,
@@ -63,12 +63,6 @@ function sharedGoBuildCache(): string {
 /** An unusable private root fails the launch that needed it, before any command is delivered. */
 function asLaunchError(error: unknown): unknown {
   return error instanceof AgentRuntimeRootError ? new TerminalLaunchError(error.message, false) : error;
-}
-
-/** The roots this daemon's homes live in, without checking or creating them. */
-function disposableStateRoots(): string[] {
-  const legacy = legacyAgentRuntimeRoot(AGENT_STATE_ROOT);
-  return [join(agentRuntimeBase(), AGENT_STATE_ROOT), ...(legacy ? [legacy] : [])];
 }
 
 /**

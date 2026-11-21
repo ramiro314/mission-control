@@ -79,14 +79,16 @@ choose an available backend and Mission Control opens a visible terminal running
 fixed command. The terminal picker starts on your macOS default terminal - the app LaunchServices
 opens shell scripts with, such as iTerm2 after "Make iTerm2 Default Term" - when Mission Control
 can drive it, labels that row "(system default)", and otherwise starts on the first available
-backend. The daemon owns the argv, working directory, title, and hold-open shell; the
-browser sends only the dependency id and terminal backend. The terminal remains open after the
+backend. On Linux the default is the **Default terminal** row, which opens whatever terminal your
+desktop names, whenever one of its launchers resolves. The daemon owns the argv, working
+directory, title, and hold-open shell; the browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
 
-Remedies follow the host. On macOS a missing tmux, WezTerm, Ghostty, GitHub CLI or Node.js offers
-its Homebrew command. Linux has no single package manager to name, so the same row shows the
-package to install, "with your distribution's package manager", and a link to the tool's install
-guide, with no **Run in a terminal** button. The `npm install -g` rows (Claude Code and Pi) run on
+Remedies follow the host. On macOS a missing tmux, WezTerm, Ghostty, Herdr, GitHub CLI, CodeRabbit
+CLI or Node.js offers its Homebrew command. Linux has no single package manager to name, so the
+same row shows the package to install, "with your distribution's package manager", and a link to
+the tool's install guide, with no **Run in a terminal** button. Herdr and the CodeRabbit CLI
+link only their install guides on Linux. The `npm install -g` rows (Claude Code and Pi) run on
 both. Rows for a terminal backend the host cannot run at all, iTerm2 and cmux on Linux, are left
 out of Setup rather than reported as needing setup; the terminal pickers still list them,
 disabled with **requires macOS**. An installed Ghostty or WezTerm reads as satisfied on Linux.
@@ -186,8 +188,8 @@ The Herdr row reports two separate facts, because installing the CLI does not ma
 With the `herdr` binary present but its default server stopped, the row is **Needs setup** and
 offers **Start the Herdr server** instead of the install command. With Herdr not installed, the
 row instead offers `brew install herdr` through **Run in a terminal**, which opens the installer in
-the selected visible terminal. **Start the Herdr server** opens no terminal: the daemon starts the
-server the same way a dispatch to Herdr would, waits for it to
+the selected visible terminal; on Linux it links Herdr's install guide instead. **Start the
+Herdr server** opens no terminal: the daemon starts the server the same way a dispatch to Herdr would, waits for it to
 answer, and the panel re-reads the machine on its own, so a repaired row reports Ready without a
 manual **Re-check**. A Herdr older than the supported release is reported with its compatibility
 reason and is not offered a start, because starting it repairs nothing. While the server is down,
@@ -388,8 +390,8 @@ the new layout. See [migration and compatibility](app-name-migration.md).
 Settings > Setup reports the optional CodeRabbit CLI in two rows, the way it reports the
 Atlassian CLI, without installing, signing in or reviewing on its own. **CodeRabbit CLI** reports
 the path/source and minimum version 0.9.1 and offers `brew install --cask coderabbit` through
-**Run in a terminal**. **CodeRabbit CLI sign-in** reads the same `coderabbit auth status --agent`
-a workflow review reads, and while the CLI is not signed in its **Run in a terminal** opens
+**Run in a terminal** (on Linux, a link to the CodeRabbit CLI installation guide).
+**CodeRabbit CLI sign-in** reads the same `coderabbit auth status --agent` a workflow review reads, and while the CLI is not signed in its **Run in a terminal** opens
 `coderabbit auth login` for the same coderabbit binary the daemon runs, offered only once the CLI
 is installed and at least 0.9.1 (before that the row says which step comes first and links the
 CodeRabbit CLI guide), with `HOME` set to the

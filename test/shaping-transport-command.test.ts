@@ -517,6 +517,10 @@ test("a reply holding no named value is returned byte for byte", async () => {
 
 test("a short named credential printed inside a word is still redacted", async () => {
   const saved = process.env.SHAPER_FIXTURE_SHORT;
+  // A Linux login session sets `XDG_SESSION_CLASS=user`, an inherited value long enough to be
+  // redacted anywhere, which would swallow the fixture's "user" too. Not what this test is about.
+  const savedClass = process.env.XDG_SESSION_CLASS;
+  delete process.env.XDG_SESSION_CLASS;
   process.env.SHAPER_FIXTURE_SHORT = "x9";
   try {
     const reply = await callCommand(request(), shaper([FIXTURE, "leak-glued", "SHAPER_FIXTURE_SHORT"], { env: ["SHAPER_FIXTURE_SHORT"] }), ctx());
@@ -524,6 +528,7 @@ test("a short named credential printed inside a word is still redacted", async (
   } finally {
     if (saved === undefined) delete process.env.SHAPER_FIXTURE_SHORT;
     else process.env.SHAPER_FIXTURE_SHORT = saved;
+    if (savedClass !== undefined) process.env.XDG_SESSION_CLASS = savedClass;
   }
 });
 

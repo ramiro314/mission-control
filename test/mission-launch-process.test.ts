@@ -18,11 +18,12 @@ process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const {
-  DISPOSABLE_STATE_ROOT,
+  disposableStateRoots,
   hasMissionLaunchAncestor,
   isMissionLaunchProcess,
   missionLaunchMarkers,
 } = await import("../src/server/terminal/launch-process.ts");
+const DISPOSABLE_STATE_ROOT = disposableStateRoots()[0]!;
 const { cleanupDisposableAgentStateHome, isolatedAgentArgv } = await import("../src/server/agent-subprocess-env.ts");
 const { resumeGuardArgv, managedResumeRoot } = await import("../src/server/harness/resume.ts");
 // `managedResumeRoot` creates this home's lease partition in the shared temp dir.
@@ -159,6 +160,31 @@ test("a resume guard under a foreign lease root, or with a malformed lease id, i
   }
 });
 
+test("on Linux, a wrapper under the private runtime root is a Mission launch", { skip: process.platform !== "linux" }, () => {
+  // The fork keeps Linux launch homes in `$XDG_RUNTIME_DIR/mission-control`, not the temp dir,
+  // so discovery must look there or every Mission-launched terminal session would be hidden.
+  const saved = { xdg: process.env.XDG_RUNTIME_DIR, override: process.env.MISSION_AGENT_RUNTIME_DIR };
+  const runtime = mkdtempSync(join(tmpdir(), "xdg-runtime-"));
+  process.env.XDG_RUNTIME_DIR = runtime;
+  delete process.env.MISSION_AGENT_RUNTIME_DIR;
+  try {
+    const markers = missionLaunchMarkers();
+    const script = "launch-and-cleanup.sh";
+    const wrapper = `/bin/sh ${runtime}/mission-control/mission-control-agent-state/session-abc123/${script}`;
+    assert.equal(isMissionLaunchProcess(proc({ pid: 1, ppid: 0, command: wrapper }), markers), true);
+    const tempWrapper = `/bin/sh ${tmpdir()}/mission-control-agent-state/session-abc123/${script}`;
+    assert.equal(
+      isMissionLaunchProcess(proc({ pid: 2, ppid: 0, command: tempWrapper }), markers),
+      false,
+      "the temp-dir root counts only while it is the private pre-upgrade root",
+    );
+  } finally {
+    if (saved.xdg === undefined) delete process.env.XDG_RUNTIME_DIR;
+    else process.env.XDG_RUNTIME_DIR = saved.xdg;
+    if (saved.override !== undefined) process.env.MISSION_AGENT_RUNTIME_DIR = saved.override;
+  }
+});
+
 test("a ppid cycle ends the walk instead of hanging it", () => {
   const procs = [proc({ pid: 20, ppid: 21, command: "zsh" }), proc({ pid: 21, ppid: 20, command: "zsh" }), agent(22, 20)];
   assert.equal(hasMissionLaunchAncestor(22, procs), false);
@@ -175,7 +201,7 @@ test("a missing state directory leaves resume markers null quietly; any other fa
   const fresh = missionLaunchMarkers(failing("ENOENT", "ENOENT: no such file or directory"), warn);
   assert.equal(fresh.resumeGuard, null);
   assert.equal(fresh.resumeLeaseRoot, null);
-  assert.equal(fresh.disposableRoot, DISPOSABLE_STATE_ROOT, "dispatch wrappers are still recognized");
+  assert.deepEqual(fresh.disposableRoots, disposableStateRoots(), "dispatch wrappers are still recognized");
   assert.deepEqual(warnings, [], "the first-run state is expected, not a fault");
 
   const denied = failing("EACCES", "EACCES: permission denied, realpath '/state'");

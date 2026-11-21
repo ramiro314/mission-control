@@ -12,6 +12,10 @@
  * has (Terminal.app, which Mission Control cannot drive), and an unreadable plist is no
  * reason to refuse a launch. The same preference file `open-targets/browser.ts` reads for the
  * default browser.
+ *
+ * On Linux the desktop's default terminal already has a backend of its own, `xdg-terminal`,
+ * which opens whichever terminal the desktop names, so that is the answer there with nothing
+ * to read. A picker still starts on it only while it can open a window.
  */
 
 import { homedir } from "node:os";
@@ -67,8 +71,9 @@ export interface SystemDefaultTerminalDeps {
   emulators: Partial<Record<EmulatorId, Pick<TerminalEmulator, "macBundleId">>>;
 }
 
-/** The emulator macOS treats as the default terminal, or null when it is none of ours. */
+/** The emulator the host treats as its default terminal, or null when it is none of ours. */
 export async function systemDefaultEmulator(deps: SystemDefaultTerminalDeps): Promise<EmulatorId | null> {
+  if (deps.platform === "linux") return deps.emulators["xdg-terminal"] ? "xdg-terminal" : null;
   if (deps.platform !== "darwin") return null;
   const plist = path.join(deps.home || homedir(), LAUNCH_SERVICES_PLIST);
   const result = await deps.run("plutil", ["-extract", "LSHandlers", "json", "-o", "-", plist], { timeoutMs: 4000 });

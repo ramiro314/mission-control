@@ -62,8 +62,23 @@ test("the default terminal is read from LaunchServices on macOS only, and every 
   // No LSHandlers key on an untouched machine: plutil exits non-zero.
   assert.equal(await read("darwin", ran("", 1)), null);
   calls.length = 0;
-  assert.equal(await read("linux", ran(ITERM_DEFAULT)), null);
+  assert.equal(await read("linux", ran(ITERM_DEFAULT)), null, "no Linux default terminal registered");
+  assert.equal(await read("win32", ran(ITERM_DEFAULT)), null);
   assert.equal(calls.length, 0, "no subprocess off macOS");
+});
+
+test("on Linux the default terminal is the desktop's own, through xdg-terminal", async () => {
+  const calls: string[][] = [];
+  const read = (platform: NodeJS.Platform) => systemDefaultEmulator({
+    platform,
+    home: "/home/operator",
+    emulators: { ...EMULATORS, "xdg-terminal": {} },
+    run: async (bin, args) => { calls.push([bin, ...args]); return ran(ITERM_DEFAULT); },
+  });
+  assert.equal(await read("linux"), "xdg-terminal");
+  assert.equal(calls.length, 0, "nothing to read: the desktop resolves it when a window opens");
+  // It declares no macOS bundle, so macOS never answers with it.
+  assert.equal(await read("darwin"), "iterm");
 });
 
 function view(id: TerminalTargetView["id"], extra: Partial<TerminalTargetView> = {}): TerminalTargetView {

@@ -15,6 +15,7 @@ import { trimUrlText } from "@shared/shaping.ts";
 import { dropPaneIdentityEnv, STATE_HOME_ENV_NAMES } from "../../agent-subprocess-env.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { executableChildEnv, executableLocator } from "../../executables/locator.ts";
+import { processLifetime } from "../../platform/process-lifetime.ts";
 import { credentialShapedName, MAKE_RECURSION_ENV_NAMES } from "../../workflows/check-env.ts";
 import { redactSpans } from "../redaction.ts";
 import { scrubResolved, type ResolvedValue } from "../references.ts";
@@ -85,15 +86,6 @@ export function shaperCommandEnv(
     env[name] = value;
   }
   return withAgentTraceContext(env, trace);
-}
-
-function killGroup(child: ChildProcess): void {
-  try {
-    if (child.pid) process.kill(-child.pid, "SIGKILL");
-    else child.kill("SIGKILL");
-  } catch {
-    try { child.kill("SIGKILL"); } catch { /* Already gone. */ }
-  }
 }
 
 /**
@@ -220,7 +212,7 @@ export async function removeScratch(dir: string, scrub: (text: string) => string
  */
 function reapGroup(child: ChildProcess | undefined): void {
   if (!child?.pid) return;
-  try { process.kill(-child.pid, "SIGKILL"); } catch { /* Nothing left in the group. */ }
+  try { processLifetime.signalTree(child.pid, "SIGKILL"); } catch { /* Nothing left in the group. */ }
 }
 
 function isDirectory(path: string): boolean {
@@ -359,7 +351,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
       // fires during the drain answers with it rather than turning it into a timeout.
       if (why === "timed_out" && exited) return complete(exited.code, exited.signal);
       ending = why;
-      killGroup(child);
+      processLifetime.killTree(child);
       // Both outcomes are known the moment they happen, and nothing more the pipes could deliver
       // changes either, so each settles at once. `finish` closes the daemon's ends of the pipes and
       // reaps the group, whoever holds them, so a timed-out call frees its process and pipes before
@@ -371,7 +363,7 @@ export const callCommand: ShapingTransport<"command"> = async (request, shaper, 
     const onAbort = (): void => end("timed_out");
     try {
       child = spawn(executable.path, transport.args, {
-        detached: true,
+        ...processLifetime.treeRootOptions,
         cwd,
         env: executable.env,
         shell: false,

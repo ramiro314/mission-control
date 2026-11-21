@@ -28,7 +28,8 @@ const {
 const { Registry } = await import("../src/server/registry.ts");
 const { pollOnce } = await import("../src/server/discovery/poller.ts");
 const { discover } = await import("../src/server/discovery/correlate.ts");
-const { DISPOSABLE_STATE_ROOT } = await import("../src/server/terminal/launch-process.ts");
+const { disposableStateRoots } = await import("../src/server/terminal/launch-process.ts");
+const DISPOSABLE_STATE_ROOT = disposableStateRoots()[0]!;
 const { getTerminalsConfig, setTerminalsConfig } = await import("../src/server/terminals-config.ts");
 const { TerminalsConfigPatchSchema } = await import("../src/shared/protocol.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
@@ -146,7 +147,7 @@ function machine(present: number[] = EVERY) {
     annotatePanes: async (sessions: DiscoveredSession[]) => {
       for (const s of sessions) annotated.panes.add(s.syntheticId);
     },
-    markers: () => ({ disposableRoot: DISPOSABLE_STATE_ROOT, resumeGuard: null, resumeLeaseRoot: null }),
+    markers: () => ({ disposableRoots: [DISPOSABLE_STATE_ROOT], resumeGuard: null, resumeLeaseRoot: null }),
     // What the real `gitInfo` returns for these made-up paths, so only the recording differs.
     gitInfo: (cwd) => {
       annotated.git.push(cwd);

@@ -376,6 +376,8 @@ test("Linux leaves out the rows for macOS-only backends and offers no Homebrew r
     assert.equal(dependencyRow(view, id)?.remedy.kind, "instruction", id);
   }
   assert.equal(dependencyRow(view, "node-runtime")?.remedy.kind, "instruction");
+  // macOS installs these two with Homebrew; Linux links their install guides.
+  for (const id of ["herdr", "coderabbit-cli"] as const) assert.equal(dependencyRow(view, id)?.remedy.kind, "link", id);
   assert.deepEqual(dependencyRow(view, "lsof")?.status, { state: "missing" });
   assert.deepEqual(dependencyRow(view, "lsof")?.remedy, setupRemedy(SETUP_DEPENDENCY_INFO.lsof, "linux"));
   assert.deepEqual(dependencyRow(view, "claude-cli")?.remedy, setupRemedy(SETUP_DEPENDENCY_INFO["claude-cli"], "darwin"));
@@ -413,7 +415,7 @@ test("macOS keeps every row and its Homebrew remedies", async () => {
     if (id === "lsof") assert.equal(dependencyRow(view, id), undefined, "macOS ships lsof, so Setup does not list it");
     else assert.ok(dependencyRow(view, id), id);
   }
-  for (const id of ["iterm", "wezterm", "ghostty", "tmux", "gh-cli", "node-runtime"] as const) {
+  for (const id of ["iterm", "wezterm", "ghostty", "tmux", "herdr", "gh-cli", "coderabbit-cli", "node-runtime"] as const) {
     const remedy = dependencyRow(view, id)?.remedy;
     assert.equal(remedy?.kind, "command", id);
     if (remedy?.kind === "command") assert.equal(remedy.argv[0], "brew", id);

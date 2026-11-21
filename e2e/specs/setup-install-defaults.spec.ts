@@ -27,6 +27,11 @@ import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-pa
 
 test.describe.configure({ timeout: 90_000 });
 
+// WezTerm and Herdr install with Homebrew on macOS only. Linux shows a package instruction or an
+// install guide for them, with no Run in a terminal, so the specs that drive those pickers are
+// macOS's; the Linux rows and the Linux default terminal are checked at the end of this file.
+const HOMEBREW_INSTALLS = "Homebrew installs are macOS-only; Linux links install guides";
+
 function terminalRecords(recordDir: string): { argv: string[] }[] {
   return recordsIn<{ argv: string[] }>(recordDir, (file) => file.startsWith("cmux-"));
 }
@@ -45,6 +50,7 @@ test.describe("with iTerm2 installed as the macOS default terminal", () => {
   test.use({ daemonEnv: { ITERM_BIN: "/usr/bin/true" } });
 
   test("the install terminal picker starts on the system default terminal", async ({ page, daemon }) => {
+    test.skip(process.platform !== "darwin", HOMEBREW_INSTALLS);
     // The daemon reads LaunchServices only on macOS, and this suite also runs on Linux, so the
     // reading is supplied here on top of the daemon's real catalog.
     await page.route("**/api/terminal-targets", async (route) => {
@@ -91,6 +97,7 @@ test.describe("with iTerm2 as the default terminal and its Apple Events recorded
   test.use({ daemonEnv: { MC_E2E_TERMINAL_BOUNDARY: "1", MC_E2E_ITERM_BOUNDARY: "1" } });
 
   test("Run in a terminal opens the installer through the daemon's iTerm2 adapter", async ({ page, daemon }) => {
+    test.skip(process.platform !== "darwin", HOMEBREW_INSTALLS);
     const recorded = join(daemon.recordDir, "iterm-osascript.jsonl");
     const calls = (): ItermBoundaryCall[] => existsSync(recorded)
       ? readFileSync(recorded, "utf8").trim().split("\n").map((line) => JSON.parse(line) as ItermBoundaryCall)
@@ -145,6 +152,7 @@ test.describe("with iTerm2 as the default terminal and its Apple Events recorded
 });
 
 test("without a system default the picker keeps starting on the first available terminal", async ({ page, daemon }) => {
+  test.skip(process.platform !== "darwin", HOMEBREW_INSTALLS);
   // Two usable terminals and no default, fixed here rather than read off the runner, so a
   // picker that took the last usable row instead of the first fails.
   const base = { glyph: "*", blurb: "", detail: null, unavailable: null };
@@ -163,6 +171,7 @@ test("without a system default the picker keeps starting on the first available 
 });
 
 test("Herdr offers a Homebrew install instead of its installation guide", async ({ page, daemon }) => {
+  test.skip(process.platform !== "darwin", HOMEBREW_INSTALLS);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await openSetupFamily(page, "terminals");
   const herdr = setupRow(page, "dependency-herdr");
@@ -260,9 +269,17 @@ test.describe("with the CodeRabbit CLI not installed", () => {
     await page.goto(`${daemon.baseURL}/#/settings/setup`);
     await openSetupFamily(page, "extensions");
     const cli = setupRow(page, "dependency-coderabbit-cli");
-    await expect(cli.locator(".setup-command code")).toHaveText("brew install --cask coderabbit");
-    await expect(cli.getByRole("link", { name: "Install and authenticate CodeRabbit" })).toHaveCount(0);
-    await expect(cli.getByRole("button", { name: "Run in a terminal" })).toBeVisible();
+    if (process.platform === "darwin") {
+      await expect(cli.locator(".setup-command code")).toHaveText("brew install --cask coderabbit");
+      await expect(cli.getByRole("link", { name: "Install and authenticate CodeRabbit" })).toHaveCount(0);
+      await expect(cli.getByRole("button", { name: "Run in a terminal" })).toBeVisible();
+    } else {
+      // The cask is macOS-only, so Linux links the CLI's install guide and runs nothing.
+      await expect(cli.getByRole("link", { name: "Open CodeRabbit CLI installation guide" }))
+        .toHaveAttribute("href", "https://docs.coderabbit.ai/cli");
+      await expect(cli.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
+      await expect(cli).not.toContainText("brew");
+    }
     const auth = setupRow(page, "dependency-coderabbit-auth");
     await expect(auth).toContainText("Install the CodeRabbit CLI first (the row above), press Re-check, then sign in.");
     // No sign-in before the CLI exists: no command and no Run button, just the CLI guide.
@@ -270,5 +287,39 @@ test.describe("with the CodeRabbit CLI not installed", () => {
     await expect(auth.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
     await expect(auth.getByRole("link", { name: "Open the CodeRabbit CLI guide" })).toBeVisible();
     await shoot(page, "coderabbit-install");
+  });
+});
+
+test("on Linux Herdr links its installation guide instead of a Homebrew install", async ({ page, daemon }) => {
+  test.skip(process.platform !== "linux", "the Linux remedies are offered on Linux only");
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "terminals");
+  const herdr = setupRow(page, "dependency-herdr");
+  await expect(herdr.getByRole("link", { name: "Open Herdr installation guide" }))
+    .toHaveAttribute("href", "https://herdr.dev/docs/install/");
+  await expect(herdr.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
+  await expect(herdr).not.toContainText("brew");
+});
+
+test.describe("on Linux with a default terminal the desktop can open", () => {
+  // `$TERMINAL` names a file that certainly exists, so the default terminal can open a window.
+  // Nothing here presses Run in a terminal, so nothing runs it.
+  test.use({ daemonEnv: { TERMINAL: "/bin/sh" } });
+
+  test("an install picker starts on the desktop's default terminal", async ({ page, daemon }) => {
+    test.skip(process.platform !== "linux", "the default terminal exists on Linux only");
+    writeFileSync(join(daemon.home, "coderabbit-script.json"), JSON.stringify({ unauthenticated: true }));
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.goto(`${daemon.baseURL}/#/settings/setup`);
+    await openSetupFamily(page, "extensions");
+    await page.getByRole("button", { name: "Re-check" }).click();
+
+    const auth = setupRow(page, "dependency-coderabbit-auth");
+    await expectRowStatus(page, "dependency-coderabbit-auth", "Needs setup");
+    const picker = auth.getByLabel("Terminal for CodeRabbit CLI sign-in");
+    // Listed after every multiplexer, so it is chosen only because it is the default.
+    await expect(picker).toHaveValue("xdg-terminal");
+    await expect(picker.locator("option:checked")).toHaveText("Default terminal (system default)");
+    await shoot(page, "picker-starts-on-linux-default-terminal");
   });
 });

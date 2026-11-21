@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Proc } from "../discovery/processes.ts";
@@ -7,7 +6,12 @@ import type { Session } from "@shared/types.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
 // Not `../config.ts`: its module scope freezes the state directory, and this module is
 // imported by files that set their own state home only after their static imports.
-import { stateDir } from "../../shared/harness-runtime.mjs";
+import {
+  AGENT_STATE_ROOT,
+  agentRuntimeBase,
+  legacyAgentRuntimeRoot,
+  stateDir,
+} from "../../shared/harness-runtime.mjs";
 import { resumeGuardPath } from "../resume-guard-path.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import type { SpawnedHome } from "./home.ts";
@@ -19,12 +23,17 @@ export type LaunchProcess = Pick<Proc, "pid" | "startMs">;
 
 /**
  * Where every agent-controlled launch gets its private state home, one `session-*` directory
- * per launch. Defined here, beside the wrapper's file name, because this module is also what
+ * per launch: the current private agent runtime root first (`$XDG_RUNTIME_DIR/mission-control`
+ * on Linux, the temp dir on macOS), then on Linux the pre-upgrade temp-dir root while it is
+ * still private. Defined here, beside the wrapper's file name, because this module is also what
  * recognizes that wrapper in the process table; `agent-subprocess-env.ts` creates the homes
- * from the same constant. (It lives here rather than there because that module already imports
+ * under the same root. (It lives here rather than there because that module already imports
  * this one, and the reverse import would close a cycle.)
  */
-export const DISPOSABLE_STATE_ROOT = join(tmpdir(), "mission-control-agent-state");
+export function disposableStateRoots(): string[] {
+  const legacy = legacyAgentRuntimeRoot(AGENT_STATE_ROOT);
+  return [join(agentRuntimeBase(), AGENT_STATE_ROOT), ...(legacy ? [legacy] : [])];
+}
 
 /**
  * What a Mission Control launch looks like in `ps`, resolved once per discovery sweep.
@@ -34,7 +43,7 @@ export const DISPOSABLE_STATE_ROOT = join(tmpdir(), "mission-control-agent-state
  * state has launched no managed resume.
  */
 export interface MissionLaunchMarkers {
-  disposableRoot: string;
+  disposableRoots: readonly string[];
   resumeGuard: string | null;
   resumeLeaseRoot: string | null;
 }
@@ -73,7 +82,7 @@ export function missionLaunchMarkers(
     }
   }
   return {
-    disposableRoot: DISPOSABLE_STATE_ROOT,
+    disposableRoots: disposableStateRoots(),
     resumeGuard: resumeLeaseRoot ? resumeGuardPath() : null,
     resumeLeaseRoot,
   };
@@ -84,7 +93,7 @@ export function missionLaunchMarkers(
  * one per launch builder:
  *
  * - `isolatedAgentArgv` (dispatch, the agent button, the terminal chooser) runs
- *   `/bin/sh <DISPOSABLE_STATE_ROOT>/session-<id>/launch-and-cleanup.sh`, which does not
+ *   `/bin/sh <disposable state root>/session-<id>/launch-and-cleanup.sh`, which does not
  *   `exec`, so the shell stays the agent's ancestor. Ghostty's `exec -l` prefixes argv0 with
  *   a dash, as `readLaunchProcess` already allows.
  * - `prepareTerminalResume` (managed resume, Continue in terminal) writes its wrapper at
@@ -101,9 +110,10 @@ export function isMissionLaunchProcess(
   markers: MissionLaunchMarkers = missionLaunchMarkers(),
 ): boolean {
   const command = proc.command.replace(/^-/, "");
-  const prefix = `${FIXED_OS_EXECUTABLES.sh} ${markers.disposableRoot}/session-`;
   const suffix = `/${LAUNCH_SCRIPT_FILE}`;
-  if (command.startsWith(prefix) && command.endsWith(suffix)) {
+  for (const root of markers.disposableRoots) {
+    const prefix = `${FIXED_OS_EXECUTABLES.sh} ${root}/session-`;
+    if (!command.startsWith(prefix) || !command.endsWith(suffix)) continue;
     const segment = command.slice(prefix.length, command.length - suffix.length);
     if (segment.length > 0 && !segment.includes("/")) return true;
   }
